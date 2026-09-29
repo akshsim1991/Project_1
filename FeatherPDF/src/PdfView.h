@@ -23,6 +23,7 @@
 // 32-bit scrollbar range.
 #pragma once
 #include <functional>
+#include <unordered_map>
 #include <unordered_set>
 
 #include "PageCache.h"
@@ -40,6 +41,13 @@ class PdfView {
 public:
     static constexpr double kMinZoom = 0.05;
     static constexpr double kMaxZoom = 16.0;
+
+    PdfView() = default;
+    ~PdfView() {
+        if (m_hwnd && IsWindow(m_hwnd)) DestroyWindow(m_hwnd);
+    }
+    PdfView(const PdfView&) = delete;
+    PdfView& operator=(const PdfView&) = delete;
 
     bool Create(HWND parent, RenderWorker* worker);
     HWND Hwnd() const { return m_hwnd; }
@@ -73,8 +81,15 @@ public:
     void SetSearch(const SearchState* search) { m_search = search; }
     void ScrollToHit(const SearchHit& hit);
 
+    // --- text selection ----------------------------------------------------
+    bool HasSelection() const { return m_hasSel && !(m_selAnchor == m_selFocus); }
+    void CopySelection();  // text arrives as WM_APP_TEXT_COPIED
+    void SelectAll();
+    void ClearSelection();
+
     // --- events from the main window -------------------------------------
-    void OnTileReady(TileResult* result);  // takes ownership
+    void OnTileReady(TileResult* result);      // takes ownership
+    void OnTextLayer(TextLayerResult* result); // takes ownership
     void OnDpiChanged();
     void OnThemeChanged();
     void TrimMemory();  // drop all cached tiles (e.g. when minimised)
@@ -127,6 +142,21 @@ private:
         if (onViewChanged) onViewChanged();
     }
 
+    // text selection
+    struct TextLayer {
+        std::vector<TextChar> chars;
+    };
+    const TextLayer* GetTextLayer(int page, bool request);
+    // Maps a client point to a caret position. `strict` only succeeds when
+    // the point is on (or right next to) a line of text.
+    bool HitText(POINT pt, bool strict, TextPos* caret, int* charIndex = nullptr);
+    void SelectionBounds(TextPos& start, TextPos& end) const;
+    void DrawSelection(HDC dc, int page, int64_t left, int64_t top, const RECT& vis);
+    void SelectWordAt(POINT pt);
+    void UpdateSelectionTo(POINT pt);
+    void OnAutoScroll();
+    void ShowContextMenu(LPARAM lp);
+
     HWND m_hwnd = nullptr;
     RenderWorker* m_worker = nullptr;
     int m_dpi = 96;
@@ -164,6 +194,14 @@ private:
     HBITMAP m_backBmp = nullptr;
     int m_backW = 0, m_backH = 0;
     HFONT m_messageFont = nullptr;
+
+    // text layers (LRU of pages' character boxes) and selection
+    std::unordered_map<int, TextLayer> m_text;
+    std::vector<int> m_textOrder;              // front = most recently used
+    std::unordered_set<int> m_textPending;
+    bool m_hasSel = false;
+    bool m_selecting = false;
+    TextPos m_selAnchor, m_selFocus;
 
     // mouse
     bool m_dragging = false;

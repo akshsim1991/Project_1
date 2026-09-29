@@ -3,7 +3,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <climits>
 #include <cstdlib>
+#include <cwctype>
 #include <memory>
 
 #include <windowsx.h>
@@ -23,6 +25,14 @@ constexpr int kTileMaxRowW = 2048;     // pages up to this width use full-width 
 constexpr int kTileColW = 1024;        // column width for wider pages
 constexpr UINT_PTR kSettleTimer = 1;   // re-render delay after wheel zoom
 constexpr UINT kSettleMs = 150;
+constexpr UINT_PTR kAutoScrollTimer = 2;  // scrolls while drag-selecting past an edge
+constexpr size_t kMaxTextLayers = 32;     // pages whose character boxes are kept
+constexpr float kTextSlackPt = 12.0f;     // how far from a glyph still counts as "on text"
+constexpr COLORREF kSelectionColor = RGB(150, 200, 255);
+
+bool IsWordChar(uint32_t cp) {
+    return cp == '_' || (cp < 0x10000 && iswalnum((wint_t)cp)) || cp >= 0x10000;
+}
 constexpr DWORD kRopDestAndPattern = 0x00A000C9;  // "multiply" highlight
 
 template <typename T>
@@ -53,6 +63,7 @@ bool PdfView::Create(HWND parent, RenderWorker* worker) {
     static bool registered = false;
     if (!registered) {
         WNDCLASSEXW wc{sizeof(wc)};
+        wc.style = CS_DBLCLKS;
         wc.lpfnWndProc = &PdfView::WndProc;
         wc.hInstance = GetModuleHandleW(nullptr);
         wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
@@ -130,6 +141,16 @@ LRESULT PdfView::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         case WM_KEYDOWN: {
             const bool shift = GetKeyState(VK_SHIFT) < 0;
+            if (GetKeyState(VK_CONTROL) < 0) {
+                if (wp == 'C' || wp == VK_INSERT) {
+                    CopySelection();
+                    return 0;
+                }
+                if (wp == 'A') {
+                    SelectAll();
+                    return 0;
+                }
+            }
             switch (wp) {
                 case VK_UP: ScrollOrFlip(-LineStep()); return 0;
                 case VK_DOWN: ScrollOrFlip(LineStep()); return 0;
@@ -143,41 +164,86 @@ LRESULT PdfView::Handle(UINT msg, WPARAM wp, LPARAM lp) {
                     ScrollOrFlip(shift ? -(ClientH() - LineStep()) : (ClientH() - LineStep()));
                     return 0;
                 case VK_ESCAPE:
-                    SendMessageW(GetParent(m_hwnd), WM_COMMAND, ID_ESCAPE, 0);
+                    if (HasSelection())
+                        ClearSelection();
+                    else
+                        SendMessageW(GetParent(m_hwnd), WM_COMMAND, ID_ESCAPE, 0);
                     return 0;
             }
             break;
         }
-        case WM_LBUTTONDOWN:
+        case WM_LBUTTONDOWN: {
             SetFocus(m_hwnd);
-            if (HasDocument()) {  // drag to pan
-                m_dragging = true;
-                m_dragStart = {GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
-                m_dragScrollX = m_scrollX;
-                m_dragScrollY = m_scrollY;
+            if (!HasDocument()) return 0;
+            const POINT pt = {GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+            TextPos pos;
+            const bool extend = (wp & MK_SHIFT) && m_hasSel;
+            if (HitText(pt, !extend, &pos)) {
+                // On text: start (or with Shift, extend) a selection.
+                if (!extend) m_selAnchor = pos;
+                m_selFocus = pos;
+                m_hasSel = true;
+                m_selecting = true;
                 SetCapture(m_hwnd);
-                SetCursor(LoadCursorW(nullptr, IDC_SIZEALL));
+                SetTimer(m_hwnd, kAutoScrollTimer, 30, nullptr);
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+                return 0;
             }
+            // Elsewhere: drag to pan.
+            ClearSelection();
+            m_dragging = true;
+            m_dragStart = pt;
+            m_dragScrollX = m_scrollX;
+            m_dragScrollY = m_scrollY;
+            SetCapture(m_hwnd);
+            SetCursor(LoadCursorW(nullptr, IDC_SIZEALL));
+            return 0;
+        }
+        case WM_LBUTTONDBLCLK:
+            SelectWordAt({GET_X_LPARAM(lp), GET_Y_LPARAM(lp)});
             return 0;
         case WM_MOUSEMOVE:
             if (m_dragging) {
                 ScrollTo(m_dragScrollX - (GET_X_LPARAM(lp) - m_dragStart.x),
                          m_dragScrollY - (GET_Y_LPARAM(lp) - m_dragStart.y));
+            } else if (m_selecting) {
+                UpdateSelectionTo({GET_X_LPARAM(lp), GET_Y_LPARAM(lp)});
             }
             return 0;
         case WM_LBUTTONUP:
-            if (m_dragging) ReleaseCapture();
+            if (m_dragging || m_selecting) ReleaseCapture();
             return 0;
         case WM_CAPTURECHANGED:
             m_dragging = false;
+            m_selecting = false;
+            KillTimer(m_hwnd, kAutoScrollTimer);
+            return 0;
+        case WM_CONTEXTMENU:
+            ShowContextMenu(lp);
             return 0;
         case WM_SETCURSOR:
             if (LOWORD(lp) == HTCLIENT) {
-                SetCursor(LoadCursorW(nullptr, m_dragging ? IDC_SIZEALL : IDC_ARROW));
+                LPCWSTR cursor = IDC_ARROW;
+                if (m_dragging) {
+                    cursor = IDC_SIZEALL;
+                } else if (m_selecting) {
+                    cursor = IDC_IBEAM;
+                } else if (HasDocument()) {
+                    POINT pt;
+                    GetCursorPos(&pt);
+                    ScreenToClient(m_hwnd, &pt);
+                    TextPos pos;
+                    if (HitText(pt, true, &pos)) cursor = IDC_IBEAM;
+                }
+                SetCursor(LoadCursorW(nullptr, cursor));
                 return TRUE;
             }
             break;
         case WM_TIMER:
+            if (wp == kAutoScrollTimer) {
+                OnAutoScroll();
+                return 0;
+            }
             if (wp == kSettleTimer) {
                 KillTimer(m_hwnd, kSettleTimer);
                 m_zoomSettling = false;
@@ -205,6 +271,10 @@ void PdfView::SetDocument(uint32_t docId, std::vector<SizeF>&& sizes, int startP
     m_sizes = std::move(sizes);
     m_cache.Clear();
     m_failed.clear();
+    m_text.clear();
+    m_textOrder.clear();
+    m_textPending.clear();
+    m_hasSel = m_selecting = false;
     m_message.clear();
     m_forcedPage = -1;
     m_scrollX = m_scrollY = 0;
@@ -226,6 +296,10 @@ void PdfView::CloseDocument() {
     m_layout.clear();
     m_cache.Clear();
     m_failed.clear();
+    m_text.clear();
+    m_textOrder.clear();
+    m_textPending.clear();
+    m_hasSel = m_selecting = false;
     m_scrollX = m_scrollY = 0;
     Relayout();
     UpdateScrollBars();
@@ -663,6 +737,9 @@ void PdfView::OnThemeChanged() {
 
 void PdfView::TrimMemory() {
     m_cache.Clear();
+    m_text.clear();
+    m_textOrder.clear();
+    m_textPending.clear();
     if (m_backDC) {
         DeleteDC(m_backDC);
         m_backDC = nullptr;
@@ -898,6 +975,225 @@ void PdfView::PaintPage(HDC dc, int page, std::vector<std::pair<int64_t, TileReq
         }
     }
 
+    // 4. Text selection (same "multiply" technique, in blue).
+    if (HasSelection()) DrawSelection(dc, page, left, top, vis);
+
     SelectClipRgn(dc, nullptr);
     DeleteObject(clip);
+}
+
+// ===========================================================================
+// Text selection
+//
+// Hit-testing and highlighting run on the UI thread using a small cache of
+// per-page character boxes ("text layers") fetched from the worker the
+// first time the mouse moves over a page. Copying is done by the worker
+// (FPDFText_GetText), so selections spanning many pages never need all of
+// their text layers in memory.
+// ===========================================================================
+const PdfView::TextLayer* PdfView::GetTextLayer(int page, bool request) {
+    auto it = m_text.find(page);
+    if (it != m_text.end()) {
+        auto pos = std::find(m_textOrder.begin(), m_textOrder.end(), page);
+        if (pos != m_textOrder.begin() && pos != m_textOrder.end()) {
+            m_textOrder.erase(pos);
+            m_textOrder.insert(m_textOrder.begin(), page);
+        }
+        return &it->second;
+    }
+    if (request && m_worker && !m_textPending.count(page)) {
+        m_textPending.insert(page);
+        m_worker->RequestTextLayer(m_docId, page);
+    }
+    return nullptr;
+}
+
+void PdfView::OnTextLayer(TextLayerResult* result) {
+    std::unique_ptr<TextLayerResult> res(result);
+    if (res->docId != m_docId || !HasDocument()) return;
+    m_textPending.erase(res->page);
+    m_text[res->page].chars = std::move(res->chars);
+    m_textOrder.erase(std::remove(m_textOrder.begin(), m_textOrder.end(), res->page),
+                      m_textOrder.end());
+    m_textOrder.insert(m_textOrder.begin(), res->page);
+    while (m_textOrder.size() > kMaxTextLayers) {
+        m_text.erase(m_textOrder.back());
+        m_textOrder.pop_back();
+    }
+    if (HasSelection()) InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+bool PdfView::HitText(POINT pt, bool strict, TextPos* caret, int* charIndex) {
+    if (!HasDocument() || m_last < m_first) return false;
+    const int64_t docY = m_scrollY + pt.y;
+    const int page = PageAtY(docY);
+    const TextLayer* layer = GetTextLayer(page, true);
+    if (!layer) return false;
+    const float px = (float)((m_scrollX + pt.x - PageLeft(page)) / m_scale);
+    const float py = (float)((docY - m_layout[(size_t)page].top) / m_scale);
+
+    // Nearest glyph, strongly preferring the line the point is on.
+    int best = -1;
+    float bestScore = 0, bestDx = 0, bestDy = 0;
+    for (size_t i = 0; i < layer->chars.size(); ++i) {
+        const TextChar& c = layer->chars[i];
+        if (!c.hasBox) continue;
+        const float dx = std::max({0.0f, c.box.left - px, px - c.box.right});
+        const float dy = std::max({0.0f, c.box.top - py, py - c.box.bottom});
+        const float score = dy * 1000.0f + dx;
+        if (best < 0 || score < bestScore) {
+            best = (int)i;
+            bestScore = score;
+            bestDx = dx;
+            bestDy = dy;
+        }
+    }
+    if (best < 0) return false;  // no text on this page (e.g. a scan)
+    if (strict && (bestDy > 1.0f || bestDx > kTextSlackPt)) return false;
+    const RectF& b = layer->chars[(size_t)best].box;
+    caret->page = page;
+    caret->index = px < (b.left + b.right) / 2 ? best : best + 1;
+    if (charIndex) *charIndex = best;
+    return true;
+}
+
+void PdfView::SelectionBounds(TextPos& start, TextPos& end) const {
+    start = std::min(m_selAnchor, m_selFocus);
+    end = std::max(m_selAnchor, m_selFocus);
+}
+
+void PdfView::UpdateSelectionTo(POINT pt) {
+    // Clamp into the viewport so dragging past an edge keeps selecting.
+    pt.x = Clamp<LONG>(pt.x, 0, std::max(0, ClientW() - 1));
+    pt.y = Clamp<LONG>(pt.y, 0, std::max(0, ClientH() - 1));
+    TextPos pos;
+    if (HitText(pt, false, &pos) && !(pos == m_selFocus)) {
+        m_selFocus = pos;
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+}
+
+void PdfView::OnAutoScroll() {
+    if (!m_selecting) {
+        KillTimer(m_hwnd, kAutoScrollTimer);
+        return;
+    }
+    POINT pt;
+    GetCursorPos(&pt);
+    ScreenToClient(m_hwnd, &pt);
+    int64_t dx = 0, dy = 0;
+    if (pt.y < 0) dy = std::max<int64_t>(pt.y, -LineStep());
+    if (pt.y >= ClientH()) dy = std::min<int64_t>(pt.y - ClientH() + 1, LineStep());
+    if (pt.x < 0) dx = std::max<int64_t>(pt.x, -LineStep());
+    if (pt.x >= ClientW()) dx = std::min<int64_t>(pt.x - ClientW() + 1, LineStep());
+    if (dx || dy) {
+        ScrollBy(dx, dy);
+        UpdateSelectionTo(pt);
+    }
+}
+
+void PdfView::SelectWordAt(POINT pt) {
+    TextPos pos;
+    int ci = -1;
+    if (!HitText(pt, true, &pos, &ci)) return;
+    const TextLayer* layer = GetTextLayer(pos.page, false);
+    if (!layer || ci < 0) return;
+    const auto& chars = layer->chars;
+    int l = ci, r = ci;
+    if (IsWordChar(chars[(size_t)ci].cp)) {
+        while (l > 0 && chars[(size_t)l - 1].hasBox && IsWordChar(chars[(size_t)l - 1].cp)) --l;
+        while (r + 1 < (int)chars.size() && chars[(size_t)r + 1].hasBox &&
+               IsWordChar(chars[(size_t)r + 1].cp))
+            ++r;
+    }
+    m_selAnchor = {pos.page, l};
+    m_selFocus = {pos.page, r + 1};
+    m_hasSel = true;
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void PdfView::SelectAll() {
+    if (!HasDocument()) return;
+    m_selAnchor = {0, 0};
+    m_selFocus = {PageCount() - 1, INT_MAX / 2};  // clamped to the page's length
+    m_hasSel = true;
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void PdfView::ClearSelection() {
+    if (!m_hasSel) return;
+    m_hasSel = false;
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void PdfView::CopySelection() {
+    if (!HasSelection() || !m_worker) return;
+    static uint32_t s_copyId = 0;
+    TextPos start, end;
+    SelectionBounds(start, end);
+    m_worker->CopyText(m_docId, ++s_copyId, start, end);
+}
+
+void PdfView::DrawSelection(HDC dc, int page, int64_t left, int64_t top, const RECT& vis) {
+    TextPos start, end;
+    SelectionBounds(start, end);
+    if (page < start.page || page > end.page) return;
+    const TextLayer* layer = GetTextLayer(page, true);
+    if (!layer) return;
+    const int n = (int)layer->chars.size();
+    const int s = page == start.page ? std::min(start.index, n) : 0;
+    const int e = page == end.page ? std::min(end.index, n) : n;
+    if (e <= s) return;
+
+    HBRUSH brush = CreateSolidBrush(kSelectionColor);
+    HGDIOBJ old = SelectObject(dc, brush);
+    auto flush = [&](const RectF& r) {
+        const int64_t x0 = left + (int64_t)std::floor(r.left * m_scale);
+        const int64_t y0 = top + (int64_t)std::floor(r.top * m_scale);
+        const int64_t x1 = left + (int64_t)std::ceil(r.right * m_scale);
+        const int64_t y1 = top + (int64_t)std::ceil(r.bottom * m_scale);
+        const int ix0 = (int)std::max<int64_t>(x0, vis.left), iy0 = (int)std::max<int64_t>(y0, vis.top);
+        const int ix1 = (int)std::min<int64_t>(x1, vis.right), iy1 = (int)std::min<int64_t>(y1, vis.bottom);
+        if (ix1 > ix0 && iy1 > iy0)
+            BitBlt(dc, ix0, iy0, ix1 - ix0, iy1 - iy0, nullptr, 0, 0, kRopDestAndPattern);
+    };
+    // Merge consecutive glyph boxes on the same line into one band, so
+    // word gaps are highlighted too.
+    bool open = false;
+    RectF band;
+    for (int i = s; i < e; ++i) {
+        const TextChar& c = layer->chars[(size_t)i];
+        if (!c.hasBox) continue;
+        const RectF& b = c.box;
+        if (open) {
+            const float overlap = std::min(band.bottom, b.bottom) - std::max(band.top, b.top);
+            const float h = std::min(band.bottom - band.top, b.bottom - b.top);
+            if (overlap > h * 0.5f && b.left >= band.left - 1.0f) {
+                band.left = std::min(band.left, b.left);
+                band.right = std::max(band.right, b.right);
+                band.top = std::min(band.top, b.top);
+                band.bottom = std::max(band.bottom, b.bottom);
+                continue;
+            }
+            flush(band);
+        }
+        band = b;
+        open = true;
+    }
+    if (open) flush(band);
+    SelectObject(dc, old);
+    DeleteObject(brush);
+}
+
+void PdfView::ShowContextMenu(LPARAM lp) {
+    if (!HasDocument()) return;
+    POINT pt = {GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+    if (pt.x == -1 && pt.y == -1) GetCursorPos(&pt);  // keyboard (Shift+F10)
+    HMENU m = CreatePopupMenu();
+    AppendMenuW(m, MF_STRING | (HasSelection() ? 0 : MF_GRAYED), ID_COPY, L"&Copy\tCtrl+C");
+    AppendMenuW(m, MF_STRING, ID_SELECT_ALL, L"Select &all\tCtrl+A");
+    const int cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, m_hwnd, nullptr);
+    DestroyMenu(m);
+    if (cmd == ID_COPY) CopySelection();
+    if (cmd == ID_SELECT_ALL) SelectAll();
 }

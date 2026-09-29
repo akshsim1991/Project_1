@@ -42,9 +42,9 @@ void AllowDarkMenus(bool dark) {
 }
 }  // namespace
 
-void ReloadTheme() {
+void ReloadTheme(ThemeMode mode) {
     Theme& t = g_theme;
-    t.dark = SystemUsesDarkApps();
+    t.dark = mode == ThemeMode::Dark || (mode == ThemeMode::System && SystemUsesDarkApps());
     if (t.dark) {
         t.barBg = RGB(32, 32, 32);
         t.barText = RGB(235, 235, 235);
@@ -59,6 +59,8 @@ void ReloadTheme() {
         t.canvasBg = RGB(43, 43, 43);
         t.canvasText = RGB(170, 170, 170);
         t.pageBorder = RGB(20, 20, 20);
+        t.tabStripBg = RGB(22, 22, 22);
+        t.tabHover = RGB(42, 42, 42);
     } else {
         t.barBg = RGB(249, 249, 249);
         t.barText = RGB(28, 28, 28);
@@ -73,6 +75,8 @@ void ReloadTheme() {
         t.canvasBg = RGB(232, 232, 232);
         t.canvasText = RGB(100, 100, 100);
         t.pageBorder = RGB(190, 190, 190);
+        t.tabStripBg = RGB(232, 232, 232);
+        t.tabHover = RGB(240, 240, 240);
     }
     if (t.editBrush) DeleteObject(t.editBrush);
     t.editBrush = CreateSolidBrush(t.editBg);

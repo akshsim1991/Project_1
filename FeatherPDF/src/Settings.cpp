@@ -9,26 +9,10 @@ DWORD ReadDword(HKEY key, const wchar_t* name, DWORD def) {
     return v;
 }
 
-std::wstring ReadString(HKEY key, const wchar_t* name) {
-    DWORD size = 0;
-    if (RegGetValueW(key, nullptr, name, RRF_RT_REG_SZ, nullptr, nullptr, &size) != ERROR_SUCCESS ||
-        size < sizeof(wchar_t))
-        return {};
-    std::wstring s(size / sizeof(wchar_t), L'\0');
-    if (RegGetValueW(key, nullptr, name, RRF_RT_REG_SZ, nullptr, s.data(), &size) != ERROR_SUCCESS)
-        return {};
-    s.resize(wcslen(s.c_str()));
-    return s;
-}
-
 void WriteDword(HKEY key, const wchar_t* name, DWORD v) {
     RegSetValueExW(key, name, 0, REG_DWORD, (const BYTE*)&v, sizeof(v));
 }
 
-void WriteString(HKEY key, const wchar_t* name, const std::wstring& s) {
-    RegSetValueExW(key, name, 0, REG_SZ, (const BYTE*)s.c_str(),
-                   (DWORD)((s.size() + 1) * sizeof(wchar_t)));
-}
 }  // namespace
 
 void Settings::Load() {
@@ -47,8 +31,26 @@ void Settings::Load() {
     if (zoom < 0.05 || zoom > 16) zoom = 1.0;
     continuous = ReadDword(key, L"Continuous", 1) != 0;
     matchCase = ReadDword(key, L"MatchCase", 0) != 0;
-    lastFile = ReadString(key, L"LastFile");
-    lastPage = (int)ReadDword(key, L"LastPage", 0);
+    themeMode = (int)ReadDword(key, L"Theme", 0);
+    if (themeMode < 0 || themeMode > 2) themeMode = 0;
+    activeTab = (int)ReadDword(key, L"ActiveTab", 0);
+
+    // Session: REG_MULTI_SZ of "page|path" entries.
+    DWORD bytes = 0;
+    if (RegGetValueW(key, nullptr, L"Session", RRF_RT_REG_MULTI_SZ, nullptr, nullptr, &bytes) ==
+            ERROR_SUCCESS &&
+        bytes >= sizeof(wchar_t)) {
+        std::wstring buf(bytes / sizeof(wchar_t) + 1, L'\0');
+        if (RegGetValueW(key, nullptr, L"Session", RRF_RT_REG_MULTI_SZ, nullptr, buf.data(),
+                         &bytes) == ERROR_SUCCESS) {
+            for (const wchar_t* p = buf.c_str(); *p; p += wcslen(p) + 1) {
+                std::wstring entry = p;
+                size_t bar = entry.find(L'|');
+                if (bar == std::wstring::npos || bar + 1 >= entry.size()) continue;
+                session.push_back({entry.substr(bar + 1), _wtoi(entry.substr(0, bar).c_str())});
+            }
+        }
+    }
     RegCloseKey(key);
 }
 
@@ -64,7 +66,15 @@ void Settings::Save() const {
     WriteDword(key, L"ZoomPermille", (DWORD)(zoom * 1000 + 0.5));
     WriteDword(key, L"Continuous", continuous ? 1 : 0);
     WriteDword(key, L"MatchCase", matchCase ? 1 : 0);
-    WriteString(key, L"LastFile", lastFile);
-    WriteDword(key, L"LastPage", (DWORD)lastPage);
+    WriteDword(key, L"Theme", (DWORD)themeMode);
+    WriteDword(key, L"ActiveTab", (DWORD)activeTab);
+    std::wstring multi;
+    for (const OpenFile& f : session) {
+        multi += std::to_wstring(f.page) + L"|" + f.path;
+        multi.push_back(L'\0');
+    }
+    multi.push_back(L'\0');
+    RegSetValueExW(key, L"Session", 0, REG_MULTI_SZ, (const BYTE*)multi.data(),
+                   (DWORD)(multi.size() * sizeof(wchar_t)));
     RegCloseKey(key);
 }

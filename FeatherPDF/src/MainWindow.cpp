@@ -1,8 +1,7 @@
-// MainWindow.cpp - top-level window and command handling.
+// MainWindow.cpp - top-level window, tabs and command handling.
 #include "MainWindow.h"
 
 #include <cmath>
-#include <memory>
 
 #include <commctrl.h>
 #include <commdlg.h>
@@ -14,7 +13,6 @@
 #include "resource.h"
 
 namespace {
-const wchar_t kClassName[] = L"FeatherPdfMain";
 constexpr UINT_PTR kSearchTimer = 1;  // incremental search debounce
 constexpr UINT kSearchDelayMs = 300;
 
@@ -48,6 +46,15 @@ const wchar_t* OpenErrorText(OpenError e) {
 bool SamePath(const std::wstring& a, const std::wstring& b) {
     return CompareStringOrdinal(a.c_str(), (int)a.size(), b.c_str(), (int)b.size(), TRUE) ==
            CSTR_EQUAL;
+}
+
+std::wstring FullPath(const std::wstring& path) {
+    DWORD n = GetFullPathNameW(path.c_str(), 0, nullptr, nullptr);
+    if (n == 0) return path;
+    std::wstring full(n, L'\0');
+    n = GetFullPathNameW(path.c_str(), n, full.data(), nullptr);
+    full.resize(n);
+    return n ? full : path;
 }
 
 std::wstring GetText(HWND hwnd) {
@@ -98,7 +105,7 @@ INT_PTR CALLBACK PasswordDlgProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
 bool MainWindow::Create(HINSTANCE inst, int showCmd, const std::wstring& file, int page) {
     m_inst = inst;
     m_settings.Load();
-    ReloadTheme();
+    ReloadTheme((ThemeMode)m_settings.themeMode);
 
     WNDCLASSEXW wc{sizeof(wc)};
     wc.style = CS_HREDRAW | CS_VREDRAW;
@@ -108,7 +115,7 @@ bool MainWindow::Create(HINSTANCE inst, int showCmd, const std::wstring& file, i
     wc.hIconSm = (HICON)LoadImageW(inst, MAKEINTRESOURCEW(IDI_APP), IMAGE_ICON,
                                    GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), 0);
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    wc.lpszClassName = kClassName;
+    wc.lpszClassName = APP_WINDOW_CLASS;
     if (!RegisterClassExW(&wc)) return false;
 
     // Default size: a portrait-friendly window that fits the work area.
@@ -118,21 +125,14 @@ bool MainWindow::Create(HINSTANCE inst, int showCmd, const std::wstring& file, i
     int w = std::min(Dpi(1000, sysDpi), (int)(work.right - work.left) * 9 / 10);
     int h = std::min(Dpi(1100, sysDpi), (int)(work.bottom - work.top) * 9 / 10);
 
-    m_hwnd = CreateWindowExW(WS_EX_ACCEPTFILES, kClassName, APP_NAME,
+    m_hwnd = CreateWindowExW(WS_EX_ACCEPTFILES, APP_WINDOW_CLASS, APP_NAME,
                              WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, CW_USEDEFAULT, CW_USEDEFAULT,
                              w, h, nullptr, nullptr, inst, this);
     if (!m_hwnd) return false;
     ApplyWindowTheme(m_hwnd);
+    if (!m_worker.Start(m_hwnd)) return false;
     CreateChildren();
     CreateAccelerators();
-    if (!m_worker.Start(m_hwnd)) return false;
-
-    m_view.SetContinuous(m_settings.continuous);
-    if (m_settings.zoomMode == 0) {
-        m_view.SetZoom(m_settings.zoom);
-    } else {
-        m_view.SetZoomMode((ZoomMode)m_settings.zoomMode);
-    }
 
     // Restore the previous window position/size (Windows moves it back on
     // screen if that monitor is gone).
@@ -149,23 +149,36 @@ bool MainWindow::Create(HINSTANCE inst, int showCmd, const std::wstring& file, i
         ShowWindow(m_hwnd, showCmd);
     }
     UpdateWindow(m_hwnd);  // show the window before any PDF work
-    SetFocus(m_view.Hwnd());
+    SetFocus(View().Hwnd());
 
-    // Open the requested file, or reopen the last document.
+    // Open the requested file, or restore the tabs of the last session.
     if (!file.empty()) {
-        int start = page >= 0 ? page
-                    : SamePath(file, m_settings.lastFile) ? m_settings.lastPage
-                                                           : 0;
+        int start = page >= 0 ? page : 0;
+        if (page < 0) {
+            for (const auto& f : m_settings.session)
+                if (SamePath(FullPath(file), f.path)) start = f.page;
+        }
         OpenFile(file, start);
-    } else if (!m_settings.lastFile.empty() && FileExists(m_settings.lastFile)) {
-        OpenFile(m_settings.lastFile, m_settings.lastPage);
+    } else {
+        int restored = 0, activeIndex = -1;
+        for (size_t i = 0; i < m_settings.session.size(); ++i) {
+            const auto& f = m_settings.session[i];
+            if (!FileExists(f.path)) continue;
+            OpenFile(f.path, f.page, {}, -1, false);
+            if ((int)i == m_settings.activeTab) activeIndex = restored;
+            ++restored;
+        }
+        if (restored) ActivateTab(activeIndex >= 0 ? activeIndex : 0);
     }
+    UpdateTabs();
     UpdateUi();
     return true;
 }
 
 void MainWindow::CreateChildren() {
     const DWORD editStyle = WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL;
+
+    m_tabBar.Create(m_hwnd, m_hwnd, 36);
 
     // Main toolbar:  Open | < > [page] / N | - 100% + | ...  Search  More
     m_toolbar.Create(m_hwnd, m_hwnd, 44);
@@ -204,15 +217,19 @@ void MainWindow::CreateChildren() {
     SetWindowSubclass(m_pageEdit, &MainWindow::EditProc, 1, (DWORD_PTR)this);
     SetWindowSubclass(m_searchEdit, &MainWindow::EditProc, 1, (DWORD_PTR)this);
 
-    m_view.Create(m_hwnd, &m_worker);
-    m_view.SetSearch(&m_search);
-    m_view.onViewChanged = [this] { UpdateUi(); };
-    Layout();
+    ActivateTab(NewTab());  // there is always at least one (possibly empty) tab
 }
 
 void MainWindow::CreateAccelerators() {
     ACCEL acc[] = {
         {FCONTROL | FVIRTKEY, 'O', ID_OPEN},
+        {FCONTROL | FVIRTKEY, 'T', ID_OPEN},
+        {FCONTROL | FVIRTKEY, 'W', ID_CLOSE_TAB},
+        {FCONTROL | FVIRTKEY, VK_F4, ID_CLOSE_TAB},
+        {FCONTROL | FVIRTKEY, VK_TAB, ID_NEXT_TAB},
+        {FCONTROL | FSHIFT | FVIRTKEY, VK_TAB, ID_PREV_TAB},
+        {FCONTROL | FVIRTKEY, VK_NEXT, ID_NEXT_TAB},
+        {FCONTROL | FVIRTKEY, VK_PRIOR, ID_PREV_TAB},
         {FCONTROL | FVIRTKEY, 'F', ID_SEARCH},
         {FVIRTKEY, VK_F3, ID_FIND_NEXT},
         {FSHIFT | FVIRTKEY, VK_F3, ID_FIND_PREV},
@@ -232,15 +249,21 @@ void MainWindow::CreateAccelerators() {
 }
 
 void MainWindow::Layout() {
+    if (m_tabs.empty()) return;
     RECT rc;
     GetClientRect(m_hwnd, &rc);
     int y = 0;
     if (!m_fullscreen) {
+        const int tabH = m_tabBar.Height();
+        MoveWindow(m_tabBar.Hwnd(), 0, 0, rc.right, tabH, TRUE);
+        ShowWindow(m_tabBar.Hwnd(), SW_SHOWNA);
+        y = tabH;
         const int th = m_toolbar.Height();
-        MoveWindow(m_toolbar.Hwnd(), 0, 0, rc.right, th, TRUE);
+        MoveWindow(m_toolbar.Hwnd(), 0, y, rc.right, th, TRUE);
         ShowWindow(m_toolbar.Hwnd(), SW_SHOWNA);
-        y = th;
+        y += th;
     } else {
+        ShowWindow(m_tabBar.Hwnd(), SW_HIDE);
         ShowWindow(m_toolbar.Hwnd(), SW_HIDE);
     }
     if (m_searchVisible) {
@@ -251,7 +274,130 @@ void MainWindow::Layout() {
     } else {
         ShowWindow(m_searchBar.Hwnd(), SW_HIDE);
     }
-    MoveWindow(m_view.Hwnd(), 0, y, rc.right, std::max(0, (int)rc.bottom - y), TRUE);
+    // Only the active tab's view is visible (and therefore renders).
+    for (size_t i = 0; i < m_tabs.size(); ++i) {
+        HWND view = m_tabs[i]->view->Hwnd();
+        if ((int)i == m_active) {
+            MoveWindow(view, 0, y, rc.right, std::max(0, (int)rc.bottom - y), TRUE);
+            ShowWindow(view, SW_SHOWNA);
+        } else {
+            ShowWindow(view, SW_HIDE);
+        }
+    }
+}
+
+// ===========================================================================
+// Tabs
+// ===========================================================================
+int MainWindow::NewTab() {
+    auto tab = std::make_unique<Tab>();
+    tab->view = std::make_unique<PdfView>();
+    tab->view->Create(m_hwnd, &m_worker);
+    ShowWindow(tab->view->Hwnd(), SW_HIDE);
+    Tab* raw = tab.get();
+    tab->view->SetSearch(&raw->search);
+    tab->view->onViewChanged = [this, raw] {
+        if (m_active >= 0 && raw == &Active()) UpdateUi();
+    };
+    // New tabs inherit the view mode and zoom of the current tab.
+    if (m_active >= 0) {
+        PdfView& cur = View();
+        tab->view->SetContinuous(cur.Continuous());
+        if (cur.GetZoomMode() == ZoomMode::Custom)
+            tab->view->SetZoom(cur.Zoom());
+        else
+            tab->view->SetZoomMode(cur.GetZoomMode());
+    } else {
+        tab->view->SetContinuous(m_settings.continuous);
+        if (m_settings.zoomMode == 0)
+            tab->view->SetZoom(m_settings.zoom);
+        else
+            tab->view->SetZoomMode((ZoomMode)m_settings.zoomMode);
+    }
+    m_tabs.push_back(std::move(tab));
+    return (int)m_tabs.size() - 1;
+}
+
+void MainWindow::ActivateTab(int index) {
+    if (index < 0 || index >= (int)m_tabs.size()) return;
+    if (index != m_active && m_active >= 0 && m_active < (int)m_tabs.size()) {
+        // Leaving a tab: stop its search and give its rendered tiles back
+        // (they are re-rendered in a few ms when the tab is shown again).
+        Tab& old = Active();
+        if (old.search.running) CancelSearch();
+        old.view->TrimMemory();
+    }
+    m_active = index;
+    Layout();
+    InvalidateRect(View().Hwnd(), nullptr, FALSE);
+    if (GetFocus() != m_searchEdit) SetFocus(View().Hwnd());
+    if (m_searchVisible && !GetText(m_searchEdit).empty() &&
+        GetText(m_searchEdit) != Active().search.query && View().HasDocument())
+        StartSearch();
+    UpdateTabs();
+    UpdateTitle();
+    UpdateUi();
+    UpdateSearchStatus();
+}
+
+void MainWindow::CloseTab(int index) {
+    if (index < 0 || index >= (int)m_tabs.size()) return;
+    Tab& tab = *m_tabs[(size_t)index];
+    if (index == m_active && tab.search.running) CancelSearch();
+    if (tab.docId) m_worker.CloseDocument(tab.docId);
+
+    if (m_tabs.size() == 1) {  // keep one empty tab rather than no view at all
+        tab.docId = tab.pendingDocId = 0;
+        tab.path.clear();
+        tab.search.Reset();
+        tab.search.query.clear();
+        tab.view->CloseDocument();
+        tab.view->SetMessage({});
+        UpdateTabs();
+        UpdateTitle();
+        UpdateUi();
+        UpdateSearchStatus();
+        return;
+    }
+    const bool wasActive = index == m_active;
+    m_tabs.erase(m_tabs.begin() + index);  // destroys the view window
+    if (wasActive) {
+        m_active = -1;
+        ActivateTab(std::min(index, (int)m_tabs.size() - 1));
+    } else {
+        if (index < m_active) --m_active;
+        UpdateTabs();
+    }
+}
+
+void MainWindow::UpdateTabs() {
+    std::vector<TabBar::TabInfo> infos;
+    for (const auto& t : m_tabs) {
+        TabBar::TabInfo info;
+        if (t->docId)
+            info.title = FileNameFromPath(t->path);
+        else if (t->pendingDocId)
+            info.title = L"Opening\x2026";
+        else
+            info.title = L"New tab";
+        info.tip = t->path;
+        infos.push_back(std::move(info));
+    }
+    m_tabBar.SetTabs(std::move(infos), m_active);
+}
+
+int MainWindow::TabByDocId(uint32_t docId) const {
+    for (size_t i = 0; i < m_tabs.size(); ++i)
+        if (docId && m_tabs[i]->docId == docId) return (int)i;
+    return -1;
+}
+
+void MainWindow::OnTabBar(TabAction action, int index) {
+    switch (action) {
+        case TabAction::Select: ActivateTab(index); break;
+        case TabAction::Close: CloseTab(index); break;
+        case TabAction::New: ShowOpenDialog(); break;
+    }
 }
 
 // ===========================================================================
@@ -274,12 +420,39 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         case WM_APP_DOC_LOADED:
             OnDocLoaded((DocLoadResult*)lp);
             return 0;
-        case WM_APP_TILE_READY:
-            m_view.OnTileReady((TileResult*)lp);
+        case WM_APP_TILE_READY: {
+            auto* res = (TileResult*)lp;
+            int i = TabByDocId(res->docId);
+            if (i >= 0)
+                m_tabs[(size_t)i]->view->OnTileReady(res);
+            else
+                delete res;
             return 0;
+        }
+        case WM_APP_TEXT_LAYER: {
+            auto* res = (TextLayerResult*)lp;
+            int i = TabByDocId(res->docId);
+            if (i >= 0)
+                m_tabs[(size_t)i]->view->OnTextLayer(res);
+            else
+                delete res;
+            return 0;
+        }
+        case WM_APP_TEXT_COPIED: {
+            std::unique_ptr<TextCopyResult> res((TextCopyResult*)lp);
+            CopyToClipboard(res->text);
+            return 0;
+        }
         case WM_APP_SEARCH_RESULT:
             OnSearchResult((SearchPageResult*)lp);
             return 0;
+        case WM_APP_TABBAR:
+            OnTabBar((TabAction)wp, (int)lp);
+            return 0;
+
+        case WM_COPYDATA:
+            OnCopyData((const COPYDATASTRUCT*)lp);
+            return TRUE;
 
         case WM_COMMAND:
             OnCommand(LOWORD(wp), HIWORD(wp), (HWND)lp);
@@ -288,8 +461,8 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         case WM_SIZE:
             if (wp == SIZE_MINIMIZED) {
                 // Nobody is looking: give the rendered pages back to the OS.
-                m_view.TrimMemory();
-            } else if (m_view.Hwnd()) {
+                if (!m_tabs.empty()) View().TrimMemory();
+            } else {
                 Layout();
             }
             return 0;
@@ -298,7 +471,8 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             if (LOWORD(wp) == WA_INACTIVE) m_lastFocus = GetFocus();
             break;
         case WM_SETFOCUS: {
-            HWND target = m_view.Hwnd();
+            if (m_tabs.empty()) return 0;
+            HWND target = View().Hwnd();
             if (m_lastFocus && IsChild(m_hwnd, m_lastFocus) && IsWindowVisible(m_lastFocus))
                 target = m_lastFocus;
             SetFocus(target);
@@ -306,21 +480,24 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         }
 
         case WM_MOUSEWHEEL:  // wheel over the toolbar etc. scrolls the page
-            return SendMessageW(m_view.Hwnd(), msg, wp, lp);
+            if (!m_tabs.empty()) return SendMessageW(View().Hwnd(), msg, wp, lp);
+            return 0;
 
         case WM_TIMER:
             if (wp == kSearchTimer) {
                 KillTimer(m_hwnd, kSearchTimer);
-                if (GetText(m_searchEdit) != m_search.query) StartSearch();
+                if (GetText(m_searchEdit) != Active().search.query) StartSearch();
             }
             return 0;
 
         case WM_DROPFILES: {
             HDROP drop = (HDROP)wp;
-            UINT len = DragQueryFileW(drop, 0, nullptr, 0);
-            if (len) {
+            const UINT count = DragQueryFileW(drop, 0xFFFFFFFF, nullptr, 0);
+            for (UINT i = 0; i < count; ++i) {  // every dropped file gets a tab
+                UINT len = DragQueryFileW(drop, i, nullptr, 0);
+                if (!len) continue;
                 std::wstring path((size_t)len + 1, L'\0');
-                DragQueryFileW(drop, 0, path.data(), len + 1);
+                DragQueryFileW(drop, i, path.data(), len + 1);
                 path.resize(len);
                 OpenFile(path, 0);
             }
@@ -337,9 +514,10 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         }
 
         case WM_DPICHANGED: {
+            m_tabBar.OnDpiChanged();
             m_toolbar.OnDpiChanged();
             m_searchBar.OnDpiChanged();
-            m_view.OnDpiChanged();
+            for (auto& t : m_tabs) t->view->OnDpiChanged();
             const RECT* r = (const RECT*)lp;
             SetWindowPos(m_hwnd, nullptr, r->left, r->top, r->right - r->left, r->bottom - r->top,
                          SWP_NOZORDER | SWP_NOACTIVATE);
@@ -348,7 +526,9 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         }
 
         case WM_SETTINGCHANGE:
-            if (lp && lstrcmpW((const wchar_t*)lp, L"ImmersiveColorSet") == 0) OnThemeChanged();
+            if (lp && lstrcmpW((const wchar_t*)lp, L"ImmersiveColorSet") == 0 &&
+                m_settings.themeMode == (int)ThemeMode::System)
+                OnThemeChanged();
             break;
 
         case WM_CLOSE:
@@ -397,7 +577,7 @@ LRESULT CALLBACK MainWindow::EditProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
 void MainWindow::OnEditKey(HWND edit, WPARAM key) {
     if (edit == m_pageEdit) {
         if (key == VK_RETURN) GoToPageFromEdit();
-        SetFocus(m_view.Hwnd());  // Esc: abandon edit (text restored on kill focus)
+        SetFocus(View().Hwnd());  // Esc: abandon edit (text restored on kill focus)
         return;
     }
     if (edit == m_searchEdit) {
@@ -410,17 +590,18 @@ void MainWindow::OnEditKey(HWND edit, WPARAM key) {
 
 void MainWindow::GoToPageFromEdit() {
     const std::wstring text = GetText(m_pageEdit);
-    if (text.empty() || !m_view.HasDocument()) return;
+    if (text.empty() || !View().HasDocument()) return;
     const long page = wcstol(text.c_str(), nullptr, 10);
-    if (page >= 1) m_view.GoToPage((int)std::min<long>(page, m_view.PageCount()) - 1);
+    if (page >= 1) View().GoToPage((int)std::min<long>(page, View().PageCount()) - 1);
 }
 
 // ===========================================================================
 // Commands
 // ===========================================================================
 void MainWindow::OnCommand(int id, int code, HWND ctl) {
+    PdfView& view = View();
     if (id >= ID_ZOOM_PRESET_FIRST && id < ID_ZOOM_PRESET_FIRST + kZoomPresetCount) {
-        m_view.SetZoom(kZoomPresets[id - ID_ZOOM_PRESET_FIRST]);
+        view.SetZoom(kZoomPresets[id - ID_ZOOM_PRESET_FIRST]);
         return;
     }
     if (ctl && ctl == m_searchEdit) {
@@ -432,24 +613,34 @@ void MainWindow::OnCommand(int id, int code, HWND ctl) {
     const bool fromAccelerator = code == 1;
     switch (id) {
         case ID_OPEN: ShowOpenDialog(); break;
-        case ID_PREV_PAGE: m_view.PrevPage(); break;
-        case ID_NEXT_PAGE: m_view.NextPage(); break;
-        case ID_FIRST_PAGE: m_view.GoToPage(0); break;
-        case ID_LAST_PAGE: m_view.GoToPage(m_view.PageCount() - 1); break;
+        case ID_CLOSE_TAB: CloseTab(m_active); break;
+        case ID_NEXT_TAB: ActivateTab((m_active + 1) % (int)m_tabs.size()); break;
+        case ID_PREV_TAB:
+            ActivateTab((m_active + (int)m_tabs.size() - 1) % (int)m_tabs.size());
+            break;
+        case ID_PREV_PAGE: view.PrevPage(); break;
+        case ID_NEXT_PAGE: view.NextPage(); break;
+        case ID_FIRST_PAGE: view.GoToPage(0); break;
+        case ID_LAST_PAGE: view.GoToPage(view.PageCount() - 1); break;
         case ID_GOTO_PAGE:
             if (m_fullscreen) ToggleFullscreen();
             SetFocus(m_pageEdit);
             SendMessageW(m_pageEdit, EM_SETSEL, 0, -1);
             break;
-        case ID_ZOOM_IN: m_view.ZoomIn(); break;
-        case ID_ZOOM_OUT: m_view.ZoomOut(); break;
+        case ID_ZOOM_IN: view.ZoomIn(); break;
+        case ID_ZOOM_OUT: view.ZoomOut(); break;
         case ID_ZOOM_LABEL: ShowZoomMenu(); break;
-        case ID_FIT_WIDTH: m_view.SetZoomMode(ZoomMode::FitWidth); break;
-        case ID_FIT_PAGE: m_view.SetZoomMode(ZoomMode::FitPage); break;
-        case ID_ACTUAL_SIZE: m_view.SetZoom(1.0); break;
-        case ID_CONTINUOUS: m_view.SetContinuous(true); break;
-        case ID_SINGLE_PAGE: m_view.SetContinuous(false); break;
+        case ID_FIT_WIDTH: view.SetZoomMode(ZoomMode::FitWidth); break;
+        case ID_FIT_PAGE: view.SetZoomMode(ZoomMode::FitPage); break;
+        case ID_ACTUAL_SIZE: view.SetZoom(1.0); break;
+        case ID_CONTINUOUS: view.SetContinuous(true); break;
+        case ID_SINGLE_PAGE: view.SetContinuous(false); break;
         case ID_FULLSCREEN: ToggleFullscreen(); break;
+        case ID_COPY: view.CopySelection(); break;
+        case ID_SELECT_ALL: view.SelectAll(); break;
+        case ID_THEME_SYSTEM: SetThemeMode((int)ThemeMode::System); break;
+        case ID_THEME_LIGHT: SetThemeMode((int)ThemeMode::Light); break;
+        case ID_THEME_DARK: SetThemeMode((int)ThemeMode::Dark); break;
         case ID_SEARCH:
             // Ctrl+F always opens/focuses; the toolbar button toggles.
             if (!fromAccelerator && m_searchVisible)
@@ -487,8 +678,9 @@ void MainWindow::OnCommand(int id, int code, HWND ctl) {
             break;
         case ID_ABOUT:
             MessageBoxW(m_hwnd,
-                        APP_NAME L" " APP_VERSION
-                        L"\n\nA fast, lightweight PDF viewer for Windows.\n\n"
+                        APP_NAME L" " APP_VERSION L"\n\n"
+                        APP_COPYRIGHT L".\n"
+                        L"Developed for faster experience.\n\n"
                         L"PDF rendering: PDFium (BSD-3-Clause / Apache-2.0),\n"
                         L"Copyright The PDFium Authors.",
                         L"About " APP_NAME, MB_ICONINFORMATION);
@@ -498,27 +690,41 @@ void MainWindow::OnCommand(int id, int code, HWND ctl) {
 }
 
 void MainWindow::ShowMoreMenu() {
-    const bool doc = m_view.HasDocument();
+    PdfView& view = View();
+    const bool doc = view.HasDocument();
     const UINT docFlag = doc ? MF_ENABLED : MF_GRAYED;
+
+    HMENU theme = CreatePopupMenu();
+    AppendMenuW(theme, MF_STRING, ID_THEME_SYSTEM, L"&System default");
+    AppendMenuW(theme, MF_STRING, ID_THEME_LIGHT, L"&Light");
+    AppendMenuW(theme, MF_STRING, ID_THEME_DARK, L"&Dark");
+    CheckMenuRadioItem(theme, ID_THEME_SYSTEM, ID_THEME_DARK, ID_THEME_SYSTEM + m_settings.themeMode,
+                       MF_BYCOMMAND);
+
     HMENU m = CreatePopupMenu();
     AppendMenuW(m, MF_STRING, ID_OPEN, L"&Open\x2026\tCtrl+O");
+    AppendMenuW(m, MF_STRING, ID_CLOSE_TAB, L"&Close tab\tCtrl+W");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_STRING | (view.HasSelection() ? 0 : MF_GRAYED), ID_COPY, L"Cop&y\tCtrl+C");
+    AppendMenuW(m, MF_STRING | docFlag, ID_SELECT_ALL, L"Select &all\tCtrl+A");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(m, MF_STRING | docFlag, ID_FIRST_PAGE, L"&First page\tHome");
     AppendMenuW(m, MF_STRING | docFlag, ID_LAST_PAGE, L"&Last page\tEnd");
     AppendMenuW(m, MF_STRING | docFlag, ID_GOTO_PAGE, L"&Go to page\x2026\tCtrl+G");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(m, MF_STRING, ID_CONTINUOUS, L"&Continuous scrolling");
-    AppendMenuW(m, MF_STRING, ID_SINGLE_PAGE, L"&Single page");
+    AppendMenuW(m, MF_STRING, ID_CONTINUOUS, L"Co&ntinuous scrolling");
+    AppendMenuW(m, MF_STRING, ID_SINGLE_PAGE, L"S&ingle page");
     CheckMenuRadioItem(m, ID_CONTINUOUS, ID_SINGLE_PAGE,
-                       m_view.Continuous() ? ID_CONTINUOUS : ID_SINGLE_PAGE, MF_BYCOMMAND);
+                       view.Continuous() ? ID_CONTINUOUS : ID_SINGLE_PAGE, MF_BYCOMMAND);
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(m, MF_STRING | (m_view.GetZoomMode() == ZoomMode::FitWidth ? MF_CHECKED : 0),
+    AppendMenuW(m, MF_STRING | (view.GetZoomMode() == ZoomMode::FitWidth ? MF_CHECKED : 0),
                 ID_FIT_WIDTH, L"Fit &width\tCtrl+2");
-    AppendMenuW(m, MF_STRING | (m_view.GetZoomMode() == ZoomMode::FitPage ? MF_CHECKED : 0),
+    AppendMenuW(m, MF_STRING | (view.GetZoomMode() == ZoomMode::FitPage ? MF_CHECKED : 0),
                 ID_FIT_PAGE, L"Fit &page\tCtrl+0");
-    AppendMenuW(m, MF_STRING, ID_ACTUAL_SIZE, L"&Actual size\tCtrl+1");
+    AppendMenuW(m, MF_STRING, ID_ACTUAL_SIZE, L"Actual si&ze\tCtrl+1");
     AppendMenuW(m, MF_STRING | (m_fullscreen ? MF_CHECKED : 0), ID_FULLSCREEN,
                 L"F&ull screen\tF11");
+    AppendMenuW(m, MF_POPUP, (UINT_PTR)theme, L"&Theme");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(m, MF_STRING, ID_REGISTER_DEFAULT, L"Set as &default PDF viewer\x2026");
     AppendMenuW(m, MF_STRING, ID_ABOUT, L"A&bout " APP_NAME);
@@ -526,24 +732,25 @@ void MainWindow::ShowMoreMenu() {
 
     RECT rc = m_toolbar.ItemScreenRect(ID_MENU);
     TrackPopupMenu(m, TPM_RIGHTALIGN | TPM_TOPALIGN, rc.right, rc.bottom, 0, m_hwnd, nullptr);
-    DestroyMenu(m);
+    DestroyMenu(m);  // also destroys the Theme submenu
 }
 
 void MainWindow::ShowZoomMenu() {
     static const int kMenuPresets[] = {3, 5, 7, 9, 10, 12, 14, 15};  // 33%..300%
+    PdfView& view = View();
     HMENU m = CreatePopupMenu();
-    const int current = (int)std::lround(m_view.Zoom() * 100);
+    const int current = (int)std::lround(view.Zoom() * 100);
     for (int idx : kMenuPresets) {
         const int pct = (int)std::lround(kZoomPresets[idx] * 100);
         std::wstring label = std::to_wstring(pct) + L"%";
         UINT flags = MF_STRING;
-        if (m_view.GetZoomMode() == ZoomMode::Custom && pct == current) flags |= MF_CHECKED;
+        if (view.GetZoomMode() == ZoomMode::Custom && pct == current) flags |= MF_CHECKED;
         AppendMenuW(m, flags, ID_ZOOM_PRESET_FIRST + idx, label.c_str());
     }
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(m, MF_STRING | (m_view.GetZoomMode() == ZoomMode::FitWidth ? MF_CHECKED : 0),
+    AppendMenuW(m, MF_STRING | (view.GetZoomMode() == ZoomMode::FitWidth ? MF_CHECKED : 0),
                 ID_FIT_WIDTH, L"Fit width\tCtrl+2");
-    AppendMenuW(m, MF_STRING | (m_view.GetZoomMode() == ZoomMode::FitPage ? MF_CHECKED : 0),
+    AppendMenuW(m, MF_STRING | (view.GetZoomMode() == ZoomMode::FitPage ? MF_CHECKED : 0),
                 ID_FIT_PAGE, L"Fit page\tCtrl+0");
     AppendMenuW(m, MF_STRING, ID_ACTUAL_SIZE, L"Actual size\tCtrl+1");
     RECT rc = m_toolbar.ItemScreenRect(ID_ZOOM_LABEL);
@@ -552,16 +759,18 @@ void MainWindow::ShowZoomMenu() {
 }
 
 void MainWindow::UpdateUi() {
-    const bool doc = m_view.HasDocument();
-    const int count = m_view.PageCount();
-    const int page = doc ? m_view.CurrentPage() + 1 : 0;
+    if (m_tabs.empty()) return;
+    PdfView& view = View();
+    const bool doc = view.HasDocument();
+    const int count = view.PageCount();
+    const int page = doc ? view.CurrentPage() + 1 : 0;
 
     if (GetFocus() != m_pageEdit) {
         const std::wstring text = doc ? std::to_wstring(page) : L"";
         if (GetText(m_pageEdit) != text) SetWindowTextW(m_pageEdit, text.c_str());
     }
     m_toolbar.SetText(ID_PAGE_TOTAL, doc ? L"/ " + std::to_wstring(count) : L"");
-    m_toolbar.SetText(ID_ZOOM_LABEL, std::to_wstring((int)std::lround(m_view.Zoom() * 100)) + L"%");
+    m_toolbar.SetText(ID_ZOOM_LABEL, std::to_wstring((int)std::lround(view.Zoom() * 100)) + L"%");
     m_toolbar.SetEnabled(ID_PREV_PAGE, doc && page > 1);
     m_toolbar.SetEnabled(ID_NEXT_PAGE, doc && page < count);
     m_toolbar.SetEnabled(ID_PAGE_EDIT, doc);
@@ -572,8 +781,9 @@ void MainWindow::UpdateUi() {
 }
 
 void MainWindow::UpdateTitle() {
-    std::wstring title = m_docPath.empty() ? std::wstring(APP_NAME)
-                                           : FileNameFromPath(m_docPath) + L" - " APP_NAME;
+    const Tab& tab = Active();
+    std::wstring title = tab.docId ? FileNameFromPath(tab.path) + L" - " APP_NAME
+                                   : std::wstring(APP_NAME);
     SetWindowTextW(m_hwnd, title.c_str());
 }
 
@@ -581,90 +791,164 @@ void MainWindow::UpdateTitle() {
 // Documents
 // ===========================================================================
 void MainWindow::ShowOpenDialog() {
-    wchar_t file[32768] = L"";
-    const std::wstring dir = DirectoryFromPath(m_docPath);
+    // Multiple selection: every chosen file opens in its own tab.
+    std::vector<wchar_t> buf(65536, L'\0');
+    const std::wstring dir = DirectoryFromPath(Active().path);
     OPENFILENAMEW ofn{sizeof(ofn)};
     ofn.hwndOwner = m_hwnd;
     ofn.lpstrFilter = L"PDF documents (*.pdf)\0*.pdf\0All files (*.*)\0*.*\0";
-    ofn.lpstrFile = file;
-    ofn.nMaxFile = (DWORD)(sizeof(file) / sizeof(file[0]));
+    ofn.lpstrFile = buf.data();
+    ofn.nMaxFile = (DWORD)buf.size();
     ofn.lpstrInitialDir = dir.empty() ? nullptr : dir.c_str();
-    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_EXPLORER | OFN_HIDEREADONLY;
-    if (GetOpenFileNameW(&ofn)) OpenFile(file, 0);
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_EXPLORER | OFN_HIDEREADONLY |
+                OFN_ALLOWMULTISELECT;
+    if (!GetOpenFileNameW(&ofn)) return;
+
+    // Single file: "C:\dir\a.pdf\0". Several: "C:\dir\0a.pdf\0b.pdf\0\0".
+    const wchar_t* p = buf.data();
+    std::wstring first = p;
+    p += first.size() + 1;
+    if (!*p) {
+        OpenFile(first, 0);
+        return;
+    }
+    for (; *p; p += wcslen(p) + 1) OpenFile(first + L"\\" + p, 0);
 }
 
-void MainWindow::OpenFile(const std::wstring& path, int page, const std::string& password) {
-    // Normalise relative paths from the command line.
-    wchar_t full[32768];
-    DWORD n = GetFullPathNameW(path.c_str(), (DWORD)(sizeof(full) / sizeof(full[0])), full, nullptr);
-    std::wstring fullPath = (n > 0 && n < sizeof(full) / sizeof(full[0])) ? full : path;
-
+void MainWindow::OpenFile(const std::wstring& path, int page, const std::string& password,
+                          int tabIndex, bool activate) {
+    const std::wstring fullPath = FullPath(path);
     if (!FileExists(fullPath)) {
         std::wstring msg = FileNameFromPath(fullPath) + L"\n\n" + OpenErrorText(OpenError::NotFound);
         MessageBoxW(m_hwnd, msg.c_str(), APP_NAME, MB_ICONWARNING);
         return;
     }
-    if (password.empty()) m_passwordAttempts = 0;
-    m_pendingDocId = m_nextDocId++;
-    m_pendingPage = page;
-    if (!m_view.HasDocument()) m_view.SetMessage(L"Opening " + FileNameFromPath(fullPath) + L"\x2026");
-    m_worker.OpenDocument(m_pendingDocId, fullPath, password);
+
+    // Already open (or opening)? Just switch to that tab.
+    if (tabIndex < 0 && password.empty()) {
+        for (size_t i = 0; i < m_tabs.size(); ++i) {
+            const Tab& t = *m_tabs[i];
+            if ((t.docId || t.pendingDocId) && SamePath(t.path, fullPath)) {
+                if (activate) ActivateTab((int)i);
+                if (t.docId && page > 0) t.view->GoToPage(page);
+                return;
+            }
+        }
+    }
+
+    // Reuse the current tab if it is empty, otherwise open a new one.
+    if (tabIndex < 0) {
+        const Tab& cur = Active();
+        tabIndex = (!cur.docId && !cur.pendingDocId) ? m_active : NewTab();
+    }
+    Tab& tab = *m_tabs[(size_t)tabIndex];
+    if (password.empty()) tab.passwordAttempts = 0;
+    tab.pendingDocId = m_nextDocId++;
+    tab.pendingPage = std::max(0, page);
+    if (!tab.docId) tab.path = fullPath;
+    if (!tab.view->HasDocument())
+        tab.view->SetMessage(L"Opening " + FileNameFromPath(fullPath) + L"\x2026");
+    m_worker.OpenDocument(tab.pendingDocId, fullPath, password);
+    if (activate)
+        ActivateTab(tabIndex);
+    else
+        UpdateTabs();
 }
 
 void MainWindow::OnDocLoaded(DocLoadResult* result) {
     std::unique_ptr<DocLoadResult> res(result);
-    if (res->docId != m_pendingDocId) return;  // superseded by a newer open
+    int index = -1;
+    for (size_t i = 0; i < m_tabs.size(); ++i)
+        if (m_tabs[i]->pendingDocId == res->docId) index = (int)i;
+    if (index < 0) {  // the tab was closed while loading
+        if (res->error == OpenError::None) m_worker.CloseDocument(res->docId);
+        return;
+    }
+    Tab& tab = *m_tabs[(size_t)index];
     const std::wstring name = FileNameFromPath(res->path);
 
     if (res->error == OpenError::Password) {
+        ActivateTab(index);  // show which document is asking
         PasswordPrompt prompt;
         prompt.fileName = name;
-        prompt.retry = m_passwordAttempts > 0;
+        prompt.retry = tab.passwordAttempts > 0;
         if (DialogBoxParamW(m_inst, MAKEINTRESOURCEW(IDD_PASSWORD), m_hwnd, PasswordDlgProc,
                             (LPARAM)&prompt) == IDOK) {
-            ++m_passwordAttempts;
+            ++tab.passwordAttempts;
             std::string pw = WideToUtf8(prompt.password);
             SecureZeroMemory(prompt.password.data(), prompt.password.size() * sizeof(wchar_t));
-            OpenFile(res->path, m_pendingPage, pw);
+            OpenFile(res->path, tab.pendingPage, pw, index);
             SecureZeroMemory(pw.data(), pw.size());
         } else {
-            m_passwordAttempts = 0;
-            if (!m_view.HasDocument()) m_view.SetMessage({});
+            tab.pendingDocId = 0;
+            if (!tab.docId) CloseTab(index);
         }
         return;
     }
 
     if (res->error != OpenError::None) {
-        // The previous document (if any) stays open.
+        tab.pendingDocId = 0;
         std::wstring msg = name + L"\n\n" + OpenErrorText(res->error);
-        if (!m_view.HasDocument()) m_view.SetMessage({});
+        if (!tab.docId) CloseTab(index);  // nothing to show in that tab
         MessageBoxW(m_hwnd, msg.c_str(), APP_NAME, MB_ICONWARNING);
         return;
     }
 
-    m_passwordAttempts = 0;
-    m_docId = res->docId;
-    m_docPath = res->path;
-    m_settings.lastFile = m_docPath;
+    if (tab.docId) m_worker.CloseDocument(tab.docId);
+    tab.docId = res->docId;
+    tab.pendingDocId = 0;
+    tab.passwordAttempts = 0;
+    tab.path = res->path;
+    tab.search.Reset();
+    tab.search.query.clear();
+    tab.view->SetDocument(tab.docId, std::move(res->pageSizes), tab.pendingPage);
+    UpdateTabs();
+    if (index == m_active) {
+        UpdateTitle();
+        UpdateUi();
+        if (m_searchVisible && !GetText(m_searchEdit).empty()) StartSearch();
+        UpdateSearchStatus();
+        if (GetFocus() != m_searchEdit) SetFocus(View().Hwnd());
+    }
+}
 
-    // A new document invalidates any search in progress.
-    m_worker.CancelSearch();
-    m_search.Reset();
-    m_search.query.clear();
+void MainWindow::OnCopyData(const COPYDATASTRUCT* cds) {
+    // Another instance forwarded "page\npath" (Explorer double-click while
+    // Feather PDF is running): open it as a tab here.
+    if (!cds || cds->dwData != kCopyDataOpenFile || !cds->lpData || cds->cbData < sizeof(wchar_t))
+        return;
+    std::wstring data((const wchar_t*)cds->lpData, cds->cbData / sizeof(wchar_t));
+    data.resize(wcsnlen(data.c_str(), data.size()));
+    const size_t nl = data.find(L'\n');
+    if (nl == std::wstring::npos) return;
+    const int page = _wtoi(data.substr(0, nl).c_str());
+    const std::wstring path = data.substr(nl + 1);
+    if (IsIconic(m_hwnd)) ShowWindow(m_hwnd, SW_RESTORE);
+    SetForegroundWindow(m_hwnd);
+    if (!path.empty()) OpenFile(path, page);
+}
 
-    m_view.SetDocument(m_docId, std::move(res->pageSizes), m_pendingPage);
-    UpdateTitle();
-    UpdateUi();
-    if (m_searchVisible && !GetText(m_searchEdit).empty()) StartSearch();
-    UpdateSearchStatus();
-    if (GetFocus() != m_searchEdit) SetFocus(m_view.Hwnd());
+void MainWindow::CopyToClipboard(const std::wstring& text) {
+    if (text.empty() || !OpenClipboard(m_hwnd)) return;
+    EmptyClipboard();
+    const size_t bytes = (text.size() + 1) * sizeof(wchar_t);
+    if (HGLOBAL mem = GlobalAlloc(GMEM_MOVEABLE, bytes)) {
+        if (void* p = GlobalLock(mem)) {
+            memcpy(p, text.c_str(), bytes);
+            GlobalUnlock(mem);
+            if (!SetClipboardData(CF_UNICODETEXT, mem)) GlobalFree(mem);
+        } else {
+            GlobalFree(mem);
+        }
+    }
+    CloseClipboard();
 }
 
 // ===========================================================================
-// Search
+// Search (always in the active tab; switching tabs stops a running search)
 // ===========================================================================
 void MainWindow::ShowSearch(bool show) {
-    if (show && !m_view.HasDocument()) return;
+    if (show && !View().HasDocument()) return;
     if (show) {
         if (!m_searchVisible) {
             m_searchVisible = true;
@@ -677,29 +961,36 @@ void MainWindow::ShowSearch(bool show) {
     if (!m_searchVisible) return;
     m_searchVisible = false;
     KillTimer(m_hwnd, kSearchTimer);
-    m_worker.CancelSearch();
-    m_search.Reset();
-    m_search.query.clear();
+    CancelSearch();
+    Active().search.Reset();
+    Active().search.query.clear();
     Layout();
-    InvalidateRect(m_view.Hwnd(), nullptr, FALSE);  // remove highlights
-    SetFocus(m_view.Hwnd());
+    InvalidateRect(View().Hwnd(), nullptr, FALSE);  // remove highlights
+    SetFocus(View().Hwnd());
+}
+
+void MainWindow::CancelSearch() {
+    m_worker.CancelSearch();
+    Active().search.running = false;
 }
 
 void MainWindow::StartSearch() {
     KillTimer(m_hwnd, kSearchTimer);
+    Tab& tab = Active();
     const std::wstring query = GetText(m_searchEdit);
     m_worker.CancelSearch();
-    m_search.Reset();
-    m_search.query = query;
-    m_search.matchCase = m_settings.matchCase;
-    ++m_search.id;
-    if (!query.empty() && m_view.HasDocument()) {
-        m_search.running = true;
-        m_search.pageCount = m_view.PageCount();
-        m_worker.StartSearch(m_docId, m_search.id, query, m_search.matchCase, m_view.CurrentPage());
+    tab.search.Reset();
+    tab.search.query = query;
+    tab.search.matchCase = m_settings.matchCase;
+    tab.search.id = m_nextSearchId++;
+    if (!query.empty() && tab.docId) {
+        tab.search.running = true;
+        tab.search.pageCount = tab.view->PageCount();
+        m_worker.StartSearch(tab.docId, tab.search.id, query, tab.search.matchCase,
+                             tab.view->CurrentPage());
     }
     UpdateSearchStatus();
-    InvalidateRect(m_view.Hwnd(), nullptr, FALSE);
+    InvalidateRect(tab.view->Hwnd(), nullptr, FALSE);
 }
 
 void MainWindow::FindNext(bool forward) {
@@ -707,37 +998,40 @@ void MainWindow::FindNext(bool forward) {
         ShowSearch(true);
         return;
     }
+    SearchState& search = Active().search;
     // Enter after editing the query starts a new search.
-    if (GetText(m_searchEdit) != m_search.query || m_search.matchCase != m_settings.matchCase) {
+    if (GetText(m_searchEdit) != search.query || search.matchCase != m_settings.matchCase) {
         StartSearch();
         return;
     }
-    if (m_search.matches.empty()) return;
+    if (search.matches.empty()) return;
     if (forward)
-        m_search.Next();
+        search.Next();
     else
-        m_search.Prev();
-    if (const SearchHit* hit = m_search.Current()) m_view.ScrollToHit(*hit);
+        search.Prev();
+    if (const SearchHit* hit = search.Current()) View().ScrollToHit(*hit);
     UpdateSearchStatus();
-    InvalidateRect(m_view.Hwnd(), nullptr, FALSE);
+    InvalidateRect(View().Hwnd(), nullptr, FALSE);
 }
 
 void MainWindow::OnSearchResult(SearchPageResult* result) {
     std::unique_ptr<SearchPageResult> res(result);
-    if (res->searchId != m_search.id || res->docId != m_docId) return;  // stale
-    m_search.pagesDone = res->pagesDone;
-    if (res->finished) m_search.running = false;
+    Tab& tab = Active();
+    if (res->searchId != tab.search.id || res->docId != tab.docId) return;  // stale
+    tab.search.pagesDone = res->pagesDone;
+    if (res->finished) tab.search.running = false;
     const bool hadHits = !res->hits.empty();
-    if (m_search.AddHits(std::move(res->hits))) {
-        if (const SearchHit* hit = m_search.Current()) m_view.ScrollToHit(*hit);
+    if (tab.search.AddHits(std::move(res->hits))) {
+        if (const SearchHit* hit = tab.search.Current()) tab.view->ScrollToHit(*hit);
     }
-    if (hadHits) InvalidateRect(m_view.Hwnd(), nullptr, FALSE);
+    if (hadHits) InvalidateRect(tab.view->Hwnd(), nullptr, FALSE);
     UpdateSearchStatus();
 }
 
 void MainWindow::UpdateSearchStatus() {
-    m_searchBar.SetText(ID_SEARCH_STATUS, m_search.StatusText());
-    const bool any = !m_search.matches.empty();
+    const SearchState& search = Active().search;
+    m_searchBar.SetText(ID_SEARCH_STATUS, search.StatusText());
+    const bool any = !search.matches.empty();
     m_searchBar.SetEnabled(ID_FIND_NEXT, any);
     m_searchBar.SetEnabled(ID_FIND_PREV, any);
 }
@@ -765,18 +1059,26 @@ void MainWindow::ToggleFullscreen() {
                      SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
     }
     Layout();
-    SetFocus(m_view.Hwnd());
+    SetFocus(View().Hwnd());
+}
+
+void MainWindow::SetThemeMode(int mode) {
+    if (mode == m_settings.themeMode) return;
+    m_settings.themeMode = mode;
+    OnThemeChanged();
 }
 
 void MainWindow::OnThemeChanged() {
-    ReloadTheme();
+    ReloadTheme((ThemeMode)m_settings.themeMode);
     ApplyWindowTheme(m_hwnd);
+    m_tabBar.OnThemeChanged();
     m_toolbar.OnThemeChanged();
     m_searchBar.OnThemeChanged();
-    m_view.OnThemeChanged();
+    for (auto& t : m_tabs) t->view->OnThemeChanged();
     // Nudge the frame so DWM repaints the title bar colour.
     SetWindowPos(m_hwnd, nullptr, 0, 0, 0, 0,
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    RedrawWindow(m_hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_FRAME);
 }
 
 void MainWindow::SaveSettings() {
@@ -791,12 +1093,19 @@ void MainWindow::SaveSettings() {
     }
     m_settings.placement = wp;
     m_settings.hasPlacement = true;
-    m_settings.zoomMode = (int)m_view.GetZoomMode();
-    m_settings.zoom = m_view.Zoom();
-    m_settings.continuous = m_view.Continuous();
-    if (!m_docPath.empty()) {
-        m_settings.lastFile = m_docPath;
-        m_settings.lastPage = m_view.CurrentPage();
+    PdfView& view = View();
+    m_settings.zoomMode = (int)view.GetZoomMode();
+    m_settings.zoom = view.Zoom();
+    m_settings.continuous = view.Continuous();
+
+    // Remember every open tab and where each was being read.
+    m_settings.session.clear();
+    m_settings.activeTab = 0;
+    for (size_t i = 0; i < m_tabs.size(); ++i) {
+        const Tab& t = *m_tabs[i];
+        if (!t.docId) continue;
+        if ((int)i == m_active) m_settings.activeTab = (int)m_settings.session.size();
+        m_settings.session.push_back({t.path, t.view->CurrentPage()});
     }
     m_settings.Save();
 }

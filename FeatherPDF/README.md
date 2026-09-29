@@ -1,12 +1,16 @@
 # Feather PDF
 
-A small, fast, native PDF **viewer** for Windows 10 and 11. It opens PDFs,
-renders them, and lets you scroll, jump to pages, zoom and search. It has no
-editing, annotations, accounts, cloud features, telemetry or background
-services.
+A small, fast, native PDF **viewer** for Windows 10 and 11. It opens PDFs
+in tabs, renders them, and lets you scroll, jump to pages, zoom, search, and
+select and copy text. It has no editing, annotations, accounts, cloud
+features, telemetry or background services.
+
+© 2026 Akshaya Simha. Developed for faster experience.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
+│ manual.pdf  ✕ │ report.pdf  ✕ │ +                                    │  ← tabs
+├──────────────────────────────────────────────────────────────────────┤
 │ Open │ ‹ › [ 12 ] / 250 │ −  125%  + │                    Search │ ⋯ │
 ├──────────────────────────────────────────────────────────────────────┤
 │ [find in document      ] ˄ ˅  Aa  3 of 17                        ✕ │  ← Ctrl+F only
@@ -17,7 +21,7 @@ services.
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
-* Executable: about 330 KB, plus `pdfium.dll` (about 7 MB). No runtime installation needed.
+* Executable: about 370 KB, plus `pdfium.dll` (about 7 MB). No runtime installation needed.
 * Opens a window right away; documents load on a background thread.
 * The number of rendered pixels in memory depends on the window size, not on
   the page count or the zoom level.
@@ -60,16 +64,18 @@ pinned to release `chromium/8066`, without V8/JavaScript or XFA.
 ## 3. Architecture
 
 ```
-PDF file ─► PdfEngine (PDFium wrapper, lazy file reads)       ┐
-               ▲                                              │ render worker
-               │ commands / wanted-tile list                  │ thread
-            RenderWorker ── renders one tile or searches      ┘
+PDF files ─► PdfEngine × N (one per tab; PDFium, lazy file reads)  ┐
+               ▲                                                   │ render worker
+               │ commands / wanted-tile list                       │ thread
+            RenderWorker ── renders a tile, extracts a page's      ┘
+               │           text layer, copies text, or searches
                │           one page per step
                │ PostMessage(result)
                ▼
-MainWindow ─► PdfView ── layout, visible-page detection, zoom, navigation
-   │             │
-   │             └─► PageCache (bounded LRU of tiles) ─► GDI paint
+MainWindow ─► Tab × N ─► PdfView ── layout, visible pages, zoom, navigation,
+   │                        │        text selection
+   │                        └─► PageCache (bounded LRU of tiles) ─► GDI paint
+   ├─ TabBar (self-drawn tab strip)
    ├─ Toolbar (self-drawn, hosts page and search edits)
    ├─ SearchState (merged results, next/previous)
    ├─ Settings (HKCU\Software\FeatherPDF)
@@ -79,21 +85,23 @@ MainWindow ─► PdfView ── layout, visible-page detection, zoom, navigatio
 | Source file | Responsibility |
 |---|---|
 | `src/main.cpp` | Entry point, command line, DPI awareness, message loop |
-| `src/MainWindow.*` | Top-level window, commands, menus, open/password/error flow, search UI |
-| `src/PdfView.*` | Page layout, scrolling, zoom, navigation, tile requests, painting |
+| `src/MainWindow.*` | Top-level window, tabs, commands, menus, open/password/error flow, search UI |
+| `src/TabBar.*` | Themed tab strip (select, close, middle-click close, "+") |
+| `src/PdfView.*` | Page layout, scrolling, zoom, navigation, tile requests, painting, text selection |
 | `src/PageCache.*` | Bounded LRU cache of rendered tiles (memory policy) |
-| `src/RenderWorker.*` | Background thread that owns PDFium; job priorities |
-| `src/PdfEngine.*` | PDFium wrapper: open, page sizes, tile rendering, text search |
+| `src/RenderWorker.*` | Background thread that owns PDFium (all tabs); job priorities |
+| `src/PdfEngine.*` | PDFium wrapper: open, page sizes, tile rendering, text layer, text copy, search |
 | `src/Search.*` | UI-side search state (sorted matches, current match, status) |
 | `src/Toolbar.*` | Flat themed toolbar with icon-font buttons and hosted edits |
-| `src/Theme.*` | Light/dark palette, dark title bar/scrollbars/menus |
-| `src/Settings.*` | Persisted window placement, zoom mode, view mode, last file/page |
+| `src/Theme.*` | Light/dark palette (System/Light/Dark), dark title bar/scrollbars/menus |
+| `src/Settings.*` | Persisted window placement, zoom mode, view mode, theme, open tabs and pages |
 | `src/FileAssoc.*` | `.pdf` "Open with" / Default-apps registration (HKCU) |
 
 ### Threading
 
-PDFium is not thread-safe, so **exactly one worker thread** calls into it.
-The UI thread never blocks on PDF work:
+PDFium is not thread-safe, not even across documents, so **exactly one
+worker thread** calls into it for every tab. Each tab's document has its own
+`PdfEngine`, keyed by document id. The UI thread never blocks on PDF work:
 
 * Opening a document runs on the worker. The window is already visible and
   shows "Opening…". If opening fails, the previously open document stays open.
@@ -144,6 +152,14 @@ The UI thread never blocks on PDF work:
   loaded into memory; Windows' file cache handles the reads.
 * When the window is **minimised**, all tiles, the back buffer and the parsed
   pages are released.
+* **Tabs in the background cost almost nothing.** Only the active tab's view
+  is visible and renders. When you switch away from a tab, its tiles and text
+  layers are freed; switching back re-renders the visible area in a few
+  milliseconds. A background tab keeps only its parsed document structure.
+* **Text selection** keeps the character boxes of at most 32 pages (a few
+  hundred KB). They are fetched only when the mouse moves over a page.
+  Copying runs on the worker, so selecting 500 pages does not load 500 text
+  layers into the UI.
 * Search results store only rectangles (a few dozen bytes per match). Text
   pages are closed as soon as each page has been searched.
 
@@ -171,9 +187,22 @@ Native Windows figures should be lower.
 
 ## Features
 
-**Opening:** File › Open (Ctrl+O), drag and drop onto the window,
-double-click in Explorer (after registering), command line, and automatic
-reopen of the last document at the last page.
+**Tabs:** every document opens in its own tab. Opening a file that is
+already open switches to its tab. Close a tab with its ✕, a middle-click or
+Ctrl+W, and switch with Ctrl+Tab or the mouse wheel over the tab strip.
+Double-clicking a PDF in Explorer while Feather PDF is running opens it as a
+new tab in the existing window (use `/newwindow` for a separate window).
+The open tabs and the page of each are restored on the next start.
+
+**Opening:** Open (Ctrl+O or Ctrl+T, with multi-select), drag and drop one or
+more files onto the window, double-click in Explorer (after registering),
+and the command line.
+
+**Text selection:** where the PDF contains real text, the cursor becomes an
+I-beam over it. Drag to select (the view scrolls when you drag past the
+edge), double-click to select a word, Shift+click to extend, Ctrl+A to
+select all, and Ctrl+C or right-click › Copy to copy. Dragging on blank
+areas or on scanned (image-only) pages pans the page instead.
 
 **Viewing:** continuous scrolling or single-page mode, fit width, fit page,
 actual size (100% equals the printed size on screen), 5%–1600% zoom,
@@ -184,8 +213,11 @@ full screen (F11).
 Shift+Enter/Shift+F3 for previous, a match-case toggle, a match count, and
 highlighted matches with the current one in orange. Esc closes the bar.
 
+**Theme:** ⋯ › Theme › System default / Light / Dark. The choice is
+remembered, and "System default" follows the Windows setting live.
+
 **Windows integration:** Per-monitor V2 high-DPI support (crisp on mixed-DPI
-setups), automatic light/dark theme (title bar, toolbar, scrollbars, menus),
+setups), light/dark theme (title bar, tabs, toolbar, scrollbars, menus),
 remembered window position/size, zoom mode and view mode, application icon
 and version info, and `.pdf` association.
 
@@ -193,11 +225,17 @@ and version info, and `.pdf` association.
 
 | Shortcut | Action |
 |---|---|
-| Ctrl+O | Open PDF |
+| Ctrl+O / Ctrl+T | Open PDF (in a new tab) |
+| Ctrl+W / Ctrl+F4 | Close tab |
+| Ctrl+Tab / Ctrl+Page Down | Next tab |
+| Ctrl+Shift+Tab / Ctrl+Page Up | Previous tab |
+| Ctrl+C | Copy selected text |
+| Ctrl+A | Select all text |
+| Double-click | Select word |
 | Ctrl+F | Search |
 | Enter / F3 | Next match |
 | Shift+Enter / Shift+F3 | Previous match |
-| Esc | Close search (or leave full screen) |
+| Esc | Clear selection, close search, or leave full screen |
 | Ctrl++ / Ctrl+= / Ctrl+Numpad+ | Zoom in |
 | Ctrl+- / Ctrl+Numpad- | Zoom out |
 | Ctrl+0 | Fit page (reset zoom) |
@@ -216,8 +254,9 @@ and version info, and `.pdf` association.
 ### Command line
 
 ```
-FeatherPDF.exe "C:\docs\manual.pdf"            open a file
+FeatherPDF.exe "C:\docs\manual.pdf"            open a file (as a tab if already running)
 FeatherPDF.exe "C:\docs\manual.pdf" /page 42   open at page 42
+FeatherPDF.exe /newwindow "C:\docs\a.pdf"      open in a separate window
 FeatherPDF.exe /register                      register as a PDF handler (current user)
 FeatherPDF.exe /unregister                    remove that registration
 ```
@@ -284,7 +323,7 @@ script:
 ```powershell
 cmake --install build --config Release --prefix dist        # 1. portable folder
 & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" installer\FeatherPDF.iss   # 2. compile
-# -> installer\Output\FeatherPDF-Setup-1.0.0.exe
+# -> installer\Output\FeatherPDF-Setup-1.1.0.exe
 ```
 
 The installer:
@@ -340,11 +379,16 @@ There are no other dependencies. The full license texts are installed to
 
 ## Known limitations (version 1)
 
-* No text selection or copy, no clickable links, no outline/bookmarks
-  panel, no thumbnails, no printing.
+* No clickable links, no outline/bookmarks panel, no thumbnails, no printing.
+* Text selection follows PDFium's character order. It works well for normal
+  documents, but multi-column layouts can select across columns, and
+  rotated or vertical text is only roughly supported.
+* Tabs cannot be reordered by dragging or torn off into a new window. When
+  there are very many tabs they shrink to a minimum width and the rest are
+  clipped.
+* Search runs in the active tab only; switching tabs stops it.
 * No rotate-view command. Pages are shown as the PDF specifies (`/Rotate`
   is honoured).
-* A second document opens in a new window; there are no tabs.
 * The file is not reloaded automatically when it changes on disk.
 * Files over 4 GB are rejected (PDFium's custom-file-access API is 32-bit on
   Windows).
@@ -353,23 +397,20 @@ There are no other dependencies. The full license texts are installed to
 * The Linux-built MinGW binary lacks the SEH crash guard around PDFium.
 * Dark popup menus use a long-standing but undocumented uxtheme API. On
   builds before Windows 10 1903 menus stay light.
-* Only the most recent document and page are remembered, not a per-file
-  history.
+* Only the tabs open at exit are remembered, not a longer per-file history.
 
 ## Suggested improvements for version 2
 
-1. Text selection and copy (`FPDFText_GetCharIndexAtPos`, `FPDFText_GetText`),
-   and clickable internal/external links (`FPDFLink_*`).
+1. Clickable internal/external links (`FPDFLink_*`), and a "dark page"
+   option that inverts page colours for night reading.
 2. Outline/bookmarks side panel (`FPDFBookmark_*`), collapsed by default.
 3. Printing through the Windows print dialog, rendering bands at printer DPI.
 4. Rotate view (90° steps) and a two-page (book) layout.
-5. Per-document memory of the last page and zoom, and a recent-files list
-   (Jump List integration).
+5. A recent-files list (Jump List integration) and per-document zoom memory.
 6. Reload when the file changes on disk (`ReadDirectoryChangesW`).
 7. A low-resolution thumbnail layer per page, so very fast scrolling shows
    page outlines with content instead of blank white pages.
 8. An optional Direct2D presentation path for smooth animated scrolling on
    high-refresh displays (off by default to keep GPU use at zero).
-9. Tabs or a single-instance option, and a portable-mode INI file next to
-   the executable.
+9. Drag-to-reorder tabs, and a portable-mode INI file next to the executable.
 10. An MSIX package and signed releases published from CI.

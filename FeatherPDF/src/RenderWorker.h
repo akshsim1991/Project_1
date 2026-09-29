@@ -1,17 +1,23 @@
 // RenderWorker.h - the single background thread that owns PDFium.
 //
+// PDFium is not thread-safe (not even across documents), so every open
+// document - one per tab - lives in this one thread, each in its own
+// PdfEngine keyed by document id.
+//
 // The UI thread never blocks on PDF work. It talks to the worker through:
-//   * commands (open document, start/cancel search, trim memory), executed
-//     in FIFO order;
+//   * commands (open/close document, text layer, copy text, search,
+//     trim memory), executed in FIFO order;
 //   * the "wanted tiles" list, which is REPLACED (not appended) every time
-//     the view repaints. Scrolling quickly through 1000 pages therefore
-//     never builds a backlog: stale requests simply disappear.
+//     the visible view repaints. Scrolling quickly through 1000 pages
+//     therefore never builds a backlog: stale requests simply disappear.
 //
 // Priority inside the worker loop: commands > visible/prefetch tiles >
 // incremental search (one page per step). Search therefore never delays
 // rendering of what the user is looking at.
 #pragma once
 #include <deque>
+#include <map>
+#include <memory>
 
 #include "PdfEngine.h"
 
@@ -24,7 +30,10 @@ public:
     void Stop();
 
     void OpenDocument(uint32_t docId, const std::wstring& path, const std::string& password);
+    void CloseDocument(uint32_t docId);
     void SetWantedTiles(uint32_t docId, std::vector<TileRequest>&& tiles);
+    void RequestTextLayer(uint32_t docId, int page);
+    void CopyText(uint32_t docId, uint32_t requestId, TextPos from, TextPos to);
     void StartSearch(uint32_t docId, uint32_t searchId, const std::wstring& query,
                      bool matchCase, int startPage);
     void CancelSearch();
@@ -32,13 +41,14 @@ public:
 
 private:
     struct Command {
-        enum Type { Open, Search, CancelSearch, Trim } type = Open;
+        enum Type { Open, Close, TextLayer, Copy, Search, CancelSearch, Trim } type = Open;
         uint32_t docId = 0;
-        uint32_t searchId = 0;
+        uint32_t requestId = 0;  // search id / copy request id
         std::wstring text;
         std::string password;
         bool matchCase = false;
-        int startPage = 0;
+        int page = 0;
+        TextPos from, to;
     };
 
     static DWORD WINAPI ThreadProc(LPVOID self);
@@ -46,6 +56,7 @@ private:
     void Execute(Command& cmd);
     void SearchStep();
     void Push(Command&& cmd);
+    PdfEngine* Engine(uint32_t docId);
     template <typename T>
     void Post(UINT msg, T* obj);
 
@@ -65,9 +76,9 @@ private:
     bool m_searchActive = false;
 
     // --- worker-thread-only state ------------------------------------------
-    PdfEngine m_engine;
-    uint32_t m_docId = 0;  // id of the document currently open in m_engine
+    std::map<uint32_t, std::unique_ptr<PdfEngine>> m_engines;
     struct {
+        uint32_t docId = 0;
         uint32_t id = 0;
         std::wstring query;
         bool matchCase = false;

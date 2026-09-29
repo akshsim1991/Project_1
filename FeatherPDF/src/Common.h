@@ -22,7 +22,9 @@
 #include <vector>
 
 #define APP_NAME L"Feather PDF"
-#define APP_VERSION L"1.0.0"
+#define APP_VERSION L"1.1.0"
+#define APP_COPYRIGHT L"\x00A9 2026 Akshaya Simha"
+#define APP_WINDOW_CLASS L"FeatherPdfMain"
 #define APP_REG_KEY L"Software\\FeatherPDF"
 
 // ---------------------------------------------------------------------------
@@ -33,6 +35,9 @@ enum : UINT {
     WM_APP_DOC_LOADED = WM_APP + 1,  // DocLoadResult*
     WM_APP_TILE_READY,               // TileResult*
     WM_APP_SEARCH_RESULT,            // SearchPageResult*
+    WM_APP_TEXT_LAYER,               // TextLayerResult*
+    WM_APP_TEXT_COPIED,              // TextCopyResult*
+    WM_APP_TABBAR,                   // from TabBar: wParam = TabAction, lParam = index
 };
 
 // ---------------------------------------------------------------------------
@@ -68,6 +73,14 @@ enum : int {
     ID_REGISTER_DEFAULT,
     ID_ABOUT,
     ID_EXIT,
+    ID_CLOSE_TAB,
+    ID_NEXT_TAB,
+    ID_PREV_TAB,
+    ID_COPY,
+    ID_SELECT_ALL,
+    ID_THEME_SYSTEM,
+    ID_THEME_LIGHT,
+    ID_THEME_DARK,
     ID_ZOOM_PRESET_FIRST = 300,  // + index into kZoomPresets
 };
 

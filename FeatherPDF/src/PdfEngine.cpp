@@ -48,6 +48,22 @@ bool Guarded(F&& f) {
 
 }  // namespace
 
+namespace {
+// Converts a rectangle from PDF user space to top-left-origin page points in
+// the displayed orientation (0.01 pt precision).
+RectF ToDisplay(FPDF_PAGE page, int sx, int sy, double l, double t, double r, double b) {
+    int x1, y1, x2, y2;
+    FPDF_PageToDevice(page, 0, 0, sx, sy, 0, l, t, &x1, &y1);
+    FPDF_PageToDevice(page, 0, 0, sx, sy, 0, r, b, &x2, &y2);
+    RectF rc;
+    rc.left = std::min(x1, x2) / 100.0f;
+    rc.right = std::max(x1, x2) / 100.0f;
+    rc.top = std::min(y1, y2) / 100.0f;
+    rc.bottom = std::max(y1, y2) / 100.0f;
+    return rc;
+}
+}  // namespace
+
 // ---------------------------------------------------------------------------
 // File access.
 //
@@ -277,15 +293,7 @@ void PdfEngine::SearchPage(int pageIndex, const std::wstring& query, bool matchC
                 for (int r = 0; r < nrects; ++r) {
                     double l, t, rr, b;
                     if (!FPDFText_GetRect(text, r, &l, &t, &rr, &b)) continue;
-                    int x1, y1, x2, y2;
-                    FPDF_PageToDevice(page, 0, 0, sx, sy, 0, l, t, &x1, &y1);
-                    FPDF_PageToDevice(page, 0, 0, sx, sy, 0, rr, b, &x2, &y2);
-                    RectF rc;
-                    rc.left = std::min(x1, x2) / 100.0f;
-                    rc.right = std::max(x1, x2) / 100.0f;
-                    rc.top = std::min(y1, y2) / 100.0f;
-                    rc.bottom = std::max(y1, y2) / 100.0f;
-                    hit.rects.push_back(rc);
+                    hit.rects.push_back(ToDisplay(page, sx, sy, l, t, rr, b));
                 }
                 if (!hit.rects.empty()) hits.push_back(std::move(hit));
             }
@@ -295,6 +303,60 @@ void PdfEngine::SearchPage(int pageIndex, const std::wstring& query, bool matchC
     });
 
     if (owned) Guarded([&] { FPDF_ClosePage(page); });
+}
+
+
+void PdfEngine::ExtractTextLayer(int pageIndex, std::vector<TextChar>& chars) {
+    FPDF_PAGE page = GetPage(pageIndex);  // the page is on screen: cache it
+    if (!page) return;
+    Guarded([&] {
+        FPDF_TEXTPAGE text = FPDFText_LoadPage(page);
+        if (!text) return;
+        const int sx = (int)std::lround(FPDF_GetPageWidthF(page) * 100);
+        const int sy = (int)std::lround(FPDF_GetPageHeightF(page) * 100);
+        const int n = FPDFText_CountChars(text);
+        chars.resize(n > 0 ? (size_t)n : 0);
+        for (int i = 0; i < n; ++i) {
+            TextChar& c = chars[(size_t)i];
+            c.cp = FPDFText_GetUnicode(text, i);
+            FS_RECTF r;
+            if (FPDFText_IsGenerated(text, i) != 1 && FPDFText_GetLooseCharBox(text, i, &r)) {
+                c.box = ToDisplay(page, sx, sy, r.left, r.top, r.right, r.bottom);
+                c.hasBox = c.box.right > c.box.left && c.box.bottom > c.box.top;
+            }
+        }
+        FPDFText_ClosePage(text);
+    });
+}
+
+std::wstring PdfEngine::ExtractText(TextPos from, TextPos to) {
+    std::wstring out;
+    if (!m_doc) return out;
+    constexpr size_t kMaxChars = 32u << 20;  // 64 MB of UTF-16 is plenty
+    for (int p = std::max(0, from.page); p <= to.page && p < m_pageCount; ++p) {
+        FPDF_PAGE page = nullptr;
+        Guarded([&] { page = FPDF_LoadPage(m_doc, p); });
+        if (!page) continue;
+        Guarded([&] {
+            FPDF_TEXTPAGE text = FPDFText_LoadPage(page);
+            if (!text) return;
+            const int n = FPDFText_CountChars(text);
+            const int s = p == from.page ? std::min(from.index, n) : 0;
+            const int e = p == to.page ? std::min(to.index, n) : n;
+            if (e > s) {
+                std::vector<unsigned short> buf((size_t)(e - s) + 1);
+                int written = FPDFText_GetText(text, s, e - s, buf.data());
+                if (written > 1) {
+                    if (!out.empty() && out.back() != L'\n') out += L"\r\n";
+                    out.append(reinterpret_cast<const wchar_t*>(buf.data()), (size_t)written - 1);
+                }
+            }
+            FPDFText_ClosePage(text);
+        });
+        Guarded([&] { FPDF_ClosePage(page); });
+        if (out.size() > kMaxChars) break;
+    }
+    return out;
 }
 
 // ---------------------------------------------------------------------------

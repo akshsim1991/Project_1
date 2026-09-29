@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(FeatherPDF VERSION 1.0.0 LANGUAGES CXX RC)
+project(FeatherPDF VERSION 1.1.0 LANGUAGES CXX RC)
 
 # ---------------------------------------------------------------------------
 # PDFium (prebuilt binaries from https://github.com/bblanchon/pdfium-binaries)
@@ -47,6 +47,7 @@ add_executable(FeatherPDF WIN32
   src/PdfEngine.cpp
   src/Search.cpp
   src/Toolbar.cpp
+  src/TabBar.cpp
   src/Theme.cpp
   src/Settings.cpp
   src/FileAssoc.cpp

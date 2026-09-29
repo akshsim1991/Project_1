@@ -1,4 +1,4 @@
-// RenderWorker.cpp - background rendering / search thread.
+// RenderWorker.cpp - background rendering / text / search thread.
 #include "RenderWorker.h"
 
 namespace {
@@ -39,12 +39,6 @@ void RenderWorker::Stop() {
 void RenderWorker::Push(Command&& cmd) {
     {
         LockGuard g(m_lock);
-        if (cmd.type == Command::Open) {
-            // A new document makes any queued work obsolete.
-            m_wanted.clear();
-            m_wantedPos = 0;
-            m_searchActive = false;
-        }
         m_commands.push_back(std::move(cmd));
     }
     WakeConditionVariable(&m_cv);
@@ -57,6 +51,20 @@ void RenderWorker::OpenDocument(uint32_t docId, const std::wstring& path,
     c.docId = docId;
     c.text = path;
     c.password = password;
+    Push(std::move(c));
+}
+
+void RenderWorker::CloseDocument(uint32_t docId) {
+    {
+        LockGuard g(m_lock);
+        if (m_wantedDocId == docId) {
+            m_wanted.clear();
+            m_wantedPos = 0;
+        }
+    }
+    Command c;
+    c.type = Command::Close;
+    c.docId = docId;
     Push(std::move(c));
 }
 
@@ -79,15 +87,33 @@ void RenderWorker::SetWantedTiles(uint32_t docId, std::vector<TileRequest>&& til
     WakeConditionVariable(&m_cv);
 }
 
+void RenderWorker::RequestTextLayer(uint32_t docId, int page) {
+    Command c;
+    c.type = Command::TextLayer;
+    c.docId = docId;
+    c.page = page;
+    Push(std::move(c));
+}
+
+void RenderWorker::CopyText(uint32_t docId, uint32_t requestId, TextPos from, TextPos to) {
+    Command c;
+    c.type = Command::Copy;
+    c.docId = docId;
+    c.requestId = requestId;
+    c.from = from;
+    c.to = to;
+    Push(std::move(c));
+}
+
 void RenderWorker::StartSearch(uint32_t docId, uint32_t searchId, const std::wstring& query,
                                bool matchCase, int startPage) {
     Command c;
     c.type = Command::Search;
     c.docId = docId;
-    c.searchId = searchId;
+    c.requestId = searchId;
     c.text = query;
     c.matchCase = matchCase;
-    c.startPage = startPage;
+    c.page = startPage;
     Push(std::move(c));
 }
 
@@ -106,6 +132,11 @@ void RenderWorker::TrimMemory() {
 template <typename T>
 void RenderWorker::Post(UINT msg, T* obj) {
     if (!PostMessageW(m_notify, msg, 0, (LPARAM)obj)) delete obj;
+}
+
+PdfEngine* RenderWorker::Engine(uint32_t docId) {
+    auto it = m_engines.find(docId);
+    return it == m_engines.end() ? nullptr : it->second.get();
 }
 
 DWORD WINAPI RenderWorker::ThreadProc(LPVOID self) {
@@ -150,11 +181,11 @@ void RenderWorker::Run() {
         if (work == DoCommand) {
             Execute(cmd);
         } else if (work == DoTile) {
-            if (tileDoc == m_docId && m_engine.IsOpen()) {
+            if (PdfEngine* engine = Engine(tileDoc)) {
                 auto* res = new TileResult;
                 res->docId = tileDoc;
                 res->req = tile;
-                m_engine.RenderTile(tile, res->pixels);  // empty pixels = failure
+                engine->RenderTile(tile, res->pixels);  // empty pixels = failure
                 Post(WM_APP_TILE_READY, res);
             }
             LockGuard g(m_lock);
@@ -164,7 +195,7 @@ void RenderWorker::Run() {
         }
     }
 
-    m_engine.Close();
+    m_engines.clear();  // closes every document
     PdfEngine::DestroyLibrary();
 }
 
@@ -174,18 +205,47 @@ void RenderWorker::Execute(Command& cmd) {
             auto* res = new DocLoadResult;
             res->docId = cmd.docId;
             res->path = cmd.text;
-            res->error = m_engine.Open(cmd.text, cmd.password, res->pageSizes);
+            auto engine = std::make_unique<PdfEngine>();
+            res->error = engine->Open(cmd.text, cmd.password, res->pageSizes);
             SecureZeroMemory(cmd.password.data(), cmd.password.size());
-            if (res->error == OpenError::None) m_docId = cmd.docId;
+            if (res->error == OpenError::None) m_engines[cmd.docId] = std::move(engine);
             Post(WM_APP_DOC_LOADED, res);
             break;
         }
+        case Command::Close:
+            m_engines.erase(cmd.docId);
+            if (m_search.docId == cmd.docId) {
+                LockGuard g(m_lock);
+                m_searchActive = false;
+            }
+            break;
+        case Command::TextLayer: {
+            PdfEngine* engine = Engine(cmd.docId);
+            if (!engine) break;
+            auto* res = new TextLayerResult;
+            res->docId = cmd.docId;
+            res->page = cmd.page;
+            engine->ExtractTextLayer(cmd.page, res->chars);
+            Post(WM_APP_TEXT_LAYER, res);
+            break;
+        }
+        case Command::Copy: {
+            PdfEngine* engine = Engine(cmd.docId);
+            if (!engine) break;
+            auto* res = new TextCopyResult;
+            res->docId = cmd.docId;
+            res->requestId = cmd.requestId;
+            res->text = engine->ExtractText(cmd.from, cmd.to);
+            Post(WM_APP_TEXT_COPIED, res);
+            break;
+        }
         case Command::Search: {
-            if (cmd.docId != m_docId || !m_engine.IsOpen() || cmd.text.empty()) break;
-            m_search.id = cmd.searchId;
+            if (!Engine(cmd.docId) || cmd.text.empty()) break;
+            m_search.docId = cmd.docId;
+            m_search.id = cmd.requestId;
             m_search.query = cmd.text;
             m_search.matchCase = cmd.matchCase;
-            m_search.startPage = cmd.startPage;
+            m_search.startPage = cmd.page;
             m_search.done = 0;
             LockGuard g(m_lock);
             m_searchActive = true;
@@ -197,13 +257,14 @@ void RenderWorker::Execute(Command& cmd) {
             break;
         }
         case Command::Trim:
-            m_engine.ReleasePages();
+            for (auto& e : m_engines) e.second->ReleasePages();
             break;
     }
 }
 
 void RenderWorker::SearchStep() {
-    const int count = m_engine.PageCount();
+    PdfEngine* engine = Engine(m_search.docId);
+    const int count = engine ? engine->PageCount() : 0;
     if (count <= 0) {
         LockGuard g(m_lock);
         m_searchActive = false;
@@ -216,7 +277,7 @@ void RenderWorker::SearchStep() {
     const int page = (start + m_search.done) % count;
 
     std::vector<SearchHit> hits;
-    m_engine.SearchPage(page, m_search.query, m_search.matchCase, hits);
+    engine->SearchPage(page, m_search.query, m_search.matchCase, hits);
     m_search.done++;
     const bool finished = m_search.done >= count;
 
@@ -224,7 +285,7 @@ void RenderWorker::SearchStep() {
     // occasionally, or to say we are done: avoids flooding the UI queue.
     if (!hits.empty() || finished || (m_search.done % 64) == 0) {
         auto* res = new SearchPageResult;
-        res->docId = m_docId;
+        res->docId = m_search.docId;
         res->searchId = m_search.id;
         res->page = page;
         res->pagesDone = m_search.done;

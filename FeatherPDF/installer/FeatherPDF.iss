@@ -7,7 +7,7 @@
 ; The installer is written to installer\Output\FeatherPDF-Setup-<version>.exe
 
 #define AppName "Feather PDF"
-#define AppVersion "1.0.0"
+#define AppVersion "1.1.0"
 #define AppExe "FeatherPDF.exe"
 #define ProgId "FeatherPDF.Document"
 
@@ -15,7 +15,8 @@
 AppId={{6CF354F2-02CD-4DDA-AA26-1547B4A9D980}
 AppName={#AppName}
 AppVersion={#AppVersion}
-AppPublisher=Feather PDF
+AppPublisher=Akshaya Simha
+AppCopyright=(c) 2026 Akshaya Simha
 DefaultDirName={autopf}\Feather PDF
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes

@@ -15,8 +15,15 @@ struct Settings {
     bool continuous = true;
     bool matchCase = false;
 
-    std::wstring lastFile;
-    int lastPage = 0;
+    int themeMode = 0;     // ThemeMode: 0 = system, 1 = light, 2 = dark
+
+    // Tabs open at exit, reopened when the app starts without a file.
+    struct OpenFile {
+        std::wstring path;
+        int page = 0;
+    };
+    std::vector<OpenFile> session;
+    int activeTab = 0;
 
     void Load();
     void Save() const;

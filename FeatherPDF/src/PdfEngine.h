@@ -22,9 +22,8 @@ public:
     static void InitLibrary();
     static void DestroyLibrary();
 
-    // Opens `path`. On success the previously open document (if any) is
-    // closed and replaced; on failure the previous document stays open so
-    // the user keeps reading it.
+    // Opens `path`. Each open document (one per tab) has its own PdfEngine;
+    // on failure the engine stays empty.
     OpenError Open(const std::wstring& path, const std::string& password,
                    std::vector<SizeF>& pageSizes);
     void Close();
@@ -41,6 +40,12 @@ public:
     // in page points relative to the top-left of the displayed page.
     void SearchPage(int page, const std::wstring& query, bool matchCase,
                     std::vector<SearchHit>& hits);
+
+    // Text layer of one page: every character with its box (for selection).
+    void ExtractTextLayer(int page, std::vector<TextChar>& chars);
+
+    // Plain text between two caret positions (pages joined by line breaks).
+    std::wstring ExtractText(TextPos from, TextPos to);
 
     // Releases cached parsed pages (used when the window is minimised).
     void ReleasePages();

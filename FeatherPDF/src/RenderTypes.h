@@ -78,3 +78,32 @@ struct SearchPageResult {
     bool finished = false;
     std::vector<SearchHit> hits;
 };
+
+// One character of a page's text layer (used for text selection).
+struct TextChar {
+    RectF box;           // page points, top-left origin; valid if hasBox
+    uint32_t cp = 0;     // Unicode code point
+    bool hasBox = false; // false for characters PDFium generated (\r\n, spaces)
+};
+
+struct TextLayerResult {
+    uint32_t docId = 0;
+    int page = 0;
+    std::vector<TextChar> chars;
+};
+
+// A caret position in the document: before character `index` of `page`.
+struct TextPos {
+    int page = 0;
+    int index = 0;
+    bool operator<(const TextPos& o) const {
+        return page != o.page ? page < o.page : index < o.index;
+    }
+    bool operator==(const TextPos& o) const { return page == o.page && index == o.index; }
+};
+
+struct TextCopyResult {
+    uint32_t docId = 0;
+    uint32_t requestId = 0;
+    std::wstring text;
+};
