@@ -45,11 +45,17 @@ struct TileRequest {
     int tx = 0, ty = 0;        // tile column / row
     int x = 0, y = 0, w = 0, h = 0;  // tile rect inside the page bitmap
     int pageW = 0, pageH = 0;  // full page size in pixels at this scale
+    int rotate = 0;            // extra view rotation, quarter turns clockwise
+    int colorMode = 0;         // PageColors: 0 normal, 1 dark (inverted), 2 dimmed
 
     bool SameTile(const TileRequest& o) const {
-        return page == o.page && scaleKey == o.scaleKey && tx == o.tx && ty == o.ty;
+        return page == o.page && scaleKey == o.scaleKey && tx == o.tx && ty == o.ty &&
+               rotate == o.rotate && colorMode == o.colorMode;
     }
 };
+
+// Page colour modes applied to rendered pixels (not to printing or copies).
+enum PageColors { kColorsNormal = 0, kColorsDark = 1, kColorsDim = 2 };
 
 struct TileResult {
     uint32_t docId = 0;
@@ -58,11 +64,39 @@ struct TileResult {
     ~TileResult() { pixels.Free(); }
 };
 
+// Where a link or bookmark goes. `destY` is in PDF user space (points
+// from the bottom of the page) or negative when the target has no position.
+struct LinkTarget {
+    int page = -1;          // internal destination, or -1
+    float destY = -1;
+    std::wstring uri;       // external destination (http/https/mailto only)
+};
+
+struct LinkInfo {
+    RectF rect;             // page points, top-left origin, unrotated
+    LinkTarget target;
+};
+
+// One entry of the document outline (bookmarks), flattened depth-first.
+struct OutlineItem {
+    std::wstring title;
+    int level = 0;
+    LinkTarget target;
+};
+
+struct DocInfo {
+    std::wstring title, author, subject, keywords, creator, producer, created, modified;
+    int version = 0;        // e.g. 17 for PDF 1.7
+    bool encrypted = false;
+};
+
 struct DocLoadResult {
     uint32_t docId = 0;
     std::wstring path;
     OpenError error = OpenError::None;
     std::vector<SizeF> pageSizes;
+    std::vector<OutlineItem> outline;
+    DocInfo info;
 };
 
 struct SearchHit {
@@ -90,6 +124,7 @@ struct TextLayerResult {
     uint32_t docId = 0;
     int page = 0;
     std::vector<TextChar> chars;
+    std::vector<LinkInfo> links;  // link annotations and URLs found in the text
 };
 
 // A caret position in the document: before character `index` of `page`.
@@ -106,4 +141,13 @@ struct TextCopyResult {
     uint32_t docId = 0;
     uint32_t requestId = 0;
     std::wstring text;
+};
+
+// A print job handed to the worker. The printer DC belongs to the worker
+// from then on (it calls EndDoc and DeleteDC).
+struct PrintJob {
+    uint32_t docId = 0;
+    HDC dc = nullptr;
+    std::wstring docName;
+    std::vector<int> pages;  // in printing order (copies already expanded)
 };

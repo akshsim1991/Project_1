@@ -4,8 +4,10 @@
 #include <cmath>
 
 #include <commctrl.h>
+#include <objbase.h>  // must precede commdlg.h for PrintDlgEx
 #include <commdlg.h>
 #include <shellapi.h>
+#include <windowsx.h>
 
 #include "FileAssoc.h"
 #include "Theme.h"
@@ -179,6 +181,7 @@ void MainWindow::CreateChildren() {
     const DWORD editStyle = WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL;
 
     m_tabBar.Create(m_hwnd, m_hwnd, 36);
+    m_sidebar.Create(m_hwnd, m_hwnd, &m_worker);
 
     // Main toolbar:  Open | < > [page] / N | - 100% + | ...  Search  More
     m_toolbar.Create(m_hwnd, m_hwnd, 44);
@@ -218,6 +221,7 @@ void MainWindow::CreateChildren() {
     SetWindowSubclass(m_searchEdit, &MainWindow::EditProc, 1, (DWORD_PTR)this);
 
     ActivateTab(NewTab());  // there is always at least one (possibly empty) tab
+    SetSidebarMode((SidebarMode)m_settings.sidebarMode);
 }
 
 void MainWindow::CreateAccelerators() {
@@ -244,6 +248,12 @@ void MainWindow::CreateAccelerators() {
         {FCONTROL | FVIRTKEY, '2', ID_FIT_WIDTH},
         {FCONTROL | FVIRTKEY, 'G', ID_GOTO_PAGE},
         {FVIRTKEY, VK_F11, ID_FULLSCREEN},
+        {FCONTROL | FVIRTKEY, 'P', ID_PRINT},
+        {FCONTROL | FVIRTKEY, 'D', ID_PROPERTIES},
+        {FCONTROL | FVIRTKEY, 'L', ID_ROTATE_LEFT},
+        {FCONTROL | FVIRTKEY, 'R', ID_ROTATE_RIGHT},
+        {FCONTROL | FVIRTKEY, 'B', ID_SIDEBAR_BOOKMARKS},
+        {FCONTROL | FSHIFT | FVIRTKEY, 'B', ID_SIDEBAR_THUMBNAILS},
     };
     m_accel = CreateAcceleratorTableW(acc, (int)(sizeof(acc) / sizeof(acc[0])));
 }
@@ -274,11 +284,24 @@ void MainWindow::Layout() {
     } else {
         ShowWindow(m_searchBar.Hwnd(), SW_HIDE);
     }
+    // Optional sidebar on the left, then a thin splitter.
+    int x = 0;
+    const int h = std::max(0, (int)rc.bottom - y);
+    if (m_sidebar.Mode() != SidebarMode::None && !m_fullscreen) {
+        const int dpi = GetWindowDpi(m_hwnd);
+        const int w = std::min(Dpi(m_settings.sidebarWidth, dpi), (int)rc.right / 2);
+        MoveWindow(m_sidebar.Hwnd(), 0, y, w, h, TRUE);
+        ShowWindow(m_sidebar.Hwnd(), SW_SHOWNA);
+        x = w + Dpi(4, dpi);
+    } else {
+        ShowWindow(m_sidebar.Hwnd(), SW_HIDE);
+    }
+    InvalidateRect(m_hwnd, nullptr, TRUE);  // repaint the splitter strip
     // Only the active tab's view is visible (and therefore renders).
     for (size_t i = 0; i < m_tabs.size(); ++i) {
         HWND view = m_tabs[i]->view->Hwnd();
         if ((int)i == m_active) {
-            MoveWindow(view, 0, y, rc.right, std::max(0, (int)rc.bottom - y), TRUE);
+            MoveWindow(view, x, y, std::max(0, (int)rc.right - x), h, TRUE);
             ShowWindow(view, SW_SHOWNA);
         } else {
             ShowWindow(view, SW_HIDE);
@@ -302,13 +325,17 @@ int MainWindow::NewTab() {
     // New tabs inherit the view mode and zoom of the current tab.
     if (m_active >= 0) {
         PdfView& cur = View();
-        tab->view->SetContinuous(cur.Continuous());
+        tab->view->SetViewMode(cur.GetViewMode());
+        tab->view->SetCoverPage(cur.CoverPage());
+        tab->view->SetPageColors(cur.GetPageColors());
         if (cur.GetZoomMode() == ZoomMode::Custom)
             tab->view->SetZoom(cur.Zoom());
         else
             tab->view->SetZoomMode(cur.GetZoomMode());
     } else {
-        tab->view->SetContinuous(m_settings.continuous);
+        tab->view->SetViewMode((ViewMode)m_settings.viewMode);
+        tab->view->SetCoverPage(m_settings.coverPage);
+        tab->view->SetPageColors(m_settings.pageColors);
         if (m_settings.zoomMode == 0)
             tab->view->SetZoom(m_settings.zoom);
         else
@@ -336,6 +363,7 @@ void MainWindow::ActivateTab(int index) {
         StartSearch();
     UpdateTabs();
     UpdateTitle();
+    SyncSidebar();
     UpdateUi();
     UpdateSearchStatus();
 }
@@ -353,6 +381,9 @@ void MainWindow::CloseTab(int index) {
         tab.search.query.clear();
         tab.view->CloseDocument();
         tab.view->SetMessage({});
+        tab.outline.clear();
+        tab.info = DocInfo{};
+        SyncSidebar();
         UpdateTabs();
         UpdateTitle();
         UpdateUi();
@@ -449,6 +480,62 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         case WM_APP_TABBAR:
             OnTabBar((TabAction)wp, (int)lp);
             return 0;
+        case WM_APP_THUMB_READY:
+            m_sidebar.Thumbs().OnThumbReady((TileResult*)lp);
+            return 0;
+        case WM_APP_IMAGE_READY:
+            CopyImageToClipboard((TileResult*)lp);
+            return 0;
+        case WM_APP_PRINT_PROGRESS:
+            OnPrintProgress((int)wp, (int)lp);
+            return 0;
+        case WM_APP_SIDEBAR:
+            OnSidebar(wp, lp);
+            return 0;
+
+        // Splitter between sidebar and page: drag to resize the sidebar.
+        case WM_SETCURSOR:
+            if ((HWND)wp == m_hwnd && LOWORD(lp) == HTCLIENT) {
+                POINT pt;
+                GetCursorPos(&pt);
+                ScreenToClient(m_hwnd, &pt);
+                RECT sr = SplitterRect();
+                if (m_splitDrag || PtInRect(&sr, pt)) {
+                    SetCursor(LoadCursorW(nullptr, IDC_SIZEWE));
+                    return TRUE;
+                }
+            }
+            break;
+        case WM_LBUTTONDOWN: {
+            RECT sr = SplitterRect();
+            POINT pt = {GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+            if (PtInRect(&sr, pt)) {
+                m_splitDrag = true;
+                SetCapture(m_hwnd);
+            }
+            return 0;
+        }
+        case WM_MOUSEMOVE:
+            if (m_splitDrag) {
+                const int dpi = GetWindowDpi(m_hwnd);
+                const int x = std::max(Dpi(120, dpi), (int)GET_X_LPARAM(lp));
+                m_settings.sidebarWidth = std::max(120, std::min(800, MulDiv(x, 96, dpi)));
+                Layout();
+            }
+            return 0;
+        case WM_LBUTTONUP:
+            if (m_splitDrag) ReleaseCapture();
+            return 0;
+        case WM_CAPTURECHANGED:
+            m_splitDrag = false;
+            return 0;
+        case WM_ERASEBKGND: {  // only the splitter strip is ever visible
+            RECT rc;
+            GetClientRect(m_hwnd, &rc);
+            SetBkColor((HDC)wp, CurrentTheme().barBorder);
+            ExtTextOutW((HDC)wp, 0, 0, ETO_OPAQUE, &rc, nullptr, 0, nullptr);
+            return 1;
+        }
 
         case WM_COPYDATA:
             OnCopyData((const COPYDATASTRUCT*)lp);
@@ -462,6 +549,7 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             if (wp == SIZE_MINIMIZED) {
                 // Nobody is looking: give the rendered pages back to the OS.
                 if (!m_tabs.empty()) View().TrimMemory();
+                m_sidebar.Thumbs().TrimMemory();
             } else {
                 Layout();
             }
@@ -517,6 +605,7 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             m_tabBar.OnDpiChanged();
             m_toolbar.OnDpiChanged();
             m_searchBar.OnDpiChanged();
+            m_sidebar.OnDpiChanged();
             for (auto& t : m_tabs) t->view->OnDpiChanged();
             const RECT* r = (const RECT*)lp;
             SetWindowPos(m_hwnd, nullptr, r->left, r->top, r->right - r->left, r->bottom - r->top,
@@ -539,6 +628,9 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         case WM_DESTROY:
             KillTimer(m_hwnd, kSearchTimer);
             m_worker.Stop();
+            if (m_devMode) GlobalFree(m_devMode);
+            if (m_devNames) GlobalFree(m_devNames);
+            m_devMode = m_devNames = nullptr;
             if (m_accel) DestroyAcceleratorTable(m_accel);
             m_accel = nullptr;
             PostQuitMessage(0);
@@ -633,8 +725,42 @@ void MainWindow::OnCommand(int id, int code, HWND ctl) {
         case ID_FIT_WIDTH: view.SetZoomMode(ZoomMode::FitWidth); break;
         case ID_FIT_PAGE: view.SetZoomMode(ZoomMode::FitPage); break;
         case ID_ACTUAL_SIZE: view.SetZoom(1.0); break;
-        case ID_CONTINUOUS: view.SetContinuous(true); break;
-        case ID_SINGLE_PAGE: view.SetContinuous(false); break;
+        case ID_CONTINUOUS: view.SetViewMode(ViewMode::Continuous); break;
+        case ID_SINGLE_PAGE: view.SetViewMode(ViewMode::Single); break;
+        case ID_VIEW_TWO_PAGE: view.SetViewMode(ViewMode::TwoPage); break;
+        case ID_COVER_PAGE:
+            m_settings.coverPage = !view.CoverPage();
+            for (auto& t : m_tabs) t->view->SetCoverPage(m_settings.coverPage);
+            break;
+        case ID_ROTATE_LEFT:
+            view.Rotate(-1);
+            SyncSidebar();
+            break;
+        case ID_ROTATE_RIGHT:
+            view.Rotate(1);
+            SyncSidebar();
+            break;
+        case ID_COLORS_NORMAL: SetPageColors(kColorsNormal); break;
+        case ID_COLORS_DARK: SetPageColors(kColorsDark); break;
+        case ID_COLORS_DIM: SetPageColors(kColorsDim); break;
+        case ID_SIDEBAR_BOOKMARKS:
+            SetSidebarMode(m_sidebar.Mode() == SidebarMode::Bookmarks ? SidebarMode::None
+                                                                      : SidebarMode::Bookmarks);
+            break;
+        case ID_SIDEBAR_THUMBNAILS:
+            SetSidebarMode(m_sidebar.Mode() == SidebarMode::Thumbnails ? SidebarMode::None
+                                                                       : SidebarMode::Thumbnails);
+            break;
+        case ID_PRINT: Print(); break;
+        case ID_CANCEL_PRINT:
+            if (m_printing) {
+                m_printCancelled = true;
+                m_worker.CancelPrint();
+            }
+            break;
+        case ID_PROPERTIES: ShowProperties(); break;
+        case ID_COPY_PAGE_IMAGE: view.CopyPageImage(); break;
+        case ID_COPY_AREA_IMAGE: view.StartAreaCopy(); break;
         case ID_FULLSCREEN: ToggleFullscreen(); break;
         case ID_COPY: view.CopySelection(); break;
         case ID_SELECT_ALL: view.SelectAll(); break;
@@ -693,6 +819,29 @@ void MainWindow::ShowMoreMenu() {
     PdfView& view = View();
     const bool doc = view.HasDocument();
     const UINT docFlag = doc ? MF_ENABLED : MF_GRAYED;
+    auto check = [](bool on) -> UINT { return on ? MF_CHECKED : 0; };
+
+    HMENU layout = CreatePopupMenu();
+    AppendMenuW(layout, MF_STRING, ID_SINGLE_PAGE, L"&Single page");
+    AppendMenuW(layout, MF_STRING, ID_CONTINUOUS, L"&Continuous");
+    AppendMenuW(layout, MF_STRING, ID_VIEW_TWO_PAGE, L"&Two pages");
+    CheckMenuRadioItem(layout, ID_CONTINUOUS, ID_VIEW_TWO_PAGE,
+                       view.GetViewMode() == ViewMode::Single     ? ID_SINGLE_PAGE
+                       : view.GetViewMode() == ViewMode::TwoPage ? ID_VIEW_TWO_PAGE
+                                                                 : ID_CONTINUOUS,
+                       MF_BYCOMMAND);
+    AppendMenuW(layout, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(layout,
+                MF_STRING | check(view.CoverPage()) |
+                    (view.GetViewMode() == ViewMode::TwoPage ? 0 : MF_GRAYED),
+                ID_COVER_PAGE, L"Show &cover page separately");
+
+    HMENU colors = CreatePopupMenu();
+    AppendMenuW(colors, MF_STRING, ID_COLORS_NORMAL, L"&Normal");
+    AppendMenuW(colors, MF_STRING, ID_COLORS_DARK, L"&Dark (night mode)");
+    AppendMenuW(colors, MF_STRING, ID_COLORS_DIM, L"D&immed");
+    CheckMenuRadioItem(colors, ID_COLORS_NORMAL, ID_COLORS_DIM,
+                       ID_COLORS_NORMAL + view.GetPageColors(), MF_BYCOMMAND);
 
     HMENU theme = CreatePopupMenu();
     AppendMenuW(theme, MF_STRING, ID_THEME_SYSTEM, L"&System default");
@@ -704,35 +853,45 @@ void MainWindow::ShowMoreMenu() {
     HMENU m = CreatePopupMenu();
     AppendMenuW(m, MF_STRING, ID_OPEN, L"&Open\x2026\tCtrl+O");
     AppendMenuW(m, MF_STRING, ID_CLOSE_TAB, L"&Close tab\tCtrl+W");
+    if (m_printing)
+        AppendMenuW(m, MF_STRING, ID_CANCEL_PRINT, L"Cancel &printing");
+    else
+        AppendMenuW(m, MF_STRING | docFlag, ID_PRINT, L"&Print\x2026\tCtrl+P");
+    AppendMenuW(m, MF_STRING | docFlag, ID_PROPERTIES, L"Document p&roperties\x2026\tCtrl+D");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(m, MF_STRING | (view.HasSelection() ? 0 : MF_GRAYED), ID_COPY, L"Cop&y\tCtrl+C");
     AppendMenuW(m, MF_STRING | docFlag, ID_SELECT_ALL, L"Select &all\tCtrl+A");
+    AppendMenuW(m, MF_STRING | docFlag, ID_COPY_PAGE_IMAGE, L"Copy page as &image");
+    AppendMenuW(m, MF_STRING | docFlag, ID_COPY_AREA_IMAGE, L"Copy area as i&mage");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(m, MF_STRING | docFlag, ID_FIRST_PAGE, L"&First page\tHome");
     AppendMenuW(m, MF_STRING | docFlag, ID_LAST_PAGE, L"&Last page\tEnd");
     AppendMenuW(m, MF_STRING | docFlag, ID_GOTO_PAGE, L"&Go to page\x2026\tCtrl+G");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(m, MF_STRING, ID_CONTINUOUS, L"Co&ntinuous scrolling");
-    AppendMenuW(m, MF_STRING, ID_SINGLE_PAGE, L"S&ingle page");
-    CheckMenuRadioItem(m, ID_CONTINUOUS, ID_SINGLE_PAGE,
-                       view.Continuous() ? ID_CONTINUOUS : ID_SINGLE_PAGE, MF_BYCOMMAND);
+    AppendMenuW(m, MF_STRING | check(m_sidebar.Mode() == SidebarMode::Bookmarks),
+                ID_SIDEBAR_BOOKMARKS, L"&Bookmarks panel\tCtrl+B");
+    AppendMenuW(m, MF_STRING | check(m_sidebar.Mode() == SidebarMode::Thumbnails),
+                ID_SIDEBAR_THUMBNAILS, L"T&humbnails panel\tCtrl+Shift+B");
+    AppendMenuW(m, MF_POPUP, (UINT_PTR)layout, L"Page la&yout");
+    AppendMenuW(m, MF_STRING | docFlag, ID_ROTATE_LEFT, L"Rotate l&eft\tCtrl+L");
+    AppendMenuW(m, MF_STRING | docFlag, ID_ROTATE_RIGHT, L"Rotate ri&ght\tCtrl+R");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(m, MF_STRING | (view.GetZoomMode() == ZoomMode::FitWidth ? MF_CHECKED : 0),
-                ID_FIT_WIDTH, L"Fit &width\tCtrl+2");
-    AppendMenuW(m, MF_STRING | (view.GetZoomMode() == ZoomMode::FitPage ? MF_CHECKED : 0),
-                ID_FIT_PAGE, L"Fit &page\tCtrl+0");
+    AppendMenuW(m, MF_STRING | check(view.GetZoomMode() == ZoomMode::FitWidth), ID_FIT_WIDTH,
+                L"Fit &width\tCtrl+2");
+    AppendMenuW(m, MF_STRING | check(view.GetZoomMode() == ZoomMode::FitPage), ID_FIT_PAGE,
+                L"Fit pa&ge\tCtrl+0");
     AppendMenuW(m, MF_STRING, ID_ACTUAL_SIZE, L"Actual si&ze\tCtrl+1");
-    AppendMenuW(m, MF_STRING | (m_fullscreen ? MF_CHECKED : 0), ID_FULLSCREEN,
-                L"F&ull screen\tF11");
+    AppendMenuW(m, MF_STRING | check(m_fullscreen), ID_FULLSCREEN, L"F&ull screen\tF11");
+    AppendMenuW(m, MF_POPUP, (UINT_PTR)colors, L"Page colo&urs");
     AppendMenuW(m, MF_POPUP, (UINT_PTR)theme, L"&Theme");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(m, MF_STRING, ID_REGISTER_DEFAULT, L"Set as &default PDF viewer\x2026");
-    AppendMenuW(m, MF_STRING, ID_ABOUT, L"A&bout " APP_NAME);
+    AppendMenuW(m, MF_STRING, ID_ABOUT, L"Abou&t " APP_NAME);
     AppendMenuW(m, MF_STRING, ID_EXIT, L"E&xit");
 
     RECT rc = m_toolbar.ItemScreenRect(ID_MENU);
     TrackPopupMenu(m, TPM_RIGHTALIGN | TPM_TOPALIGN, rc.right, rc.bottom, 0, m_hwnd, nullptr);
-    DestroyMenu(m);  // also destroys the Theme submenu
+    DestroyMenu(m);  // also destroys the submenus
 }
 
 void MainWindow::ShowZoomMenu() {
@@ -778,12 +937,17 @@ void MainWindow::UpdateUi() {
     m_toolbar.SetEnabled(ID_ZOOM_OUT, doc);
     m_toolbar.SetEnabled(ID_ZOOM_LABEL, doc);
     m_toolbar.SetEnabled(ID_SEARCH, doc);
+    if (doc && m_sidebar.Mode() == SidebarMode::Thumbnails)
+        m_sidebar.Thumbs().SetCurrentPage(view.CurrentPage());
 }
 
 void MainWindow::UpdateTitle() {
     const Tab& tab = Active();
     std::wstring title = tab.docId ? FileNameFromPath(tab.path) + L" - " APP_NAME
                                    : std::wstring(APP_NAME);
+    if (m_printing)
+        title += L"  (printing " + std::to_wstring(m_printDone) + L" of " +
+                 std::to_wstring(m_printTotal) + L")";
     SetWindowTextW(m_hwnd, title.c_str());
 }
 
@@ -901,9 +1065,12 @@ void MainWindow::OnDocLoaded(DocLoadResult* result) {
     tab.path = res->path;
     tab.search.Reset();
     tab.search.query.clear();
+    tab.outline = std::move(res->outline);
+    tab.info = std::move(res->info);
     tab.view->SetDocument(tab.docId, std::move(res->pageSizes), tab.pendingPage);
     UpdateTabs();
     if (index == m_active) {
+        SyncSidebar();
         UpdateTitle();
         UpdateUi();
         if (m_searchVisible && !GetText(m_searchEdit).empty()) StartSearch();
@@ -1072,6 +1239,7 @@ void MainWindow::OnThemeChanged() {
     ReloadTheme((ThemeMode)m_settings.themeMode);
     ApplyWindowTheme(m_hwnd);
     m_tabBar.OnThemeChanged();
+    m_sidebar.OnThemeChanged();
     m_toolbar.OnThemeChanged();
     m_searchBar.OnThemeChanged();
     for (auto& t : m_tabs) t->view->OnThemeChanged();
@@ -1096,7 +1264,10 @@ void MainWindow::SaveSettings() {
     PdfView& view = View();
     m_settings.zoomMode = (int)view.GetZoomMode();
     m_settings.zoom = view.Zoom();
-    m_settings.continuous = view.Continuous();
+    m_settings.viewMode = (int)view.GetViewMode();
+    m_settings.coverPage = view.CoverPage();
+    m_settings.pageColors = view.GetPageColors();
+    m_settings.sidebarMode = (int)m_sidebar.Mode();
 
     // Remember every open tab and where each was being read.
     m_settings.session.clear();
@@ -1108,4 +1279,274 @@ void MainWindow::SaveSettings() {
         m_settings.session.push_back({t.path, t.view->CurrentPage()});
     }
     m_settings.Save();
+}
+
+// ===========================================================================
+// Sidebar (bookmarks / thumbnails)
+// ===========================================================================
+void MainWindow::SetSidebarMode(SidebarMode mode) {
+    m_sidebar.SetMode(mode);
+    SyncSidebar();
+    Layout();
+}
+
+void MainWindow::SyncSidebar() {
+    if (m_tabs.empty()) return;
+    Tab& tab = Active();
+    switch (m_sidebar.Mode()) {
+        case SidebarMode::Bookmarks:
+            m_sidebar.SetOutline(tab.docId ? &tab.outline : nullptr);
+            break;
+        case SidebarMode::Thumbnails:
+            if (tab.docId) {
+                m_sidebar.Thumbs().SetDocument(tab.docId, tab.view->PageSizes(),
+                                               tab.view->Rotation(), tab.view->GetPageColors());
+                m_sidebar.Thumbs().SetCurrentPage(tab.view->CurrentPage());
+            } else {
+                m_sidebar.Thumbs().Clear();
+            }
+            break;
+        case SidebarMode::None:
+            break;
+    }
+}
+
+void MainWindow::OnSidebar(WPARAM event, LPARAM value) {
+    Tab& tab = Active();
+    if (!tab.docId) return;
+    if (event == kSidebarPageClicked) {
+        tab.view->GoToPage((int)value);
+    } else if (event == kSidebarOutlineClicked && value >= 0 &&
+               (size_t)value < tab.outline.size()) {
+        const LinkTarget& target = tab.outline[(size_t)value].target;
+        if (target.page >= 0)
+            tab.view->GoToTarget(target);
+        else if (!target.uri.empty())
+            OpenExternalLink(m_hwnd, target.uri);
+    }
+}
+
+RECT MainWindow::SplitterRect() const {
+    RECT r{};
+    if (m_sidebar.Mode() == SidebarMode::None || m_fullscreen) return r;
+    RECT sb;
+    GetWindowRect(m_sidebar.Hwnd(), &sb);
+    MapWindowPoints(nullptr, m_hwnd, (POINT*)&sb, 2);
+    const int dpi = GetWindowDpi(m_hwnd);
+    return {sb.right, sb.top, sb.right + Dpi(4, dpi), sb.bottom};
+}
+
+// ===========================================================================
+// Page colours (all tabs)
+// ===========================================================================
+void MainWindow::SetPageColors(int mode) {
+    m_settings.pageColors = mode;
+    for (auto& t : m_tabs) t->view->SetPageColors(mode);
+    SyncSidebar();
+}
+
+// ===========================================================================
+// Printing
+// ===========================================================================
+void MainWindow::Print() {
+    Tab& tab = Active();
+    if (!tab.docId) return;
+    if (m_printing) {
+        MessageBoxW(m_hwnd, L"A document is already being printed.", APP_NAME, MB_ICONINFORMATION);
+        return;
+    }
+    const int count = tab.view->PageCount();
+    PRINTPAGERANGE ranges[32] = {};
+    ranges[0] = {1, (DWORD)count};
+    PRINTDLGEXW pd{};
+    pd.lStructSize = sizeof(pd);
+    pd.hwndOwner = m_hwnd;
+    pd.hDevMode = m_devMode;  // remembers the last printer and its settings
+    pd.hDevNames = m_devNames;
+    pd.Flags = PD_RETURNDC | PD_USEDEVMODECOPIESANDCOLLATE | PD_NOSELECTION;
+    pd.nPageRanges = 1;
+    pd.nMaxPageRanges = 32;
+    pd.lpPageRanges = ranges;
+    pd.nMinPage = 1;
+    pd.nMaxPage = (DWORD)count;
+    pd.nCopies = 1;
+    pd.nStartPage = START_PAGE_GENERAL;
+    const HRESULT hr = PrintDlgExW(&pd);
+    m_devMode = pd.hDevMode;
+    m_devNames = pd.hDevNames;
+    if (FAILED(hr) || pd.dwResultAction != PD_RESULT_PRINT || !pd.hDC) {
+        if (pd.hDC) DeleteDC(pd.hDC);
+        return;
+    }
+
+    // Pages to print, in order.
+    std::vector<int> pages;
+    if (pd.Flags & PD_CURRENTPAGE) {
+        pages.push_back(tab.view->CurrentPage());
+    } else if (pd.Flags & PD_PAGENUMS) {
+        for (DWORD i = 0; i < pd.nPageRanges; ++i) {
+            const int from = std::max(1, (int)std::min(ranges[i].nFromPage, ranges[i].nToPage));
+            const int to = std::min(count, (int)std::max(ranges[i].nFromPage, ranges[i].nToPage));
+            for (int p = from; p <= to; ++p) pages.push_back(p - 1);
+        }
+    } else {
+        for (int p = 0; p < count; ++p) pages.push_back(p);
+    }
+    // Copies the driver can not do itself (nCopies is 1 when it can).
+    const int copies = std::max(1, (int)pd.nCopies);
+    if (copies > 1) {
+        std::vector<int> expanded;
+        if (pd.Flags & PD_COLLATE) {
+            for (int c = 0; c < copies; ++c) expanded.insert(expanded.end(), pages.begin(), pages.end());
+        } else {
+            for (int p : pages) expanded.insert(expanded.end(), (size_t)copies, p);
+        }
+        pages.swap(expanded);
+    }
+    if (pages.empty()) {
+        DeleteDC(pd.hDC);
+        return;
+    }
+
+    PrintJob job;
+    job.docId = tab.docId;
+    job.dc = pd.hDC;  // owned by the worker from here on
+    job.docName = FileNameFromPath(tab.path);
+    job.pages = std::move(pages);
+    m_printing = true;
+    m_printCancelled = false;
+    m_printDone = 0;
+    m_printTotal = (int)job.pages.size();
+    m_worker.StartPrint(std::move(job));
+    UpdateTitle();
+}
+
+void MainWindow::OnPrintProgress(int done, int total) {
+    if (total < 0) {  // failed or cancelled
+        const bool wasCancelled = m_printCancelled;
+        m_printing = false;
+        UpdateTitle();
+        if (!wasCancelled)
+            MessageBoxW(m_hwnd, L"The document could not be printed.", APP_NAME, MB_ICONWARNING);
+        return;
+    }
+    m_printDone = done;
+    m_printTotal = total;
+    if (done >= total) m_printing = false;
+    UpdateTitle();
+}
+
+// ===========================================================================
+// Document properties
+// ===========================================================================
+namespace {
+// "D:20240131154500+01'00'" -> "2024-01-31 15:45"
+std::wstring FormatPdfDate(const std::wstring& d) {
+    std::wstring s = d.rfind(L"D:", 0) == 0 ? d.substr(2) : d;
+    if (s.size() < 8) return d;
+    for (size_t i = 0; i < 8; ++i)
+        if (!iswdigit(s[i])) return d;
+    std::wstring out = s.substr(0, 4) + L"-" + s.substr(4, 2) + L"-" + s.substr(6, 2);
+    if (s.size() >= 12 && iswdigit(s[8]) && iswdigit(s[11]))
+        out += L" " + s.substr(8, 2) + L":" + s.substr(10, 2);
+    return out;
+}
+
+std::wstring FormatBytes(ULONGLONG bytes) {
+    wchar_t buf[64];
+    if (bytes >= (1ull << 20))
+        swprintf_s(buf, L"%.1f MB (%llu bytes)", bytes / 1048576.0, bytes);
+    else if (bytes >= 1024)
+        swprintf_s(buf, L"%.1f KB (%llu bytes)", bytes / 1024.0, bytes);
+    else
+        swprintf_s(buf, L"%llu bytes", bytes);
+    return buf;
+}
+}  // namespace
+
+void MainWindow::ShowProperties() {
+    const Tab& tab = Active();
+    if (!tab.docId) return;
+    const DocInfo& info = tab.info;
+    std::wstring text;
+    auto line = [&](const wchar_t* label, const std::wstring& value) {
+        if (!value.empty()) text += std::wstring(label) + L"\t" + value + L"\n";
+    };
+    line(L"File:", FileNameFromPath(tab.path));
+    line(L"Location:", DirectoryFromPath(tab.path));
+    WIN32_FILE_ATTRIBUTE_DATA fad{};
+    if (GetFileAttributesExW(tab.path.c_str(), GetFileExInfoStandard, &fad))
+        line(L"File size:",
+             FormatBytes(((ULONGLONG)fad.nFileSizeHigh << 32) | fad.nFileSizeLow));
+    text += L"\n";
+    line(L"Title:", info.title);
+    line(L"Author:", info.author);
+    line(L"Subject:", info.subject);
+    line(L"Keywords:", info.keywords);
+    line(L"Created:", FormatPdfDate(info.created));
+    line(L"Modified:", FormatPdfDate(info.modified));
+    line(L"Creator:", info.creator);
+    line(L"Producer:", info.producer);
+    text += L"\n";
+    if (info.version)
+        line(L"Version:", L"PDF " + std::to_wstring(info.version / 10) + L"." + std::to_wstring(info.version % 10));
+    line(L"Pages:", std::to_wstring(tab.view->PageCount()));
+    const int page = tab.view->CurrentPage();
+    if (page >= 0 && page < tab.view->PageCount()) {
+        const SizeF& sz = tab.view->PageSizes()[(size_t)page];
+        wchar_t buf[128];
+        swprintf_s(buf, L"%.0f \x00D7 %.0f mm  (%.2f \x00D7 %.2f in)", sz.w / 72 * 25.4,
+                   sz.h / 72 * 25.4, sz.w / 72, sz.h / 72);
+        line(L"Page size:", buf);
+    }
+    line(L"Encrypted:", info.encrypted ? L"Yes" : L"No");
+    MessageBoxW(m_hwnd, text.c_str(), L"Document properties", MB_OK | MB_ICONINFORMATION);
+}
+
+// ===========================================================================
+// Page image -> clipboard (24-bit DIB, understood by every application)
+// ===========================================================================
+void MainWindow::CopyImageToClipboard(TileResult* image) {
+    std::unique_ptr<TileResult> res(image);
+    const PixelBuffer& px = res->pixels;
+    if (!px.bits) {
+        MessageBoxW(m_hwnd, L"The image is too large to copy.", APP_NAME, MB_ICONWARNING);
+        return;
+    }
+    const size_t stride = ((size_t)px.width * 3 + 3) & ~(size_t)3;
+    const size_t bytes = sizeof(BITMAPINFOHEADER) + stride * (size_t)px.height;
+    HGLOBAL mem = GlobalAlloc(GMEM_MOVEABLE, bytes);
+    if (!mem) return;
+    auto* dst = (uint8_t*)GlobalLock(mem);
+    if (!dst) {
+        GlobalFree(mem);
+        return;
+    }
+    auto* bih = (BITMAPINFOHEADER*)dst;
+    *bih = BITMAPINFOHEADER{};
+    bih->biSize = sizeof(BITMAPINFOHEADER);
+    bih->biWidth = px.width;
+    bih->biHeight = px.height;  // bottom-up
+    bih->biPlanes = 1;
+    bih->biBitCount = 24;
+    bih->biCompression = BI_RGB;
+    bih->biSizeImage = (DWORD)(stride * px.height);
+    uint8_t* bits = dst + sizeof(BITMAPINFOHEADER);
+    for (int y = 0; y < px.height; ++y) {
+        const uint8_t* src = px.bits + (size_t)(px.height - 1 - y) * px.width * 4;
+        uint8_t* row = bits + (size_t)y * stride;
+        for (int x = 0; x < px.width; ++x) {
+            row[x * 3 + 0] = src[x * 4 + 0];
+            row[x * 3 + 1] = src[x * 4 + 1];
+            row[x * 3 + 2] = src[x * 4 + 2];
+        }
+    }
+    GlobalUnlock(mem);
+    if (OpenClipboard(m_hwnd)) {
+        EmptyClipboard();
+        if (!SetClipboardData(CF_DIB, mem)) GlobalFree(mem);
+        CloseClipboard();
+    } else {
+        GlobalFree(mem);
+    }
 }

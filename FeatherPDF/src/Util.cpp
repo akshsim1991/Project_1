@@ -1,6 +1,8 @@
 // Util.cpp - small helpers shared by all modules.
 #include "Util.h"
 
+#include <shellapi.h>
+
 std::string WideToUtf8(const std::wstring& s) {
     if (s.empty()) return {};
     int n = WideCharToMultiByte(CP_UTF8, 0, s.data(), (int)s.size(), nullptr, 0, nullptr, nullptr);
@@ -69,6 +71,16 @@ std::wstring ExecutablePath() {
         }
         buf.resize(buf.size() * 2);
     }
+}
+
+bool OpenExternalLink(HWND owner, const std::wstring& uri) {
+    auto starts = [&](const wchar_t* prefix) {
+        const size_t n = wcslen(prefix);
+        return uri.size() > n && _wcsnicmp(uri.c_str(), prefix, n) == 0;
+    };
+    if (!(starts(L"http://") || starts(L"https://") || starts(L"mailto:"))) return false;
+    ShellExecuteW(owner, L"open", uri.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    return true;
 }
 
 bool FileExists(const std::wstring& path) {

@@ -5,6 +5,8 @@
 #include <cmath>
 #include <type_traits>
 
+#include "Util.h"
+#include "fpdf_doc.h"
 #include "fpdf_text.h"
 #include "fpdfview.h"
 
@@ -219,6 +221,24 @@ FPDF_PAGE PdfEngine::GetPage(int index) {
     return page;
 }
 
+// Dark mode maps white paper to near-black and black text to light grey
+// (an inversion with softened contrast); dim mode lowers brightness.
+void PdfEngine::ApplyPageColors(PixelBuffer& px, int mode) {
+    if (mode == kColorsNormal || !px.bits) return;
+    uint8_t lut[256];
+    for (int c = 0; c < 256; ++c) {
+        lut[c] = mode == kColorsDark ? (uint8_t)(30 + (255 - c) * 195 / 255)
+                                     : (uint8_t)(c * 200 / 255);
+    }
+    uint8_t* p = px.bits;
+    const size_t n = (size_t)px.width * px.height;
+    for (size_t i = 0; i < n; ++i, p += 4) {
+        p[0] = lut[p[0]];
+        p[1] = lut[p[1]];
+        p[2] = lut[p[2]];
+    }
+}
+
 bool PdfEngine::RenderTile(const TileRequest& req, PixelBuffer& out) {
     if (req.w <= 0 || req.h <= 0) return false;
     if (!out.Allocate(req.w, req.h)) return false;
@@ -240,7 +260,7 @@ bool PdfEngine::RenderTile(const TileRequest& req, PixelBuffer& out) {
         // small, trading a little speed for much lower memory on
         // image-heavy documents.
         ok = Guarded([&] {
-            FPDF_RenderPageBitmap(bmp, page, -req.x, -req.y, req.pageW, req.pageH, 0,
+            FPDF_RenderPageBitmap(bmp, page, -req.x, -req.y, req.pageW, req.pageH, req.rotate & 3,
                                   FPDF_ANNOT | FPDF_RENDER_LIMITEDIMAGECACHE);
         });
         if (!ok) {
@@ -250,6 +270,7 @@ bool PdfEngine::RenderTile(const TileRequest& req, PixelBuffer& out) {
         }
     }
     FPDFBitmap_Destroy(bmp);  // does not free our external buffer
+    ApplyPageColors(out, req.colorMode);
     return true;
 }
 
@@ -306,14 +327,32 @@ void PdfEngine::SearchPage(int pageIndex, const std::wstring& query, bool matchC
 }
 
 
-void PdfEngine::ExtractTextLayer(int pageIndex, std::vector<TextChar>& chars) {
+void PdfEngine::ExtractPageInfo(int pageIndex, std::vector<TextChar>& chars,
+                                std::vector<LinkInfo>& links) {
     FPDF_PAGE page = GetPage(pageIndex);  // the page is on screen: cache it
     if (!page) return;
     Guarded([&] {
-        FPDF_TEXTPAGE text = FPDFText_LoadPage(page);
-        if (!text) return;
         const int sx = (int)std::lround(FPDF_GetPageWidthF(page) * 100);
         const int sy = (int)std::lround(FPDF_GetPageHeightF(page) * 100);
+
+        // Link annotations (internal jumps and URIs).
+        constexpr size_t kMaxLinks = 4000;
+        int pos = 0;
+        FPDF_LINK link = nullptr;
+        while (links.size() < kMaxLinks && FPDFLink_Enumerate(page, &pos, &link)) {
+            FS_RECTF r;
+            if (!FPDFLink_GetAnnotRect(link, &r)) continue;
+            LinkInfo li;
+            li.rect = ToDisplay(page, sx, sy, r.left, r.top, r.right, r.bottom);
+            if (FPDF_DEST dest = FPDFLink_GetDest(m_doc, link))
+                ReadDest(dest, li.target);
+            else if (FPDF_ACTION action = FPDFLink_GetAction(link))
+                ReadAction(action, li.target);
+            if (li.target.page >= 0 || !li.target.uri.empty()) links.push_back(std::move(li));
+        }
+
+        FPDF_TEXTPAGE text = FPDFText_LoadPage(page);
+        if (!text) return;
         const int n = FPDFText_CountChars(text);
         chars.resize(n > 0 ? (size_t)n : 0);
         for (int i = 0; i < n; ++i) {
@@ -325,8 +364,148 @@ void PdfEngine::ExtractTextLayer(int pageIndex, std::vector<TextChar>& chars) {
                 c.hasBox = c.box.right > c.box.left && c.box.bottom > c.box.top;
             }
         }
+
+        // Plain-text URLs ("www.example.com") that are not link annotations.
+        if (FPDF_PAGELINK web = FPDFLink_LoadWebLinks(text)) {
+            const int count = FPDFLink_CountWebLinks(web);
+            for (int i = 0; i < count && links.size() < kMaxLinks; ++i) {
+                const int len = FPDFLink_GetURL(web, i, nullptr, 0);
+                if (len <= 1 || len > 8192) continue;
+                std::vector<unsigned short> buf((size_t)len);
+                FPDFLink_GetURL(web, i, buf.data(), len);
+                LinkInfo li;
+                li.target.uri.assign(reinterpret_cast<const wchar_t*>(buf.data()), (size_t)len - 1);
+                const int rects = FPDFLink_CountRects(web, i);
+                for (int k = 0; k < rects; ++k) {
+                    double l, t, rr, b;
+                    if (!FPDFLink_GetRect(web, i, k, &l, &t, &rr, &b)) continue;
+                    li.rect = ToDisplay(page, sx, sy, l, t, rr, b);
+                    links.push_back(li);
+                }
+            }
+            FPDFLink_CloseWebLinks(web);
+        }
         FPDFText_ClosePage(text);
     });
+}
+
+void PdfEngine::ReadDest(FPDF_DEST dest, LinkTarget& target) {
+    target.page = FPDFDest_GetDestPageIndex(m_doc, dest);
+    if (target.page >= m_pageCount) target.page = -1;
+    FPDF_BOOL hasX = 0, hasY = 0, hasZoom = 0;
+    FS_FLOAT x = 0, y = 0, zoom = 0;
+    if (FPDFDest_GetLocationInPage(dest, &hasX, &hasY, &hasZoom, &x, &y, &zoom) && hasY)
+        target.destY = y;
+}
+
+void PdfEngine::ReadAction(FPDF_ACTION action, LinkTarget& target) {
+    switch (FPDFAction_GetType(action)) {
+        case PDFACTION_GOTO:
+            if (FPDF_DEST dest = FPDFAction_GetDest(m_doc, action)) ReadDest(dest, target);
+            break;
+        case PDFACTION_URI: {
+            const unsigned long len = FPDFAction_GetURIPath(m_doc, action, nullptr, 0);
+            if (len <= 1 || len > 8192) break;
+            std::string uri(len, '\0');
+            FPDFAction_GetURIPath(m_doc, action, uri.data(), len);
+            uri.resize(len - 1);
+            target.uri = Utf8ToWide(uri);
+            break;
+        }
+        default:  // launch / remote files are never followed (security)
+            break;
+    }
+}
+
+void PdfEngine::LoadOutline(std::vector<OutlineItem>& out) {
+    if (!m_doc) return;
+    Guarded([&] {
+        constexpr size_t kMaxItems = 20000;
+        constexpr int kMaxDepth = 32;
+        std::vector<FPDF_BOOKMARK> seen;  // malformed outlines can contain cycles
+        // Iterative depth-first walk: (bookmark, level).
+        std::vector<std::pair<FPDF_BOOKMARK, int>> stack;
+        if (FPDF_BOOKMARK first = FPDFBookmark_GetFirstChild(m_doc, nullptr))
+            stack.push_back({first, 0});
+        while (!stack.empty() && out.size() < kMaxItems) {
+            auto [bm, level] = stack.back();
+            stack.pop_back();
+            if (std::find(seen.begin(), seen.end(), bm) != seen.end()) continue;
+            seen.push_back(bm);
+
+            OutlineItem item;
+            item.level = level;
+            const unsigned long bytes = FPDFBookmark_GetTitle(bm, nullptr, 0);
+            if (bytes > 2 && bytes < 4096) {
+                std::vector<unsigned short> buf(bytes / 2);
+                FPDFBookmark_GetTitle(bm, buf.data(), bytes);
+                item.title.assign(reinterpret_cast<const wchar_t*>(buf.data()), bytes / 2 - 1);
+            }
+            if (FPDF_DEST dest = FPDFBookmark_GetDest(m_doc, bm))
+                ReadDest(dest, item.target);
+            else if (FPDF_ACTION action = FPDFBookmark_GetAction(bm))
+                ReadAction(action, item.target);
+            out.push_back(std::move(item));
+
+            // Push the next sibling first so the child is visited next.
+            if (FPDF_BOOKMARK next = FPDFBookmark_GetNextSibling(m_doc, bm))
+                stack.push_back({next, level});
+            if (level + 1 < kMaxDepth)
+                if (FPDF_BOOKMARK child = FPDFBookmark_GetFirstChild(m_doc, bm))
+                    stack.push_back({child, level + 1});
+        }
+    });
+}
+
+void PdfEngine::GetInfo(DocInfo& info) {
+    if (!m_doc) return;
+    Guarded([&] {
+        auto meta = [&](const char* tag) {
+            const unsigned long bytes = FPDF_GetMetaText(m_doc, tag, nullptr, 0);
+            if (bytes <= 2 || bytes > 65536) return std::wstring();
+            std::vector<unsigned short> buf(bytes / 2);
+            FPDF_GetMetaText(m_doc, tag, buf.data(), bytes);
+            return std::wstring(reinterpret_cast<const wchar_t*>(buf.data()), bytes / 2 - 1);
+        };
+        info.title = meta("Title");
+        info.author = meta("Author");
+        info.subject = meta("Subject");
+        info.keywords = meta("Keywords");
+        info.creator = meta("Creator");
+        info.producer = meta("Producer");
+        info.created = meta("CreationDate");
+        info.modified = meta("ModDate");
+        int version = 0;
+        if (FPDF_GetFileVersion(m_doc, &version)) info.version = version;
+        info.encrypted = FPDF_GetSecurityHandlerRevision(m_doc) != -1;
+    });
+}
+
+bool PdfEngine::PrintPage(HDC dc, int index) {
+    if (!m_doc || index < 0 || index >= m_pageCount) return false;
+    FPDF_PAGE page = nullptr;
+    if (!Guarded([&] { page = FPDF_LoadPage(m_doc, index); }) || !page) return false;
+
+    // Fit to the printable area, keeping the aspect ratio, centred, and
+    // turned 90 degrees when page and paper orientation differ.
+    const float w = FPDF_GetPageWidthF(page), h = FPDF_GetPageHeightF(page);
+    const int resX = GetDeviceCaps(dc, HORZRES), resY = GetDeviceCaps(dc, VERTRES);
+    const int dpiX = GetDeviceCaps(dc, LOGPIXELSX), dpiY = GetDeviceCaps(dc, LOGPIXELSY);
+    const bool rotate = (w > h) != (resX > resY);
+    const double pw = (rotate ? h : w) * dpiX / 72.0, ph = (rotate ? w : h) * dpiY / 72.0;
+    const double k = std::min(resX / pw, resY / ph);
+    const int outW = (int)(pw * k), outH = (int)(ph * k);
+
+    bool ok = StartPage(dc) > 0;
+    if (ok) {
+        Guarded([&] {
+            FPDF_RenderPage(dc, page, (resX - outW) / 2, (resY - outH) / 2, outW, outH,
+                            rotate ? 1 : 0, FPDF_ANNOT | FPDF_PRINTING);
+        });
+        ok = EndPage(dc) > 0;
+    }
+    Guarded([&] { FPDF_ClosePage(page); });
+    return ok;
 }
 
 std::wstring PdfEngine::ExtractText(TextPos from, TextPos to) {

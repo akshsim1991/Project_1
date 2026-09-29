@@ -8,6 +8,7 @@
 #include "RenderWorker.h"
 #include "Search.h"
 #include "Settings.h"
+#include "Sidebar.h"
 #include "TabBar.h"
 #include "Toolbar.h"
 
@@ -30,6 +31,8 @@ private:
         uint32_t pendingDocId = 0; // open in progress
         int pendingPage = 0;
         int passwordAttempts = 0;
+        std::vector<OutlineItem> outline;  // bookmarks
+        DocInfo info;
     };
 
     static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
@@ -79,10 +82,23 @@ private:
     void CopyToClipboard(const std::wstring& text);
     void SaveSettings();
 
+    // sidebar, printing, properties, clipboard images
+    void SetSidebarMode(SidebarMode mode);
+    void SyncSidebar();  // show the active tab's outline / thumbnails
+    void OnSidebar(WPARAM event, LPARAM value);
+    RECT SplitterRect() const;
+    void Print();
+    void OnPrintProgress(int done, int total);
+    void ShowProperties();
+    void CopyImageToClipboard(TileResult* image);
+    void SetPageColors(int mode);
+
     HINSTANCE m_inst = nullptr;
     HWND m_hwnd = nullptr;
     HACCEL m_accel = nullptr;
     TabBar m_tabBar;
+    Sidebar m_sidebar;
+    bool m_splitDrag = false;
     Toolbar m_toolbar;
     Toolbar m_searchBar;
     HWND m_pageEdit = nullptr;
@@ -96,6 +112,12 @@ private:
     int m_active = -1;
     uint32_t m_nextDocId = 1;
     uint32_t m_nextSearchId = 1;
+
+    // printing (one job at a time; the printer settings are remembered)
+    bool m_printing = false;
+    bool m_printCancelled = false;
+    int m_printDone = 0, m_printTotal = 0;
+    HGLOBAL m_devMode = nullptr, m_devNames = nullptr;
 
     // full screen
     bool m_fullscreen = false;

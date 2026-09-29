@@ -11,6 +11,8 @@
 
 typedef struct fpdf_document_t__* FPDF_DOCUMENT;
 typedef struct fpdf_page_t__* FPDF_PAGE;
+typedef struct fpdf_dest_t__* FPDF_DEST;
+typedef struct fpdf_action_t__* FPDF_ACTION;
 
 class PdfEngine {
 public:
@@ -41,8 +43,18 @@ public:
     void SearchPage(int page, const std::wstring& query, bool matchCase,
                     std::vector<SearchHit>& hits);
 
-    // Text layer of one page: every character with its box (for selection).
-    void ExtractTextLayer(int page, std::vector<TextChar>& chars);
+    // Text layer of one page (every character with its box, for selection)
+    // and its links (annotations plus URLs detected in the text).
+    void ExtractPageInfo(int page, std::vector<TextChar>& chars, std::vector<LinkInfo>& links);
+
+    // Bookmarks, flattened depth-first, and document metadata.
+    void LoadOutline(std::vector<OutlineItem>& out);
+    void GetInfo(DocInfo& info);
+
+    // Prints one page on `dc` (between StartDoc/EndDoc), fitted to the paper.
+    bool PrintPage(HDC dc, int page);
+
+    static void ApplyPageColors(PixelBuffer& px, int mode);
 
     // Plain text between two caret positions (pages joined by line breaks).
     std::wstring ExtractText(TextPos from, TextPos to);
@@ -53,6 +65,8 @@ public:
 private:
     struct FileSource;
     FPDF_PAGE GetPage(int index);  // uses the small parsed-page LRU
+    void ReadDest(FPDF_DEST dest, LinkTarget& target);
+    void ReadAction(FPDF_ACTION action, LinkTarget& target);
 
     FPDF_DOCUMENT m_doc = nullptr;
     std::unique_ptr<FileSource> m_file;

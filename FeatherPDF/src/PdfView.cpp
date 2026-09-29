@@ -8,6 +8,8 @@
 #include <cwctype>
 #include <memory>
 
+#include <commctrl.h>
+#include <shellapi.h>
 #include <windowsx.h>
 
 #include "RenderWorker.h"
@@ -164,7 +166,10 @@ LRESULT PdfView::Handle(UINT msg, WPARAM wp, LPARAM lp) {
                     ScrollOrFlip(shift ? -(ClientH() - LineStep()) : (ClientH() - LineStep()));
                     return 0;
                 case VK_ESCAPE:
-                    if (HasSelection())
+                    if (m_areaMode) {
+                        m_areaMode = false;
+                        if (m_areaDragging) ReleaseCapture();
+                    } else if (HasSelection())
                         ClearSelection();
                     else
                         SendMessageW(GetParent(m_hwnd), WM_COMMAND, ID_ESCAPE, 0);
@@ -176,6 +181,18 @@ LRESULT PdfView::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             SetFocus(m_hwnd);
             if (!HasDocument()) return 0;
             const POINT pt = {GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+            if (m_areaMode) {  // "copy area as image": start the rectangle
+                m_areaDragging = true;
+                m_areaStart = m_areaEnd = pt;
+                SetCapture(m_hwnd);
+                return 0;
+            }
+            if (const LinkInfo* link = HitLink(pt)) {  // followed on button-up
+                m_linkPressed = true;
+                m_pressedLink = link->target;
+                SetCapture(m_hwnd);
+                return 0;
+            }
             TextPos pos;
             const bool extend = (wp & MK_SHIFT) && m_hasSel;
             if (HitText(pt, !extend, &pos)) {
@@ -203,6 +220,12 @@ LRESULT PdfView::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             SelectWordAt({GET_X_LPARAM(lp), GET_Y_LPARAM(lp)});
             return 0;
         case WM_MOUSEMOVE:
+            if (m_areaDragging) {
+                m_areaEnd = {GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+            } else if (!m_dragging && !m_selecting && !m_linkPressed && HasDocument()) {
+                UpdateLinkTip(HitLink({GET_X_LPARAM(lp), GET_Y_LPARAM(lp)}));
+            }
             if (m_dragging) {
                 ScrollTo(m_dragScrollX - (GET_X_LPARAM(lp) - m_dragStart.x),
                          m_dragScrollY - (GET_Y_LPARAM(lp) - m_dragStart.y));
@@ -210,13 +233,51 @@ LRESULT PdfView::Handle(UINT msg, WPARAM wp, LPARAM lp) {
                 UpdateSelectionTo({GET_X_LPARAM(lp), GET_Y_LPARAM(lp)});
             }
             return 0;
-        case WM_LBUTTONUP:
+        case WM_LBUTTONUP: {
+            const POINT pt = {GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+            if (m_areaDragging) {
+                // Copy the part of the page under the rectangle's start point.
+                const int64_t sx = m_scrollX + m_areaStart.x, sy = m_scrollY + m_areaStart.y;
+                const int page = PageAt(sx, sy);
+                const PageLayout& L = m_layout[(size_t)page];
+                RECT r = {(LONG)(std::min(m_areaStart.x, pt.x) + m_scrollX - L.left),
+                          (LONG)(std::min(m_areaStart.y, pt.y) + m_scrollY - L.top),
+                          (LONG)(std::max(m_areaStart.x, pt.x) + m_scrollX - L.left),
+                          (LONG)(std::max(m_areaStart.y, pt.y) + m_scrollY - L.top)};
+                r.left = std::max(0L, r.left);
+                r.top = std::max(0L, r.top);
+                r.right = std::min((LONG)L.w, r.right);
+                r.bottom = std::min((LONG)L.h, r.bottom);
+                m_areaMode = m_areaDragging = false;
+                ReleaseCapture();
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+                if (r.right - r.left > 2 && r.bottom - r.top > 2) RequestImage(page, r);
+                return 0;
+            }
+            if (m_linkPressed) {
+                m_linkPressed = false;
+                ReleaseCapture();
+                const LinkInfo* link = HitLink(pt);
+                if (link && link->target.page == m_pressedLink.page &&
+                    link->target.uri == m_pressedLink.uri)
+                    FollowLink(m_pressedLink);
+                return 0;
+            }
             if (m_dragging || m_selecting) ReleaseCapture();
             return 0;
+        }
         case WM_CAPTURECHANGED:
             m_dragging = false;
             m_selecting = false;
+            m_linkPressed = false;
+            if (m_areaDragging) {
+                m_areaDragging = false;
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+            }
             KillTimer(m_hwnd, kAutoScrollTimer);
+            return 0;
+        case WM_MOUSELEAVE:
+            UpdateLinkTip(nullptr);
             return 0;
         case WM_CONTEXTMENU:
             ShowContextMenu(lp);
@@ -224,7 +285,15 @@ LRESULT PdfView::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         case WM_SETCURSOR:
             if (LOWORD(lp) == HTCLIENT) {
                 LPCWSTR cursor = IDC_ARROW;
-                if (m_dragging) {
+                POINT cpt;
+                GetCursorPos(&cpt);
+                ScreenToClient(m_hwnd, &cpt);
+                if (m_areaMode) {
+                    cursor = IDC_CROSS;
+                } else if (m_linkPressed || (!m_dragging && !m_selecting && HasDocument() &&
+                                             HitLink(cpt))) {
+                    cursor = IDC_HAND;
+                } else if (m_dragging) {
                     cursor = IDC_SIZEALL;
                 } else if (m_selecting) {
                     cursor = IDC_IBEAM;
@@ -251,6 +320,8 @@ LRESULT PdfView::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             }
             return 0;
         case WM_DESTROY:
+            if (m_linkTip) DestroyWindow(m_linkTip);
+            m_linkTip = nullptr;
             m_cache.Clear();
             if (m_backDC) DeleteDC(m_backDC);
             if (m_backBmp) DeleteObject(m_backBmp);
@@ -321,6 +392,39 @@ void PdfView::UpdateScale() {
     m_scale = m_scaleKey / 1000.0;
 }
 
+float PdfView::DispW(int page) const {
+    const SizeF& sz = m_sizes[(size_t)page];
+    return (m_rotation & 1) ? sz.h : sz.w;
+}
+
+float PdfView::DispH(int page) const {
+    const SizeF& sz = m_sizes[(size_t)page];
+    return (m_rotation & 1) ? sz.w : sz.h;
+}
+
+// Text, search and link rectangles come from the worker in unrotated page
+// points; these two map them to and from the rotated view.
+RectF PdfView::ToView(const RectF& r, int page) const {
+    const float w = m_sizes[(size_t)page].w, h = m_sizes[(size_t)page].h;
+    switch (m_rotation & 3) {
+        case 1: return {h - r.bottom, r.left, h - r.top, r.right};
+        case 2: return {w - r.right, h - r.bottom, w - r.left, h - r.top};
+        case 3: return {r.top, w - r.right, r.bottom, w - r.left};
+        default: return r;
+    }
+}
+
+void PdfView::FromView(float& x, float& y, int page) const {
+    const float w = m_sizes[(size_t)page].w, h = m_sizes[(size_t)page].h;
+    const float vx = x, vy = y;
+    switch (m_rotation & 3) {
+        case 1: x = vy; y = h - vx; break;
+        case 2: x = w - vx; y = h - vy; break;
+        case 3: x = w - vy; y = vx; break;
+        default: break;
+    }
+}
+
 void PdfView::Relayout() {
     m_margin = Dpi(8, m_dpi);
     const int n = PageCount();
@@ -331,34 +435,63 @@ void PdfView::Relayout() {
         return;
     }
     m_layout.resize((size_t)n);
-    if (m_continuous) {
-        m_first = 0;
-        m_last = n - 1;
-    } else {
+    if (IsPaged()) {
         m_singlePage = Clamp(m_singlePage, 0, n - 1);
         m_first = m_last = m_singlePage;
+    } else {
+        m_first = 0;
+        m_last = n - 1;
     }
-    // One O(n) pass of integer math; nothing is rendered or allocated.
-    int64_t y = m_margin;
-    int maxW = 0;
-    for (int i = m_first; i <= m_last; ++i) {
-        PageLayout& L = m_layout[(size_t)i];
-        L.w = (int)std::max<long long>(1, std::llround(m_sizes[(size_t)i].w * m_scale));
-        L.h = (int)std::max<long long>(1, std::llround(m_sizes[(size_t)i].h * m_scale));
-        L.top = y;
-        y += L.h + m_margin;
-        maxW = std::max(maxW, L.w);
+    // Pages are arranged in rows: one page per row, or two side by side in
+    // two-page mode (optionally with the cover page alone). One O(n) pass of
+    // integer math; nothing is rendered or allocated.
+    const bool two = m_viewMode == ViewMode::TwoPage;
+    struct Row { int first, last; int64_t width; };
+    std::vector<Row> rows;
+    int64_t y = m_margin, maxRowW = 0;
+    for (int i = m_first; i <= m_last;) {
+        int last = i;
+        if (two && !(m_cover && i == 0) && i + 1 <= m_last) last = i + 1;
+        int64_t rowW = 0, rowH = 0;
+        for (int k = i; k <= last; ++k) {
+            PageLayout& L = m_layout[(size_t)k];
+            L.w = (int)std::max<long long>(1, std::llround(DispW(k) * m_scale));
+            L.h = (int)std::max<long long>(1, std::llround(DispH(k) * m_scale));
+            rowW += L.w + (k > i ? m_margin : 0);
+            rowH = std::max<int64_t>(rowH, L.h);
+        }
+        for (int k = i; k <= last; ++k) {
+            PageLayout& L = m_layout[(size_t)k];
+            L.rowTop = y;
+            L.rowBottom = y + rowH;
+            L.top = y + (rowH - L.h) / 2;
+        }
+        rows.push_back({i, last, rowW});
+        maxRowW = std::max(maxRowW, rowW);
+        y += rowH + m_margin;
+        i = last + 1;
     }
-    m_docW = (int64_t)maxW + 2 * m_margin;
+    m_docW = maxRowW + 2 * m_margin;
     m_docH = y;
+    // Centre each row in the wider of document and window.
+    const int64_t area = std::max<int64_t>(m_docW, ClientW());
+    for (const Row& r : rows) {
+        int64_t x = (area - r.width) / 2;
+        if (two && r.first == r.last && !(m_cover && r.first == 0)) {
+            // A lone last page sits on the left, where its partner would be.
+            x = (area - maxRowW) / 2;
+        }
+        for (int k = r.first; k <= r.last; ++k) {
+            m_layout[(size_t)k].left = x;
+            x += m_layout[(size_t)k].w + m_margin;
+        }
+    }
 }
 
 int64_t PdfView::MaxScrollX() const { return std::max<int64_t>(0, m_docW - ClientW()); }
 int64_t PdfView::MaxScrollY() const { return std::max<int64_t>(0, m_docH - ClientH()); }
 
-int64_t PdfView::PageLeft(int page) const {
-    return (std::max<int64_t>(m_docW, ClientW()) - m_layout[(size_t)page].w) / 2;
-}
+int64_t PdfView::PageLeft(int page) const { return m_layout[(size_t)page].left; }
 
 // Documents mixing narrow and wide pages are wider than a narrow page; show
 // the given page centred rather than scrolled to the document's left edge.
@@ -371,11 +504,11 @@ void PdfView::CenterHorizontally(int page) {
 }
 
 int PdfView::PageAtY(int64_t docY) const {
-    // Last laid-out page whose top is <= docY.
+    // Last laid-out page whose row starts at or above docY.
     int lo = m_first, hi = m_last;
     while (lo < hi) {
         int mid = lo + (hi - lo + 1) / 2;
-        if (m_layout[(size_t)mid].top <= docY)
+        if (m_layout[(size_t)mid].rowTop <= docY)
             lo = mid;
         else
             hi = mid - 1;
@@ -383,23 +516,43 @@ int PdfView::PageAtY(int64_t docY) const {
     return lo;
 }
 
+int PdfView::RowFirst(int page) const {
+    while (page > m_first && m_layout[(size_t)page - 1].rowTop == m_layout[(size_t)page].rowTop)
+        --page;
+    return page;
+}
+
+int PdfView::PageAt(int64_t docX, int64_t docY) const {
+    const int last = PageAtY(docY);
+    int best = last;
+    int64_t bestDist = INT64_MAX;
+    for (int p = RowFirst(last); p <= last; ++p) {
+        const PageLayout& L = m_layout[(size_t)p];
+        const int64_t d = docX < L.left ? L.left - docX : (docX > L.left + L.w ? docX - L.left - L.w : 0);
+        if (d < bestDist) {
+            bestDist = d;
+            best = p;
+        }
+    }
+    return best;
+}
+
 void PdfView::VisibleRange(int64_t y0, int64_t y1, int& first, int& last) const {
     first = 0;
     last = -1;
     if (m_last < m_first) return;
-    // First page whose bottom is below y0 (binary search).
+    // First page whose row ends below y0 (binary search; rows are ordered).
     int lo = m_first, hi = m_last + 1;
     while (lo < hi) {
         int mid = lo + (hi - lo) / 2;
-        const PageLayout& L = m_layout[(size_t)mid];
-        if (L.top + L.h <= y0)
+        if (m_layout[(size_t)mid].rowBottom <= y0)
             lo = mid + 1;
         else
             hi = mid;
     }
     first = lo;
     last = first - 1;
-    for (int i = first; i <= m_last && m_layout[(size_t)i].top < y1; ++i) last = i;
+    for (int i = first; i <= m_last && m_layout[(size_t)i].rowTop < y1; ++i) last = i;
 }
 
 void PdfView::UpdateScrollBars() {
@@ -484,7 +637,7 @@ void PdfView::ScrollTo(int64_t x, int64_t y) {
 }
 
 void PdfView::ScrollOrFlip(int64_t dy) {
-    if (!m_continuous && HasDocument()) {
+    if (IsPaged() && HasDocument()) {
         // Single page mode: scrolling past the page edge turns the page.
         // A short cooldown stops touchpad inertia from flipping many pages.
         const ULONGLONG now = GetTickCount64();
@@ -534,7 +687,7 @@ void PdfView::OnScrollBar(int bar, int code) {
 
 int PdfView::CurrentPage() const {
     if (!HasDocument()) return 0;
-    if (!m_continuous) return m_singlePage;
+    if (IsPaged()) return m_singlePage;
     if (m_forcedPage >= 0 && m_forcedPage < PageCount()) return m_forcedPage;
     // Otherwise: the page occupying most of the viewport.
     const int64_t y0 = m_scrollY, y1 = m_scrollY + ClientH();
@@ -557,7 +710,7 @@ int PdfView::CurrentPage() const {
 void PdfView::GoToPage(int page) {
     if (!HasDocument()) return;
     page = Clamp(page, 0, PageCount() - 1);
-    if (!m_continuous) {
+    if (IsPaged()) {
         if (page != m_singlePage) {
             m_singlePage = page;
             if (m_mode != ZoomMode::Custom) {  // pages may differ in size
@@ -574,20 +727,58 @@ void PdfView::GoToPage(int page) {
         Notify();
         return;
     }
-    ScrollTo(m_scrollX, m_layout[(size_t)page].top - m_margin);
+    ScrollTo(m_scrollX, m_layout[(size_t)page].rowTop - m_margin);
     m_forcedPage = page;  // so the page counter shows exactly this page
     Notify();
 }
 
-void PdfView::NextPage() { GoToPage(CurrentPage() + 1); }
-void PdfView::PrevPage() { GoToPage(CurrentPage() - 1); }
+// Next/previous move by rows, so two-page mode turns a whole spread.
+void PdfView::NextPage() {
+    if (!HasDocument()) return;
+    const int cur = CurrentPage();
+    if (IsPaged()) {
+        GoToPage(cur + 1);
+        return;
+    }
+    int p = cur;
+    while (p < m_last && m_layout[(size_t)p].rowTop == m_layout[(size_t)cur].rowTop) ++p;
+    if (m_layout[(size_t)p].rowTop != m_layout[(size_t)cur].rowTop) GoToPage(p);
+}
 
-void PdfView::SetContinuous(bool continuous) {
-    if (continuous == m_continuous) return;
+void PdfView::PrevPage() {
+    if (!HasDocument()) return;
+    const int cur = CurrentPage();
+    if (IsPaged()) {
+        GoToPage(cur - 1);
+        return;
+    }
+    const int first = RowFirst(cur);
+    if (first > m_first) GoToPage(RowFirst(first - 1));
+}
+
+void PdfView::GoToTarget(const LinkTarget& target) {
+    if (!HasDocument() || target.page < 0 || target.page >= PageCount()) return;
+    GoToPage(target.page);
+    if (target.destY < 0 || IsPaged() || m_rotation != 0) return;
+    // Destination y is in PDF user space (from the bottom); approximate the
+    // page's origin as its bottom-left corner, which holds for most files.
+    const float fromTop = Clamp(m_sizes[(size_t)target.page].h - target.destY, 0.0f,
+                                m_sizes[(size_t)target.page].h);
+    ScrollTo(m_scrollX, m_layout[(size_t)target.page].top + (int64_t)(fromTop * m_scale) - m_margin);
+    m_forcedPage = target.page;
+    Notify();
+}
+
+void PdfView::SetViewMode(ViewMode mode) {
+    if (mode == m_viewMode) return;
     const int page = CurrentPage();
-    m_continuous = continuous;
+    m_viewMode = mode;
     m_singlePage = page;
     m_cache.Clear();  // tiles of other pages are no longer useful
+    if (HasDocument() && m_mode != ZoomMode::Custom) {
+        m_zoom = FitZoom(m_mode, page);
+        UpdateScale();
+    }
     Relayout();
     UpdateScrollBars();
     GoToPage(page);
@@ -596,12 +787,51 @@ void PdfView::SetContinuous(bool continuous) {
     Notify();
 }
 
+void PdfView::SetCoverPage(bool cover) {
+    if (cover == m_cover) return;
+    m_cover = cover;
+    if (m_viewMode != ViewMode::TwoPage) return;
+    const int page = CurrentPage();
+    Relayout();
+    UpdateScrollBars();
+    GoToPage(page);
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void PdfView::Rotate(int quarterTurns) {
+    const int page = CurrentPage();
+    m_rotation = ((m_rotation + quarterTurns) % 4 + 4) % 4;
+    m_cache.Clear();
+    m_failed.clear();
+    if (HasDocument() && m_mode != ZoomMode::Custom) {
+        m_zoom = FitZoom(m_mode, page);
+        UpdateScale();
+    }
+    Relayout();
+    UpdateScrollBars();
+    if (HasDocument()) {
+        GoToPage(page);
+        CenterHorizontally(page);
+    }
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+    Notify();
+}
+
+void PdfView::SetPageColors(int mode) {
+    if (mode == m_colors) return;
+    m_colors = mode;
+    m_cache.Clear();  // tiles are re-rendered in the new colours
+    m_failed.clear();
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
 void PdfView::ScrollToHit(const SearchHit& hit) {
     if (!HasDocument() || hit.rects.empty() || hit.page < 0 || hit.page >= PageCount()) return;
-    if (!m_continuous && hit.page != m_singlePage) GoToPage(hit.page);
+    if (IsPaged() && hit.page != m_singlePage) GoToPage(hit.page);
     if (hit.page < m_first || hit.page > m_last) return;
-    RectF u = hit.rects.front();
-    for (const RectF& r : hit.rects) {
+    RectF u = ToView(hit.rects.front(), hit.page);
+    for (const RectF& raw : hit.rects) {
+        const RectF r = ToView(raw, hit.page);
         u.left = std::min(u.left, r.left);
         u.top = std::min(u.top, r.top);
         u.right = std::max(u.right, r.right);
@@ -626,13 +856,28 @@ void PdfView::ScrollToHit(const SearchHit& hit) {
 double PdfView::FitZoom(ZoomMode mode, int page) const {
     if (!HasDocument()) return m_zoom;
     page = Clamp(page, 0, PageCount() - 1);
-    const SizeF& s = m_sizes[(size_t)page];
     const double pxPerPt = m_dpi / 72.0;  // at 100 %
     const int margin = Dpi(8, m_dpi);
-    const double availW = std::max(50, ClientW() - 2 * margin);
+    // Fit a whole row. In two-page mode that is always a full spread, even
+    // on the cover or a lone last page, so the zoom does not jump while
+    // scrolling through the document.
+    double rowW = DispW(page), rowH = DispH(page);
+    int gaps = 0;
+    if (m_viewMode == ViewMode::TwoPage) {
+        int first = m_cover ? (page == 0 ? 1 : (page - 1) / 2 * 2 + 1) : page / 2 * 2;
+        if (first + 1 >= PageCount()) first = std::max(0, PageCount() - 2);
+        if (first + 1 < PageCount()) {
+            rowW = DispW(first) + DispW(first + 1);
+            rowH = std::max(DispH(first), DispH(first + 1));
+        } else {
+            rowW = 2 * DispW(page);  // one-page document
+        }
+        gaps = 1;
+    }
+    const double availW = std::max(50, ClientW() - (2 + gaps) * margin - 2);  // -2: rounding slack
     const double availH = std::max(50, ClientH() - 2 * margin);
-    double z = availW / (s.w * pxPerPt);
-    if (mode == ZoomMode::FitPage) z = std::min(z, availH / (s.h * pxPerPt));
+    double z = availW / (rowW * pxPerPt);
+    if (mode == ZoomMode::FitPage) z = std::min(z, availH / (rowH * pxPerPt));
     return Clamp(z, kMinZoom, kMaxZoom);
 }
 
@@ -646,7 +891,7 @@ void PdfView::ApplyZoom(double zoom, POINT anchor, bool settle) {
     }
     // Remember which point of which page is under the anchor...
     const int64_t docX = m_scrollX + anchor.x, docY = m_scrollY + anchor.y;
-    const int page = PageAtY(docY);
+    const int page = PageAt(docX, docY);
     const double ptX = (docX - PageLeft(page)) / m_scale;
     const double ptY = (docY - m_layout[(size_t)page].top) / m_scale;
 
@@ -771,7 +1016,9 @@ void PdfView::OnTileReady(TileResult* result) {
         return;
     }
     // Drop results for a zoom level the user has already left.
-    if (r.scaleKey != m_scaleKey || r.pageW != m_layout[(size_t)r.page].w) return;
+    if (r.scaleKey != m_scaleKey || r.pageW != m_layout[(size_t)r.page].w ||
+        r.rotate != m_rotation || r.colorMode != m_colors)
+        return;
     m_cache.Insert(key, r.x, r.y, std::move(res->pixels));
     InvalidateTile(r);
 }
@@ -809,7 +1056,7 @@ void PdfView::AddPrefetch(int64_t y0, int64_t y1, size_t& budgetLeft,
                 if (bytes > budgetLeft) return;  // cache would thrash: stop here
                 budgetLeft -= bytes;
                 if (m_cache.Touch(key) || m_failed.count(key)) continue;
-                out.push_back({i, m_scaleKey, tx, ty, x, y, w, h, L.w, L.h});
+                out.push_back({i, m_scaleKey, tx, ty, x, y, w, h, L.w, L.h, m_rotation, m_colors});
             }
         }
     }
@@ -886,6 +1133,18 @@ void PdfView::Paint(HDC hdc) {
     // zoom levels are released.
     if (missing.empty()) m_cache.DropScalesOtherThan(m_scaleKey);
 
+    if (m_areaDragging) {  // rubber band for "copy area as image"
+        RECT band = {std::min(m_areaStart.x, m_areaEnd.x), std::min(m_areaStart.y, m_areaEnd.y),
+                     std::max(m_areaStart.x, m_areaEnd.x), std::max(m_areaStart.y, m_areaEnd.y)};
+        HBRUSH tint = CreateSolidBrush(kSelectionColor);
+        HGDIOBJ old = SelectObject(dc, tint);
+        BitBlt(dc, band.left, band.top, band.right - band.left, band.bottom - band.top, nullptr, 0,
+               0, kRopDestAndPattern);
+        SelectObject(dc, old);
+        DeleteObject(tint);
+        FrameRect(dc, &band, (HBRUSH)GetStockObject(BLACK_BRUSH));
+    }
+
     BitBlt(hdc, 0, 0, w, h, dc, 0, 0, SRCCOPY);
 }
 
@@ -909,7 +1168,10 @@ void PdfView::PaintPage(HDC dc, int page, std::vector<std::pair<int64_t, TileReq
     if (vy0 == 0) outer.top -= 1;
     if (vy1 == L.h) outer.bottom += 1;
     FillSolid(dc, outer, th.pageBorder);
-    FillSolid(dc, vis, RGB(255, 255, 255));
+    const COLORREF paper = m_colors == kColorsDark  ? RGB(30, 30, 30)
+                           : m_colors == kColorsDim ? RGB(200, 200, 200)
+                                                    : RGB(255, 255, 255);
+    FillSolid(dc, vis, paper);
 
     HRGN clip = CreateRectRgnIndirect(&vis);
     SelectClipRgn(dc, clip);
@@ -942,7 +1204,8 @@ void PdfView::PaintPage(HDC dc, int page, std::vector<std::pair<int64_t, TileReq
             } else if (!m_failed.count(key)) {
                 const int64_t dist = std::llabs(left + x + tileW / 2 - cx) +
                                      std::llabs(top + y + tileH / 2 - cy);
-                missing.push_back({dist, {page, m_scaleKey, tx, ty, x, y, tileW, tileH, L.w, L.h}});
+                missing.push_back({dist, {page, m_scaleKey, tx, ty, x, y, tileW, tileH, L.w, L.h,
+                                          m_rotation, m_colors}});
             }
         }
     }
@@ -955,7 +1218,8 @@ void PdfView::PaintPage(HDC dc, int page, std::vector<std::pair<int64_t, TileReq
             HBRUSH current = CreateSolidBrush(RGB(255, 150, 40));
             for (size_t k = range.first; k < range.second; ++k) {
                 HGDIOBJ old = SelectObject(dc, (int)k == m_search->current ? current : normal);
-                for (const RectF& r : m_search->matches[k].rects) {
+                for (const RectF& raw : m_search->matches[k].rects) {
+                    const RectF r = ToView(raw, page);
                     const int64_t x0 = left + (int64_t)std::floor(r.left * m_scale) - 1;
                     const int64_t y0 = top + (int64_t)std::floor(r.top * m_scale) - 1;
                     const int64_t x1 = left + (int64_t)std::ceil(r.right * m_scale) + 1;
@@ -1012,7 +1276,9 @@ void PdfView::OnTextLayer(TextLayerResult* result) {
     std::unique_ptr<TextLayerResult> res(result);
     if (res->docId != m_docId || !HasDocument()) return;
     m_textPending.erase(res->page);
-    m_text[res->page].chars = std::move(res->chars);
+    TextLayer& layer = m_text[res->page];
+    layer.chars = std::move(res->chars);
+    layer.links = std::move(res->links);
     m_textOrder.erase(std::remove(m_textOrder.begin(), m_textOrder.end(), res->page),
                       m_textOrder.end());
     m_textOrder.insert(m_textOrder.begin(), res->page);
@@ -1025,12 +1291,13 @@ void PdfView::OnTextLayer(TextLayerResult* result) {
 
 bool PdfView::HitText(POINT pt, bool strict, TextPos* caret, int* charIndex) {
     if (!HasDocument() || m_last < m_first) return false;
-    const int64_t docY = m_scrollY + pt.y;
-    const int page = PageAtY(docY);
+    const int64_t docX = m_scrollX + pt.x, docY = m_scrollY + pt.y;
+    const int page = PageAt(docX, docY);
     const TextLayer* layer = GetTextLayer(page, true);
     if (!layer) return false;
-    const float px = (float)((m_scrollX + pt.x - PageLeft(page)) / m_scale);
-    const float py = (float)((docY - m_layout[(size_t)page].top) / m_scale);
+    float px = (float)((docX - PageLeft(page)) / m_scale);
+    float py = (float)((docY - m_layout[(size_t)page].top) / m_scale);
+    FromView(px, py, page);
 
     // Nearest glyph, strongly preferring the line the point is on.
     int best = -1;
@@ -1147,7 +1414,8 @@ void PdfView::DrawSelection(HDC dc, int page, int64_t left, int64_t top, const R
 
     HBRUSH brush = CreateSolidBrush(kSelectionColor);
     HGDIOBJ old = SelectObject(dc, brush);
-    auto flush = [&](const RectF& r) {
+    auto flush = [&](const RectF& raw) {
+        const RectF r = ToView(raw, page);
         const int64_t x0 = left + (int64_t)std::floor(r.left * m_scale);
         const int64_t y0 = top + (int64_t)std::floor(r.top * m_scale);
         const int64_t x1 = left + (int64_t)std::ceil(r.right * m_scale);
@@ -1192,8 +1460,130 @@ void PdfView::ShowContextMenu(LPARAM lp) {
     HMENU m = CreatePopupMenu();
     AppendMenuW(m, MF_STRING | (HasSelection() ? 0 : MF_GRAYED), ID_COPY, L"&Copy\tCtrl+C");
     AppendMenuW(m, MF_STRING, ID_SELECT_ALL, L"Select &all\tCtrl+A");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_STRING, ID_COPY_PAGE_IMAGE, L"Copy &page as image");
+    AppendMenuW(m, MF_STRING, ID_COPY_AREA_IMAGE, L"Copy a&rea as image");
     const int cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, m_hwnd, nullptr);
     DestroyMenu(m);
     if (cmd == ID_COPY) CopySelection();
     if (cmd == ID_SELECT_ALL) SelectAll();
+    if (cmd == ID_COPY_PAGE_IMAGE) CopyPageImage();
+    if (cmd == ID_COPY_AREA_IMAGE) StartAreaCopy();
+}
+
+// ===========================================================================
+// Links
+// ===========================================================================
+const LinkInfo* PdfView::HitLink(POINT pt) {
+    if (!HasDocument() || m_last < m_first) return nullptr;
+    const int64_t docX = m_scrollX + pt.x, docY = m_scrollY + pt.y;
+    const int page = PageAt(docX, docY);
+    const PageLayout& L = m_layout[(size_t)page];
+    if (docX < L.left || docX >= L.left + L.w || docY < L.top || docY >= L.top + L.h)
+        return nullptr;
+    const TextLayer* layer = GetTextLayer(page, true);  // links arrive with the text layer
+    if (!layer) return nullptr;
+    float px = (float)((docX - L.left) / m_scale), py = (float)((docY - L.top) / m_scale);
+    FromView(px, py, page);
+    for (const LinkInfo& link : layer->links) {
+        if (px >= link.rect.left && px <= link.rect.right && py >= link.rect.top &&
+            py <= link.rect.bottom)
+            return &link;
+    }
+    return nullptr;
+}
+
+// Shows the web address of an external link before it is clicked, so a
+// PDF can not hide where a link really goes.
+void PdfView::UpdateLinkTip(const LinkInfo* link) {
+    const std::wstring text = link && !link->target.uri.empty() ? link->target.uri : L"";
+    if (text == m_linkTipText) {
+        if (!text.empty()) {
+            POINT pt;
+            GetCursorPos(&pt);
+            SendMessageW(m_linkTip, TTM_TRACKPOSITION, 0, MAKELPARAM(pt.x + 16, pt.y + 20));
+        }
+        return;
+    }
+    m_linkTipText = text;
+    if (!m_linkTip) {
+        m_linkTip = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, nullptr,
+                                    WS_POPUP | TTS_NOPREFIX | TTS_ALWAYSTIP, 0, 0, 0, 0, m_hwnd,
+                                    nullptr, GetModuleHandleW(nullptr), nullptr);
+        TTTOOLINFOW ti{};
+        ti.cbSize = sizeof(ti);
+        ti.uFlags = TTF_TRACK | TTF_ABSOLUTE;
+        ti.hwnd = m_hwnd;
+        ti.uId = 1;
+        ti.lpszText = const_cast<wchar_t*>(L"");
+        SendMessageW(m_linkTip, TTM_ADDTOOLW, 0, (LPARAM)&ti);
+        SendMessageW(m_linkTip, TTM_SETMAXTIPWIDTH, 0, Dpi(480, m_dpi));
+    }
+    TTTOOLINFOW ti{};
+    ti.cbSize = sizeof(ti);
+    ti.hwnd = m_hwnd;
+    ti.uId = 1;
+    if (text.empty()) {
+        SendMessageW(m_linkTip, TTM_TRACKACTIVATE, FALSE, (LPARAM)&ti);
+        return;
+    }
+    ti.lpszText = const_cast<wchar_t*>(m_linkTipText.c_str());
+    SendMessageW(m_linkTip, TTM_UPDATETIPTEXTW, 0, (LPARAM)&ti);
+    POINT pt;
+    GetCursorPos(&pt);
+    SendMessageW(m_linkTip, TTM_TRACKPOSITION, 0, MAKELPARAM(pt.x + 16, pt.y + 20));
+    SendMessageW(m_linkTip, TTM_TRACKACTIVATE, TRUE, (LPARAM)&ti);
+    TRACKMOUSEEVENT tme{sizeof(tme), TME_LEAVE, m_hwnd, 0};
+    TrackMouseEvent(&tme);
+}
+
+void PdfView::FollowLink(const LinkTarget& target) {
+    UpdateLinkTip(nullptr);
+    if (target.page >= 0) {
+        GoToTarget(target);
+        return;
+    }
+    OpenExternalLink(m_hwnd, target.uri);  // http/https/mailto only
+}
+
+// ===========================================================================
+// Page images for the clipboard
+// ===========================================================================
+void PdfView::CopyPageImage() {
+    if (!HasDocument()) return;
+    const int page = CurrentPage();
+    if (page < m_first || page > m_last) return;
+    const PageLayout& L = m_layout[(size_t)page];
+    RequestImage(page, {0, 0, L.w, L.h});
+}
+
+void PdfView::StartAreaCopy() {
+    if (!HasDocument()) return;
+    ClearSelection();
+    m_areaMode = true;
+    SetFocus(m_hwnd);
+    SetCursor(LoadCursorW(nullptr, IDC_CROSS));
+}
+
+void PdfView::RequestImage(int page, RECT r) {
+    if (!m_worker) return;
+    // Render at 200 DPI or the current zoom, whichever is sharper, capped
+    // at about 40 megapixels. Always in normal colours (a true copy).
+    const double target = std::max(200.0 / 72.0, m_scale);
+    double k = target / m_scale;
+    const double area = (double)(r.right - r.left) * (r.bottom - r.top);
+    const double maxPixels = 40e6;
+    if (area * k * k > maxPixels) k = std::sqrt(maxPixels / area);
+    const PageLayout& L = m_layout[(size_t)page];
+    TileRequest req;
+    req.page = page;
+    req.pageW = std::max(1, (int)std::lround(L.w * k));
+    req.pageH = std::max(1, (int)std::lround(L.h * k));
+    req.x = (int)std::lround(r.left * k);
+    req.y = (int)std::lround(r.top * k);
+    req.w = std::max(1, std::min(req.pageW - req.x, (int)std::lround((r.right - r.left) * k)));
+    req.h = std::max(1, std::min(req.pageH - req.y, (int)std::lround((r.bottom - r.top) * k)));
+    req.rotate = m_rotation;
+    req.colorMode = kColorsNormal;
+    m_worker->RenderImage(m_docId, req);
 }

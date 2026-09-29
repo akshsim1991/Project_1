@@ -22,3 +22,8 @@ std::wstring DirectoryFromPath(const std::wstring& path);
 // Full path of the running executable.
 std::wstring ExecutablePath();
 bool FileExists(const std::wstring& path);
+
+// Opens a link from a PDF in the default browser / mail client. Only http,
+// https and mailto are allowed: other schemes (file:, custom protocols)
+// could launch programs. Returns false if the link was refused.
+bool OpenExternalLink(HWND owner, const std::wstring& uri);

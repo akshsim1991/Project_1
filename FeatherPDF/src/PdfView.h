@@ -32,6 +32,7 @@
 class RenderWorker;
 
 enum class ZoomMode { Custom = 0, FitWidth = 1, FitPage = 2 };
+enum class ViewMode { Single = 0, Continuous = 1, TwoPage = 2 };
 
 // Zoom steps used by zoom in / zoom out (1.0 == 100 %).
 extern const double kZoomPresets[];
@@ -57,6 +58,8 @@ public:
     void CloseDocument();
     bool HasDocument() const { return !m_sizes.empty(); }
     int PageCount() const { return (int)m_sizes.size(); }
+    uint32_t DocId() const { return m_docId; }
+    const std::vector<SizeF>& PageSizes() const { return m_sizes; }  // unrotated
     void SetMessage(const std::wstring& text);  // shown when no document
 
     // --- navigation --------------------------------------------------------
@@ -64,6 +67,7 @@ public:
     void GoToPage(int page);
     void NextPage();
     void PrevPage();
+    void GoToTarget(const LinkTarget& target);  // bookmark / link destination
 
     // --- zoom --------------------------------------------------------------
     double Zoom() const { return m_zoom; }  // 1.0 == 100 % (actual size)
@@ -73,9 +77,15 @@ public:
     void ZoomIn();
     void ZoomOut();
 
-    // --- view mode ---------------------------------------------------------
-    bool Continuous() const { return m_continuous; }
-    void SetContinuous(bool continuous);
+    // --- view mode, rotation, page colours -----------------------------------
+    ViewMode GetViewMode() const { return m_viewMode; }
+    void SetViewMode(ViewMode mode);
+    bool CoverPage() const { return m_cover; }  // two-page: first page alone
+    void SetCoverPage(bool cover);
+    int Rotation() const { return m_rotation; }  // quarter turns clockwise
+    void Rotate(int quarterTurns);
+    int GetPageColors() const { return m_colors; }
+    void SetPageColors(int mode);  // PageColors
 
     // --- search highlights -------------------------------------------------
     void SetSearch(const SearchState* search) { m_search = search; }
@@ -86,6 +96,10 @@ public:
     void CopySelection();  // text arrives as WM_APP_TEXT_COPIED
     void SelectAll();
     void ClearSelection();
+
+    // --- page images for the clipboard (arrive as WM_APP_IMAGE_READY) ---
+    void CopyPageImage();
+    void StartAreaCopy();  // the next drag selects the area to copy
 
     // --- events from the main window -------------------------------------
     void OnTileReady(TileResult* result);      // takes ownership
@@ -99,8 +113,9 @@ public:
 
 private:
     struct PageLayout {
-        int64_t top = 0;  // document y of the page's top edge
-        int w = 0, h = 0; // page size in pixels at the current scale
+        int64_t left = 0, top = 0;         // document position of the page
+        int w = 0, h = 0;                  // page size in pixels (rotated)
+        int64_t rowTop = 0, rowBottom = 0; // extent of the row it sits in
     };
 
     static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
@@ -118,7 +133,14 @@ private:
     int64_t MaxScrollY() const;
     int64_t PageLeft(int page) const;  // document x of the page's left edge
     void CenterHorizontally(int page);
-    int PageAtY(int64_t docY) const;
+    int PageAtY(int64_t docY) const;                // last page of the row at docY
+    int PageAt(int64_t docX, int64_t docY) const;   // page nearest to a point
+    int RowFirst(int page) const;                    // first page of page's row
+    bool IsPaged() const { return m_viewMode == ViewMode::Single; }
+    float DispW(int page) const;                     // rotated size in points
+    float DispH(int page) const;
+    RectF ToView(const RectF& r, int page) const;    // unrotated -> rotated points
+    void FromView(float& x, float& y, int page) const;
     void VisibleRange(int64_t y0, int64_t y1, int& first, int& last) const;
     int ClientW() const { return m_clientW; }
     int ClientH() const { return m_clientH; }
@@ -145,7 +167,12 @@ private:
     // text selection
     struct TextLayer {
         std::vector<TextChar> chars;
+        std::vector<LinkInfo> links;
     };
+    const LinkInfo* HitLink(POINT pt);
+    void UpdateLinkTip(const LinkInfo* link);
+    void FollowLink(const LinkTarget& target);
+    void RequestImage(int page, RECT pagePixels);  // rect in page pixels at m_scale
     const TextLayer* GetTextLayer(int page, bool request);
     // Maps a client point to a caret position. `strict` only succeeds when
     // the point is on (or right next to) a line of text.
@@ -175,7 +202,10 @@ private:
     int64_t m_scrollX = 0, m_scrollY = 0;
     int64_t m_sbUnit = 1;  // pixels per scrollbar unit
     int m_margin = 8;
-    bool m_continuous = true;
+    ViewMode m_viewMode = ViewMode::Continuous;
+    bool m_cover = true;
+    int m_rotation = 0;
+    int m_colors = 0;
     int m_forcedPage = -1;  // page explicitly navigated to (see CurrentPage)
     bool m_inSize = false, m_sizeDirty = false;
 
@@ -202,6 +232,16 @@ private:
     bool m_hasSel = false;
     bool m_selecting = false;
     TextPos m_selAnchor, m_selFocus;
+
+    // links
+    bool m_linkPressed = false;
+    LinkTarget m_pressedLink;
+    HWND m_linkTip = nullptr;
+    std::wstring m_linkTipText;
+
+    // "copy area as image" mode
+    bool m_areaMode = false, m_areaDragging = false;
+    POINT m_areaStart{}, m_areaEnd{};
 
     // mouse
     bool m_dragging = false;

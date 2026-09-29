@@ -87,6 +87,38 @@ void RenderWorker::SetWantedTiles(uint32_t docId, std::vector<TileRequest>&& til
     WakeConditionVariable(&m_cv);
 }
 
+void RenderWorker::SetWantedThumbs(uint32_t docId, std::vector<TileRequest>&& thumbs) {
+    {
+        LockGuard g(m_lock);
+        m_thumbs = std::move(thumbs);
+        m_thumbPos = 0;
+        m_thumbDocId = docId;
+    }
+    WakeConditionVariable(&m_cv);
+}
+
+void RenderWorker::RenderImage(uint32_t docId, const TileRequest& req) {
+    Command c;
+    c.type = Command::Image;
+    c.docId = docId;
+    c.tile = req;
+    Push(std::move(c));
+}
+
+void RenderWorker::StartPrint(PrintJob&& job) {
+    Command c;
+    c.type = Command::Print;
+    c.docId = job.docId;
+    c.job = std::move(job);
+    Push(std::move(c));
+}
+
+void RenderWorker::CancelPrint() {
+    Command c;
+    c.type = Command::CancelPrint;
+    Push(std::move(c));
+}
+
 void RenderWorker::RequestTextLayer(uint32_t docId, int page) {
     Command c;
     c.type = Command::TextLayer;
@@ -154,12 +186,12 @@ void RenderWorker::Run() {
         Command cmd;
         TileRequest tile;
         uint32_t tileDoc = 0;
-        enum { None, DoCommand, DoTile, DoSearch } work = None;
+        enum { None, DoCommand, DoTile, DoThumb, DoPrint, DoSearch } work = None;
         {
             LockGuard g(m_lock);
             // Sleep (zero CPU) until there is something to do.
             while (!m_quit && m_commands.empty() && m_wantedPos >= m_wanted.size() &&
-                   !m_searchActive) {
+                   m_thumbPos >= m_thumbs.size() && !m_printActive && !m_searchActive) {
                 SleepConditionVariableSRW(&m_cv, &m_lock, INFINITE, 0);
             }
             if (m_quit) break;
@@ -173,6 +205,12 @@ void RenderWorker::Run() {
                 m_inFlight = tile;
                 m_hasInFlight = true;
                 work = DoTile;
+            } else if (m_thumbPos < m_thumbs.size()) {
+                tile = m_thumbs[m_thumbPos++];
+                tileDoc = m_thumbDocId;
+                work = DoThumb;
+            } else if (m_printActive) {
+                work = DoPrint;
             } else {
                 work = DoSearch;
             }
@@ -190,11 +228,22 @@ void RenderWorker::Run() {
             }
             LockGuard g(m_lock);
             m_hasInFlight = false;
+        } else if (work == DoThumb) {
+            if (PdfEngine* engine = Engine(tileDoc)) {
+                auto* res = new TileResult;
+                res->docId = tileDoc;
+                res->req = tile;
+                engine->RenderTile(tile, res->pixels);
+                Post(WM_APP_THUMB_READY, res);
+            }
+        } else if (work == DoPrint) {
+            PrintStep();
         } else if (work == DoSearch) {
             SearchStep();
         }
     }
 
+    if (m_print.dc) EndPrint(true);
     m_engines.clear();  // closes every document
     PdfEngine::DestroyLibrary();
 }
@@ -208,11 +257,16 @@ void RenderWorker::Execute(Command& cmd) {
             auto engine = std::make_unique<PdfEngine>();
             res->error = engine->Open(cmd.text, cmd.password, res->pageSizes);
             SecureZeroMemory(cmd.password.data(), cmd.password.size());
-            if (res->error == OpenError::None) m_engines[cmd.docId] = std::move(engine);
+            if (res->error == OpenError::None) {
+                engine->LoadOutline(res->outline);
+                engine->GetInfo(res->info);
+                m_engines[cmd.docId] = std::move(engine);
+            }
             Post(WM_APP_DOC_LOADED, res);
             break;
         }
         case Command::Close:
+            if (m_print.dc && m_print.docId == cmd.docId) EndPrint(true);
             m_engines.erase(cmd.docId);
             if (m_search.docId == cmd.docId) {
                 LockGuard g(m_lock);
@@ -225,7 +279,7 @@ void RenderWorker::Execute(Command& cmd) {
             auto* res = new TextLayerResult;
             res->docId = cmd.docId;
             res->page = cmd.page;
-            engine->ExtractTextLayer(cmd.page, res->chars);
+            engine->ExtractPageInfo(cmd.page, res->chars, res->links);
             Post(WM_APP_TEXT_LAYER, res);
             break;
         }
@@ -256,6 +310,35 @@ void RenderWorker::Execute(Command& cmd) {
             m_searchActive = false;
             break;
         }
+        case Command::Image: {
+            PdfEngine* engine = Engine(cmd.docId);
+            if (!engine) break;
+            auto* res = new TileResult;
+            res->docId = cmd.docId;
+            res->req = cmd.tile;
+            engine->RenderTile(cmd.tile, res->pixels);
+            Post(WM_APP_IMAGE_READY, res);
+            break;
+        }
+        case Command::Print: {
+            if (m_print.dc) EndPrint(true);  // only one job at a time
+            m_print = std::move(cmd.job);
+            m_printPos = 0;
+            DOCINFOW di{sizeof(di)};
+            di.lpszDocName = m_print.docName.c_str();
+            if (!m_print.dc || !Engine(m_print.docId) || StartDocW(m_print.dc, &di) <= 0) {
+                if (m_print.dc) DeleteDC(m_print.dc);
+                m_print = PrintJob{};
+                PostMessageW(m_notify, WM_APP_PRINT_PROGRESS, 0, -1);
+                break;
+            }
+            LockGuard g(m_lock);
+            m_printActive = true;
+            break;
+        }
+        case Command::CancelPrint:
+            if (m_print.dc) EndPrint(true);
+            break;
         case Command::Trim:
             for (auto& e : m_engines) e.second->ReleasePages();
             break;
@@ -297,4 +380,38 @@ void RenderWorker::SearchStep() {
         LockGuard g(m_lock);
         m_searchActive = false;
     }
+}
+
+// Prints one page per call so rendering stays responsive during long jobs.
+void RenderWorker::PrintStep() {
+    PdfEngine* engine = Engine(m_print.docId);
+    if (!engine || !m_print.dc) {
+        EndPrint(true);
+        return;
+    }
+    if (m_printPos < m_print.pages.size()) {
+        if (!engine->PrintPage(m_print.dc, m_print.pages[m_printPos])) {
+            EndPrint(true);
+            return;
+        }
+        ++m_printPos;
+        PostMessageW(m_notify, WM_APP_PRINT_PROGRESS, (WPARAM)m_printPos,
+                     (LPARAM)m_print.pages.size());
+    }
+    if (m_printPos >= m_print.pages.size()) EndPrint(false);
+}
+
+void RenderWorker::EndPrint(bool abort) {
+    if (m_print.dc) {
+        if (abort)
+            AbortDoc(m_print.dc);
+        else
+            EndDoc(m_print.dc);
+        DeleteDC(m_print.dc);
+    }
+    if (abort) PostMessageW(m_notify, WM_APP_PRINT_PROGRESS, 0, -1);
+    m_print = PrintJob{};
+    m_printPos = 0;
+    LockGuard g(m_lock);
+    m_printActive = false;
 }

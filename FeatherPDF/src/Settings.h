@@ -12,7 +12,11 @@ struct Settings {
 
     int zoomMode = 1;      // 0 = custom, 1 = fit width, 2 = fit page
     double zoom = 1.0;     // used when zoomMode == 0
-    bool continuous = true;
+    int viewMode = 1;      // ViewMode: 0 single page, 1 continuous, 2 two pages
+    bool coverPage = true; // two-page layout shows the first page alone
+    int pageColors = 0;    // PageColors: 0 normal, 1 dark, 2 dimmed
+    int sidebarMode = 0;   // SidebarMode: 0 hidden, 1 bookmarks, 2 thumbnails
+    int sidebarWidth = 240;  // in 96-DPI pixels
     bool matchCase = false;
 
     int themeMode = 0;     // ThemeMode: 0 = system, 1 = light, 2 = dark

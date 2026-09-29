@@ -22,7 +22,7 @@
 #include <vector>
 
 #define APP_NAME L"Feather PDF"
-#define APP_VERSION L"1.1.0"
+#define APP_VERSION L"1.2.0"
 #define APP_COPYRIGHT L"\x00A9 2026 Akshaya Simha"
 #define APP_WINDOW_CLASS L"FeatherPdfMain"
 #define APP_REG_KEY L"Software\\FeatherPDF"
@@ -38,7 +38,14 @@ enum : UINT {
     WM_APP_TEXT_LAYER,               // TextLayerResult*
     WM_APP_TEXT_COPIED,              // TextCopyResult*
     WM_APP_TABBAR,                   // from TabBar: wParam = TabAction, lParam = index
+    WM_APP_THUMB_READY,              // TileResult* (thumbnail)
+    WM_APP_IMAGE_READY,              // TileResult* (page/area image for the clipboard)
+    WM_APP_PRINT_PROGRESS,           // wParam = pages printed, lParam = total (-1 = failed)
+    WM_APP_SIDEBAR,                  // from Sidebar: wParam = SidebarEvent, lParam = value
 };
+
+// WM_APP_SIDEBAR notifications: lParam = outline index / page index.
+enum : WPARAM { kSidebarOutlineClicked = 0, kSidebarPageClicked = 1 };
 
 // ---------------------------------------------------------------------------
 // Command ids (toolbar buttons, menu items, accelerators).
@@ -81,6 +88,20 @@ enum : int {
     ID_THEME_SYSTEM,
     ID_THEME_LIGHT,
     ID_THEME_DARK,
+    ID_PRINT,
+    ID_CANCEL_PRINT,
+    ID_PROPERTIES,
+    ID_COPY_PAGE_IMAGE,
+    ID_COPY_AREA_IMAGE,
+    ID_ROTATE_LEFT,
+    ID_ROTATE_RIGHT,
+    ID_VIEW_TWO_PAGE,
+    ID_COVER_PAGE,
+    ID_SIDEBAR_BOOKMARKS,
+    ID_SIDEBAR_THUMBNAILS,
+    ID_COLORS_NORMAL,
+    ID_COLORS_DARK,
+    ID_COLORS_DIM,
     ID_ZOOM_PRESET_FIRST = 300,  // + index into kZoomPresets
 };
 

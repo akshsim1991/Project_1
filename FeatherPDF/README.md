@@ -1,9 +1,10 @@
 # Feather PDF
 
 A small, fast, native PDF **viewer** for Windows 10 and 11. It opens PDFs
-in tabs, renders them, and lets you scroll, jump to pages, zoom, search, and
-select and copy text. It has no editing, annotations, accounts, cloud
-features, telemetry or background services.
+in tabs and lets you scroll, jump to pages, zoom, search, follow links,
+browse bookmarks and thumbnails, read in two-page, rotated or night mode,
+select and copy text or images, and print. It has no editing, annotations,
+accounts, cloud features, telemetry or background services.
 
 © 2026 Akshaya Simha. Developed for faster experience.
 
@@ -21,7 +22,7 @@ features, telemetry or background services.
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
-* Executable: about 370 KB, plus `pdfium.dll` (about 7 MB). No runtime installation needed.
+* Executable: about 450 KB, plus `pdfium.dll` (about 7 MB). No runtime installation needed.
 * Opens a window right away; documents load on a background thread.
 * The number of rendered pixels in memory depends on the window size, not on
   the page count or the zoom level.
@@ -76,6 +77,7 @@ MainWindow ─► Tab × N ─► PdfView ── layout, visible pages, zoom, na
    │                        │        text selection
    │                        └─► PageCache (bounded LRU of tiles) ─► GDI paint
    ├─ TabBar (self-drawn tab strip)
+   ├─ Sidebar ─ bookmarks TreeView / ThumbView (lazy thumbnails, 16 MB LRU)
    ├─ Toolbar (self-drawn, hosts page and search edits)
    ├─ SearchState (merged results, next/previous)
    ├─ Settings (HKCU\Software\FeatherPDF)
@@ -87,10 +89,12 @@ MainWindow ─► Tab × N ─► PdfView ── layout, visible pages, zoom, na
 | `src/main.cpp` | Entry point, command line, DPI awareness, message loop |
 | `src/MainWindow.*` | Top-level window, tabs, commands, menus, open/password/error flow, search UI |
 | `src/TabBar.*` | Themed tab strip (select, close, middle-click close, "+") |
-| `src/PdfView.*` | Page layout, scrolling, zoom, navigation, tile requests, painting, text selection |
+| `src/Sidebar.*` | Optional left panel: bookmarks tree or thumbnails, with a draggable splitter |
+| `src/ThumbView.*` | Virtualised page-thumbnail list, rendered lazily on a low-priority worker queue |
+| `src/PdfView.*` | Page layout (single / continuous / two-page), rotation, zoom, navigation, tile requests, painting, text selection, links, image copy |
 | `src/PageCache.*` | Bounded LRU cache of rendered tiles (memory policy) |
 | `src/RenderWorker.*` | Background thread that owns PDFium (all tabs); job priorities |
-| `src/PdfEngine.*` | PDFium wrapper: open, page sizes, tile rendering, text layer, text copy, search |
+| `src/PdfEngine.*` | PDFium wrapper: open, page sizes, tile rendering (rotation, night/dim colours), text and link layer, bookmarks, metadata, text copy, search, printing |
 | `src/Search.*` | UI-side search state (sorted matches, current match, status) |
 | `src/Toolbar.*` | Flat themed toolbar with icon-font buttons and hosted edits |
 | `src/Theme.*` | Light/dark palette (System/Light/Dark), dark title bar/scrollbars/menus |
@@ -107,9 +111,11 @@ worker thread** calls into it for every tab. Each tab's document has its own
   shows "Opening…". If opening fails, the previously open document stays open.
 * Every repaint **replaces** the worker's list of wanted tiles. Stale requests
   (pages you scrolled past) disappear instead of piling up.
-* Priorities are commands (open, search start/cancel) first, then visible
-  tiles nearest the viewport centre, then prefetch tiles, then search, one
-  page per step. A running search never delays rendering.
+* Priorities are commands (open, text layer, copy, search start/cancel)
+  first, then visible tiles nearest the viewport centre, then prefetch tiles,
+  then sidebar thumbnails, then printing (one page per step), then search
+  (one page per step). A print job or a running search never delays
+  rendering.
 * When there is no work, the worker sleeps on a condition variable (0% CPU).
   The UI has no polling timers.
 
@@ -156,6 +162,12 @@ worker thread** calls into it for every tab. Each tab's document has its own
   is visible and renders. When you switch away from a tab, its tiles and text
   layers are freed; switching back re-renders the visible area in a few
   milliseconds. A background tab keeps only its parsed document structure.
+* **Thumbnails** are rendered only for the part of the sidebar you can see
+  (plus a few below), on the lowest-priority worker queue, and kept in a
+  16 MB LRU cache. Nothing is rendered while the panel is hidden, and the
+  cache is freed when the panel closes or the window is minimised.
+* **Bookmarks** are read once when a document opens and stored as a flat
+  list (at most 20,000 entries); the tree control holds only titles.
 * **Text selection** keeps the character boxes of at most 32 pages (a few
   hundred KB). They are fetched only when the mouse moves over a page.
   Copying runs on the worker, so selecting 500 pages does not load 500 text
@@ -213,6 +225,41 @@ full screen (F11).
 Shift+Enter/Shift+F3 for previous, a match-case toggle, a match count, and
 highlighted matches with the current one in orange. Esc closes the bar.
 
+**Links:** internal links jump to their page, and web links (`http`,
+`https`, `mailto`) open in your browser. Addresses written as plain text
+(for example `www.example.com`) work too. Hovering a web link shows its
+real address first. Links that would launch files or programs are ignored.
+
+**Bookmarks and thumbnails:** ⋯ › Bookmarks panel (Ctrl+B) shows the PDF's
+table of contents, and ⋯ › Thumbnails panel (Ctrl+Shift+B) shows page
+previews that are rendered only as you scroll. Click an entry to jump
+there, and drag the panel edge to resize it. The choice is remembered.
+
+**Page layout and rotation:** ⋯ › Page layout › Single page / Continuous /
+Two pages, with "Show cover page separately" for books and magazines.
+Rotate left or right (Ctrl+L / Ctrl+R) turns sideways scans upright.
+
+**Page colours:** ⋯ › Page colours › Normal / Dark (night mode: light text
+on a dark page) / Dimmed. This applies to all tabs and is remembered.
+Printing and copying always use the original colours.
+
+**Printing:** ⋯ › Print (Ctrl+P) opens the standard Windows print dialog,
+with all pages, the current page or page ranges (such as `1-3, 7`), and
+copies. Each page is fitted to the paper and turned automatically when
+page and paper orientation differ. Pages are printed in the background
+while you keep reading, with progress in the title bar and a
+"Cancel printing" menu item.
+
+**Document properties:** ⋯ › Document properties (Ctrl+D) shows file name,
+location and size, plus title, author, subject, keywords, dates, creator,
+producer, PDF version, page count, page size and whether it is encrypted.
+
+**Copy as image:** ⋯ › Copy page as image copies the current page, and
+⋯ › Copy area as image lets you drag a rectangle. Both are also on the
+right-click menu. Images are rendered at 200 DPI (or the current zoom if
+sharper, up to about 40 megapixels) and pasted as normal bitmaps into any
+program.
+
 **Theme:** ⋯ › Theme › System default / Light / Dark. The choice is
 remembered, and "System default" follows the Windows setting live.
 
@@ -230,12 +277,17 @@ and version info, and `.pdf` association.
 | Ctrl+Tab / Ctrl+Page Down | Next tab |
 | Ctrl+Shift+Tab / Ctrl+Page Up | Previous tab |
 | Ctrl+C | Copy selected text |
+| Ctrl+P | Print |
+| Ctrl+D | Document properties |
+| Ctrl+B | Bookmarks panel |
+| Ctrl+Shift+B | Thumbnails panel |
+| Ctrl+L / Ctrl+R | Rotate left / right |
 | Ctrl+A | Select all text |
 | Double-click | Select word |
 | Ctrl+F | Search |
 | Enter / F3 | Next match |
 | Shift+Enter / Shift+F3 | Previous match |
-| Esc | Clear selection, close search, or leave full screen |
+| Esc | Cancel area copy, clear selection, close search, or leave full screen |
 | Ctrl++ / Ctrl+= / Ctrl+Numpad+ | Zoom in |
 | Ctrl+- / Ctrl+Numpad- | Zoom out |
 | Ctrl+0 | Fit page (reset zoom) |
@@ -323,7 +375,7 @@ script:
 ```powershell
 cmake --install build --config Release --prefix dist        # 1. portable folder
 & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" installer\FeatherPDF.iss   # 2. compile
-# -> installer\Output\FeatherPDF-Setup-1.1.0.exe
+# -> installer\Output\FeatherPDF-Setup-1.2.0.exe
 ```
 
 The installer:
@@ -379,7 +431,12 @@ There are no other dependencies. The full license texts are installed to
 
 ## Known limitations (version 1)
 
-* No clickable links, no outline/bookmarks panel, no thumbnails, no printing.
+* Printing always fits each page to the paper; there is no "actual size"
+  or booklet option. Printing ignores the night/dim page colours.
+* Link and bookmark targets jump to the right page. The position within the
+  page is only approximated (from the top-left of an unrotated page), so for
+  rotated views or unusual page boxes the jump goes to the top of the page.
+* The view rotation is per tab and is not remembered after closing.
 * Text selection follows PDFium's character order. It works well for normal
   documents, but multi-column layouts can select across columns, and
   rotated or vertical text is only roughly supported.
@@ -401,11 +458,10 @@ There are no other dependencies. The full license texts are installed to
 
 ## Suggested improvements for version 2
 
-1. Clickable internal/external links (`FPDFLink_*`), and a "dark page"
-   option that inverts page colours for night reading.
-2. Outline/bookmarks side panel (`FPDFBookmark_*`), collapsed by default.
-3. Printing through the Windows print dialog, rendering bands at printer DPI.
-4. Rotate view (90° steps) and a two-page (book) layout.
+1. Back/forward navigation (Alt+← / Alt+→) after following links and bookmarks.
+2. Print options: actual size, multiple pages per sheet, booklet.
+3. Presentation mode and auto-scroll.
+4. Remember rotation per document.
 5. A recent-files list (Jump List integration) and per-document zoom memory.
 6. Reload when the file changes on disk (`ReadDirectoryChangesW`).
 7. A low-resolution thumbnail layer per page, so very fast scrolling shows
