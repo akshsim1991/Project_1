@@ -1,0 +1,60 @@
+name: Feather PDF
+
+on:
+  push:
+    paths: ["FeatherPDF/**", ".github/workflows/featherpdf.yml"]
+  pull_request:
+    paths: ["FeatherPDF/**", ".github/workflows/featherpdf.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-msvc:
+    name: Windows x64 (MSVC) + installer
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: FeatherPDF
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S . -B build -A x64
+
+      - name: Build (Release)
+        run: cmake --build build --config Release --parallel
+
+      - name: Package portable folder
+        run: cmake --install build --config Release --prefix dist
+
+      - name: Build installer (Inno Setup)
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress | Out-Null }
+          & $iscc installer\FeatherPDF.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FeatherPDF-portable-x64
+          path: FeatherPDF/dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FeatherPDF-installer-x64
+          path: FeatherPDF/installer/Output/*.exe
+
+  linux-mingw:
+    name: Cross-compile check (MinGW-w64)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: FeatherPDF
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y g++-mingw-w64-x86-64
+      - run: cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=cmake/mingw-w64-x86_64.cmake -DCMAKE_BUILD_TYPE=Release
+      - run: cmake --build build --parallel

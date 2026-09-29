@@ -1,0 +1,375 @@
+# Feather PDF
+
+A small, fast, native PDF **viewer** for Windows 10 and 11. It opens PDFs,
+renders them, and lets you scroll, jump to pages, zoom and search. It has no
+editing, annotations, accounts, cloud features, telemetry or background
+services.
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│ Open │ ‹ › [ 12 ] / 250 │ −  125%  + │                    Search │ ⋯ │
+├──────────────────────────────────────────────────────────────────────┤
+│ [find in document      ] ˄ ˅  Aa  3 of 17                        ✕ │  ← Ctrl+F only
+├──────────────────────────────────────────────────────────────────────┤
+│                         ┌──────────────┐                             │
+│                         │   PDF PAGE   │                             │
+│                         └──────────────┘                             │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+* Executable: about 330 KB, plus `pdfium.dll` (about 7 MB). No runtime installation needed.
+* Opens a window right away; documents load on a background thread.
+* The number of rendered pixels in memory depends on the window size, not on
+  the page count or the zoom level.
+
+---
+
+## 1. Technology stack and why
+
+| Choice | Reason |
+|---|---|
+| **C++17 + raw Win32 API** | Starts fastest and uses the least memory on Windows. There is no runtime to load (no .NET, JVM, Chromium or Qt). With a static CRT the program is one executable plus the PDF engine DLL. Idle memory is a few MB above what the engine uses. |
+| **GDI** for drawing | Rendered tiles are 32-bit DIB buffers, blitted with `StretchDIBits`. There is no GPU context, so no idle GPU use and no driver problems. It is fast enough for 2D page blitting. |
+| **Segoe MDL2 / Fluent icon font** for toolbar icons | Ships with Windows 10/11, stays sharp at any DPI, and needs no image resources. |
+| **CMake** | Builds with Visual Studio 2022 (recommended), with MinGW-w64 on Windows, or cross-compiles from Linux. |
+
+Alternatives considered: WinUI/WPF/.NET (slower cold start and 30–80 MB
+baseline), Electron/WebView (hundreds of MB, and it is effectively a
+browser), Qt (heavy DLLs, and LGPL obligations). None of them fits "a small
+native Windows utility".
+
+## 2. PDF engine: PDFium
+
+| | **PDFium** (selected) | MuPDF | Windows.Data.Pdf (built in) |
+|---|---|---|---|
+| Rendering quality / compatibility | Excellent (Chrome's PDF engine) | Excellent | Good |
+| Speed / memory | Very good, supports partial (clipped) rendering | Very good | Good |
+| Text search API | Yes (`fpdf_text`) | Yes | **No text API** |
+| Robustness on malformed files | Continuously fuzzed by Google | Good | Good |
+| License | **BSD-3 / Apache-2.0 (permissive)** | **AGPL-3** or paid commercial | OS component |
+| Integration | Prebuilt DLL + C API | Build from source | WinRT/COM |
+
+PDFium has permissive licensing, is battle-tested in Chrome, and has a clean
+C API with page rendering to caller-provided buffers and text search. MuPDF
+is equally good technically, but AGPL would force the whole app to be AGPL.
+The built-in Windows PDF API cannot search text. Feather PDF uses the
+prebuilt binaries from
+[bblanchon/pdfium-binaries](https://github.com/bblanchon/pdfium-binaries),
+pinned to release `chromium/8066`, without V8/JavaScript or XFA.
+
+## 3. Architecture
+
+```
+PDF file ─► PdfEngine (PDFium wrapper, lazy file reads)       ┐
+               ▲                                              │ render worker
+               │ commands / wanted-tile list                  │ thread
+            RenderWorker ── renders one tile or searches      ┘
+               │           one page per step
+               │ PostMessage(result)
+               ▼
+MainWindow ─► PdfView ── layout, visible-page detection, zoom, navigation
+   │             │
+   │             └─► PageCache (bounded LRU of tiles) ─► GDI paint
+   ├─ Toolbar (self-drawn, hosts page and search edits)
+   ├─ SearchState (merged results, next/previous)
+   ├─ Settings (HKCU\Software\FeatherPDF)
+   └─ FileAssoc (per-user .pdf registration)
+```
+
+| Source file | Responsibility |
+|---|---|
+| `src/main.cpp` | Entry point, command line, DPI awareness, message loop |
+| `src/MainWindow.*` | Top-level window, commands, menus, open/password/error flow, search UI |
+| `src/PdfView.*` | Page layout, scrolling, zoom, navigation, tile requests, painting |
+| `src/PageCache.*` | Bounded LRU cache of rendered tiles (memory policy) |
+| `src/RenderWorker.*` | Background thread that owns PDFium; job priorities |
+| `src/PdfEngine.*` | PDFium wrapper: open, page sizes, tile rendering, text search |
+| `src/Search.*` | UI-side search state (sorted matches, current match, status) |
+| `src/Toolbar.*` | Flat themed toolbar with icon-font buttons and hosted edits |
+| `src/Theme.*` | Light/dark palette, dark title bar/scrollbars/menus |
+| `src/Settings.*` | Persisted window placement, zoom mode, view mode, last file/page |
+| `src/FileAssoc.*` | `.pdf` "Open with" / Default-apps registration (HKCU) |
+
+### Threading
+
+PDFium is not thread-safe, so **exactly one worker thread** calls into it.
+The UI thread never blocks on PDF work:
+
+* Opening a document runs on the worker. The window is already visible and
+  shows "Opening…". If opening fails, the previously open document stays open.
+* Every repaint **replaces** the worker's list of wanted tiles. Stale requests
+  (pages you scrolled past) disappear instead of piling up.
+* Priorities are commands (open, search start/cancel) first, then visible
+  tiles nearest the viewport centre, then prefetch tiles, then search, one
+  page per step. A running search never delays rendering.
+* When there is no work, the worker sleeps on a condition variable (0% CPU).
+  The UI has no polling timers.
+
+### Rendering and caching
+
+1. **Page virtualisation.** Layout is an array of page offsets computed with
+   integer math from page sizes only. No page content is parsed until the
+   page is on screen. Finding the visible pages is a binary search, so it
+   costs the same for 10 or 10,000 pages.
+2. **Tiles, not pages.** Each visible page is split into tiles: full-width
+   rows up to 2048 px wide and 512 px tall, or 1024 px columns on wider
+   pages. PDFium renders a tile straight into its buffer using an offset and a
+   clip, so there are no intermediate copies. Only visible tiles plus a
+   prefetch band are requested: one screen below (the reading direction) and
+   half a screen above.
+3. **Bounded cache.** Tiles live in an LRU cache whose byte budget follows
+   the viewport: `clamp(5 × screen + 16 MB, 64 MB, 256 MB)`. That is about
+   64 MB on a 1080p window. Prefetch stops at 90% of the budget, and tiles
+   drawn in the current frame are pinned, so a tight budget cannot cause
+   render/evict loops.
+4. **Smooth zoom without extra rendering.** After a zoom change, tiles from
+   the old zoom level are stretched as placeholders straight away. During
+   Ctrl+wheel or pinch zooming, rendering waits until the wheel stops for
+   150 ms, so intermediate zoom steps are not rendered. Once the new level is
+   sharp, the old tiles are freed.
+5. **Parsed-page cache.** The worker keeps only the four most recently
+   parsed pages (`FPDF_PAGE`). Tiles of the same page arrive in bursts, and
+   this keeps content-stream parsing to about once per page.
+
+## 4. How RAM usage is controlled
+
+* **Tile buffers use `VirtualAlloc`/`VirtualFree`.** Evicting a tile returns
+  its memory to Windows immediately instead of leaving it in a fragmented heap.
+* **Memory depends on the window size, not the document.** A 5,000-page
+  PDF at 1600% zoom holds only the tiles on screen plus the budgeted prefetch.
+  A single A4 page at 1600% as one bitmap would be about 900 MB.
+* PDFium renders with `FPDF_RENDER_LIMITEDIMAGECACHE`, which keeps its
+  decoded-image cache small.
+* The file is **read lazily** through `FPDF_LoadCustomDocument`. It is not
+  loaded into memory; Windows' file cache handles the reads.
+* When the window is **minimised**, all tiles, the back buffer and the parsed
+  pages are released.
+* Search results store only rectangles (a few dozen bytes per match). Text
+  pages are closed as soon as each page has been searched.
+
+In a Wine test with a 600-page document: about 56 MB when opened, a plateau
+around 116 MB after rapid paging through 150 pages (including Wine's own
+overhead), about 75 MB at 1600% zoom, and back to about 58 MB at fit-page.
+Native Windows figures should be lower.
+
+## 5. How large PDFs are handled
+
+* Opening reads only the xref and page tree. The page sizes of all pages are
+  collected without parsing any content, which takes milliseconds even for
+  thousands of pages.
+* Layout, visible-page lookup and scrollbar mapping all work for any page
+  count. Offsets are 64-bit, and scrollbar units are scaled if a document
+  exceeds the 32-bit scrollbar range.
+* Search runs page by page on the worker, starting at the current page and
+  wrapping around. Results stream in, the first match is shown immediately,
+  and the status shows progress ("Searching… 40%", then "3 of 17+").
+* Unusual page sizes are clamped to sane bounds. Mixed portrait and
+  landscape documents are laid out centred, and fit modes re-fit per page in
+  single-page mode.
+
+---
+
+## Features
+
+**Opening:** File › Open (Ctrl+O), drag and drop onto the window,
+double-click in Explorer (after registering), command line, and automatic
+reopen of the last document at the last page.
+
+**Viewing:** continuous scrolling or single-page mode, fit width, fit page,
+actual size (100% equals the printed size on screen), 5%–1600% zoom,
+Ctrl+wheel zoom anchored at the cursor, touchpad pinch, drag-to-pan, and
+full screen (F11).
+
+**Search:** Ctrl+F, incremental search as you type, Enter/F3 for next,
+Shift+Enter/Shift+F3 for previous, a match-case toggle, a match count, and
+highlighted matches with the current one in orange. Esc closes the bar.
+
+**Windows integration:** Per-monitor V2 high-DPI support (crisp on mixed-DPI
+setups), automatic light/dark theme (title bar, toolbar, scrollbars, menus),
+remembered window position/size, zoom mode and view mode, application icon
+and version info, and `.pdf` association.
+
+### Keyboard shortcuts
+
+| Shortcut | Action |
+|---|---|
+| Ctrl+O | Open PDF |
+| Ctrl+F | Search |
+| Enter / F3 | Next match |
+| Shift+Enter / Shift+F3 | Previous match |
+| Esc | Close search (or leave full screen) |
+| Ctrl++ / Ctrl+= / Ctrl+Numpad+ | Zoom in |
+| Ctrl+- / Ctrl+Numpad- | Zoom out |
+| Ctrl+0 | Fit page (reset zoom) |
+| Ctrl+1 | Actual size (100%) |
+| Ctrl+2 | Fit width |
+| Ctrl+Mouse wheel | Zoom at the cursor |
+| Ctrl+G | Go to page (focus the page box) |
+| Home / End | First / last page |
+| Page Up / Page Down | Previous / next page |
+| Left / Right | Previous / next page |
+| Up / Down | Scroll |
+| Space / Shift+Space | Scroll one screen down / up |
+| Shift+Mouse wheel | Scroll horizontally |
+| F11 | Full screen |
+
+### Command line
+
+```
+FeatherPDF.exe "C:\docs\manual.pdf"            open a file
+FeatherPDF.exe "C:\docs\manual.pdf" /page 42   open at page 42
+FeatherPDF.exe /register                      register as a PDF handler (current user)
+FeatherPDF.exe /unregister                    remove that registration
+```
+
+---
+
+## Building
+
+### Requirements
+
+* Windows 10/11 with **Visual Studio 2022** (Desktop development with C++)
+  and **CMake 3.20+** (included with Visual Studio). The other supported
+  options are MinGW-w64 on Windows, or cross-compiling from Linux.
+* Internet access on the first configure: CMake downloads the pinned PDFium
+  package (about 4 MB). To build offline, download
+  `pdfium-win-x64.tgz` from the pdfium-binaries release `chromium/8066`,
+  extract it, and pass `-DPDFIUM_DIR=<folder>`.
+
+### Build a release `.exe` (Visual Studio / MSVC)
+
+From a *Developer PowerShell for VS 2022*, in the `FeatherPDF` folder:
+
+```powershell
+cmake -S . -B build -A x64
+cmake --build build --config Release
+# -> build\Release\FeatherPDF.exe + pdfium.dll
+
+# Portable, ready-to-zip folder (exe, dll, licenses):
+cmake --install build --config Release --prefix dist
+```
+
+The MSVC release build links the CRT statically (`/MT`), uses whole-program
+optimisation (`/GL /LTCG`), and wraps every PDFium call in a
+structured-exception guard. If PDFium ever faults on a hostile file, the
+affected page is shown blank and the application keeps running.
+
+For ARM64 (Windows on ARM), use `-A ARM64`. CMake then fetches
+`pdfium-win-arm64`.
+
+### Cross-compile from Linux (MinGW-w64)
+
+```bash
+sudo apt install g++-mingw-w64-x86-64 cmake
+cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=cmake/mingw-w64-x86_64.cmake -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+cmake --install build --prefix dist
+```
+
+(MinGW builds have no structured-exception guard around PDFium, so prefer
+MSVC for releases.)
+
+### Continuous integration
+
+`.github/workflows/featherpdf.yml` (at the repository root) builds the MSVC
+release, the portable folder and the installer on `windows-latest`, and
+uploads them as workflow artifacts. It also runs a MinGW cross-compile check
+on Linux.
+
+## Creating an installer
+
+The repository includes an [Inno Setup 6](https://jrsoftware.org/isinfo.php)
+script:
+
+```powershell
+cmake --install build --config Release --prefix dist        # 1. portable folder
+& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" installer\FeatherPDF.iss   # 2. compile
+# -> installer\Output\FeatherPDF-Setup-1.0.0.exe
+```
+
+The installer:
+
+* installs per user by default (no admin prompt), or for all users if the
+  user chooses that;
+* creates a Start-menu shortcut and an optional desktop shortcut;
+* registers the `FeatherPDF.Document` ProgID, the ".pdf → Open with" entry
+  and Default-apps capabilities;
+* offers to open *Settings › Default apps*. Windows 10/11 do not allow any
+  installer to silently take over `.pdf`; the user has to confirm the choice
+  there;
+* uninstalls cleanly, removing its registry entries.
+
+Without the installer, use **⋯ › Set as default PDF viewer…** (or run
+`FeatherPDF.exe /register`) from the portable folder.
+
+Code signing is recommended for public distribution (SmartScreen). Sign both
+`FeatherPDF.exe` and the setup file with `signtool sign /fd sha256 /tr
+<timestamp-url> /td sha256 ...`.
+
+---
+
+## Dependencies and licenses
+
+| Dependency | How it is used | License |
+|---|---|---|
+| PDFium (`pdfium.dll`) | PDF engine, loaded at run time | BSD-3-Clause / Apache-2.0 |
+| Its bundled libraries (FreeType, libjpeg-turbo, libpng, zlib, OpenJPEG, lcms2, AGG, ICU, Abseil, and others) | Inside `pdfium.dll` | Permissive (see `THIRD_PARTY_NOTICES.md`) |
+| Windows SDK system libraries | UI, GDI, dialogs, registry | Part of Windows |
+
+There are no other dependencies. The full license texts are installed to
+`licenses/` by `cmake --install`.
+
+## Performance considerations
+
+* **Startup:** there is no runtime to load. The window is created and shown
+  before any PDF work starts. `pdfium.dll` is mapped by the loader (no
+  initialisation cost until the worker calls `FPDF_InitLibrary`).
+* **Idle:** no timers, no polling, no background threads with work. The
+  worker sleeps on a condition variable.
+* **Scrolling:** each frame is a back-buffer fill plus 1:1 `StretchDIBits`
+  of cached tiles, costing a few milliseconds even at 4K. New tiles
+  invalidate only their own rectangle, and prefetched off-screen tiles cause
+  no repaint.
+* **Zoom:** placeholder stretching gives instant feedback. Re-rendering is
+  debounced during wheel zoom, and results for zoom levels you have already
+  left are discarded.
+* **GPU:** none used. GDI blits run on the CPU, which avoids GPU wake-ups
+  on battery.
+* The worker runs at *below normal* priority so the UI thread always wins on
+  low-core machines.
+
+## Known limitations (version 1)
+
+* No text selection or copy, no clickable links, no outline/bookmarks
+  panel, no thumbnails, no printing.
+* No rotate-view command. Pages are shown as the PDF specifies (`/Rotate`
+  is honoured).
+* A second document opens in a new window; there are no tabs.
+* The file is not reloaded automatically when it changes on disk.
+* Files over 4 GB are rejected (PDFium's custom-file-access API is 32-bit on
+  Windows).
+* XFA forms and PDF JavaScript are not supported (PDFium build without
+  V8/XFA). Normal AcroForm field *appearances* are rendered.
+* The Linux-built MinGW binary lacks the SEH crash guard around PDFium.
+* Dark popup menus use a long-standing but undocumented uxtheme API. On
+  builds before Windows 10 1903 menus stay light.
+* Only the most recent document and page are remembered, not a per-file
+  history.
+
+## Suggested improvements for version 2
+
+1. Text selection and copy (`FPDFText_GetCharIndexAtPos`, `FPDFText_GetText`),
+   and clickable internal/external links (`FPDFLink_*`).
+2. Outline/bookmarks side panel (`FPDFBookmark_*`), collapsed by default.
+3. Printing through the Windows print dialog, rendering bands at printer DPI.
+4. Rotate view (90° steps) and a two-page (book) layout.
+5. Per-document memory of the last page and zoom, and a recent-files list
+   (Jump List integration).
+6. Reload when the file changes on disk (`ReadDirectoryChangesW`).
+7. A low-resolution thumbnail layer per page, so very fast scrolling shows
+   page outlines with content instead of blank white pages.
+8. An optional Direct2D presentation path for smooth animated scrolling on
+   high-refresh displays (off by default to keep GPU use at zero).
+9. Tabs or a single-instance option, and a portable-mode INI file next to
+   the executable.
+10. An MSIX package and signed releases published from CI.
