@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   windows:
-    name: Windows build (.NET Framework 4.7.2)
+    name: Windows build + installer
     runs-on: windows-latest
     defaults:
       run:
@@ -32,7 +32,20 @@ jobs:
           Copy-Item bin\Release\PixelBlend.exe, bin\Release\PixelBlend.exe.config dist\
           Get-ChildItem dist
 
+      - name: Build installer (Inno Setup)
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress | Out-Null }
+          & $iscc installer\PixelBlend.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - uses: actions/upload-artifact@v4
         with:
-          name: PixelBlend-windows
+          name: PixelBlend-portable
           path: PixelBlend/dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PixelBlend-installer
+          path: PixelBlend/installer/Output/*.exe
