@@ -22,7 +22,7 @@
 #include <vector>
 
 #define APP_NAME L"Feather PDF"
-#define APP_VERSION L"1.2.0"
+#define APP_VERSION L"1.3.0"
 #define APP_COPYRIGHT L"\x00A9 2026 Akshaya Simha"
 #define APP_WINDOW_CLASS L"FeatherPdfMain"
 #define APP_REG_KEY L"Software\\FeatherPDF"
@@ -42,10 +42,21 @@ enum : UINT {
     WM_APP_IMAGE_READY,              // TileResult* (page/area image for the clipboard)
     WM_APP_PRINT_PROGRESS,           // wParam = pages printed, lParam = total (-1 = failed)
     WM_APP_SIDEBAR,                  // from Sidebar: wParam = SidebarEvent, lParam = value
+    WM_APP_DOC_EDITED,               // EditResult* (edit, undo, redo or save finished)
+    WM_APP_EXTRACTED,                // ExtractResult*
 };
 
 // WM_APP_SIDEBAR notifications: lParam = outline index / page index.
-enum : WPARAM { kSidebarOutlineClicked = 0, kSidebarPageClicked = 1 };
+// kSidebarPagesMoved: lParam = gap (insert before this page) for the
+// selected thumbnails; kSidebarPagesMenu: lParam = MAKELPARAM(screen x, y);
+// kSidebarDeletePages: Delete key in the thumbnails.
+enum : WPARAM {
+    kSidebarOutlineClicked = 0,
+    kSidebarPageClicked = 1,
+    kSidebarPagesMoved = 2,
+    kSidebarPagesMenu = 3,
+    kSidebarDeletePages = 4,
+};
 
 // ---------------------------------------------------------------------------
 // Command ids (toolbar buttons, menu items, accelerators).
@@ -102,6 +113,24 @@ enum : int {
     ID_COLORS_NORMAL,
     ID_COLORS_DARK,
     ID_COLORS_DIM,
+    // editing
+    ID_SAVE,
+    ID_SAVE_AS,
+    ID_UNDO,
+    ID_REDO,
+    ID_DELETE_PAGES,
+    ID_ROTATE_PAGES_CW,
+    ID_ROTATE_PAGES_CCW,
+    ID_INSERT_BLANK,
+    ID_INSERT_FILE,
+    ID_MERGE_FILES,
+    ID_MERGE_TABS,
+    ID_EXTRACT_PAGES,
+    ID_HIGHLIGHT,
+    ID_UNDERLINE,
+    ID_STRIKEOUT,
+    ID_HL_COLOR_FIRST,  // + index into kHighlightColors
+    ID_HL_COLOR_LAST = ID_HL_COLOR_FIRST + 3,
     ID_ZOOM_PRESET_FIRST = 300,  // + index into kZoomPresets
 };
 

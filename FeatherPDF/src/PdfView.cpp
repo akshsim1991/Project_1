@@ -152,6 +152,13 @@ LRESULT PdfView::Handle(UINT msg, WPARAM wp, LPARAM lp) {
                     SelectAll();
                     return 0;
                 }
+                // Text markup: recorded as an edit by the main window.
+                if (wp == 'H' || wp == 'U' || wp == 'K') {
+                    if (HasSelection())
+                        SendMessageW(GetParent(m_hwnd), WM_COMMAND,
+                                     wp == 'H' ? ID_HIGHLIGHT : wp == 'U' ? ID_UNDERLINE : ID_STRIKEOUT, 0);
+                    return 0;
+                }
             }
             switch (wp) {
                 case VK_UP: ScrollOrFlip(-LineStep()); return 0;
@@ -339,6 +346,7 @@ LRESULT PdfView::Handle(UINT msg, WPARAM wp, LPARAM lp) {
 // ===========================================================================
 void PdfView::SetDocument(uint32_t docId, std::vector<SizeF>&& sizes, int startPage) {
     m_docId = docId;
+    m_editPending = false;
     m_sizes = std::move(sizes);
     m_cache.Clear();
     m_failed.clear();
@@ -361,8 +369,47 @@ void PdfView::SetDocument(uint32_t docId, std::vector<SizeF>&& sizes, int startP
     Notify();
 }
 
+void PdfView::BeginEdit(uint32_t newDocId) {
+    m_docId = newDocId;
+    m_editPending = true;
+    m_cache.MarkAllStale();
+    m_failed.clear();
+    m_text.clear();
+    m_textOrder.clear();
+    m_textPending.clear();
+    if (m_selecting && GetCapture() == m_hwnd) ReleaseCapture();
+    m_hasSel = m_selecting = false;
+    if (m_worker) m_worker->SetWantedTiles(m_docId, {});
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void PdfView::EndEdit(std::vector<SizeF>&& sizes, int focusPage) {
+    m_editPending = false;
+    auto same = [&] {
+        if (sizes.size() != m_sizes.size()) return false;
+        for (size_t i = 0; i < sizes.size(); ++i)
+            if (sizes[i].w != m_sizes[i].w || sizes[i].h != m_sizes[i].h) return false;
+        return true;
+    };
+    if (same()) {
+        // Same layout: the placeholders stay until the new tiles arrive.
+        if (focusPage >= 0 && focusPage < PageCount()) {
+            int first, last;
+            VisibleRange(m_scrollY, m_scrollY + ClientH(), first, last);
+            if (focusPage < first || focusPage > last) GoToPage(focusPage);
+        }
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        Notify();
+        return;
+    }
+    const int page = focusPage >= 0 ? focusPage : CurrentPage();
+    const int count = (int)sizes.size();
+    SetDocument(m_docId, std::move(sizes), std::min(page, count - 1));
+}
+
 void PdfView::CloseDocument() {
     m_docId = 0;
+    m_editPending = false;
     m_sizes.clear();
     m_layout.clear();
     m_cache.Clear();
@@ -1065,7 +1112,7 @@ void PdfView::AddPrefetch(int64_t y0, int64_t y1, size_t& budgetLeft,
 void PdfView::RequestTiles(std::vector<std::pair<int64_t, TileRequest>>& missing,
                            size_t visibleBytes) {
     if (!m_worker) return;
-    if (m_zoomSettling) {  // wait until the wheel stops
+    if (m_zoomSettling || m_editPending) {  // wait until the wheel stops / the edit is done
         m_worker->SetWantedTiles(m_docId, {});
         return;
     }
@@ -1176,8 +1223,9 @@ void PdfView::PaintPage(HDC dc, int page, std::vector<std::pair<int64_t, TileReq
     HRGN clip = CreateRectRgnIndirect(&vis);
     SelectClipRgn(dc, clip);
 
-    // 1. Placeholders: tiles rendered at another zoom level, stretched.
-    m_cache.ForEachOtherScale(page, m_scaleKey, [&](const Tile& t) {
+    // 1. Placeholders: tiles rendered at another zoom level (stretched), or
+    //    before the last edit.
+    m_cache.ForEachPlaceholder(page, m_scaleKey, [&](const Tile& t) {
         const double f = m_scale / (t.key.scaleKey / 1000.0);
         const int64_t x0 = left + std::llround(t.x * f), y0 = top + std::llround(t.y * f);
         const int64_t x1 = left + std::llround((t.x + t.pixels.width) * f);
@@ -1324,6 +1372,12 @@ bool PdfView::HitText(POINT pt, bool strict, TextPos* caret, int* charIndex) {
     return true;
 }
 
+bool PdfView::GetSelection(TextPos& from, TextPos& to) const {
+    if (!HasSelection()) return false;
+    SelectionBounds(from, to);
+    return true;
+}
+
 void PdfView::SelectionBounds(TextPos& start, TextPos& end) const {
     start = std::min(m_selAnchor, m_selFocus);
     end = std::max(m_selAnchor, m_selFocus);
@@ -1458,8 +1512,13 @@ void PdfView::ShowContextMenu(LPARAM lp) {
     POINT pt = {GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
     if (pt.x == -1 && pt.y == -1) GetCursorPos(&pt);  // keyboard (Shift+F10)
     HMENU m = CreatePopupMenu();
-    AppendMenuW(m, MF_STRING | (HasSelection() ? 0 : MF_GRAYED), ID_COPY, L"&Copy\tCtrl+C");
+    const UINT selFlag = HasSelection() ? 0 : MF_GRAYED;
+    AppendMenuW(m, MF_STRING | selFlag, ID_COPY, L"&Copy\tCtrl+C");
     AppendMenuW(m, MF_STRING, ID_SELECT_ALL, L"Select &all\tCtrl+A");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_STRING | selFlag, ID_HIGHLIGHT, L"&Highlight\tCtrl+H");
+    AppendMenuW(m, MF_STRING | selFlag, ID_UNDERLINE, L"&Underline\tCtrl+U");
+    AppendMenuW(m, MF_STRING | selFlag, ID_STRIKEOUT, L"&Strikethrough\tCtrl+K");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(m, MF_STRING, ID_COPY_PAGE_IMAGE, L"Copy &page as image");
     AppendMenuW(m, MF_STRING, ID_COPY_AREA_IMAGE, L"Copy a&rea as image");
@@ -1469,6 +1528,9 @@ void PdfView::ShowContextMenu(LPARAM lp) {
     if (cmd == ID_SELECT_ALL) SelectAll();
     if (cmd == ID_COPY_PAGE_IMAGE) CopyPageImage();
     if (cmd == ID_COPY_AREA_IMAGE) StartAreaCopy();
+    // Annotations change the document: the main window records the edit.
+    if (cmd == ID_HIGHLIGHT || cmd == ID_UNDERLINE || cmd == ID_STRIKEOUT)
+        SendMessageW(GetParent(m_hwnd), WM_COMMAND, (WPARAM)cmd, 0);
 }
 
 // ===========================================================================

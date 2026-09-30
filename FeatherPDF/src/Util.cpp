@@ -87,3 +87,105 @@ bool FileExists(const std::wstring& path) {
     DWORD attr = GetFileAttributesW(path.c_str());
     return attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY);
 }
+
+bool SamePath(const std::wstring& a, const std::wstring& b) {
+    return CompareStringOrdinal(a.c_str(), (int)a.size(), b.c_str(), (int)b.size(), TRUE) ==
+           CSTR_EQUAL;
+}
+
+namespace {
+std::wstring TempDir() {
+    wchar_t buf[MAX_PATH + 1];
+    const DWORD n = GetTempPathW(MAX_PATH + 1, buf);
+    std::wstring dir = (n && n <= MAX_PATH) ? std::wstring(buf, n) : std::wstring(L".\\");
+    dir += L"FeatherPDF";
+    CreateDirectoryW(dir.c_str(), nullptr);
+    return dir;
+}
+}  // namespace
+
+std::wstring MakeTempPdfPath() {
+    static LONG counter = 0;
+    wchar_t name[64];
+    swprintf_s(name, L"\\%lu-%llx-%ld.pdf", GetCurrentProcessId(), GetTickCount64(),
+               InterlockedIncrement(&counter));
+    return TempDir() + name;
+}
+
+void CleanOldTempFiles() {
+    const std::wstring dir = TempDir();
+    WIN32_FIND_DATAW fd;
+    HANDLE find = FindFirstFileW((dir + L"\\*.pdf").c_str(), &fd);
+    if (find == INVALID_HANDLE_VALUE) return;
+    FILETIME now;
+    GetSystemTimeAsFileTime(&now);
+    const ULONGLONG nowT = ((ULONGLONG)now.dwHighDateTime << 32) | now.dwLowDateTime;
+    const ULONGLONG twoDays = 2ull * 24 * 3600 * 10000000;
+    do {
+        const ULONGLONG t = ((ULONGLONG)fd.ftLastWriteTime.dwHighDateTime << 32) |
+                            fd.ftLastWriteTime.dwLowDateTime;
+        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && nowT > t + twoDays)
+            DeleteFileW((dir + L"\\" + fd.cFileName).c_str());
+    } while (FindNextFileW(find, &fd));
+    FindClose(find);
+}
+
+bool ParsePageRanges(const std::wstring& text, int pageCount, std::vector<int>& pages) {
+    pages.clear();
+    size_t i = 0;
+    auto skipSpace = [&] {
+        while (i < text.size() && iswspace(text[i])) ++i;
+    };
+    auto number = [&](int& out) {
+        skipSpace();
+        if (i >= text.size() || !iswdigit(text[i])) return false;
+        long v = 0;
+        while (i < text.size() && iswdigit(text[i])) {
+            v = v * 10 + (text[i++] - L'0');
+            if (v > 1000000) return false;
+        }
+        out = (int)v;
+        return true;
+    };
+    for (;;) {
+        skipSpace();
+        if (i >= text.size()) break;
+        int from, to;
+        if (!number(from)) return false;
+        to = from;
+        skipSpace();
+        if (i < text.size() && (text[i] == L'-' || text[i] == L'\x2013')) {
+            ++i;
+            skipSpace();
+            if (i >= text.size() || text[i] == L',' || text[i] == L';')
+                to = pageCount;  // "8-": to the end
+            else if (!number(to))
+                return false;
+        }
+        if (from < 1 || to < 1 || from > pageCount || to > pageCount) return false;
+        const int step = from <= to ? 1 : -1;
+        for (int p = from;; p += step) {
+            pages.push_back(p - 1);
+            if (p == to) break;
+        }
+        skipSpace();
+        if (i < text.size()) {
+            if (text[i] != L',' && text[i] != L';') return false;
+            ++i;
+        }
+    }
+    return !pages.empty();
+}
+
+std::wstring FormatPageRanges(const std::vector<int>& pages) {
+    std::wstring out;
+    for (size_t i = 0; i < pages.size();) {
+        size_t j = i;
+        while (j + 1 < pages.size() && pages[j + 1] == pages[j] + 1) ++j;
+        if (!out.empty()) out += L", ";
+        out += std::to_wstring(pages[i] + 1);
+        if (j > i) out += L"-" + std::to_wstring(pages[j] + 1);
+        i = j + 1;
+    }
+    return out;
+}

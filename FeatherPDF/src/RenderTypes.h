@@ -151,3 +151,62 @@ struct PrintJob {
     std::wstring docName;
     std::vector<int> pages;  // in printing order (copies already expanded)
 };
+
+// ---------------------------------------------------------------------------
+// Editing
+// ---------------------------------------------------------------------------
+
+// Text markup annotation types (values are PDFium's FPDF_ANNOT_* subtypes).
+enum MarkupType { kMarkupHighlight = 9, kMarkupUnderline = 10, kMarkupStrikeOut = 12 };
+
+// A PDF whose pages are inserted. The worker replaces `path` with a private
+// copy before applying the edit, so undo/redo can replay it later even if
+// the original file changes or the source tab is closed.
+struct ImportSource {
+    std::wstring path;
+    uint32_t docId = 0;    // an open tab (its current, possibly unsaved, state)
+    std::string password;  // filled in by the worker for tab sources
+};
+
+// One undoable change to a document. Edits are recorded in order; undo
+// re-opens the last saved file and replays all but the last one.
+struct EditOp {
+    enum Kind { DeletePages, MovePages, RotatePages, InsertBlank, InsertFiles, Markup } kind = DeletePages;
+    std::vector<int> pages;  // Delete/Move/Rotate: ascending page indices
+    int index = 0;           // Move: new index of the first moved page;
+                             // InsertBlank/InsertFiles: insert before this page
+    int turns = 0;           // Rotate: quarter turns clockwise
+    SizeF size;              // InsertBlank: page size in points
+    std::vector<ImportSource> sources;  // InsertFiles, in order
+    int markup = kMarkupHighlight;      // Markup: MarkupType
+    COLORREF color = 0;
+    TextPos from, to;        // Markup: text range (may span pages)
+};
+
+enum class EditAction { Edit, Undo, Redo, Save };
+
+// Posted after an edit, undo, redo or save. Edits give the document a new
+// id (so results still queued for the old state are ignored); `docId` is
+// that new id.
+struct EditResult {
+    uint32_t docId = 0;
+    EditAction action = EditAction::Edit;
+    bool ok = true;
+    std::wstring error;       // shown to the user when !ok
+    std::vector<SizeF> pageSizes;
+    std::vector<OutlineItem> outline;
+    DocInfo info;
+    bool canUndo = false, canRedo = false, dirty = false;
+    std::wstring path;        // file the document is saved in
+    int focusPage = -1;       // page to show after the edit (-1: stay)
+    std::vector<int> select;  // pages to select in the thumbnails
+    uint32_t flags = 0;       // Save: echoed from the request (kAfterSave*)
+};
+
+enum : uint32_t { kAfterSaveCloseTab = 1, kAfterSaveQuit = 2 };
+
+struct ExtractResult {
+    bool ok = true;
+    std::wstring error;
+    std::vector<std::wstring> files;  // written files
+};

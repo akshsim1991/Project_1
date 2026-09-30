@@ -33,6 +33,11 @@ private:
         int passwordAttempts = 0;
         std::vector<OutlineItem> outline;  // bookmarks
         DocInfo info;
+        // editing
+        bool dirty = false;           // unsaved changes (shown as "\x2022" on the tab)
+        bool canUndo = false, canRedo = false;
+        uint32_t saveDocId = 0;       // id the last save was requested under
+        bool discardOnQuit = false;   // "Don't save" was chosen while exiting
     };
 
     static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
@@ -51,7 +56,7 @@ private:
     PdfView& View() { return *Active().view; }
     int NewTab();
     void ActivateTab(int index);
-    void CloseTab(int index);
+    void CloseTab(int index, bool force = false);
     void UpdateTabs();
     int TabByDocId(uint32_t docId) const;
     void OnTabBar(TabAction action, int index);
@@ -81,6 +86,29 @@ private:
     void OnThemeChanged();
     void CopyToClipboard(const std::wstring& text);
     void SaveSettings();
+
+    // editing (the work itself happens in the worker's DocEditor)
+    bool CanEdit();
+    void SendEdit(EditOp&& op);
+    void UndoRedo(bool redo);
+    void SaveDocument(int tabIndex, bool saveAs, uint32_t flags);
+    bool ConfirmCloseTab(int index);  // true: close now
+    bool ConfirmQuit();               // true: exit now
+    void OnDocEdited(EditResult* res);
+    void OnExtracted(ExtractResult* res);
+    std::vector<int> SelectedPages();
+    void DeletePages();
+    void RotatePages(int turns);
+    void MovePages(int gap);
+    void InsertBlankPage();
+    void InsertPagesFromFile();
+    void MergeFiles();
+    void MergeTabs();
+    void ExtractPages();
+    void AddMarkup(int type);
+    void ShowPagesMenu(POINT screen);
+    HMENU CreatePagesMenu();
+    std::vector<std::wstring> PickPdfFiles(bool multiple, const wchar_t* title);
 
     // sidebar, printing, properties, clipboard images
     void SetSidebarMode(SidebarMode mode);
@@ -118,6 +146,10 @@ private:
     bool m_printCancelled = false;
     int m_printDone = 0, m_printTotal = 0;
     HGLOBAL m_devMode = nullptr, m_devNames = nullptr;
+
+    // exiting with unsaved changes: saves still running before closing
+    int m_quitSaves = 0;
+    bool m_quitAfterSaves = false;
 
     // full screen
     bool m_fullscreen = false;

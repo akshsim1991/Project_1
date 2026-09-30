@@ -6,14 +6,14 @@ const Tile* PageCache::Use(const TileKey& key) {
     if (it == m_map.end()) return nullptr;
     m_lru.splice(m_lru.begin(), m_lru, it->second);
     it->second->frame = m_frame;
-    return &*it->second;
+    return it->second->stale ? nullptr : &*it->second;
 }
 
 bool PageCache::Touch(const TileKey& key) {
     auto it = m_map.find(key);
     if (it == m_map.end()) return false;
     m_lru.splice(m_lru.begin(), m_lru, it->second);
-    return true;
+    return !it->second->stale;
 }
 
 void PageCache::Insert(const TileKey& key, int x, int y, PixelBuffer&& pixels) {
@@ -53,7 +53,7 @@ void PageCache::Evict() {
 
 void PageCache::DropScalesOtherThan(int scaleKey) {
     for (auto it = m_lru.begin(); it != m_lru.end();) {
-        if (it->key.scaleKey != scaleKey) {
+        if (it->key.scaleKey != scaleKey || it->stale) {
             m_bytes -= it->pixels.Bytes();
             it->pixels.Free();
             m_map.erase(it->key);
@@ -62,6 +62,10 @@ void PageCache::DropScalesOtherThan(int scaleKey) {
             ++it;
         }
     }
+}
+
+void PageCache::MarkAllStale() {
+    for (Tile& t : m_lru) t.stale = true;
 }
 
 void PageCache::Clear() {

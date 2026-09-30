@@ -27,3 +27,19 @@ bool FileExists(const std::wstring& path);
 // https and mailto are allowed: other schemes (file:, custom protocols)
 // could launch programs. Returns false if the link was refused.
 bool OpenExternalLink(HWND owner, const std::wstring& uri);
+
+// Same file? (case-insensitive, as NTFS names are)
+bool SamePath(const std::wstring& a, const std::wstring& b);
+
+// A new, unique file name in %TEMP%\FeatherPDF for private copies of
+// documents (the undo history's saved states and inserted files).
+std::wstring MakeTempPdfPath();
+// Deletes private copies left behind by a crash (older than two days).
+void CleanOldTempFiles();
+
+// Parses "1-3, 5, 8-" (1-based, open-ended ranges allowed) into 0-based
+// page indices, in the order given. Returns false on a syntax error or a
+// page outside 1..pageCount.
+bool ParsePageRanges(const std::wstring& text, int pageCount, std::vector<int>& pages);
+// The inverse, for 0-based ascending pages: {0,1,2,4} -> "1-3, 5".
+std::wstring FormatPageRanges(const std::vector<int>& pages);

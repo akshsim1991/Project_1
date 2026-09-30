@@ -62,6 +62,14 @@ public:
     const std::vector<SizeF>& PageSizes() const { return m_sizes; }  // unrotated
     void SetMessage(const std::wstring& text);  // shown when no document
 
+    // --- editing -------------------------------------------------------------
+    // An edit was sent to the worker under `newDocId`: keep showing the
+    // current pages as placeholders until EndEdit delivers the result.
+    void BeginEdit(uint32_t newDocId);
+    // The edited document's page sizes; shows `focusPage` if >= 0 (and not
+    // already visible), otherwise stays where the reader is.
+    void EndEdit(std::vector<SizeF>&& sizes, int focusPage);
+
     // --- navigation --------------------------------------------------------
     int CurrentPage() const;
     void GoToPage(int page);
@@ -93,6 +101,7 @@ public:
 
     // --- text selection ----------------------------------------------------
     bool HasSelection() const { return m_hasSel && !(m_selAnchor == m_selFocus); }
+    bool GetSelection(TextPos& from, TextPos& to) const;  // false if none
     void CopySelection();  // text arrives as WM_APP_TEXT_COPIED
     void SelectAll();
     void ClearSelection();
@@ -208,6 +217,7 @@ private:
     int m_colors = 0;
     int m_forcedPage = -1;  // page explicitly navigated to (see CurrentPage)
     bool m_inSize = false, m_sizeDirty = false;
+    bool m_editPending = false;  // between BeginEdit and EndEdit
 
     // zoom
     ZoomMode m_mode = ZoomMode::FitWidth;

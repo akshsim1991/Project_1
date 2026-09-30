@@ -6,7 +6,11 @@
 #include <type_traits>
 
 #include "Util.h"
+#include "fpdf_annot.h"
 #include "fpdf_doc.h"
+#include "fpdf_edit.h"
+#include "fpdf_ppo.h"
+#include "fpdf_save.h"
 #include "fpdf_text.h"
 #include "fpdfview.h"
 
@@ -120,9 +124,10 @@ void PdfEngine::Close() {
     m_pageCount = 0;
 }
 
-OpenError PdfEngine::Open(const std::wstring& path, const std::string& password,
-                          std::vector<SizeF>& pageSizes) {
-    auto file = std::make_unique<FileSource>();
+OpenError PdfEngine::LoadDocument(const std::wstring& path, const std::string& password,
+                                  std::unique_ptr<FileSource>& file, FPDF_DOCUMENT& doc) {
+    doc = nullptr;
+    file = std::make_unique<FileSource>();
     file->handle = CreateFileW(path.c_str(), GENERIC_READ,
                                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
                                OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_RANDOM_ACCESS,
@@ -153,10 +158,10 @@ OpenError PdfEngine::Open(const std::wstring& path, const std::string& password,
     file->access.m_GetBlock = &FileSource::GetBlock;
     file->access.m_Param = file.get();
 
-    FPDF_DOCUMENT doc = nullptr;
     unsigned long err = FPDF_ERR_SUCCESS;
+    FPDF_FILEACCESS* access = &file->access;
     bool ok = Guarded([&] {
-        doc = FPDF_LoadCustomDocument(&file->access, password.empty() ? nullptr : password.c_str());
+        doc = FPDF_LoadCustomDocument(access, password.empty() ? nullptr : password.c_str());
         if (!doc) err = FPDF_GetLastError();
     });
     if (!ok) return OpenError::NotPdf;
@@ -169,13 +174,13 @@ OpenError PdfEngine::Open(const std::wstring& path, const std::string& password,
             default: return OpenError::Unknown;
         }
     }
+    return OpenError::None;
+}
 
-    int count = 0;
-    std::vector<SizeF> sizes;
-    ok = Guarded([&] {
-        count = FPDF_GetPageCount(doc);
-        if (count <= 0) return;
-        sizes.resize((size_t)count);
+bool PdfEngine::ReadPageSizes(FPDF_DOCUMENT doc, std::vector<SizeF>& sizes) {
+    return Guarded([&] {
+        const int count = FPDF_GetPageCount(doc);
+        sizes.assign(count > 0 ? (size_t)count : 0, SizeF{});
         // Page sizes come from the page dictionaries only; page content is
         // NOT parsed here, so this is fast even for thousands of pages.
         for (int i = 0; i < count; ++i) {
@@ -187,7 +192,18 @@ OpenError PdfEngine::Open(const std::wstring& path, const std::string& password,
             sizes[(size_t)i] = {s.width, s.height};
         }
     });
-    if (!ok || count <= 0) {
+}
+
+OpenError PdfEngine::Open(const std::wstring& path, const std::string& password,
+                          std::vector<SizeF>& pageSizes) {
+    std::unique_ptr<FileSource> file;
+    FPDF_DOCUMENT doc = nullptr;
+    const OpenError err = LoadDocument(path, password, file, doc);
+    if (err != OpenError::None) return err;
+
+    std::vector<SizeF> sizes;
+    const bool ok = ReadPageSizes(doc, sizes);
+    if (!ok || sizes.empty()) {
         Guarded([&] { FPDF_CloseDocument(doc); });
         return ok ? OpenError::NoPages : OpenError::NotPdf;
     }
@@ -196,7 +212,7 @@ OpenError PdfEngine::Open(const std::wstring& path, const std::string& password,
     Close();
     m_doc = doc;
     m_file = std::move(file);
-    m_pageCount = count;
+    m_pageCount = (int)sizes.size();
     pageSizes = std::move(sizes);
     return OpenError::None;
 }
@@ -536,6 +552,237 @@ std::wstring PdfEngine::ExtractText(TextPos from, TextPos to) {
         if (out.size() > kMaxChars) break;
     }
     return out;
+}
+
+// ---------------------------------------------------------------------------
+// Editing
+// ---------------------------------------------------------------------------
+namespace {
+// Streams FPDF_SaveAsCopy output into a file.
+struct FileWriter : FPDF_FILEWRITE {
+    HANDLE handle = INVALID_HANDLE_VALUE;
+    bool failed = false;
+
+    static int Write(FPDF_FILEWRITE* self, const void* data, unsigned long size) {
+        auto* w = static_cast<FileWriter*>(self);
+        const auto* p = static_cast<const uint8_t*>(data);
+        while (size > 0 && !w->failed) {
+            DWORD written = 0;
+            if (!WriteFile(w->handle, p, size, &written, nullptr) || written == 0) {
+                w->failed = true;
+                break;
+            }
+            p += written;
+            size -= written;
+        }
+        return w->failed ? 0 : 1;
+    }
+};
+
+// Saves `doc` to `path` (overwriting it) and flushes it to disk.
+bool SaveDocument(FPDF_DOCUMENT doc, const std::wstring& path) {
+    FileWriter w;
+    w.version = 1;
+    w.WriteBlock = &FileWriter::Write;
+    w.handle = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                           FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+    if (w.handle == INVALID_HANDLE_VALUE) return false;
+    FPDF_BOOL saved = 0;
+    const bool ok = Guarded([&] { saved = FPDF_SaveAsCopy(doc, &w, FPDF_NO_INCREMENTAL); });
+    // The data must be on disk before the file replaces the original.
+    const bool flushed = FlushFileBuffers(w.handle) != 0;
+    CloseHandle(w.handle);
+    return ok && saved && !w.failed && flushed;
+}
+
+// The current time as a PDF date string (UTC), e.g. D:20260301140500Z.
+std::wstring PdfDateNow() {
+    SYSTEMTIME st;
+    GetSystemTime(&st);
+    wchar_t buf[32];
+    swprintf_s(buf, L"D:%04u%02u%02u%02u%02u%02uZ", st.wYear, st.wMonth, st.wDay, st.wHour,
+               st.wMinute, st.wSecond);
+    return buf;
+}
+}  // namespace
+
+void PdfEngine::GetPageSizes(std::vector<SizeF>& out) {
+    if (m_doc) ReadPageSizes(m_doc, out);
+}
+
+bool PdfEngine::WriteTo(const std::wstring& path) { return m_doc && SaveDocument(m_doc, path); }
+
+bool PdfEngine::WritePagesTo(const std::vector<int>& pages, const std::wstring& path) {
+    if (!m_doc || pages.empty()) return false;
+    for (int p : pages)
+        if (p < 0 || p >= m_pageCount) return false;
+    FPDF_DOCUMENT out = nullptr;
+    bool ok = Guarded([&] {
+        out = FPDF_CreateNewDocument();
+        if (!out) return;
+        if (!FPDF_ImportPagesByIndex(out, m_doc, pages.data(), (unsigned long)pages.size(), 0)) {
+            FPDF_CloseDocument(out);
+            out = nullptr;
+            return;
+        }
+        FPDF_CopyViewerPreferences(out, m_doc);
+    });
+    if (!ok || !out) return false;
+    ok = SaveDocument(out, path);
+    Guarded([&] { FPDF_CloseDocument(out); });
+    return ok;
+}
+
+bool PdfEngine::ApplyEdit(const EditOp& op, std::wstring& error) {
+    if (!m_doc) return false;
+    ReleasePages();  // parsed pages may be deleted or change below
+    bool ok = false;
+    switch (op.kind) {
+        case EditOp::DeletePages: {
+            if (op.pages.empty() || (int)op.pages.size() >= m_pageCount) {
+                error = L"A document must keep at least one page.";
+                return false;
+            }
+            for (int p : op.pages)
+                if (p < 0 || p >= m_pageCount) return false;
+            ok = Guarded([&] {
+                // Highest first, so the remaining indices stay valid.
+                for (auto it = op.pages.rbegin(); it != op.pages.rend(); ++it)
+                    FPDFPage_Delete(m_doc, *it);
+            });
+            break;
+        }
+        case EditOp::MovePages: {
+            // FPDF_MovePages may leave the document half-changed on bad
+            // input, so everything is validated first.
+            const int n = (int)op.pages.size();
+            if (n == 0 || op.index < 0 || op.index > m_pageCount - n) return false;
+            for (int i = 0; i < n; ++i) {
+                if (op.pages[(size_t)i] < 0 || op.pages[(size_t)i] >= m_pageCount) return false;
+                if (i > 0 && op.pages[(size_t)i] <= op.pages[(size_t)i - 1]) return false;
+            }
+            FPDF_BOOL moved = 0;
+            ok = Guarded([&] {
+                moved = FPDF_MovePages(m_doc, op.pages.data(), (unsigned long)n, op.index);
+            }) && moved;
+            break;
+        }
+        case EditOp::RotatePages: {
+            ok = Guarded([&] {
+                for (int p : op.pages) {
+                    FPDF_PAGE page = FPDF_LoadPage(m_doc, p);
+                    if (!page) continue;
+                    const int current = std::max(0, FPDFPage_GetRotation(page));
+                    FPDFPage_SetRotation(page, ((current + op.turns) % 4 + 4) % 4);
+                    FPDF_ClosePage(page);
+                }
+            });
+            break;
+        }
+        case EditOp::InsertBlank: {
+            if (op.index < 0 || op.index > m_pageCount) return false;
+            FPDF_PAGE page = nullptr;
+            ok = Guarded([&] {
+                page = FPDFPage_New(m_doc, op.index, op.size.w, op.size.h);
+                if (page) FPDF_ClosePage(page);
+            }) && page;
+            break;
+        }
+        case EditOp::InsertFiles: {
+            if (op.index < 0 || op.index > m_pageCount) return false;
+            // Open every source first, so a bad file changes nothing.
+            struct Source {
+                std::unique_ptr<FileSource> file;
+                FPDF_DOCUMENT doc = nullptr;
+            };
+            std::vector<Source> sources;
+            for (const ImportSource& src : op.sources) {
+                Source s;
+                const OpenError e = LoadDocument(src.path, src.password, s.file, s.doc);
+                if (e != OpenError::None) {
+                    for (auto& o : sources) Guarded([&] { FPDF_CloseDocument(o.doc); });
+                    error = e == OpenError::Password
+                                ? L"A file is password-protected. Open it in a tab first, "
+                                  L"then use \x201CMerge open tabs\x201D."
+                                : L"A file could not be read, or is not a PDF document.";
+                    return false;
+                }
+                sources.push_back(std::move(s));
+            }
+            ok = true;
+            int at = op.index;
+            for (auto& s : sources) {
+                int count = 0;
+                FPDF_BOOL done = 0;
+                ok = ok && Guarded([&] {
+                    count = FPDF_GetPageCount(s.doc);
+                    done = FPDF_ImportPagesByIndex(m_doc, s.doc, nullptr, 0, at);
+                }) && done;
+                at += count;
+                Guarded([&] { FPDF_CloseDocument(s.doc); });
+            }
+            break;
+        }
+        case EditOp::Markup:
+            ok = AddMarkup(op);
+            break;
+    }
+    int count = m_pageCount;
+    Guarded([&] { count = FPDF_GetPageCount(m_doc); });
+    m_pageCount = std::max(0, count);
+    if (!ok && error.empty()) error = L"The change could not be made to this document.";
+    return ok;
+}
+
+// Adds a highlight / underline / strike-out annotation over a text range,
+// one annotation per page. Quad points come straight from PDFium's text
+// rectangles (PDF user space), so they are right for rotated pages too.
+bool PdfEngine::AddMarkup(const EditOp& op) {
+    bool any = false;
+    const std::wstring now = PdfDateNow();
+    for (int p = std::max(0, op.from.page); p <= op.to.page && p < m_pageCount; ++p) {
+        Guarded([&] {
+            FPDF_PAGE page = FPDF_LoadPage(m_doc, p);
+            if (!page) return;
+            FPDF_TEXTPAGE text = FPDFText_LoadPage(page);
+            if (text) {
+                const int n = FPDFText_CountChars(text);
+                const int s = p == op.from.page ? std::min(op.from.index, n) : 0;
+                const int e = p == op.to.page ? std::min(op.to.index, n) : n;
+                const int rects = e > s ? FPDFText_CountRects(text, s, e - s) : 0;
+                FPDF_ANNOTATION annot =
+                    rects > 0 ? FPDFPage_CreateAnnot(page, (FPDF_ANNOTATION_SUBTYPE)op.markup) : nullptr;
+                if (annot) {
+                    FPDFAnnot_SetColor(annot, FPDFANNOT_COLORTYPE_Color, GetRValue(op.color),
+                                       GetGValue(op.color), GetBValue(op.color), 255);
+                    FS_RECTF bounds{1e9f, -1e9f, -1e9f, 1e9f};  // left, top, right, bottom
+                    for (int r = 0; r < rects; ++r) {
+                        double l, t, rr, b;
+                        if (!FPDFText_GetRect(text, r, &l, &t, &rr, &b)) continue;
+                        FS_QUADPOINTSF q;
+                        q.x1 = (float)l;  q.y1 = (float)t;   // upper left
+                        q.x2 = (float)rr; q.y2 = (float)t;   // upper right
+                        q.x3 = (float)l;  q.y3 = (float)b;   // lower left
+                        q.x4 = (float)rr; q.y4 = (float)b;   // lower right
+                        FPDFAnnot_AppendAttachmentPoints(annot, &q);
+                        bounds.left = std::min(bounds.left, (float)l);
+                        bounds.right = std::max(bounds.right, (float)rr);
+                        bounds.top = std::max(bounds.top, (float)t);
+                        bounds.bottom = std::min(bounds.bottom, (float)b);
+                    }
+                    FPDFAnnot_SetRect(annot, &bounds);
+                    FPDFAnnot_SetFlags(annot, FPDF_ANNOT_FLAG_PRINT);
+                    FPDFAnnot_SetStringValue(annot, "M",
+                                             reinterpret_cast<FPDF_WIDESTRING>(now.c_str()));
+                    FPDFPage_CloseAnnot(annot);
+                    any = true;
+                }
+                FPDFText_ClosePage(text);
+            }
+            FPDF_ClosePage(page);
+        });
+    }
+    return any;
 }
 
 // ---------------------------------------------------------------------------

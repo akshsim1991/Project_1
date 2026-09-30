@@ -43,6 +43,8 @@ struct Tile {
     int x = 0, y = 0;  // position inside the page bitmap at key.scaleKey
     PixelBuffer pixels;
     uint64_t frame = 0;  // last frame in which the tile was drawn
+    bool stale = false;  // content out of date (document edited): shown
+                         // only as a placeholder until re-rendered
 };
 
 class PageCache {
@@ -57,7 +59,7 @@ public:
     void BeginFrame() { ++m_frame; }
 
     // Returns the tile (and marks it most recently used and pinned for the
-    // current frame), or nullptr.
+    // current frame), or nullptr. Stale tiles are pinned but not returned.
     const Tile* Use(const TileKey& key);
     // Like Use() but does not pin: for prefetched tiles.
     bool Touch(const TileKey& key);
@@ -65,14 +67,18 @@ public:
     void Insert(const TileKey& key, int x, int y, PixelBuffer&& pixels);
 
     // Calls fn(const Tile&) for every cached tile of `page` whose scale is
-    // not `excludeScale` (used to draw stretched placeholders while zooming).
+    // not `excludeScale`, or that is stale (used to draw placeholders while
+    // zooming or after an edit).
     template <typename Fn>
-    void ForEachOtherScale(int page, int excludeScale, Fn&& fn) const {
+    void ForEachPlaceholder(int page, int excludeScale, Fn&& fn) const {
         for (const Tile& t : m_lru)
-            if (t.key.page == page && t.key.scaleKey != excludeScale) fn(t);
+            if (t.key.page == page && (t.key.scaleKey != excludeScale || t.stale)) fn(t);
     }
 
+    // Drops placeholders: tiles of other scales and stale tiles.
     void DropScalesOtherThan(int scaleKey);
+    // Keeps every tile as a placeholder but renders it again.
+    void MarkAllStale();
     void Clear();
 
 private:

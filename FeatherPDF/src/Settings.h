@@ -18,6 +18,7 @@ struct Settings {
     int sidebarMode = 0;   // SidebarMode: 0 hidden, 1 bookmarks, 2 thumbnails
     int sidebarWidth = 240;  // in 96-DPI pixels
     bool matchCase = false;
+    int highlightColor = 0;  // index into kHighlightColors
 
     int themeMode = 0;     // ThemeMode: 0 = system, 1 = light, 2 = dark
 

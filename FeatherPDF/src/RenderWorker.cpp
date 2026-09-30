@@ -1,6 +1,8 @@
 // RenderWorker.cpp - background rendering / text / search thread.
 #include "RenderWorker.h"
 
+#include "Util.h"
+
 namespace {
 class LockGuard {
 public:
@@ -161,14 +163,59 @@ void RenderWorker::TrimMemory() {
     Push(std::move(c));
 }
 
+void RenderWorker::Edit(uint32_t docId, uint32_t newDocId, EditOp&& op) {
+    Command c;
+    c.type = Command::Edit;
+    c.docId = docId;
+    c.newDocId = newDocId;
+    c.op = std::move(op);
+    Push(std::move(c));
+}
+
+void RenderWorker::Undo(uint32_t docId, uint32_t newDocId) {
+    Command c;
+    c.type = Command::Undo;
+    c.docId = docId;
+    c.newDocId = newDocId;
+    Push(std::move(c));
+}
+
+void RenderWorker::Redo(uint32_t docId, uint32_t newDocId) {
+    Command c;
+    c.type = Command::Redo;
+    c.docId = docId;
+    c.newDocId = newDocId;
+    Push(std::move(c));
+}
+
+void RenderWorker::Save(uint32_t docId, const std::wstring& path, uint32_t flags) {
+    Command c;
+    c.type = Command::Save;
+    c.docId = docId;
+    c.text = path;
+    c.flags = flags;
+    Push(std::move(c));
+}
+
+void RenderWorker::Extract(uint32_t docId, std::vector<int>&& pages, const std::wstring& path,
+                           bool separate) {
+    Command c;
+    c.type = Command::Extract;
+    c.docId = docId;
+    c.pages = std::move(pages);
+    c.text = path;
+    c.flags = separate ? 1 : 0;
+    Push(std::move(c));
+}
+
 template <typename T>
 void RenderWorker::Post(UINT msg, T* obj) {
     if (!PostMessageW(m_notify, msg, 0, (LPARAM)obj)) delete obj;
 }
 
 PdfEngine* RenderWorker::Engine(uint32_t docId) {
-    auto it = m_engines.find(docId);
-    return it == m_engines.end() ? nullptr : it->second.get();
+    auto it = m_docs.find(docId);
+    return it == m_docs.end() ? nullptr : it->second->Engine();
 }
 
 DWORD WINAPI RenderWorker::ThreadProc(LPVOID self) {
@@ -244,7 +291,7 @@ void RenderWorker::Run() {
     }
 
     if (m_print.dc) EndPrint(true);
-    m_engines.clear();  // closes every document
+    m_docs.clear();  // closes every document and deletes private copies
     PdfEngine::DestroyLibrary();
 }
 
@@ -254,20 +301,20 @@ void RenderWorker::Execute(Command& cmd) {
             auto* res = new DocLoadResult;
             res->docId = cmd.docId;
             res->path = cmd.text;
-            auto engine = std::make_unique<PdfEngine>();
-            res->error = engine->Open(cmd.text, cmd.password, res->pageSizes);
+            auto doc = std::make_unique<DocEditor>();
+            res->error = doc->Open(cmd.text, cmd.password, res->pageSizes);
             SecureZeroMemory(cmd.password.data(), cmd.password.size());
             if (res->error == OpenError::None) {
-                engine->LoadOutline(res->outline);
-                engine->GetInfo(res->info);
-                m_engines[cmd.docId] = std::move(engine);
+                doc->Engine()->LoadOutline(res->outline);
+                doc->Engine()->GetInfo(res->info);
+                m_docs[cmd.docId] = std::move(doc);
             }
             Post(WM_APP_DOC_LOADED, res);
             break;
         }
         case Command::Close:
             if (m_print.dc && m_print.docId == cmd.docId) EndPrint(true);
-            m_engines.erase(cmd.docId);
+            m_docs.erase(cmd.docId);
             if (m_search.docId == cmd.docId) {
                 LockGuard g(m_lock);
                 m_searchActive = false;
@@ -340,9 +387,138 @@ void RenderWorker::Execute(Command& cmd) {
             if (m_print.dc) EndPrint(true);
             break;
         case Command::Trim:
-            for (auto& e : m_engines) e.second->ReleasePages();
+            for (auto& d : m_docs)
+                if (d.second->Engine()) d.second->Engine()->ReleasePages();
+            break;
+        case Command::Edit:
+        case Command::Undo:
+        case Command::Redo:
+        case Command::Save:
+            ExecuteEdit(cmd);
+            break;
+        case Command::Extract:
+            ExecuteExtract(cmd);
             break;
     }
+}
+
+// Moves a document to a new id (see the header): work still queued for
+// the old id is dropped, and a running print job or search follows.
+void RenderWorker::Rekey(uint32_t oldId, uint32_t newId) {
+    if (oldId == newId) return;
+    auto it = m_docs.find(oldId);
+    if (it == m_docs.end()) return;
+    m_docs[newId] = std::move(it->second);
+    m_docs.erase(it);
+    if (m_print.docId == oldId) m_print.docId = newId;
+    LockGuard g(m_lock);
+    if (m_search.docId == oldId) m_searchActive = false;  // the UI restarts it
+}
+
+// Inserted files are copied (tabs: saved) to private files first, so that
+// undo/redo can replay the edit later whatever happens to the originals.
+bool RenderWorker::PrepareSources(EditOp& op, DocEditor& target, std::wstring& error) {
+    for (ImportSource& src : op.sources) {
+        const std::wstring copy = MakeTempPdfPath();
+        if (src.docId) {
+            auto it = m_docs.find(src.docId);
+            if (it == m_docs.end() || !it->second->Engine() ||
+                !it->second->Engine()->WriteTo(copy)) {
+                DeleteFileW(copy.c_str());
+                error = L"An open tab could not be added.";
+                return false;
+            }
+            src.password = it->second->Password();
+            src.docId = 0;
+        } else if (!CopyFileW(src.path.c_str(), copy.c_str(), FALSE)) {
+            error = FileNameFromPath(src.path) + L" could not be read.";
+            return false;
+        }
+        target.AdoptTempFile(copy);
+        src.path = copy;
+    }
+    return true;
+}
+
+void RenderWorker::ExecuteEdit(Command& cmd) {
+    auto it = m_docs.find(cmd.docId);
+    if (it == m_docs.end()) return;
+    DocEditor& doc = *it->second;
+    auto* res = new EditResult;
+    res->docId = cmd.docId;
+    res->flags = cmd.flags;
+    switch (cmd.type) {
+        case Command::Edit:
+            res->action = EditAction::Edit;
+            res->ok = PrepareSources(cmd.op, doc, res->error) &&
+                      doc.Apply(std::move(cmd.op), res->error, res->focusPage, res->select);
+            break;
+        case Command::Undo:
+            res->action = EditAction::Undo;
+            res->ok = doc.Undo(res->error);
+            break;
+        case Command::Redo:
+            res->action = EditAction::Redo;
+            res->ok = doc.Redo(res->error, res->focusPage, res->select);
+            break;
+        default:
+            res->action = EditAction::Save;
+            res->ok = doc.Save(cmd.text, res->error);
+            break;
+    }
+    if (cmd.type != Command::Save) {
+        Rekey(cmd.docId, cmd.newDocId);
+        res->docId = cmd.newDocId;
+    }
+    if (PdfEngine* engine = doc.Engine()) {
+        engine->GetPageSizes(res->pageSizes);
+        engine->LoadOutline(res->outline);
+        engine->GetInfo(res->info);
+    }
+    res->canUndo = doc.CanUndo();
+    res->canRedo = doc.CanRedo();
+    res->dirty = doc.Dirty();
+    res->path = doc.Path();
+    Post(WM_APP_DOC_EDITED, res);
+}
+
+void RenderWorker::ExecuteExtract(Command& cmd) {
+    PdfEngine* engine = Engine(cmd.docId);
+    if (!engine) return;
+    auto* res = new ExtractResult;
+    // Each file is written under a temporary name and renamed when
+    // complete, so a failure never leaves a half-written PDF behind.
+    auto write = [&](const std::vector<int>& pages, const std::wstring& target) {
+        const std::wstring temp = target + L".tmp";
+        if (!engine->WritePagesTo(pages, temp) ||
+            !MoveFileExW(temp.c_str(), target.c_str(),
+                         MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+            DeleteFileW(temp.c_str());
+            return false;
+        }
+        res->files.push_back(target);
+        return true;
+    };
+    if (!cmd.flags) {
+        res->ok = write(cmd.pages, cmd.text);
+    } else {
+        std::wstring stem = cmd.text;
+        if (stem.size() > 4 && _wcsicmp(stem.c_str() + stem.size() - 4, L".pdf") == 0)
+            stem.resize(stem.size() - 4);
+        for (int p : cmd.pages) {
+            std::wstring target = stem + L"-" + std::to_wstring(p + 1) + L".pdf";
+            for (int n = 2; FileExists(target) && n < 1000; ++n)
+                target = stem + L"-" + std::to_wstring(p + 1) + L" (" + std::to_wstring(n) + L").pdf";
+            if (!write({p}, target)) {
+                res->ok = false;
+                break;
+            }
+        }
+    }
+    if (!res->ok)
+        res->error = L"The pages could not be saved. The folder may be read-only, or the disk "
+                     L"may be full.";
+    Post(WM_APP_EXTRACTED, res);
 }
 
 void RenderWorker::SearchStep() {

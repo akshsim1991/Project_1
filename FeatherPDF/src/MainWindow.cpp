@@ -29,6 +29,16 @@ const wchar_t kGlyphMore[] = L"\xE712";
 const wchar_t kGlyphUp[] = L"\xE70E";
 const wchar_t kGlyphDown[] = L"\xE70D";
 const wchar_t kGlyphClose[] = L"\xE711";
+const wchar_t kGlyphSave[] = L"\xE74E";
+const wchar_t kGlyphUndo[] = L"\xE7A7";
+const wchar_t kGlyphRedo[] = L"\xE7A6";
+
+// Highlight colours offered in the menu (ID_HL_COLOR_FIRST + index).
+const COLORREF kHighlightColors[] = {RGB(255, 230, 0), RGB(120, 220, 110), RGB(110, 190, 255),
+                                     RGB(255, 140, 200)};
+const wchar_t* const kHighlightColorNames[] = {L"&Yellow", L"&Green", L"&Blue", L"&Pink"};
+constexpr COLORREF kUnderlineColor = RGB(0, 90, 220);
+constexpr COLORREF kStrikeOutColor = RGB(220, 30, 30);
 
 const wchar_t* OpenErrorText(OpenError e) {
     switch (e) {
@@ -43,11 +53,6 @@ const wchar_t* OpenErrorText(OpenError e) {
         case OpenError::NoPages: return L"The document does not contain any pages.";
         default: return L"The document could not be opened.";
     }
-}
-
-bool SamePath(const std::wstring& a, const std::wstring& b) {
-    return CompareStringOrdinal(a.c_str(), (int)a.size(), b.c_str(), (int)b.size(), TRUE) ==
-           CSTR_EQUAL;
 }
 
 std::wstring FullPath(const std::wstring& path) {
@@ -107,6 +112,7 @@ INT_PTR CALLBACK PasswordDlgProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
 bool MainWindow::Create(HINSTANCE inst, int showCmd, const std::wstring& file, int page) {
     m_inst = inst;
     m_settings.Load();
+    CleanOldTempFiles();
     ReloadTheme((ThemeMode)m_settings.themeMode);
 
     WNDCLASSEXW wc{sizeof(wc)};
@@ -186,6 +192,9 @@ void MainWindow::CreateChildren() {
     // Main toolbar:  Open | < > [page] / N | - 100% + | ...  Search  More
     m_toolbar.Create(m_hwnd, m_hwnd, 44);
     m_toolbar.AddButton(ID_OPEN, kGlyphOpen, L"Open (Ctrl+O)");
+    m_toolbar.AddButton(ID_SAVE, kGlyphSave, L"Save (Ctrl+S)");
+    m_toolbar.AddButton(ID_UNDO, kGlyphUndo, L"Undo (Ctrl+Z)");
+    m_toolbar.AddButton(ID_REDO, kGlyphRedo, L"Redo (Ctrl+Y)");
     m_toolbar.AddSeparator();
     m_toolbar.AddButton(ID_PREV_PAGE, kGlyphPrev, L"Previous page (Page Up)");
     m_toolbar.AddButton(ID_NEXT_PAGE, kGlyphNext, L"Next page (Page Down)");
@@ -254,6 +263,11 @@ void MainWindow::CreateAccelerators() {
         {FCONTROL | FVIRTKEY, 'R', ID_ROTATE_RIGHT},
         {FCONTROL | FVIRTKEY, 'B', ID_SIDEBAR_BOOKMARKS},
         {FCONTROL | FSHIFT | FVIRTKEY, 'B', ID_SIDEBAR_THUMBNAILS},
+        {FCONTROL | FVIRTKEY, 'S', ID_SAVE},
+        {FCONTROL | FSHIFT | FVIRTKEY, 'S', ID_SAVE_AS},
+        {FCONTROL | FVIRTKEY, 'Z', ID_UNDO},
+        {FCONTROL | FSHIFT | FVIRTKEY, 'Z', ID_REDO},
+        {FCONTROL | FVIRTKEY, 'Y', ID_REDO},
     };
     m_accel = CreateAcceleratorTableW(acc, (int)(sizeof(acc) / sizeof(acc[0])));
 }
@@ -368,14 +382,16 @@ void MainWindow::ActivateTab(int index) {
     UpdateSearchStatus();
 }
 
-void MainWindow::CloseTab(int index) {
+void MainWindow::CloseTab(int index, bool force) {
     if (index < 0 || index >= (int)m_tabs.size()) return;
+    if (!force && !ConfirmCloseTab(index)) return;
     Tab& tab = *m_tabs[(size_t)index];
     if (index == m_active && tab.search.running) CancelSearch();
     if (tab.docId) m_worker.CloseDocument(tab.docId);
 
     if (m_tabs.size() == 1) {  // keep one empty tab rather than no view at all
         tab.docId = tab.pendingDocId = 0;
+        tab.dirty = tab.canUndo = tab.canRedo = false;
         tab.path.clear();
         tab.search.Reset();
         tab.search.query.clear();
@@ -406,7 +422,7 @@ void MainWindow::UpdateTabs() {
     for (const auto& t : m_tabs) {
         TabBar::TabInfo info;
         if (t->docId)
-            info.title = FileNameFromPath(t->path);
+            info.title = (t->dirty ? L"\x2022 " : L"") + FileNameFromPath(t->path);
         else if (t->pendingDocId)
             info.title = L"Opening\x2026";
         else
@@ -491,6 +507,12 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         case WM_APP_SIDEBAR:
             OnSidebar(wp, lp);
+            return 0;
+        case WM_APP_DOC_EDITED:
+            OnDocEdited((EditResult*)lp);
+            return 0;
+        case WM_APP_EXTRACTED:
+            OnExtracted((ExtractResult*)lp);
             return 0;
 
         // Splitter between sidebar and page: drag to resize the sidebar.
@@ -621,6 +643,8 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             break;
 
         case WM_CLOSE:
+            if (m_quitSaves > 0) return 0;  // still saving; closes when done
+            if (!ConfirmQuit()) return 0;
             SaveSettings();
             DestroyWindow(m_hwnd);
             return 0;
@@ -692,6 +716,11 @@ void MainWindow::GoToPageFromEdit() {
 // ===========================================================================
 void MainWindow::OnCommand(int id, int code, HWND ctl) {
     PdfView& view = View();
+    if (id >= ID_HL_COLOR_FIRST && id <= ID_HL_COLOR_LAST) {
+        m_settings.highlightColor = id - ID_HL_COLOR_FIRST;
+        if (view.HasSelection()) AddMarkup(kMarkupHighlight);
+        return;
+    }
     if (id >= ID_ZOOM_PRESET_FIRST && id < ID_ZOOM_PRESET_FIRST + kZoomPresetCount) {
         view.SetZoom(kZoomPresets[id - ID_ZOOM_PRESET_FIRST]);
         return;
@@ -705,6 +734,28 @@ void MainWindow::OnCommand(int id, int code, HWND ctl) {
     const bool fromAccelerator = code == 1;
     switch (id) {
         case ID_OPEN: ShowOpenDialog(); break;
+        case ID_SAVE: SaveDocument(m_active, false, 0); break;
+        case ID_SAVE_AS: SaveDocument(m_active, true, 0); break;
+        case ID_UNDO:
+        case ID_REDO:
+            // In a text box Ctrl+Z undoes typing, not the document.
+            if (HWND focus = GetFocus(); focus == m_searchEdit || focus == m_pageEdit) {
+                if (id == ID_UNDO) SendMessageW(focus, EM_UNDO, 0, 0);
+                break;
+            }
+            UndoRedo(id == ID_REDO);
+            break;
+        case ID_DELETE_PAGES: DeletePages(); break;
+        case ID_ROTATE_PAGES_CW: RotatePages(1); break;
+        case ID_ROTATE_PAGES_CCW: RotatePages(-1); break;
+        case ID_INSERT_BLANK: InsertBlankPage(); break;
+        case ID_INSERT_FILE: InsertPagesFromFile(); break;
+        case ID_MERGE_FILES: MergeFiles(); break;
+        case ID_MERGE_TABS: MergeTabs(); break;
+        case ID_EXTRACT_PAGES: ExtractPages(); break;
+        case ID_HIGHLIGHT: AddMarkup(kMarkupHighlight); break;
+        case ID_UNDERLINE: AddMarkup(kMarkupUnderline); break;
+        case ID_STRIKEOUT: AddMarkup(kMarkupStrikeOut); break;
         case ID_CLOSE_TAB: CloseTab(m_active); break;
         case ID_NEXT_TAB: ActivateTab((m_active + 1) % (int)m_tabs.size()); break;
         case ID_PREV_TAB:
@@ -850,9 +901,29 @@ void MainWindow::ShowMoreMenu() {
     CheckMenuRadioItem(theme, ID_THEME_SYSTEM, ID_THEME_DARK, ID_THEME_SYSTEM + m_settings.themeMode,
                        MF_BYCOMMAND);
 
+    const Tab& tab = Active();
+    const UINT selFlag = view.HasSelection() ? 0 : MF_GRAYED;
+    HMENU markup = CreatePopupMenu();
+    AppendMenuW(markup, MF_STRING | selFlag, ID_HIGHLIGHT, L"&Highlight\tCtrl+H");
+    AppendMenuW(markup, MF_STRING | selFlag, ID_UNDERLINE, L"&Underline\tCtrl+U");
+    AppendMenuW(markup, MF_STRING | selFlag, ID_STRIKEOUT, L"&Strikethrough\tCtrl+K");
+    AppendMenuW(markup, MF_SEPARATOR, 0, nullptr);
+    for (int i = 0; i <= ID_HL_COLOR_LAST - ID_HL_COLOR_FIRST; ++i)
+        AppendMenuW(markup, MF_STRING, ID_HL_COLOR_FIRST + i, kHighlightColorNames[i]);
+    CheckMenuRadioItem(markup, ID_HL_COLOR_FIRST, ID_HL_COLOR_LAST,
+                       ID_HL_COLOR_FIRST + m_settings.highlightColor, MF_BYCOMMAND);
+
     HMENU m = CreatePopupMenu();
     AppendMenuW(m, MF_STRING, ID_OPEN, L"&Open\x2026\tCtrl+O");
+    AppendMenuW(m, MF_STRING | (doc && tab.dirty ? 0 : MF_GRAYED), ID_SAVE, L"&Save\tCtrl+S");
+    AppendMenuW(m, MF_STRING | docFlag, ID_SAVE_AS, L"Sa&ve as\x2026\tCtrl+Shift+S");
     AppendMenuW(m, MF_STRING, ID_CLOSE_TAB, L"&Close tab\tCtrl+W");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_STRING | (doc && tab.canUndo ? 0 : MF_GRAYED), ID_UNDO, L"&Undo\tCtrl+Z");
+    AppendMenuW(m, MF_STRING | (doc && tab.canRedo ? 0 : MF_GRAYED), ID_REDO, L"&Redo\tCtrl+Y");
+    AppendMenuW(m, MF_POPUP | docFlag, (UINT_PTR)CreatePagesMenu(), L"&Edit pages");
+    AppendMenuW(m, MF_POPUP | docFlag, (UINT_PTR)markup, L"Mar&k up text");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     if (m_printing)
         AppendMenuW(m, MF_STRING, ID_CANCEL_PRINT, L"Cancel &printing");
     else
@@ -937,13 +1008,18 @@ void MainWindow::UpdateUi() {
     m_toolbar.SetEnabled(ID_ZOOM_OUT, doc);
     m_toolbar.SetEnabled(ID_ZOOM_LABEL, doc);
     m_toolbar.SetEnabled(ID_SEARCH, doc);
+    const Tab& tab = Active();
+    m_toolbar.SetEnabled(ID_SAVE, doc && tab.dirty);
+    m_toolbar.SetEnabled(ID_UNDO, doc && tab.canUndo);
+    m_toolbar.SetEnabled(ID_REDO, doc && tab.canRedo);
     if (doc && m_sidebar.Mode() == SidebarMode::Thumbnails)
         m_sidebar.Thumbs().SetCurrentPage(view.CurrentPage());
 }
 
 void MainWindow::UpdateTitle() {
     const Tab& tab = Active();
-    std::wstring title = tab.docId ? FileNameFromPath(tab.path) + L" - " APP_NAME
+    std::wstring title = tab.docId ? (tab.dirty ? L"\x2022 " : L"") + FileNameFromPath(tab.path) +
+                                         L" - " APP_NAME
                                    : std::wstring(APP_NAME);
     if (m_printing)
         title += L"  (printing " + std::to_wstring(m_printDone) + L" of " +
@@ -1067,6 +1143,7 @@ void MainWindow::OnDocLoaded(DocLoadResult* result) {
     tab.search.query.clear();
     tab.outline = std::move(res->outline);
     tab.info = std::move(res->info);
+    tab.dirty = tab.canUndo = tab.canRedo = false;
     tab.view->SetDocument(tab.docId, std::move(res->pageSizes), tab.pendingPage);
     UpdateTabs();
     if (index == m_active) {
@@ -1316,6 +1393,12 @@ void MainWindow::OnSidebar(WPARAM event, LPARAM value) {
     if (!tab.docId) return;
     if (event == kSidebarPageClicked) {
         tab.view->GoToPage((int)value);
+    } else if (event == kSidebarPagesMoved) {
+        MovePages((int)value);
+    } else if (event == kSidebarPagesMenu) {
+        ShowPagesMenu({GET_X_LPARAM(value), GET_Y_LPARAM(value)});
+    } else if (event == kSidebarDeletePages) {
+        DeletePages();
     } else if (event == kSidebarOutlineClicked && value >= 0 &&
                (size_t)value < tab.outline.size()) {
         const LinkTarget& target = tab.outline[(size_t)value].target;
@@ -1549,4 +1632,455 @@ void MainWindow::CopyImageToClipboard(TileResult* image) {
     } else {
         GlobalFree(mem);
     }
+}
+
+// ===========================================================================
+// Editing
+//
+// The UI only describes changes (EditOp) and shows results; DocEditor on the
+// render worker applies them, keeps the undo history and saves safely.
+// Every edit, undo and redo gives the document a new id, so tiles, text
+// and search results that are still queued for the old state are dropped
+// (TabByDocId no longer finds them) instead of flashing wrong content.
+// ===========================================================================
+bool MainWindow::CanEdit() {
+    const Tab& tab = Active();
+    return tab.docId && !tab.pendingDocId && tab.view->HasDocument();
+}
+
+void MainWindow::SendEdit(EditOp&& op) {
+    if (!CanEdit()) return;
+    Tab& tab = Active();
+    if (tab.search.running) CancelSearch();
+    const uint32_t oldId = tab.docId;
+    tab.docId = m_nextDocId++;
+    tab.view->BeginEdit(tab.docId);
+    m_worker.Edit(oldId, tab.docId, std::move(op));
+    // Optimistic state until the worker answers.
+    tab.dirty = tab.canUndo = true;
+    tab.canRedo = false;
+    UpdateTabs();
+    UpdateTitle();
+    UpdateUi();
+}
+
+void MainWindow::UndoRedo(bool redo) {
+    if (!CanEdit()) return;
+    Tab& tab = Active();
+    if (redo ? !tab.canRedo : !tab.canUndo) return;
+    if (tab.search.running) CancelSearch();
+    const uint32_t oldId = tab.docId;
+    tab.docId = m_nextDocId++;
+    tab.view->BeginEdit(tab.docId);
+    if (redo)
+        m_worker.Redo(oldId, tab.docId);
+    else
+        m_worker.Undo(oldId, tab.docId);
+    tab.canUndo = tab.canRedo = false;  // until the worker answers
+    UpdateUi();
+}
+
+void MainWindow::SaveDocument(int index, bool saveAs, uint32_t flags) {
+    if (index < 0 || index >= (int)m_tabs.size()) return;
+    Tab& tab = *m_tabs[(size_t)index];
+    if (!tab.docId || tab.pendingDocId) return;
+    std::wstring target = tab.path;
+    if (saveAs) {
+        std::vector<wchar_t> buf(32768, L'\0');
+        const std::wstring name = FileNameFromPath(tab.path);
+        wcsncpy_s(buf.data(), buf.size(), name.c_str(), _TRUNCATE);
+        const std::wstring dir = DirectoryFromPath(tab.path);
+        OPENFILENAMEW ofn{sizeof(ofn)};
+        ofn.hwndOwner = m_hwnd;
+        ofn.lpstrFilter = L"PDF documents (*.pdf)\0*.pdf\0";
+        ofn.lpstrFile = buf.data();
+        ofn.nMaxFile = (DWORD)buf.size();
+        ofn.lpstrInitialDir = dir.empty() ? nullptr : dir.c_str();
+        ofn.lpstrDefExt = L"pdf";
+        ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_EXPLORER | OFN_HIDEREADONLY;
+        if (!GetSaveFileNameW(&ofn)) return;
+        target = FullPath(buf.data());
+        for (size_t i = 0; i < m_tabs.size(); ++i) {
+            if ((int)i != index && m_tabs[i]->docId && SamePath(m_tabs[i]->path, target)) {
+                MessageBoxW(m_hwnd,
+                            L"That file is open in another tab. Close it first, or choose "
+                            L"another name.",
+                            APP_NAME, MB_ICONWARNING);
+                return;
+            }
+        }
+    }
+    tab.saveDocId = tab.docId;
+    m_worker.Save(tab.docId, target, flags);
+}
+
+bool MainWindow::ConfirmCloseTab(int index) {
+    Tab& tab = *m_tabs[(size_t)index];
+    if (!tab.docId || !tab.dirty) return true;
+    ActivateTab(index);
+    const std::wstring msg =
+        L"Do you want to save the changes to \x201C" + FileNameFromPath(tab.path) + L"\x201D?";
+    switch (MessageBoxW(m_hwnd, msg.c_str(), APP_NAME, MB_YESNOCANCEL | MB_ICONWARNING)) {
+        case IDYES:
+            SaveDocument(index, false, kAfterSaveCloseTab);  // closes when saved
+            return false;
+        case IDNO: return true;
+        default: return false;
+    }
+}
+
+bool MainWindow::ConfirmQuit() {
+    for (size_t i = 0; i < m_tabs.size(); ++i) {
+        Tab& tab = *m_tabs[i];
+        if (!tab.docId || !tab.dirty || tab.discardOnQuit) continue;
+        ActivateTab((int)i);
+        const std::wstring msg = L"Do you want to save the changes to \x201C" +
+                                 FileNameFromPath(tab.path) + L"\x201D before closing?";
+        const int answer = MessageBoxW(m_hwnd, msg.c_str(), APP_NAME, MB_YESNOCANCEL | MB_ICONWARNING);
+        if (answer == IDYES) {
+            ++m_quitSaves;
+            SaveDocument((int)i, false, kAfterSaveQuit);
+        } else if (answer == IDNO) {
+            tab.discardOnQuit = true;
+        } else {
+            for (auto& t : m_tabs) t->discardOnQuit = false;
+            m_quitAfterSaves = false;  // saves already started still finish
+            return false;
+        }
+    }
+    if (m_quitSaves > 0) {
+        m_quitAfterSaves = true;  // WM_CLOSE is posted again when they finish
+        return false;
+    }
+    return true;
+}
+
+void MainWindow::OnDocEdited(EditResult* result) {
+    std::unique_ptr<EditResult> res(result);
+    int index = -1;
+    for (size_t i = 0; i < m_tabs.size(); ++i) {
+        const Tab& t = *m_tabs[i];
+        if (t.docId == res->docId ||
+            (res->action == EditAction::Save && t.saveDocId == res->docId))
+            index = (int)i;
+    }
+    if (res->action == EditAction::Save && (res->flags & kAfterSaveQuit)) {
+        --m_quitSaves;
+        if (!res->ok) m_quitAfterSaves = false;
+    }
+    if (index < 0) return;  // tab closed, or a newer edit is already on its way
+    Tab& tab = *m_tabs[(size_t)index];
+    const bool current = tab.docId == res->docId;  // no newer edit sent since
+
+    if (current) {
+        tab.dirty = res->dirty;
+        tab.canUndo = res->canUndo;
+        tab.canRedo = res->canRedo;
+        tab.path = res->path;
+        tab.info = std::move(res->info);
+        if (res->action != EditAction::Save) {
+            tab.outline = std::move(res->outline);
+            tab.view->EndEdit(std::move(res->pageSizes), res->focusPage);
+            if (index == m_active) {
+                if (m_sidebar.Mode() == SidebarMode::Thumbnails) {
+                    m_sidebar.Thumbs().Reload(tab.docId, tab.view->PageSizes());
+                    m_sidebar.Thumbs().SetSelection(res->select);
+                    m_sidebar.Thumbs().SetCurrentPage(tab.view->CurrentPage());
+                } else {
+                    SyncSidebar();
+                }
+                // Results found before the edit point at old positions.
+                if (m_searchVisible && !GetText(m_searchEdit).empty()) {
+                    StartSearch();
+                } else {
+                    tab.search.Reset();
+                    UpdateSearchStatus();
+                }
+            } else {
+                tab.search.Reset();
+            }
+        }
+    }
+    UpdateTabs();
+    if (index == m_active) {
+        UpdateTitle();
+        UpdateUi();
+    }
+
+    if (!res->ok) {
+        const std::wstring what = res->action == EditAction::Save
+                                      ? L"\x201C" + FileNameFromPath(tab.path) + L"\x201D could not be saved.\n\n"
+                                      : std::wstring();
+        MessageBoxW(m_hwnd, (what + res->error).c_str(), APP_NAME, MB_ICONWARNING);
+        return;
+    }
+    if (res->action == EditAction::Save) {
+        if (res->flags & kAfterSaveCloseTab) CloseTab(index, true);
+        if ((res->flags & kAfterSaveQuit) && m_quitAfterSaves && m_quitSaves == 0)
+            PostMessageW(m_hwnd, WM_CLOSE, 0, 0);
+    }
+}
+
+std::vector<int> MainWindow::SelectedPages() {
+    Tab& tab = Active();
+    if (m_sidebar.Mode() == SidebarMode::Thumbnails) {
+        std::vector<int> sel = m_sidebar.Thumbs().Selection();
+        if (!sel.empty() && sel.back() < tab.view->PageCount()) return sel;
+    }
+    return {tab.view->CurrentPage()};
+}
+
+void MainWindow::DeletePages() {
+    if (!CanEdit()) return;
+    EditOp op;
+    op.kind = EditOp::DeletePages;
+    op.pages = SelectedPages();
+    if ((int)op.pages.size() >= View().PageCount()) {
+        MessageBoxW(m_hwnd, L"A document must keep at least one page.", APP_NAME, MB_ICONINFORMATION);
+        return;
+    }
+    SendEdit(std::move(op));
+}
+
+void MainWindow::RotatePages(int turns) {
+    if (!CanEdit()) return;
+    EditOp op;
+    op.kind = EditOp::RotatePages;
+    op.pages = SelectedPages();
+    op.turns = turns;
+    SendEdit(std::move(op));
+}
+
+void MainWindow::MovePages(int gap) {
+    if (!CanEdit()) return;
+    EditOp op;
+    op.kind = EditOp::MovePages;
+    op.pages = m_sidebar.Thumbs().Selection();
+    if (op.pages.empty()) return;
+    // FPDF_MovePages wants the index of the first moved page afterwards.
+    int before = 0;
+    for (int p : op.pages)
+        if (p < gap) ++before;
+    op.index = gap - before;
+    SendEdit(std::move(op));
+}
+
+void MainWindow::InsertBlankPage() {
+    if (!CanEdit()) return;
+    const int after = SelectedPages().back();
+    EditOp op;
+    op.kind = EditOp::InsertBlank;
+    op.index = after + 1;
+    op.size = View().PageSizes()[(size_t)after];  // same size as its neighbour
+    SendEdit(std::move(op));
+}
+
+std::vector<std::wstring> MainWindow::PickPdfFiles(bool multiple, const wchar_t* title) {
+    std::vector<wchar_t> buf(65536, L'\0');
+    const std::wstring dir = DirectoryFromPath(Active().path);
+    OPENFILENAMEW ofn{sizeof(ofn)};
+    ofn.hwndOwner = m_hwnd;
+    ofn.lpstrTitle = title;
+    ofn.lpstrFilter = L"PDF documents (*.pdf)\0*.pdf\0All files (*.*)\0*.*\0";
+    ofn.lpstrFile = buf.data();
+    ofn.nMaxFile = (DWORD)buf.size();
+    ofn.lpstrInitialDir = dir.empty() ? nullptr : dir.c_str();
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_EXPLORER | OFN_HIDEREADONLY |
+                (multiple ? OFN_ALLOWMULTISELECT : 0);
+    if (!GetOpenFileNameW(&ofn)) return {};
+    // Single file: "C:\dir\a.pdf\0". Several: "C:\dir\0a.pdf\0b.pdf\0\0".
+    std::vector<std::wstring> files;
+    const wchar_t* p = buf.data();
+    std::wstring first = p;
+    p += first.size() + 1;
+    if (!*p) return {first};
+    for (; *p; p += wcslen(p) + 1) files.push_back(first + L"\\" + p);
+    return files;
+}
+
+void MainWindow::InsertPagesFromFile() {
+    if (!CanEdit()) return;
+    const int after = SelectedPages().back();
+    const auto files = PickPdfFiles(false, L"Insert pages from");
+    if (files.empty()) return;
+    EditOp op;
+    op.kind = EditOp::InsertFiles;
+    op.index = after + 1;
+    op.sources.push_back({files[0]});
+    SendEdit(std::move(op));
+}
+
+void MainWindow::MergeFiles() {
+    if (!CanEdit()) return;
+    const auto files = PickPdfFiles(true, L"Add PDFs to the end of this document");
+    if (files.empty()) return;
+    EditOp op;
+    op.kind = EditOp::InsertFiles;
+    op.index = View().PageCount();
+    for (const auto& f : files) op.sources.push_back({f});
+    SendEdit(std::move(op));
+}
+
+void MainWindow::MergeTabs() {
+    if (!CanEdit()) return;
+    EditOp op;
+    op.kind = EditOp::InsertFiles;
+    op.index = View().PageCount();
+    for (size_t i = 0; i < m_tabs.size(); ++i) {
+        const Tab& t = *m_tabs[i];
+        if ((int)i != m_active && t.docId && !t.pendingDocId) {
+            ImportSource src;
+            src.docId = t.docId;  // its current state, unsaved changes included
+            op.sources.push_back(src);
+        }
+    }
+    if (op.sources.empty()) {
+        MessageBoxW(m_hwnd, L"Open the other PDFs in tabs first. Their pages are then added to "
+                            L"the end of this document, in tab order.",
+                    APP_NAME, MB_ICONINFORMATION);
+        return;
+    }
+    SendEdit(std::move(op));
+}
+
+namespace {
+struct ExtractPrompt {
+    std::wstring range;
+    int pageCount = 0;
+    bool separate = false;
+    std::vector<int> pages;
+};
+
+INT_PTR CALLBACK ExtractDlgProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
+    switch (msg) {
+        case WM_INITDIALOG: {
+            SetWindowLongPtrW(dlg, DWLP_USER, lp);
+            auto* p = (ExtractPrompt*)lp;
+            const std::wstring text = L"Pages to save as a new PDF (for example 1-3, 5, 8-). "
+                                      L"The document has " + std::to_wstring(p->pageCount) +
+                                      L" pages.";
+            SetDlgItemTextW(dlg, IDC_EXTRACT_TEXT, text.c_str());
+            SetDlgItemTextW(dlg, IDC_EXTRACT_RANGE, p->range.c_str());
+            ApplyWindowTheme(dlg);
+            return TRUE;
+        }
+        case WM_COMMAND:
+            if (LOWORD(wp) == IDOK) {
+                auto* p = (ExtractPrompt*)GetWindowLongPtrW(dlg, DWLP_USER);
+                p->range = GetText(GetDlgItem(dlg, IDC_EXTRACT_RANGE));
+                if (!ParsePageRanges(p->range, p->pageCount, p->pages)) {
+                    MessageBoxW(dlg, L"Enter page numbers or ranges, such as 1-3, 5, 8-.", APP_NAME,
+                                MB_ICONWARNING);
+                    SetFocus(GetDlgItem(dlg, IDC_EXTRACT_RANGE));
+                    return TRUE;
+                }
+                p->separate = IsDlgButtonChecked(dlg, IDC_EXTRACT_SEPARATE) == BST_CHECKED;
+                EndDialog(dlg, IDOK);
+                return TRUE;
+            }
+            if (LOWORD(wp) == IDCANCEL) {
+                EndDialog(dlg, IDCANCEL);
+                return TRUE;
+            }
+            break;
+    }
+    return FALSE;
+}
+}  // namespace
+
+void MainWindow::ExtractPages() {
+    if (!CanEdit()) return;
+    Tab& tab = Active();
+    ExtractPrompt prompt;
+    prompt.pageCount = tab.view->PageCount();
+    prompt.range = FormatPageRanges(SelectedPages());
+    if (DialogBoxParamW(m_inst, MAKEINTRESOURCEW(IDD_EXTRACT), m_hwnd, ExtractDlgProc,
+                        (LPARAM)&prompt) != IDOK)
+        return;
+
+    std::wstring stem = FileNameFromPath(tab.path);
+    if (stem.size() > 4 && _wcsicmp(stem.c_str() + stem.size() - 4, L".pdf") == 0)
+        stem.resize(stem.size() - 4);
+    std::wstring suggested = prompt.separate ? stem + L".pdf"
+                                             : stem + L" (pages " + prompt.range + L").pdf";
+    for (wchar_t& c : suggested)
+        if (wcschr(L"\\/:*?\"<>|", c)) c = L'-';
+    std::vector<wchar_t> buf(32768, L'\0');
+    wcsncpy_s(buf.data(), buf.size(), suggested.c_str(), _TRUNCATE);
+    const std::wstring dir = DirectoryFromPath(tab.path);
+    OPENFILENAMEW ofn{sizeof(ofn)};
+    ofn.hwndOwner = m_hwnd;
+    ofn.lpstrTitle = prompt.separate ? L"Save pages as (each page gets its number added)"
+                                     : L"Save pages as";
+    ofn.lpstrFilter = L"PDF documents (*.pdf)\0*.pdf\0";
+    ofn.lpstrFile = buf.data();
+    ofn.nMaxFile = (DWORD)buf.size();
+    ofn.lpstrInitialDir = dir.empty() ? nullptr : dir.c_str();
+    ofn.lpstrDefExt = L"pdf";
+    ofn.Flags = OFN_PATHMUSTEXIST | OFN_EXPLORER | OFN_HIDEREADONLY |
+                (prompt.separate ? 0 : OFN_OVERWRITEPROMPT);
+    if (!GetSaveFileNameW(&ofn)) return;
+    const std::wstring target = FullPath(buf.data());
+    for (const auto& t : m_tabs) {
+        if (t->docId && SamePath(t->path, target)) {
+            MessageBoxW(m_hwnd, L"That file is open in a tab. Choose another name.", APP_NAME,
+                        MB_ICONWARNING);
+            return;
+        }
+    }
+    m_worker.Extract(tab.docId, std::move(prompt.pages), target, prompt.separate);
+}
+
+void MainWindow::OnExtracted(ExtractResult* result) {
+    std::unique_ptr<ExtractResult> res(result);
+    if (!res->ok) {
+        MessageBoxW(m_hwnd, res->error.c_str(), APP_NAME, MB_ICONWARNING);
+        return;
+    }
+    if (res->files.size() == 1) {
+        const std::wstring msg = L"Saved \x201C" + FileNameFromPath(res->files[0]) +
+                                 L"\x201D.\n\nOpen it in a new tab?";
+        if (MessageBoxW(m_hwnd, msg.c_str(), APP_NAME, MB_YESNO | MB_ICONINFORMATION) == IDYES)
+            OpenFile(res->files[0], 0);
+    } else if (!res->files.empty()) {
+        const std::wstring msg = L"Saved " + std::to_wstring(res->files.size()) + L" files in\n" +
+                                 DirectoryFromPath(res->files[0]) + L".";
+        MessageBoxW(m_hwnd, msg.c_str(), APP_NAME, MB_ICONINFORMATION);
+    }
+}
+
+void MainWindow::AddMarkup(int type) {
+    if (!CanEdit()) return;
+    EditOp op;
+    op.kind = EditOp::Markup;
+    if (!View().GetSelection(op.from, op.to)) return;
+    op.markup = type;
+    op.color = type == kMarkupHighlight   ? kHighlightColors[m_settings.highlightColor]
+               : type == kMarkupUnderline ? kUnderlineColor
+                                          : kStrikeOutColor;
+    SendEdit(std::move(op));
+}
+
+HMENU MainWindow::CreatePagesMenu() {
+    const bool several = SelectedPages().size() > 1;
+    HMENU m = CreatePopupMenu();
+    AppendMenuW(m, MF_STRING, ID_DELETE_PAGES, several ? L"&Delete pages\tDel" : L"&Delete page\tDel");
+    AppendMenuW(m, MF_STRING, ID_ROTATE_PAGES_CW, L"Rotate &clockwise");
+    AppendMenuW(m, MF_STRING, ID_ROTATE_PAGES_CCW, L"Rotate c&ounterclockwise");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_STRING, ID_INSERT_BLANK, L"Insert &blank page after");
+    AppendMenuW(m, MF_STRING, ID_INSERT_FILE, L"&Insert pages from file\x2026");
+    AppendMenuW(m, MF_STRING, ID_MERGE_FILES, L"&Merge PDFs into this document\x2026");
+    AppendMenuW(m, MF_STRING | (m_tabs.size() > 1 ? 0 : MF_GRAYED), ID_MERGE_TABS,
+                L"Merge open &tabs into this document");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_STRING, ID_EXTRACT_PAGES, L"E&xtract or split pages\x2026");
+    return m;
+}
+
+void MainWindow::ShowPagesMenu(POINT screen) {
+    if (!CanEdit()) return;
+    HMENU m = CreatePagesMenu();
+    TrackPopupMenu(m, TPM_RIGHTBUTTON, screen.x, screen.y, 0, m_hwnd, nullptr);
+    DestroyMenu(m);
 }

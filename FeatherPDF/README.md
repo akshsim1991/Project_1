@@ -1,10 +1,12 @@
 # Feather PDF
 
-A small, fast, native PDF **viewer** for Windows 10 and 11. It opens PDFs
-in tabs and lets you scroll, jump to pages, zoom, search, follow links,
-browse bookmarks and thumbnails, read in two-page, rotated or night mode,
-select and copy text or images, and print. It has no editing, annotations,
-accounts, cloud features, telemetry or background services.
+A small, fast, native PDF **viewer and page editor** for Windows 10 and 11.
+It opens PDFs in tabs and lets you scroll, jump to pages, zoom, search,
+follow links, browse bookmarks and thumbnails, read in two-page, rotated or
+night mode, select and copy text or images, and print. You can also delete,
+reorder, rotate, insert, merge, split and extract pages, and highlight,
+underline or strike through text, with undo/redo and crash-safe saving. It
+has no accounts, cloud features, telemetry or background services.
 
 © 2026 Akshaya Simha. Developed for faster experience.
 
@@ -65,12 +67,14 @@ pinned to release `chromium/8066`, without V8/JavaScript or XFA.
 ## 3. Architecture
 
 ```
-PDF files ─► PdfEngine × N (one per tab; PDFium, lazy file reads)  ┐
-               ▲                                                   │ render worker
-               │ commands / wanted-tile list                       │ thread
+PDF files ─► DocEditor × N (one per tab)                          ┐
+               │  PdfEngine (PDFium, lazy file reads)              │
+               │  + edit history (undo/redo, safe save)            │ render worker
+               ▲                                                   │ thread
+               │ commands / wanted-tile list                       │
             RenderWorker ── renders a tile, extracts a page's      ┘
-               │           text layer, copies text, or searches
-               │           one page per step
+               │           text layer, copies text, applies an
+               │           edit, saves, or searches one page per step
                │ PostMessage(result)
                ▼
 MainWindow ─► Tab × N ─► PdfView ── layout, visible pages, zoom, navigation,
@@ -94,7 +98,8 @@ MainWindow ─► Tab × N ─► PdfView ── layout, visible pages, zoom, na
 | `src/PdfView.*` | Page layout (single / continuous / two-page), rotation, zoom, navigation, tile requests, painting, text selection, links, image copy |
 | `src/PageCache.*` | Bounded LRU cache of rendered tiles (memory policy) |
 | `src/RenderWorker.*` | Background thread that owns PDFium (all tabs); job priorities |
-| `src/PdfEngine.*` | PDFium wrapper: open, page sizes, tile rendering (rotation, night/dim colours), text and link layer, bookmarks, metadata, text copy, search, printing |
+| `src/PdfEngine.*` | PDFium wrapper: open, page sizes, tile rendering (rotation, night/dim colours), text and link layer, bookmarks, metadata, text copy, search, printing, page edits, text markup, writing files |
+| `src/DocEditor.*` | One open document on the worker: edit history, undo/redo by replay, safe saving |
 | `src/Search.*` | UI-side search state (sorted matches, current match, status) |
 | `src/Toolbar.*` | Flat themed toolbar with icon-font buttons and hosted edits |
 | `src/Theme.*` | Light/dark palette (System/Light/Dark), dark title bar/scrollbars/menus |
@@ -118,6 +123,36 @@ worker thread** calls into it for every tab. Each tab's document has its own
   rendering.
 * When there is no work, the worker sleeps on a condition variable (0% CPU).
   The UI has no polling timers.
+
+### Editing, undo and saving
+
+PDFium can change a document in memory but has no undo. `DocEditor`
+therefore records every edit (delete, move, rotate, insert, merge, text
+markup) as a small description. The edit is applied to the live document
+straight away. **Undo** re-opens the file as it was last loaded and replays
+every edit except the last. That takes milliseconds because nothing is
+rendered while replaying. **Redo** applies the next recorded edit again.
+Inserted and merged files are first copied to a private temporary folder
+(`%TEMP%\FeatherPDF`), so undo and redo keep working even if the originals
+change or their tabs are closed.
+
+Every edit gives the document a new internal id. Tiles, text layers and
+search results that were still queued for the old state are then ignored
+instead of briefly showing the wrong page. Until the new tiles arrive, the
+previous rendering stays on screen as a placeholder, so there is no flash.
+
+**Saving is crash-safe:**
+
+1. The document is written to a new file in the same folder and flushed to
+   disk.
+2. That file is opened again to check that it is a valid PDF with every page.
+3. Only then does it replace the original, using `ReplaceFileW`, which keeps
+   the original's attributes and permissions.
+
+A crash, power cut or full disk at any step leaves the original file
+untouched. If the original is also what undo replays from, a private copy
+of it is kept first, so changes made before saving can still be undone.
+Encrypted PDFs stay encrypted with the same password.
 
 ### Rendering and caching
 
@@ -260,6 +295,41 @@ right-click menu. Images are rendered at 200 DPI (or the current zoom if
 sharper, up to about 40 megapixels) and pasted as normal bitmaps into any
 program.
 
+### Editing
+
+**Pages:** open the thumbnails panel (Ctrl+Shift+B) and select pages with a
+click, Ctrl+click, Shift+click or Ctrl+A. Right-click a page, or use
+⋯ › Edit pages, for these commands:
+
+* **Delete pages** (or press Del in the thumbnails).
+* **Reorder pages:** drag the selected thumbnails to a new position. A blue
+  bar shows where they will go.
+* **Rotate clockwise / counterclockwise:** saved into the file, unlike the
+  view-only Rotate left/right (Ctrl+L / Ctrl+R).
+* **Insert blank page after** the selection, the same size as its neighbour.
+* **Insert pages from file:** another PDF is inserted after the selection.
+* **Merge PDFs into this document:** choose several files; they are added
+  to the end in the order chosen.
+* **Merge open tabs into this document:** every other open tab is added to
+  the end, in tab order, including any unsaved changes.
+* **Extract or split pages:** save a page range (such as `1-3, 7, 10-`) as
+  a new PDF, or save each page as its own file (`name-1.pdf`,
+  `name-2.pdf`, …). You can then open the new file in a tab.
+
+Without the thumbnails panel, page commands apply to the current page.
+
+**Text markup:** select text, then right-click › Highlight (Ctrl+H),
+Underline (Ctrl+U) or Strikethrough (Ctrl+K), or use ⋯ › Mark up text.
+Choose the highlight colour (yellow, green, blue or pink) in the same menu.
+These are standard PDF annotations, so Acrobat, Edge, Chrome and other
+viewers show them too.
+
+**Save, undo and redo:** Save (Ctrl+S) or Save as (Ctrl+Shift+S), and
+Undo (Ctrl+Z) or Redo (Ctrl+Y / Ctrl+Shift+Z). These are also on the
+toolbar. A tab with unsaved changes shows "•" before its name, as does the
+title bar. Closing that tab, or the window, asks whether to save, with
+Save / Don't save / Cancel. Undo keeps working after saving.
+
 **Theme:** ⋯ › Theme › System default / Light / Dark. The choice is
 remembered, and "System default" follows the Windows setting live.
 
@@ -277,6 +347,13 @@ and version info, and `.pdf` association.
 | Ctrl+Tab / Ctrl+Page Down | Next tab |
 | Ctrl+Shift+Tab / Ctrl+Page Up | Previous tab |
 | Ctrl+C | Copy selected text |
+| Ctrl+S | Save |
+| Ctrl+Shift+S | Save as |
+| Ctrl+Z | Undo |
+| Ctrl+Y / Ctrl+Shift+Z | Redo |
+| Ctrl+H / Ctrl+U / Ctrl+K | Highlight / underline / strike through the selected text |
+| Del (in thumbnails) | Delete the selected pages |
+| Ctrl+A (in thumbnails) | Select all pages |
 | Ctrl+P | Print |
 | Ctrl+D | Document properties |
 | Ctrl+B | Bookmarks panel |
@@ -375,7 +452,7 @@ script:
 ```powershell
 cmake --install build --config Release --prefix dist        # 1. portable folder
 & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" installer\FeatherPDF.iss   # 2. compile
-# -> installer\Output\FeatherPDF-Setup-1.2.0.exe
+# -> installer\Output\FeatherPDF-Setup-1.3.0.exe
 ```
 
 The installer:
@@ -446,7 +523,15 @@ There are no other dependencies. The full license texts are installed to
 * Search runs in the active tab only; switching tabs stops it.
 * No rotate-view command. Pages are shown as the PDF specifies (`/Rotate`
   is honoured).
-* The file is not reloaded automatically when it changes on disk.
+* The file is not reloaded automatically when it changes on disk. If
+  another program changes a file that has unsaved edits in Feather PDF,
+  undo replays those edits on the changed file.
+* Annotations can be added but not selected, moved or deleted afterwards,
+  except with undo. Existing annotations and forms are kept when saving.
+* Merging a password-protected file from disk is refused. Open it in a tab
+  first and use "Merge open tabs".
+* Saving always writes a complete new file, not an incremental update. Any
+  digital signatures in the original become invalid, as with most editors.
 * Files over 4 GB are rejected (PDFium's custom-file-access API is 32-bit on
   Windows).
 * XFA forms and PDF JavaScript are not supported (PDFium build without

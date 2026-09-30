@@ -39,6 +39,8 @@ void Settings::Load() {
     sidebarWidth = (int)ReadDword(key, L"SidebarWidth", 240);
     if (sidebarWidth < 120 || sidebarWidth > 800) sidebarWidth = 240;
     matchCase = ReadDword(key, L"MatchCase", 0) != 0;
+    highlightColor = (int)ReadDword(key, L"HighlightColor", 0);
+    if (highlightColor < 0 || highlightColor > 3) highlightColor = 0;
     themeMode = (int)ReadDword(key, L"Theme", 0);
     if (themeMode < 0 || themeMode > 2) themeMode = 0;
     activeTab = (int)ReadDword(key, L"ActiveTab", 0);
@@ -78,6 +80,7 @@ void Settings::Save() const {
     WriteDword(key, L"Sidebar", (DWORD)sidebarMode);
     WriteDword(key, L"SidebarWidth", (DWORD)sidebarWidth);
     WriteDword(key, L"MatchCase", matchCase ? 1 : 0);
+    WriteDword(key, L"HighlightColor", (DWORD)highlightColor);
     WriteDword(key, L"Theme", (DWORD)themeMode);
     WriteDword(key, L"ActiveTab", (DWORD)activeTab);
     std::wstring multi;

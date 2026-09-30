@@ -2,7 +2,11 @@
 //
 // PDFium is not thread-safe (not even across documents), so every open
 // document - one per tab - lives in this one thread, each in its own
-// PdfEngine keyed by document id.
+// DocEditor (PdfEngine + edit history) keyed by document id.
+//
+// Edits, undo and redo move the document to a new id chosen by the UI.
+// Tiles, text layers and search results already queued for the old id are
+// then ignored by the UI instead of being shown with the wrong content.
 //
 // The UI thread never blocks on PDF work. It talks to the worker through:
 //   * commands (open/close document, text layer, copy text, search,
@@ -20,7 +24,7 @@
 #include <map>
 #include <memory>
 
-#include "PdfEngine.h"
+#include "DocEditor.h"
 
 class RenderWorker {
 public:
@@ -44,12 +48,24 @@ public:
     void CancelSearch();
     void TrimMemory();
 
+    // Editing (results arrive as WM_APP_DOC_EDITED / WM_APP_EXTRACTED).
+    void Edit(uint32_t docId, uint32_t newDocId, EditOp&& op);
+    void Undo(uint32_t docId, uint32_t newDocId);
+    void Redo(uint32_t docId, uint32_t newDocId);
+    void Save(uint32_t docId, const std::wstring& path, uint32_t flags);
+    // Writes `pages` to `path`, or with `separate` one file per page named
+    // after `path` ("name-3.pdf").
+    void Extract(uint32_t docId, std::vector<int>&& pages, const std::wstring& path, bool separate);
+
 private:
     struct Command {
         enum Type {
-            Open, Close, TextLayer, Copy, Search, CancelSearch, Trim, Image, Print, CancelPrint
+            Open, Close, TextLayer, Copy, Search, CancelSearch, Trim, Image, Print, CancelPrint,
+            Edit, Undo, Redo, Save, Extract
         } type = Open;
         uint32_t docId = 0;
+        uint32_t newDocId = 0;   // Edit / Undo / Redo
+        uint32_t flags = 0;      // Save: kAfterSave*; Extract: separate files
         uint32_t requestId = 0;  // search id / copy request id
         std::wstring text;
         std::string password;
@@ -58,6 +74,8 @@ private:
         TextPos from, to;
         TileRequest tile;
         PrintJob job;
+        EditOp op;
+        std::vector<int> pages;  // Extract
     };
 
     static DWORD WINAPI ThreadProc(LPVOID self);
@@ -68,6 +86,10 @@ private:
     void EndPrint(bool abort);
     void Push(Command&& cmd);
     PdfEngine* Engine(uint32_t docId);
+    void ExecuteEdit(Command& cmd);
+    void ExecuteExtract(Command& cmd);
+    bool PrepareSources(EditOp& op, DocEditor& target, std::wstring& error);
+    void Rekey(uint32_t oldId, uint32_t newId);
     template <typename T>
     void Post(UINT msg, T* obj);
 
@@ -91,7 +113,7 @@ private:
     bool m_printActive = false;
 
     // --- worker-thread-only state ------------------------------------------
-    std::map<uint32_t, std::unique_ptr<PdfEngine>> m_engines;
+    std::map<uint32_t, std::unique_ptr<DocEditor>> m_docs;
     struct {
         uint32_t docId = 0;
         uint32_t id = 0;

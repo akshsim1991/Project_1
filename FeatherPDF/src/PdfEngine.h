@@ -62,8 +62,24 @@ public:
     // Releases cached parsed pages (used when the window is minimised).
     void ReleasePages();
 
+    // --- editing (driven by DocEditor) ----------------------------------------
+    // Applies one change to the document in memory. On failure `error` says
+    // why; the caller then rebuilds the document from its history, because
+    // a partly applied change can not be rolled back here.
+    bool ApplyEdit(const EditOp& op, std::wstring& error);
+    // Current page sizes (in points, after /Rotate), e.g. after an edit.
+    void GetPageSizes(std::vector<SizeF>& out);
+    // Writes the whole document (all edits included) to a new file.
+    bool WriteTo(const std::wstring& path);
+    // Writes the given pages, in order, as a new document.
+    bool WritePagesTo(const std::vector<int>& pages, const std::wstring& path);
+
 private:
     struct FileSource;
+    static OpenError LoadDocument(const std::wstring& path, const std::string& password,
+                                  std::unique_ptr<FileSource>& file, FPDF_DOCUMENT& doc);
+    static bool ReadPageSizes(FPDF_DOCUMENT doc, std::vector<SizeF>& sizes);
+    bool AddMarkup(const EditOp& op);
     FPDF_PAGE GetPage(int index);  // uses the small parsed-page LRU
     void ReadDest(FPDF_DEST dest, LinkTarget& target);
     void ReadAction(FPDF_ACTION action, LinkTarget& target);
