@@ -52,6 +52,31 @@ jobs:
           if ($title -notlike '*Collage Maker*') { Write-Host "Main window not shown (window title: '$title')"; exit 1 }
           Write-Host "PixelBlend started correctly. Window title: '$title'"
 
+      - name: Smoke test (open 3 images of different sizes)
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.Drawing
+          $dir = New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\pb-images"
+          $specs = @(@(640, 480, 'Red', 'jpg'), @(300, 500, 'Green', 'png'), @(800, 800, 'Blue', 'bmp'))
+          $files = foreach ($s in $specs) {
+            $bmp = New-Object System.Drawing.Bitmap $s[0], $s[1]
+            $g = [System.Drawing.Graphics]::FromImage($bmp); $g.Clear([System.Drawing.Color]::FromName($s[2])); $g.Dispose()
+            $path = Join-Path $dir "$($s[2]).$($s[3])"
+            $bmp.Save($path); $bmp.Dispose(); $path
+          }
+          $crashLog = "$env:LOCALAPPDATA\PixelBlend\crash.log"
+          Remove-Item $crashLog -ErrorAction SilentlyContinue
+          $p = Start-Process -FilePath dist\PixelBlend.exe -ArgumentList ($files | ForEach-Object { "`"$_`"" }) -PassThru
+          Start-Sleep -Seconds 20
+          $p.Refresh()
+          $exited = $p.HasExited
+          $title = if ($exited) { '' } else { $p.MainWindowTitle }
+          if (-not $exited) { Stop-Process -Id $p.Id -Force }
+          if (Test-Path $crashLog) { Write-Host "PixelBlend reported an error:"; Get-Content $crashLog; exit 1 }
+          if ($exited) { Write-Host "PixelBlend exited with code $($p.ExitCode)"; exit 1 }
+          if ($title -notlike '*Collage Maker*') { Write-Host "Main window not shown (window title: '$title')"; exit 1 }
+          Write-Host "Opened 3 images without errors."
+
       - name: Build installer (Inno Setup)
         shell: pwsh
         run: |

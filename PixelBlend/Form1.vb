@@ -32,6 +32,8 @@ Public Class Form1
     ' Starts True because the designer code also changes control values while the form is being built.
     Private _loadingSettings As Boolean = True
     Private _syncingPreset As Boolean
+    ' True while the image list is being rebuilt; its selection events are ignored until it is complete.
+    Private _refreshingList As Boolean
 
 #Region "Start-up and shut-down"
 
@@ -46,6 +48,12 @@ Public Class Form1
         RefreshImageList(Enumerable.Empty(Of String)())
         UpdateControlStates()
         RenderPreview()
+    End Sub
+
+    Private Async Sub Form1_Shown(sender As Object, e As EventArgs) Handles MyBase.Shown
+        ' Images passed on the command line, e.g. photos dropped onto PixelBlend.exe or its shortcut.
+        Dim files = My.Application.CommandLineArgs.ToArray()
+        If files.Length > 0 Then Await AddImagesAsync(files)
     End Sub
 
     Private Sub Form1_FormClosing(sender As Object, e As FormClosingEventArgs) Handles MyBase.FormClosing
@@ -242,6 +250,7 @@ Public Class Form1
     ''' <summary>Rebuilds the list from <see cref="_images"/> and selects the images with the given keys.</summary>
     Private Sub RefreshImageList(selectedKeys As IEnumerable(Of String))
         Dim selected = New HashSet(Of String)(selectedKeys)
+        _refreshingList = True
         lvImages.BeginUpdate()
         Try
             lvImages.Items.Clear()
@@ -255,7 +264,9 @@ Public Class Form1
             Next
         Finally
             lvImages.EndUpdate()
+            _refreshingList = False
         End Try
+        UpdateControlStates()
         If lvImages.SelectedIndices.Count > 0 Then lvImages.EnsureVisible(lvImages.SelectedIndices(0))
         lblImagesHeader.Text = If(_images.Count = 0, "IMAGES", String.Format("IMAGES ({0})", _images.Count))
     End Sub
@@ -335,7 +346,7 @@ Public Class Form1
     End Sub
 
     Private Sub lvImages_SelectedIndexChanged(sender As Object, e As EventArgs) Handles lvImages.SelectedIndexChanged
-        UpdateControlStates()
+        If Not _refreshingList Then UpdateControlStates()
     End Sub
 
     Private Sub lvImages_Resize(sender As Object, e As EventArgs) Handles lvImages.Resize
@@ -462,13 +473,16 @@ Public Class Form1
     Private Sub UpdateControlStates()
         Dim idle = Not _busy
         Dim hasImages = _images.Count > 0
-        Dim selectedCount = lvImages.SelectedIndices.Count
+        ' Read the selection as plain numbers. SelectedIndices.Contains(i) looks up Items(i) and throws when i is past
+        ' the end of the list, which happens while the list is being filled.
+        Dim selected = lvImages.SelectedIndices.Cast(Of Integer)().ToList()
+        Dim selectedCount = selected.Count
 
         btnAddImages.Enabled = idle
         btnRemove.Enabled = idle AndAlso selectedCount > 0
         btnClear.Enabled = idle AndAlso hasImages
-        btnMoveUp.Enabled = idle AndAlso selectedCount > 0 AndAlso Not lvImages.SelectedIndices.Contains(0)
-        btnMoveDown.Enabled = idle AndAlso selectedCount > 0 AndAlso Not lvImages.SelectedIndices.Contains(_images.Count - 1)
+        btnMoveUp.Enabled = idle AndAlso selectedCount > 0 AndAlso Not selected.Contains(0)
+        btnMoveDown.Enabled = idle AndAlso selectedCount > 0 AndAlso Not selected.Contains(lvImages.Items.Count - 1)
         btnSave.Enabled = idle AndAlso hasImages
         pnlSettings.Enabled = idle
 
