@@ -29,7 +29,20 @@ function Save-Screenshot([string] $name) {
     $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
     $g = [System.Drawing.Graphics]::FromImage($bmp)
     $g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
-    $g.Dispose(); $bmp.Save((Join-Path $OutDir "$name.png")); $bmp.Dispose()
+    $g.Dispose(); $bmp.Save((Join-Path $OutDir "$name.png"))
+    if ($env:PRINT_SCREENSHOTS) {
+        # Also write a JPEG copy into the log as base64, for reviewers who cannot download artifacts.
+        $jpeg = [System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where-Object { $_.MimeType -eq 'image/jpeg' }
+        $params = New-Object System.Drawing.Imaging.EncoderParameters 1
+        $params.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter ([System.Drawing.Imaging.Encoder]::Quality), 60L
+        $ms = New-Object System.IO.MemoryStream
+        $bmp.Save($ms, $jpeg, $params)
+        $text = [Convert]::ToBase64String($ms.ToArray())
+        Write-Host "==SCREENSHOT-BEGIN $name=="
+        for ($i = 0; $i -lt $text.Length; $i += 4000) { Write-Host $text.Substring($i, [Math]::Min(4000, $text.Length - $i)) }
+        Write-Host "==SCREENSHOT-END $name=="
+    }
+    $bmp.Dispose()
 }
 function Find([string] $automationId) {
     $cond = New-Object System.Windows.Automation.PropertyCondition($A::AutomationIdProperty, $automationId)
@@ -124,7 +137,7 @@ try {
     # ---- 4. Automatic trace with a real click on the curve at X = 30 ----------------------------------
     Select-Item (Find-ByName '2. Trace')
     Select-Item (Find 'rbAutoTrace')
-    $canvasRect = (Find 'canvas').Current.BoundingRectangle
+    $canvasRect = (Find-ByName 'Graph canvas').Current.BoundingRectangle
     $zoom = [Math]::Min(($canvasRect.Width - 24) / 800, ($canvasRect.Height - 24) / 600)
     $offX = ($canvasRect.Width - 800 * $zoom) / 2; $offY = ($canvasRect.Height - 600 * $zoom) / 2
     $px = 50 + 7 * 30; $py = 550 - 5 * (50 + 30 * [Math]::Sin(2))

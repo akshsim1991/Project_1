@@ -81,6 +81,9 @@ Public Class GraphCanvas
         BackColor = Color.FromArgb(58, 58, 62)
         ForeColor = Color.Gainsboro
         TabStop = True
+        ' Lets screen readers and UI automation find the graph area.
+        AccessibleName = "Graph canvas"
+        AccessibleRole = AccessibleRole.Graphic
     End Sub
 
 #Region "Properties"
