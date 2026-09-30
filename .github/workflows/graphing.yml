@@ -35,8 +35,6 @@ jobs:
 
       - name: UI test (open, auto-trace with a real click, clean up, fit, undo)
         shell: pwsh
-        env:
-          PRINT_SCREENSHOTS: "1"
         run: ./Tests/ui-smoke-test.ps1 -Exe (Resolve-Path dist/Graphing.exe) -OutDir "$env:RUNNER_TEMP/screenshots"
 
       - uses: actions/upload-artifact@v4

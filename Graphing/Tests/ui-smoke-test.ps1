@@ -29,20 +29,7 @@ function Save-Screenshot([string] $name) {
     $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
     $g = [System.Drawing.Graphics]::FromImage($bmp)
     $g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
-    $g.Dispose(); $bmp.Save((Join-Path $OutDir "$name.png"))
-    if ($env:PRINT_SCREENSHOTS) {
-        # Also write a JPEG copy into the log as base64, for reviewers who cannot download artifacts.
-        $jpeg = [System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where-Object { $_.MimeType -eq 'image/jpeg' }
-        $params = New-Object System.Drawing.Imaging.EncoderParameters 1
-        $params.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter ([System.Drawing.Imaging.Encoder]::Quality), 60L
-        $ms = New-Object System.IO.MemoryStream
-        $bmp.Save($ms, $jpeg, $params)
-        $text = [Convert]::ToBase64String($ms.ToArray())
-        Write-Host "==SCREENSHOT-BEGIN $name=="
-        for ($i = 0; $i -lt $text.Length; $i += 4000) { Write-Host $text.Substring($i, [Math]::Min(4000, $text.Length - $i)) }
-        Write-Host "==SCREENSHOT-END $name=="
-    }
-    $bmp.Dispose()
+    $g.Dispose(); $bmp.Save((Join-Path $OutDir "$name.png")); $bmp.Dispose()
 }
 function Find([string] $automationId) {
     $cond = New-Object System.Windows.Automation.PropertyCondition($A::AutomationIdProperty, $automationId)
@@ -51,12 +38,13 @@ function Find([string] $automationId) {
         if ($el) { return $el }
         Start-Sleep -Milliseconds 250
     }
+    Show-Tree
     throw "Control '$automationId' not found"
 }
 function Find-ByName([string] $name) {
     $cond = New-Object System.Windows.Automation.PropertyCondition($A::NameProperty, $name)
     $el = $script:window.FindFirst($Tree::Descendants, $cond)
-    if (-not $el) { throw "Element named '$name' not found" }
+    if (-not $el) { Show-Tree; throw "Element named '$name' not found" }
     return $el
 }
 function Invoke-Button([string] $automationId) {
@@ -82,8 +70,18 @@ function Get-Text([string] $automationId) {
     if ($el.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref] $pattern)) { return $pattern.Current.Value }
     return $el.Current.Name
 }
+function Show-Tree {
+    # Lists what UI Automation can see, to make failures easy to diagnose from the log.
+    if (-not $script:window) { return }
+    Write-Host '---- controls in the window ----'
+    foreach ($el in $script:window.FindAll($Tree::Descendants, [System.Windows.Automation.Condition]::TrueCondition)) {
+        $c = $el.Current
+        if ($c.IsOffscreen) { continue }
+        Write-Host ("{0,-22} id={1,-22} name='{2}' rect={3}" -f $c.ControlType.ProgrammaticName.Replace('ControlType.', ''), $c.AutomationId, $c.Name, $c.BoundingRectangle)
+    }
+}
 function Assert($condition, [string] $message) {
-    if (-not $condition) { Save-Screenshot 'failure'; throw "CHECK FAILED: $message" }
+    if (-not $condition) { Save-Screenshot 'failure'; Show-Tree; throw "CHECK FAILED: $message" }
     Write-Host "OK   $message"
 }
 
