@@ -394,11 +394,12 @@ Public Class Form1
     End Sub
 
     Private Sub nudOutputWidth_ValueChanged(sender As Object, e As EventArgs) Handles nudOutputWidth.ValueChanged
-        If Not _syncingPreset Then SyncPresetFromWidth()
+        If Not _loadingSettings AndAlso Not _syncingPreset Then SyncPresetFromWidth()
     End Sub
 
     ''' <summary>Shows the preset that matches the typed width, or "Custom".</summary>
     Private Sub SyncPresetFromWidth()
+        If cmbSizePreset.Items.Count = 0 Then Return
         _syncingPreset = True
         Try
             cmbSizePreset.SelectedIndex = Math.Max(0, Array.IndexOf(SizePresetWidths, CInt(nudOutputWidth.Value)))

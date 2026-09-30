@@ -78,6 +78,7 @@
     <Import Include="System.Threading.Tasks" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="ApplicationEvents.vb" />
     <Compile Include="CollageImage.vb" />
     <Compile Include="CollageRenderer.vb" />
     <Compile Include="Form1.vb">
