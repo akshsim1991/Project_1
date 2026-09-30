@@ -189,7 +189,13 @@ Public NotInheritable Class CollageRenderer
                 g.FillRectangle(brush, Rectangle.Inflate(destination, border, border))
             End Using
         End If
-        g.DrawImage(img, destination, source.X, source.Y, source.Width, source.Height, GraphicsUnit.Pixel, attributes)
+        ' Clipping guarantees a picture can never spill into its neighbours or the gaps.
+        g.SetClip(destination)
+        Try
+            g.DrawImage(img, destination, source.X, source.Y, source.Width, source.Height, GraphicsUnit.Pixel, attributes)
+        Finally
+            g.ResetClip()
+        End Try
     End Sub
 
     ''' <summary>The centred part of an image that has the given aspect ratio.</summary>
