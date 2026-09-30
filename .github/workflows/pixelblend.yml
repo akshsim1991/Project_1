@@ -71,11 +71,23 @@ jobs:
           $p.Refresh()
           $exited = $p.HasExited
           $title = if ($exited) { '' } else { $p.MainWindowTitle }
-          if (-not $exited) { Stop-Process -Id $p.Id -Force }
+          # Read the status bar text through UI Automation: it only says "3 images" once the images are in the
+          # list and the preview has been drawn.
+          $texts = @()
+          if (-not $exited) {
+            Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+            $window = [System.Windows.Automation.AutomationElement]::FromHandle($p.MainWindowHandle)
+            $texts = $window.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) |
+              ForEach-Object { $_.Current.Name } | Where-Object { $_ }
+            Stop-Process -Id $p.Id -Force
+          }
           if (Test-Path $crashLog) { Write-Host "PixelBlend reported an error:"; Get-Content $crashLog; exit 1 }
           if ($exited) { Write-Host "PixelBlend exited with code $($p.ExitCode)"; exit 1 }
           if ($title -notlike '*Collage Maker*') { Write-Host "Main window not shown (window title: '$title')"; exit 1 }
-          Write-Host "Opened 3 images without errors."
+          if (-not ($texts | Where-Object { $_ -like '3 images*' })) {
+            Write-Host "The status bar does not report 3 images. Texts in the window:"; $texts | ForEach-Object { Write-Host "  $_" }; exit 1
+          }
+          Write-Host "Opened 3 images without errors:"; $texts | Where-Object { $_ -like '3 images*' -or $_ -like 'Saved size*' } | ForEach-Object { Write-Host "  $_" }
 
       - name: Build installer (Inno Setup)
         shell: pwsh
