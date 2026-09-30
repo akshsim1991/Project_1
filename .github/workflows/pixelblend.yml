@@ -32,6 +32,23 @@ jobs:
           Copy-Item bin\Release\PixelBlend.exe, bin\Release\PixelBlend.exe.config dist\
           Get-ChildItem dist
 
+      - name: Smoke test (the app must start and show its window)
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath dist\PixelBlend.exe -PassThru
+          Start-Sleep -Seconds 15
+          $p.Refresh()
+          if ($p.HasExited) {
+            Write-Host "PixelBlend exited during start-up with code $($p.ExitCode)"
+            Get-WinEvent -FilterHashtable @{ LogName = 'Application'; StartTime = (Get-Date).AddMinutes(-5) } -ErrorAction SilentlyContinue |
+              Where-Object { $_.ProviderName -in '.NET Runtime', 'Application Error' } |
+              ForEach-Object { Write-Host "---- $($_.ProviderName)"; Write-Host $_.Message }
+            if (Test-Path "$env:LOCALAPPDATA\PixelBlend\crash.log") { Get-Content "$env:LOCALAPPDATA\PixelBlend\crash.log" }
+            exit 1
+          }
+          Write-Host "Running. Window title: '$($p.MainWindowTitle)'"
+          Stop-Process -Id $p.Id -Force
+
       - name: Build installer (Inno Setup)
         shell: pwsh
         run: |
