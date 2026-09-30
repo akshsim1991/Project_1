@@ -1,4 +1,4 @@
-Imports System.Globalization
+﻿Imports System.Globalization
 
 ''' <summary>Summary numbers for one curve.</summary>
 Public Class SeriesStatistics

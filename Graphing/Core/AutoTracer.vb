@@ -1,4 +1,4 @@
-''' <summary>An image as a flat array of 32-bit ARGB pixels (row by row).</summary>
+﻿''' <summary>An image as a flat array of 32-bit ARGB pixels (row by row).</summary>
 Public NotInheritable Class PixelBuffer
     Public ReadOnly Property Width As Integer
     Public ReadOnly Property Height As Integer

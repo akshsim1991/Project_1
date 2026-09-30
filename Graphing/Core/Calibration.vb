@@ -1,4 +1,4 @@
-Imports System.Text.Json.Serialization
+﻿Imports System.Text.Json.Serialization
 
 ''' <summary>A point with double-precision coordinates (image pixels or data values).</summary>
 Public Structure PointD

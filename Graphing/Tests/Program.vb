@@ -1,4 +1,4 @@
-Imports System.IO
+﻿Imports System.IO
 Imports System.IO.Compression
 
 ''' <summary>Checks for the Graphing calculation engine. Exit code 0 means every check passed.</summary>

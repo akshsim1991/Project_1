@@ -1,4 +1,4 @@
-''' <summary>Chooses round tick values (like 0, 5, 10 or 1, 10, 100) for drawing a calibrated grid.</summary>
+﻿''' <summary>Chooses round tick values (like 0, 5, 10 or 1, 10, 100) for drawing a calibrated grid.</summary>
 Public NotInheritable Class AxisTicks
     Private Sub New()
     End Sub

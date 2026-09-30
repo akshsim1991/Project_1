@@ -1,0 +1,63 @@
+name: Graphing
+
+on:
+  push:
+    paths: ["Graphing/**", ".github/workflows/graphing.yml"]
+  pull_request:
+    paths: ["Graphing/**", ".github/workflows/graphing.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Windows build, tests + installer
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: Graphing
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Engine tests
+        run: dotnet run --project Tests/Graphing.Tests.vbproj -c Release
+
+      - name: Build self-contained Graphing.exe
+        run: >
+          dotnet publish Graphing.vbproj -c Release -r win-x64 --self-contained
+          -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:DebugType=none -p:TreatWarningsAsErrors=true -o dist
+
+      - name: UI test (open, auto-trace with a real click, clean up, fit, undo)
+        shell: pwsh
+        run: ./Tests/ui-smoke-test.ps1 -Exe (Resolve-Path dist/Graphing.exe) -OutDir "$env:RUNNER_TEMP/screenshots"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Graphing-ui-screenshots
+          path: ${{ runner.temp }}/screenshots
+          if-no-files-found: ignore
+
+      - name: Build installer (Inno Setup)
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress | Out-Null }
+          & $iscc installer\Graphing.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Graphing-portable
+          path: Graphing/dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Graphing-installer
+          path: Graphing/installer/Output/*.exe
