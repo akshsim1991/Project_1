@@ -1,0 +1,38 @@
+name: PixelBlend
+
+on:
+  push:
+    paths: ["PixelBlend/**", ".github/workflows/pixelblend.yml"]
+  pull_request:
+    paths: ["PixelBlend/**", ".github/workflows/pixelblend.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Windows build (.NET Framework 4.7.2)
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: PixelBlend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: microsoft/setup-msbuild@v2
+
+      - name: Build (Release)
+        run: msbuild PixelBlend.sln /p:Configuration=Release "/p:Platform=Any CPU" /m /v:minimal /warnaserror
+
+      - name: Package portable folder
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item bin\Release\PixelBlend.exe, bin\Release\PixelBlend.exe.config dist\
+          Get-ChildItem dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PixelBlend-windows
+          path: PixelBlend/dist
