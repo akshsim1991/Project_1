@@ -135,7 +135,12 @@ try {
     # ---- 4. Automatic trace with a real click on the curve at X = 30 ----------------------------------
     Select-Item (Find-ByName '2. Trace')
     Select-Item (Find 'rbAutoTrace')
-    $canvasRect = (Find-ByName 'Graph canvas').Current.BoundingRectangle
+    # The graph canvas fills the space between the toolbar, the side panel and the status bar.
+    $top = (Find 'toolMain').Current.BoundingRectangle.Bottom
+    $side = (Find 'pnlSide').Current.BoundingRectangle
+    $bottom = (Find 'statusMain').Current.BoundingRectangle.Top
+    $left = (Find 'toolMain').Current.BoundingRectangle.Left
+    $canvasRect = [System.Windows.Rect]::new($left, $top, $side.Left - $left, $bottom - $top)
     $zoom = [Math]::Min(($canvasRect.Width - 24) / 800, ($canvasRect.Height - 24) / 600)
     $offX = ($canvasRect.Width - 800 * $zoom) / 2; $offY = ($canvasRect.Height - 600 * $zoom) / 2
     $px = 50 + 7 * 30; $py = 550 - 5 * (50 + 30 * [Math]::Sin(2))

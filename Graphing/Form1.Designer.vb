@@ -195,6 +195,7 @@ Partial Class Form1
         '
         Me.menuMain.Items.AddRange(New System.Windows.Forms.ToolStripItem() {Me.mnuFile, Me.mnuEdit, Me.mnuView, Me.mnuHelp})
         Me.menuMain.Location = New System.Drawing.Point(0, 0)
+        Me.menuMain.AccessibleName = "Main menu"
         Me.menuMain.Name = "menuMain"
         Me.menuMain.Size = New System.Drawing.Size(1280, 24)
         Me.menuMain.TabIndex = 4
@@ -397,6 +398,7 @@ Partial Class Form1
         Me.toolMain.GripStyle = System.Windows.Forms.ToolStripGripStyle.Hidden
         Me.toolMain.Items.AddRange(New System.Windows.Forms.ToolStripItem() {Me.tsOpenImage, Me.tsPaste, Me.tsSep6, Me.tsOpenProject, Me.tsSaveProject, Me.tsSep7, Me.tsUndo, Me.tsRedo, Me.tsSep8, Me.tsZoomIn, Me.tsZoomOut, Me.tsFit, Me.tsSep9, Me.tsMagnifier, Me.tsGrid})
         Me.toolMain.Location = New System.Drawing.Point(0, 24)
+        Me.toolMain.AccessibleName = "Toolbar"
         Me.toolMain.Name = "toolMain"
         Me.toolMain.Size = New System.Drawing.Size(1280, 25)
         Me.toolMain.TabIndex = 3
@@ -515,6 +517,7 @@ Partial Class Form1
         '
         Me.statusMain.Items.AddRange(New System.Windows.Forms.ToolStripItem() {Me.lblStatus, Me.lblZoom, Me.lblCoords})
         Me.statusMain.Location = New System.Drawing.Point(0, 778)
+        Me.statusMain.AccessibleName = "Status bar"
         Me.statusMain.Name = "statusMain"
         Me.statusMain.Size = New System.Drawing.Size(1280, 22)
         Me.statusMain.TabIndex = 2
@@ -592,6 +595,7 @@ Partial Class Form1
         Me.tabCalibrate.Controls.Add(Me.lblCalState)
         Me.tabCalibrate.Controls.Add(Me.btnClearCalibration)
         Me.tabCalibrate.Controls.Add(Me.lblCalTip)
+        Me.tabCalibrate.AutoScroll = True
         Me.tabCalibrate.Location = New System.Drawing.Point(4, 24)
         Me.tabCalibrate.Name = "tabCalibrate"
         Me.tabCalibrate.Padding = New System.Windows.Forms.Padding(3)
@@ -613,6 +617,7 @@ Partial Class Form1
         Me.tabTrace.Controls.Add(Me.chkShowLines)
         Me.tabTrace.Controls.Add(Me.btnClearSeries)
         Me.tabTrace.Controls.Add(Me.lblTraceTip)
+        Me.tabTrace.AutoScroll = True
         Me.tabTrace.Location = New System.Drawing.Point(4, 24)
         Me.tabTrace.Name = "tabTrace"
         Me.tabTrace.Padding = New System.Windows.Forms.Padding(3)
@@ -642,6 +647,7 @@ Partial Class Form1
         Me.tabAnalyze.Controls.Add(Me.grpInterpolate)
         Me.tabAnalyze.Controls.Add(Me.grpFit)
         Me.tabAnalyze.Controls.Add(Me.lblAnalyzeTip)
+        Me.tabAnalyze.AutoScroll = True
         Me.tabAnalyze.Location = New System.Drawing.Point(4, 24)
         Me.tabAnalyze.Name = "tabAnalyze"
         Me.tabAnalyze.Padding = New System.Windows.Forms.Padding(3)
@@ -1078,9 +1084,9 @@ Partial Class Form1
         'lblTraceTip
         '
         Me.lblTraceTip.ForeColor = System.Drawing.Color.DimGray
-        Me.lblTraceTip.Location = New System.Drawing.Point(8, 514)
+        Me.lblTraceTip.Location = New System.Drawing.Point(8, 512)
         Me.lblTraceTip.Name = "lblTraceTip"
-        Me.lblTraceTip.Size = New System.Drawing.Size(334, 100)
+        Me.lblTraceTip.Size = New System.Drawing.Size(334, 84)
         Me.lblTraceTip.TabIndex = 10
         Me.lblTraceTip.Text = "Mouse wheel zooms; right-drag moves the image." & Global.Microsoft.VisualBasic.ChrW(13) & Global.Microsoft.VisualBasic.ChrW(10) & "In Edit mode, arrow keys nudge the selected point (Shift for finer steps) and right-click deletes a point." & Global.Microsoft.VisualBasic.ChrW(13) & Global.Microsoft.VisualBasic.ChrW(10) & "Ctrl+Z undoes any change."
         '
