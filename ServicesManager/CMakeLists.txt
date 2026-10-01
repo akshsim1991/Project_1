@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(ServicesManager VERSION 2.0.0 LANGUAGES CXX RC)
+project(ServicesManager VERSION 2.1.0 LANGUAGES CXX RC)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -11,6 +11,10 @@ add_executable(ServicesManager WIN32
   src/Services.cpp
   src/Worker.cpp
   src/Dialogs.cpp
+  src/Details.cpp
+  src/Inspect.cpp
+  src/Advice.cpp
+  src/Profiles.cpp
   src/Settings.cpp
   src/Toolbar.cpp
   src/Theme.cpp
@@ -23,7 +27,8 @@ target_compile_definitions(ServicesManager PRIVATE
   UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX
   _WIN32_WINNT=0x0A00 WINVER=0x0A00)
 target_link_libraries(ServicesManager PRIVATE
-  comctl32 shell32 shlwapi ole32 dwmapi uxtheme advapi32 version gdi32 user32)
+  comctl32 comdlg32 shell32 shlwapi ole32 dwmapi uxtheme advapi32 version gdi32 user32
+  wintrust crypt32 bcrypt psapi wevtapi winhttp)
 
 if(MSVC)
   # Static CRT: no Visual C++ Redistributable needed.

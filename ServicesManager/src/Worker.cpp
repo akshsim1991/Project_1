@@ -45,15 +45,22 @@ void Worker::Push(Job&& job) {
     {
         LockGuard g(m_lock);
         if (job.refresh) {
-            for (const Job& j : m_jobs)
-                if (j.refresh) return;  // one queued refresh is enough
+            for (Job& j : m_jobs)
+                if (j.refresh) {  // one queued refresh is enough
+                    j.full = j.full || job.full;
+                    return;
+                }
         }
         m_jobs.push_back(std::move(job));
     }
     WakeConditionVariable(&m_cv);
 }
 
-void Worker::Refresh() { Push(Job{}); }
+void Worker::Refresh(bool full) {
+    Job job;
+    job.full = full;
+    Push(std::move(job));
+}
 
 void Worker::Run(OpRequest&& request) {
     Job job;
@@ -81,7 +88,7 @@ void Worker::Loop() {
             m_jobs.pop_front();
         }
         if (job.refresh) {
-            DoRefresh();
+            DoRefresh(job.full);
         } else {
             DoBatch(job.request);
             DoRefresh();  // show the new states right away
@@ -89,9 +96,13 @@ void Worker::Loop() {
     }
 }
 
-void Worker::DoRefresh() {
+void Worker::DoRefresh(bool full) {
+    if (full) {
+        m_cache.signatures.clear();
+        m_cache.bootDelaysRead = false;
+    }
     auto* snap = new Snapshot;
-    Svc::Enumerate(snap->services, snap->error, m_companies);
+    Svc::Enumerate(snap->services, snap->error, m_cache);
     Post(m_notify, WM_APP_SNAPSHOT, snap);
 }
 

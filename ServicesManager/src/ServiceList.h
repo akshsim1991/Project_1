@@ -40,6 +40,7 @@ public:
 
     std::function<void()> onSelectionChanged;
     std::function<void(POINT screen)> onContextMenu;
+    std::function<void()> onActivate;  // double-click or Enter
 
     static const wchar_t* ColumnTitle(int column);
     static std::wstring CellText(const ServiceInfo& s, int column);

@@ -36,6 +36,19 @@ struct ServiceInfo {
     bool triggered = false;    // has trigger-start conditions
     bool configKnown = false;  // false if the configuration was not readable
     Safety safety = Safety::Windows;
+    std::vector<std::wstring> dependencies;  // services (and "+group"s) it needs
+    DWORD bootDelayMs = 0;     // worst start-up delay Windows recorded for it
+    int bootDelayCount = 0;    // how many recent start-ups it slowed down
+    unsigned warnings = 0;     // kWarn* flags
+};
+
+// Things worth a closer look (malware and broken installs often show them).
+enum : unsigned {
+    kWarnMissingFile = 1,  // the program file does not exist
+    kWarnUserFolder = 2,   // runs from a user, AppData or Temp folder
+    kWarnUnsigned = 4,     // third-party program without a digital signature
+    kWarnBadSignature = 8, // signature broken or not trusted
+    kWarnUnquoted = 16,    // path with spaces but no quotes (a known security hole)
 };
 
 struct Snapshot {
@@ -43,12 +56,19 @@ struct Snapshot {
     DWORD error = 0;  // non-zero if the list could not be read
 };
 
-// Program-file -> company name, kept between refreshes (reading version
-// information is the slowest part of a refresh).
-using CompanyCache = std::map<std::wstring, std::wstring>;
+// Facts about program files, kept between refreshes (reading version
+// information and checking signatures are the slowest part of a refresh).
+struct EnumCache {
+    std::map<std::wstring, std::wstring> companies;  // file -> CompanyName
+    std::map<std::wstring, int> signatures;          // file -> SignState
+    std::map<std::wstring, std::pair<DWORD, int>> bootDelays;  // lowercase name -> (worst ms, count)
+    bool bootDelaysRead = false;
+};
 
 namespace Svc {
-bool Enumerate(std::vector<ServiceInfo>& out, DWORD& error, CompanyCache& companies);
+bool Enumerate(std::vector<ServiceInfo>& out, DWORD& error, EnumCache& cache);
+std::wstring WarningsText(unsigned warnings);           // short, for the list
+std::wstring WarningsExplained(unsigned warnings);      // one line per warning
 
 std::wstring StateText(DWORD state);
 std::wstring StartTypeText(const ServiceInfo& s);
@@ -69,7 +89,8 @@ struct OpRequest {
     OpKind kind = OpKind::Start;
     std::vector<std::wstring> names;         // services to act on, in order
     std::vector<std::wstring> displayNames;  // for progress and results
-    StartMode mode = StartMode::Manual;      // SetStartMode
+    StartMode mode = StartMode::Manual;      // SetStartMode (all services)...
+    std::vector<StartMode> modes;            // ...or one per service (profiles, restore)
     bool withDependents = false;  // Stop/Restart: stop running dependents first
     bool enableFirst = false;     // Start: set disabled services to Manual first
     DWORD timeoutMs = 30000;      // per service

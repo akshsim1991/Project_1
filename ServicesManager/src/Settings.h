@@ -14,6 +14,8 @@ enum Column : int {
     kColDescription,
     kColPath,
     kColCompany,
+    kColBootDelay,
+    kColWarnings,
     kColumnCount
 };
 
@@ -26,6 +28,8 @@ enum Filter : int {
     kFilterDisabled,
     kFilterThirdParty,
     kFilterCritical,
+    kFilterAttention,    // has warnings
+    kFilterBootDelay,    // slowed down Windows start-up
     kFilterCount
 };
 
@@ -39,6 +43,7 @@ struct Settings {
     bool confirmActions = true; // ask before stop/restart/pause/kill/start-type changes
     bool protectCritical = true;// block risky actions on critical services
     bool alwaysElevate = false; // restart as administrator on launch
+    bool onlineAdvice = true;   // download "can it be disabled?" advice
 
     int filter = kFilterAll;
     int sortColumn = kColDisplayName;

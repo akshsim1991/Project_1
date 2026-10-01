@@ -6,9 +6,13 @@
 #include <set>
 
 #include <commctrl.h>
+#include <objbase.h>
+#include <commdlg.h>
 #include <shellapi.h>
 #include <windowsx.h>
 
+#include "Advice.h"
+#include "Details.h"
 #include "Dialogs.h"
 #include "Theme.h"
 #include "Util.h"
@@ -26,6 +30,8 @@ const wchar_t* FilterTitle(int f) {
         case kFilterDisabled: return L"Disabled";
         case kFilterThirdParty: return L"Third-party only";
         case kFilterCritical: return L"Critical to Windows";
+        case kFilterAttention: return L"Needs attention (warnings)";
+        case kFilterBootDelay: return L"Slowed down start-up";
         default: return L"All services";
     }
 }
@@ -72,6 +78,7 @@ std::wstring PastTense(OpKind kind) {
 bool MainWindow::Create(HINSTANCE inst, int showCmd) {
     m_inst = inst;
     m_elevated = IsElevated();
+    Advice::SetEnabled(m_settings.onlineAdvice);
     ReloadTheme((ThemeMode)m_settings.themeMode);
 
     WNDCLASSEXW wc{sizeof(wc)};
@@ -131,19 +138,22 @@ void MainWindow::CreateChildren() {
     m_toolbar.AddSeparator();
     m_toolbar.AddTextButton(ID_STARTTYPE_MENU, L"Start type \x25BE",
                             L"Automatic, delayed, manual or disabled", 104);
+    m_toolbar.AddTextButton(ID_PROFILES_MENU, L"Profiles \x25BE",
+                            L"Profiles, snapshots and undo", 88);
     m_toolbar.AddSpacer();
     m_search = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
                                0, 0, 0, 0, m_toolbar.Hwnd(), (HMENU)(INT_PTR)ID_SEARCH_EDIT, m_inst,
                                nullptr);
     SendMessageW(m_search, EM_SETCUEBANNER, TRUE, (LPARAM)L"Search services (Ctrl+F)");
     SetWindowSubclass(m_search, &MainWindow::EditProc, 1, (DWORD_PTR)this);
-    m_toolbar.AddChild(m_search, 230);
-    m_toolbar.AddLabel(ID_FILTER_MENU, 190, true, L"Show only some services");
+    m_toolbar.AddChild(m_search, 210);
+    m_toolbar.AddLabel(ID_FILTER_MENU, 200, true, L"Show only some services");
     m_toolbar.AddTextButton(ID_MORE_MENU, L"More", L"Settings, About and more", 52);
 
     m_list.Create(m_hwnd, &m_settings);
     m_list.onSelectionChanged = [this] { UpdateUi(); };
     m_list.onContextMenu = [this](POINT pt) { ShowContextMenu(pt); };
+    m_list.onActivate = [this] { ShowDetails(); };
 
     m_status.Create(m_hwnd, m_hwnd, 30);
     m_status.SetBorderTop(true);
@@ -172,6 +182,8 @@ void MainWindow::CreateAccelerators() {
         {FCONTROL | FSHIFT | FVIRTKEY, 'K', ID_KILL},
         {FCONTROL | FVIRTKEY, VK_OEM_COMMA, ID_SETTINGS},
         {FVIRTKEY, VK_F1, ID_ABOUT},
+        {FCONTROL | FVIRTKEY, 'Z', ID_UNDO},
+        {FALT | FVIRTKEY, VK_RETURN, ID_DETAILS},
     };
     m_accel = CreateAcceleratorTableW(acc, (int)(sizeof(acc) / sizeof(acc[0])));
 }
@@ -347,6 +359,11 @@ void MainWindow::OnCommand(int id, int code, HWND ctl) {
         if (code == EN_CHANGE) SetTimer(m_hwnd, kSearchTimer, 150, nullptr);
         return;
     }
+    if (id >= ID_PROFILE_FIRST && id < ID_PROFILE_FIRST + (int)m_menuProfiles.size()) {
+        const Profile p = m_menuProfiles[(size_t)(id - ID_PROFILE_FIRST)];
+        ApplyProfile(p, L"Apply profile: " + p.title);
+        return;
+    }
     if (id >= ID_FILTER_FIRST && id < ID_FILTER_FIRST + kFilterCount) {
         m_list.SetFilter(id - ID_FILTER_FIRST);
         UpdateUi();
@@ -354,7 +371,31 @@ void MainWindow::OnCommand(int id, int code, HWND ctl) {
     }
     const bool inSearch = GetFocus() == m_search;
     switch (id) {
-        case ID_REFRESH: m_worker.Refresh(); break;
+        case IDOK:
+            // Enter (IsDialogMessage turns it into IDOK): in the search box
+            // it moves to the results, in the list it opens the details.
+            if (inSearch) {
+                SetFocus(m_list.Hwnd());
+                if (m_list.ShownCount() > 0 && m_list.Selected().empty())
+                    ListView_SetItemState(m_list.Hwnd(), 0, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+            } else if (GetFocus() == m_list.Hwnd()) {
+                ShowDetails();
+            }
+            break;
+        case ID_REFRESH: m_worker.Refresh(true); break;
+        case ID_DETAILS: ShowDetails(); break;
+        case ID_PROFILES_MENU: ShowProfilesMenu(); break;
+        case ID_UNDO:
+            if (inSearch)
+                SendMessageW(m_search, EM_UNDO, 0, 0);
+            else
+                Undo();
+            break;
+        case ID_SAVE_SNAPSHOT: SaveSnapshot(); break;
+        case ID_RESTORE_SNAPSHOT: RestoreSnapshot(); break;
+        case ID_OPEN_SNAPSHOTS: OpenDataFolder(L"Snapshots"); break;
+        case ID_SAVE_PROFILE: SaveSelectedAsProfile(); break;
+        case ID_OPEN_PROFILES: OpenDataFolder(L"Profiles"); break;
         case ID_START: Act(OpKind::Start); break;
         case ID_STOP: Act(OpKind::Stop); break;
         case ID_RESTART: Act(OpKind::Restart); break;
@@ -568,6 +609,13 @@ void MainWindow::Act(OpKind kind, StartMode mode) {
 }
 
 void MainWindow::Launch(OpRequest&& request) {
+    if (request.kind == OpKind::SetStartMode) {
+        // Every start-type change can be undone (Ctrl+Z) and is preceded by
+        // an automatic snapshot of all services.
+        if (!m_undoing) RecordUndo(request);
+        Profiles::AutoSnapshot(m_list.All(), std::wstring(Svc::OpVerb(request.kind)) + L" (" +
+                                                 std::to_wstring(request.names.size()) + L" services)");
+    }
     m_running = true;
     m_opText = std::wstring(Svc::OpProgressVerb(request.kind)) + L"\x2026";
     m_worker.Run(std::move(request));
@@ -696,7 +744,8 @@ void MainWindow::ShowStartTypeMenu(POINT pt) {
 void MainWindow::ShowFilterMenu() {
     HMENU m = CreatePopupMenu();
     for (int f = 0; f < kFilterCount; ++f) {
-        if (f == kFilterAutoStopped || f == kFilterThirdParty) AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+        if (f == kFilterAutoStopped || f == kFilterThirdParty || f == kFilterAttention)
+            AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(m, MF_STRING, ID_FILTER_FIRST + f, FilterTitle(f));
     }
     CheckMenuRadioItem(m, ID_FILTER_FIRST, ID_FILTER_FIRST + kFilterCount - 1,
@@ -708,6 +757,11 @@ void MainWindow::ShowFilterMenu() {
 
 void MainWindow::ShowMoreMenu() {
     HMENU m = CreatePopupMenu();
+    AppendMenuW(m, MF_STRING | (m_list.Selected().empty() ? MF_GRAYED : 0), ID_DETAILS,
+                L"&Properties\tEnter");
+    AppendMenuW(m, MF_STRING | (m_undo.empty() || m_running ? MF_GRAYED : 0), ID_UNDO,
+                L"&Undo start-type change\tCtrl+Z");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(m, MF_STRING, ID_REFRESH, L"&Refresh\tF5");
     AppendMenuW(m, MF_STRING, ID_SELECT_ALL, L"Select &all\tCtrl+A");
     AppendMenuW(m, MF_STRING | (m_list.Selected().empty() ? MF_GRAYED : 0), ID_COPY_DETAILS,
@@ -737,6 +791,9 @@ void MainWindow::ShowContextMenu(POINT screen) {
     }
     auto en = [this](bool on) -> UINT { return on && !m_running ? MF_ENABLED : MF_GRAYED; };
     HMENU m = CreatePopupMenu();
+    AppendMenuW(m, MF_STRING, ID_DETAILS, sel.size() > 1 ? L"&About these services\tEnter" : L"&Properties\tEnter");
+    SetMenuDefaultItem(m, ID_DETAILS, FALSE);
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(m, MF_STRING | en(start), ID_START, L"&Start\tCtrl+Shift+S");
     AppendMenuW(m, MF_STRING | en(stop), ID_STOP, L"S&top\tCtrl+Shift+T");
     AppendMenuW(m, MF_STRING | en(stop), ID_RESTART, L"&Restart\tCtrl+Shift+R");
@@ -752,6 +809,8 @@ void MainWindow::ShowContextMenu(POINT screen) {
     AppendMenuW(m, MF_STRING | (f && FileExists(f->imagePath) ? 0 : MF_GRAYED), ID_OPEN_LOCATION,
                 L"Open file &location");
     AppendMenuW(m, MF_STRING, ID_SEARCH_ONLINE, L"Search &online");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_STRING, ID_SAVE_PROFILE, L"Save as a &profile\x2026");
     TrackPopupMenu(m, TPM_RIGHTBUTTON, screen.x, screen.y, 0, m_hwnd, nullptr);
     DestroyMenu(m);
 }
@@ -797,23 +856,7 @@ void MainWindow::OpenLocation() {
 void MainWindow::SearchOnline() {
     const ServiceInfo* s = m_list.Focused();
     if (!s) return;
-    const std::wstring query = L"\"" + s->name + L"\" " + s->displayName + L" Windows service";
-    std::wstring url = L"https://www.bing.com/search?q=";
-    for (wchar_t c : query) {
-        if (iswalnum(c) || c == L'-' || c == L'_' || c == L'.') {
-            url += c;
-        } else {
-            // Percent-encode the UTF-8 bytes.
-            char utf8[8];
-            const int n = WideCharToMultiByte(CP_UTF8, 0, &c, 1, utf8, sizeof(utf8), nullptr, nullptr);
-            for (int i = 0; i < n; ++i) {
-                wchar_t hex[4];
-                swprintf_s(hex, L"%%%02X", (unsigned char)utf8[i]);
-                url += hex;
-            }
-        }
-    }
-    ShellExecuteW(m_hwnd, L"open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    SearchServiceOnline(m_hwnd, *s);
 }
 
 // ===========================================================================
@@ -830,6 +873,8 @@ void MainWindow::ShowSettings() {
     m_settings.confirmActions = edited.confirmActions;
     m_settings.protectCritical = edited.protectCritical;
     m_settings.alwaysElevate = edited.alwaysElevate;
+    m_settings.onlineAdvice = edited.onlineAdvice;
+    Advice::SetEnabled(m_settings.onlineAdvice);
     if (resetColumns) m_list.ResetColumns();
     SetRefreshTimer();
     if (themeChanged) ApplyTheme();
@@ -856,4 +901,256 @@ void MainWindow::ApplyTheme() {
     SetWindowPos(m_hwnd, nullptr, 0, 0, 0, 0,
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
     RedrawWindow(m_hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_FRAME);
+}
+
+// ===========================================================================
+// Details (double-click / Enter)
+// ===========================================================================
+void MainWindow::ShowDetails() {
+    const auto sel = m_list.Selected();
+    if (sel.empty()) return;
+    if (sel.size() > 1) {
+        std::vector<ServiceInfo> copies;
+        for (const ServiceInfo* s : sel) copies.push_back(*s);
+        ShowServicesSummary(m_inst, m_hwnd, copies);
+        return;
+    }
+    DetailsContext ctx;
+    ctx.service = *sel[0];
+    ctx.all = m_list.All();
+    ctx.elevated = m_elevated;
+    ctx.protectCritical = m_settings.protectCritical;
+    ctx.main = m_hwnd;
+    ctx.onStartTypeChanged = [this](const ServiceInfo& before) {
+        StartMode old;
+        if (!Profiles::ModeOf(before, old)) return;
+        m_undo.push_back({{before.name}, {before.displayName}, {old}});
+        if (m_undo.size() > 20) m_undo.erase(m_undo.begin());
+        Profiles::AutoSnapshot(m_list.All(), L"Properties: start type of " + before.displayName);
+    };
+    // Auto-refresh replaces the list the details window copied; pause it.
+    KillTimer(m_hwnd, kRefreshTimer);
+    ShowServiceDetails(m_inst, m_hwnd, ctx);
+    SetRefreshTimer();
+}
+
+// ===========================================================================
+// Undo
+// ===========================================================================
+void MainWindow::RecordUndo(const OpRequest& req) {
+    UndoEntry entry;
+    for (const std::wstring& name : req.names) {
+        for (const ServiceInfo& s : m_list.All()) {
+            StartMode m;
+            if (s.name == name && Profiles::ModeOf(s, m)) {
+                entry.names.push_back(s.name);
+                entry.displayNames.push_back(s.displayName);
+                entry.modes.push_back(m);
+                break;
+            }
+        }
+    }
+    if (entry.names.empty()) return;
+    m_undo.push_back(std::move(entry));
+    if (m_undo.size() > 20) m_undo.erase(m_undo.begin());
+}
+
+void MainWindow::Undo() {
+    if (m_running) return;
+    if (m_undo.empty()) {
+        m_opText = L"There is no start-type change to undo.";
+        UpdateStatus();
+        return;
+    }
+    UndoEntry entry = m_undo.back();
+    m_undo.pop_back();
+    OpRequest req;
+    req.kind = OpKind::SetStartMode;
+    req.names = entry.names;
+    req.displayNames = entry.displayNames;
+    req.modes = entry.modes;
+    req.timeoutMs = (DWORD)m_settings.timeoutSeconds * 1000;
+    m_undoing = true;
+    Launch(std::move(req));
+    m_undoing = false;
+    m_opText = L"Undoing the last start-type change\x2026";
+    UpdateStatus();
+}
+
+// ===========================================================================
+// Profiles and snapshots
+// ===========================================================================
+void MainWindow::ShowProfilesMenu() {
+    m_menuProfiles = Profiles::BuiltIn();
+    const size_t builtIn = m_menuProfiles.size();
+    for (Profile& p : Profiles::Custom()) m_menuProfiles.push_back(std::move(p));
+    const UINT busy = m_running ? MF_GRAYED : 0;
+
+    HMENU m = CreatePopupMenu();
+    AppendMenuW(m, MF_STRING | MF_GRAYED, 0, L"Built-in profiles (you review every change first):");
+    for (size_t i = 0; i < m_menuProfiles.size(); ++i) {
+        if (i == builtIn) {
+            AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+            AppendMenuW(m, MF_STRING | MF_GRAYED, 0, L"Your profiles:");
+        }
+        const std::wstring label = L"    " + m_menuProfiles[i].title + L"\x2026";
+        AppendMenuW(m, MF_STRING | busy, ID_PROFILE_FIRST + (UINT)i, label.c_str());
+    }
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_STRING | (m_list.Selected().empty() ? MF_GRAYED : 0), ID_SAVE_PROFILE,
+                L"Save selected services as a &profile\x2026");
+    AppendMenuW(m, MF_STRING, ID_OPEN_PROFILES, L"Open the profiles &folder");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_STRING, ID_SAVE_SNAPSHOT, L"&Save a snapshot of all start types\x2026");
+    AppendMenuW(m, MF_STRING | busy, ID_RESTORE_SNAPSHOT, L"&Restore a snapshot\x2026");
+    AppendMenuW(m, MF_STRING, ID_OPEN_SNAPSHOTS, L"Open the snapshots f&older");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_STRING | (m_undo.empty() || m_running ? MF_GRAYED : 0), ID_UNDO,
+                L"&Undo the last start-type change\tCtrl+Z");
+    const RECT r = m_toolbar.ItemScreenRect(ID_PROFILES_MENU);
+    TrackPopupMenu(m, TPM_LEFTALIGN | TPM_TOPALIGN, r.left, r.bottom, 0, m_hwnd, nullptr);
+    DestroyMenu(m);
+}
+
+void MainWindow::ApplyProfile(const Profile& p, const std::wstring& title) {
+    if (m_running) return;
+    if (!m_elevated) {
+        MessageBoxW(m_hwnd, L"Changing start types needs administrator rights. Use \x201CRestart as "
+                            L"administrator\x201D first.",
+                    APP_NAME, MB_ICONINFORMATION);
+        return;
+    }
+    std::vector<PlannedChange> changes;
+    int missing = 0, same = 0;
+    for (const ProfileEntry& e : p.entries) {
+        const ServiceInfo* svc = nullptr;
+        for (const ServiceInfo& s : m_list.All())
+            if (_wcsicmp(s.name.c_str(), e.name.c_str()) == 0) svc = &s;
+        StartMode now;
+        if (!svc || !Profiles::ModeOf(*svc, now)) {
+            ++missing;
+            continue;
+        }
+        if (now == e.mode) {
+            ++same;
+            continue;
+        }
+        PlannedChange c;
+        c.name = svc->name;
+        c.displayName = svc->displayName;
+        c.from = now;
+        c.to = e.mode;
+        c.critical = svc->safety == Safety::Critical;
+        c.blocked = c.critical && m_settings.protectCritical &&
+                    (e.mode == StartMode::Manual || e.mode == StartMode::Disabled);
+        changes.push_back(std::move(c));
+    }
+    std::wstring notes;
+    if (same) notes += std::to_wstring(same) + L" service(s) already have the right start type. ";
+    if (missing) notes += std::to_wstring(missing) + L" service(s) are not on this PC and are skipped.";
+    if (changes.empty()) {
+        MessageBoxW(m_hwnd, (L"Nothing to change.\n\n" + notes).c_str(), APP_NAME, MB_ICONINFORMATION);
+        return;
+    }
+    std::wstring intro = p.description.empty() ? std::wstring() : p.description + L"\n";
+    intro += std::to_wstring(changes.size()) + L" change(s). Untick any you want to keep as they are. A snapshot "
+             L"is saved first, and Ctrl+Z undoes it. " + notes;
+    if (!ShowChangesDialog(m_inst, m_hwnd, title, intro, changes)) return;
+
+    OpRequest req;
+    req.kind = OpKind::SetStartMode;
+    req.timeoutMs = (DWORD)m_settings.timeoutSeconds * 1000;
+    for (const PlannedChange& c : changes) {
+        if (!c.apply) continue;
+        req.names.push_back(c.name);
+        req.displayNames.push_back(c.displayName);
+        req.modes.push_back(c.to);
+    }
+    if (!req.names.empty()) Launch(std::move(req));
+}
+
+namespace {
+// Save/Open dialog for .wsm files in `dir`.
+bool PickFile(HWND owner, bool save, const std::wstring& dir, const std::wstring& suggested,
+              const wchar_t* title, std::wstring& out) {
+    std::vector<wchar_t> buf(32768, L'\0');
+    wcsncpy_s(buf.data(), buf.size(), suggested.c_str(), _TRUNCATE);
+    OPENFILENAMEW ofn{sizeof(ofn)};
+    ofn.hwndOwner = owner;
+    ofn.lpstrTitle = title;
+    ofn.lpstrFilter = L"Service start types (*.wsm)\0*.wsm\0All files (*.*)\0*.*\0";
+    ofn.lpstrFile = buf.data();
+    ofn.nMaxFile = (DWORD)buf.size();
+    ofn.lpstrInitialDir = dir.empty() ? nullptr : dir.c_str();
+    ofn.lpstrDefExt = L"wsm";
+    ofn.Flags = OFN_PATHMUSTEXIST | OFN_EXPLORER | OFN_HIDEREADONLY |
+                (save ? OFN_OVERWRITEPROMPT : OFN_FILEMUSTEXIST);
+    if (!(save ? GetSaveFileNameW(&ofn) : GetOpenFileNameW(&ofn))) return false;
+    out = buf.data();
+    return true;
+}
+
+std::wstring FileStem(const std::wstring& path) {
+    const size_t slash = path.find_last_of(L"\\/");
+    std::wstring name = path.substr(slash == std::wstring::npos ? 0 : slash + 1);
+    const size_t dot = name.rfind(L'.');
+    return dot == std::wstring::npos ? name : name.substr(0, dot);
+}
+}  // namespace
+
+void MainWindow::SaveSnapshot() {
+    if (m_list.All().empty()) return;
+    std::wstring path;
+    const std::wstring stamp = Profiles::Timestamp(true);
+    if (!PickFile(m_hwnd, true, Profiles::Folder(L"Snapshots"), L"Snapshot " + stamp + L".wsm",
+                  L"Save a snapshot of all start types", path))
+        return;
+    std::vector<const ServiceInfo*> all;
+    for (const auto& s : m_list.All()) all.push_back(&s);
+    Profile p = Profiles::FromServices(all, FileStem(path));
+    wchar_t pc[MAX_COMPUTERNAME_LENGTH + 1] = L"";
+    DWORD n = MAX_COMPUTERNAME_LENGTH + 1;
+    GetComputerNameW(pc, &n);
+    p.description = L"Start types of all " + std::to_wstring(p.entries.size()) + L" services on " + pc +
+                    L", saved " + Profiles::Timestamp(false) + L".";
+    if (!Profiles::Save(path, p)) {
+        MessageBoxW(m_hwnd, L"The snapshot could not be saved.", APP_NAME, MB_ICONWARNING);
+        return;
+    }
+    m_opText = L"Snapshot saved (" + std::to_wstring(p.entries.size()) + L" services).";
+    UpdateStatus();
+}
+
+void MainWindow::RestoreSnapshot() {
+    std::wstring path;
+    if (!PickFile(m_hwnd, false, Profiles::Folder(L"Snapshots"), L"", L"Restore a snapshot", path)) return;
+    Profile p;
+    if (!Profiles::Load(path, p)) {
+        MessageBoxW(m_hwnd, L"That file is not a snapshot or profile, or it is empty.", APP_NAME, MB_ICONWARNING);
+        return;
+    }
+    ApplyProfile(p, L"Restore snapshot: " + p.title);
+}
+
+void MainWindow::SaveSelectedAsProfile() {
+    const auto sel = m_list.Selected();
+    if (sel.empty()) return;
+    std::wstring path;
+    if (!PickFile(m_hwnd, true, Profiles::Folder(L"Profiles"), L"My profile.wsm",
+                  L"Save the selected services' start types as a profile", path))
+        return;
+    Profile p = Profiles::FromServices(sel, FileStem(path));
+    p.description = L"Your profile: " + std::to_wstring(p.entries.size()) + L" service(s), saved " +
+                    Profiles::Timestamp(false) + L".";
+    if (p.entries.empty() || !Profiles::Save(path, p)) {
+        MessageBoxW(m_hwnd, L"The profile could not be saved.", APP_NAME, MB_ICONWARNING);
+        return;
+    }
+    m_opText = L"Profile \x201C" + p.title + L"\x201D saved. Apply it from the Profiles menu.";
+    UpdateStatus();
+}
+
+void MainWindow::OpenDataFolder(const wchar_t* sub) {
+    const std::wstring dir = Profiles::Folder(sub);
+    if (!dir.empty()) ShellExecuteW(m_hwnd, L"open", dir.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }

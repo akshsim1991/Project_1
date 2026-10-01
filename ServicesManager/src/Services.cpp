@@ -6,6 +6,7 @@
 
 #include <shlwapi.h>
 
+#include "Inspect.h"
 #include "Util.h"
 
 namespace {
@@ -118,7 +119,7 @@ bool QueryConfig2(SC_HANDLE svc, DWORD level, std::vector<BYTE>& buf) {
     return QueryServiceConfig2W(svc, level, buf.data(), (DWORD)buf.size(), &needed) != FALSE;
 }
 
-void ReadConfig(SC_HANDLE scm, ServiceInfo& s, CompanyCache& companies) {
+void ReadConfig(SC_HANDLE scm, ServiceInfo& s, EnumCache& cache) {
     ScHandle svc(OpenServiceW(scm, s.name.c_str(), SERVICE_QUERY_CONFIG));
     if (!svc) return;
     std::vector<BYTE> buf(8192);
@@ -135,6 +136,7 @@ void ReadConfig(SC_HANDLE scm, ServiceInfo& s, CompanyCache& companies) {
     s.binaryPath = cfg->lpBinaryPathName ? cfg->lpBinaryPathName : L"";
     s.account = AccountText(cfg->lpServiceStartName ? cfg->lpServiceStartName : L"");
     s.imagePath = ImageFromCommandLine(s.binaryPath);
+    for (const wchar_t* d = cfg->lpDependencies; d && *d; d += wcslen(d) + 1) s.dependencies.push_back(d);
 
     std::vector<BYTE> b2;
     if (QueryConfig2(svc.h, SERVICE_CONFIG_DESCRIPTION, b2)) {
@@ -159,8 +161,8 @@ void ReadConfig(SC_HANDLE scm, ServiceInfo& s, CompanyCache& companies) {
         s.triggered = ((const TriggerInfoHead*)b2.data())->cTriggers > 0;
 
     if (!s.imagePath.empty()) {
-        auto it = companies.find(s.imagePath);
-        if (it == companies.end()) it = companies.emplace(s.imagePath, CompanyOf(s.imagePath)).first;
+        auto it = cache.companies.find(s.imagePath);
+        if (it == cache.companies.end()) it = cache.companies.emplace(s.imagePath, CompanyOf(s.imagePath)).first;
         s.company = it->second;
     }
 }
@@ -174,12 +176,72 @@ Safety Classify(const ServiceInfo& s, const std::wstring& systemRootLower) {
     if (!s.configKnown) return Safety::Windows;  // unknown: assume Windows, the careful choice
     return Safety::ThirdParty;
 }
+
+// Warning flags. Signatures are only checked for third-party programs
+// (Windows' own are trusted) and only once per file.
+void CheckWarnings(ServiceInfo& s, EnumCache& cache) {
+    if (!s.configKnown || s.imagePath.empty()) return;
+    const bool exists = FileExists(s.imagePath);
+    if (!exists) s.warnings |= kWarnMissingFile;
+    const std::wstring low = ToLower(s.imagePath);
+    if (low.find(L"\\users\\") != std::wstring::npos || low.find(L"\\appdata\\") != std::wstring::npos ||
+        low.find(L"\\temp\\") != std::wstring::npos)
+        s.warnings |= kWarnUserFolder;
+    // C:\Program Files\My App\svc.exe without quotes: Windows may run
+    // C:\Program.exe or C:\Program Files\My.exe instead.
+    std::wstring cmd = s.binaryPath;
+    cmd.erase(0, cmd.find_first_not_of(L" \t"));
+    if (!cmd.empty() && cmd[0] != L'"') {
+        const size_t exe = ToLower(cmd).find(L".exe");
+        if (exe != std::wstring::npos && cmd.substr(0, exe).find(L' ') != std::wstring::npos)
+            s.warnings |= kWarnUnquoted;
+    }
+    if (exists && s.safety == Safety::ThirdParty) {
+        auto it = cache.signatures.find(low);
+        if (it == cache.signatures.end())
+            it = cache.signatures.emplace(low, (int)Inspect::CheckSignature(s.imagePath).state).first;
+        if (it->second == (int)SignState::Unsigned) s.warnings |= kWarnUnsigned;
+        if (it->second == (int)SignState::Invalid) s.warnings |= kWarnBadSignature;
+    }
+}
 }  // namespace
 
 // ===========================================================================
 // Listing
 // ===========================================================================
-bool Svc::Enumerate(std::vector<ServiceInfo>& out, DWORD& error, CompanyCache& companies) {
+std::wstring Svc::WarningsText(unsigned w) {
+    std::wstring out;
+    auto add = [&](unsigned flag, const wchar_t* text) {
+        if (!(w & flag)) return;
+        if (!out.empty()) out += L" \x00B7 ";
+        out += text;
+    };
+    add(kWarnMissingFile, L"File missing");
+    add(kWarnBadSignature, L"Bad signature");
+    add(kWarnUnsigned, L"Unsigned");
+    add(kWarnUserFolder, L"In user folder");
+    add(kWarnUnquoted, L"Unquoted path");
+    return out;
+}
+
+std::wstring Svc::WarningsExplained(unsigned w) {
+    std::wstring out;
+    auto add = [&](unsigned flag, const wchar_t* text) {
+        if (w & flag) out += std::wstring(L"\x26A0 ") + text + L"\r\n";
+    };
+    add(kWarnMissingFile, L"The program file is missing: the service cannot start. Often left over from "
+                          L"uninstalled software.");
+    add(kWarnBadSignature, L"The program's digital signature is broken or not trusted: the file may have been "
+                           L"changed.");
+    add(kWarnUnsigned, L"The program has no digital signature, so its publisher cannot be verified.");
+    add(kWarnUserFolder, L"It runs from a user, AppData or Temp folder. Normal services run from Program Files "
+                         L"or Windows; malware often hides in these folders.");
+    add(kWarnUnquoted, L"Its path contains spaces but no quotes. Windows might run a different program placed "
+                       L"earlier in that path (a known security hole). Ask the publisher for an update.");
+    return out;
+}
+
+bool Svc::Enumerate(std::vector<ServiceInfo>& out, DWORD& error, EnumCache& cache) {
     out.clear();
     error = 0;
     ScHandle scm(OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT | SC_MANAGER_ENUMERATE_SERVICE));
@@ -214,10 +276,24 @@ bool Svc::Enumerate(std::vector<ServiceInfo>& out, DWORD& error, CompanyCache& c
         if (ok) break;
         if (needed > buf.size()) buf.resize(needed);
     }
+    if (!cache.bootDelaysRead) {
+        // Read once per run (the boot log only changes when Windows starts).
+        cache.bootDelaysRead = true;
+        std::map<std::wstring, Inspect::BootDelay> delays;
+        if (Inspect::ReadBootDelays(delays))
+            for (const auto& d : delays) cache.bootDelays[d.first] = {d.second.worstMs, d.second.count};
+    }
     const std::wstring root = ToLower(SystemRoot()) + L"\\";
     for (ServiceInfo& s : out) {
-        ReadConfig(scm.h, s, companies);
+        ReadConfig(scm.h, s, cache);
         s.safety = Classify(s, root);
+        CheckWarnings(s, cache);
+        auto it = cache.bootDelays.find(ToLower(s.name));
+        if (it == cache.bootDelays.end()) it = cache.bootDelays.find(ToLower(s.displayName));
+        if (it != cache.bootDelays.end()) {
+            s.bootDelayMs = it->second.first;
+            s.bootDelayCount = it->second.second;
+        }
     }
     return true;
 }
@@ -561,7 +637,7 @@ OpOutcome Svc::Run(const OpRequest& req, size_t index, const std::atomic<bool>& 
         }
 
         case OpKind::SetStartMode:
-            out.error = SetMode(scm.h, name, req.mode);
+            out.error = SetMode(scm.h, name, index < req.modes.size() ? req.modes[index] : req.mode);
             break;
     }
     return out;

@@ -21,7 +21,7 @@
 #include <vector>
 
 #define APP_NAME L"Windows Services Manager"
-#define APP_VERSION L"2.0.0"
+#define APP_VERSION L"2.1.0"
 #define APP_COPYRIGHT L"\x00A9 2026 Akshaya Simha"
 #define APP_WINDOW_CLASS L"WindowsServicesManagerMain"
 #define APP_REG_KEY L"Software\\WindowsServicesManager"
@@ -32,6 +32,9 @@ enum : UINT {
     WM_APP_SNAPSHOT = WM_APP + 1,  // Snapshot*: the full service list
     WM_APP_OP_PROGRESS,            // OpProgress*: an action started on one service
     WM_APP_OP_DONE,                // OpBatchResult*: a batch of actions finished
+    WM_APP_DETAILS_READY,          // to a details page: background facts loaded
+    WM_APP_EVENTS_READY,           // to the History page: event-log entries loaded
+    WM_APP_ADVICE_READY,           // online advice downloaded (or failed)
 };
 
 // Command ids (toolbar, menus, accelerators).
@@ -65,6 +68,15 @@ enum : int {
     ID_CANCEL_OPS,
     ID_STATUS_TEXT,
     ID_STATUS_OP,
+    ID_DETAILS,
+    ID_PROFILES_MENU,
+    ID_UNDO,
+    ID_SAVE_SNAPSHOT,
+    ID_RESTORE_SNAPSHOT,
+    ID_OPEN_SNAPSHOTS,
+    ID_SAVE_PROFILE,
+    ID_OPEN_PROFILES,
     ID_FILTER_FIRST = 200,  // + Filter value
     ID_COLUMN_FIRST = 300,  // + column index (show/hide)
+    ID_PROFILE_FIRST = 400, // + index into the Profiles menu's list
 };

@@ -1,12 +1,13 @@
 // app.rc - icon, manifest, version information and the Settings dialog.
 #include <windows.h>
+#include <commctrl.h>
 #include "resource.h"
 
 IDI_APP ICON "app.ico"
 
 1 RT_MANIFEST "app.manifest"
 
-IDD_SETTINGS DIALOGEX 0, 0, 300, 198
+IDD_SETTINGS DIALOGEX 0, 0, 300, 212
 STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "Settings"
 FONT 9, "Segoe UI", 400, 0, 0x1
@@ -16,21 +17,121 @@ BEGIN
     COMBOBOX        IDC_THEME, 112, 21, 170, 80, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
     LTEXT           "Refresh the list every:", -1, 16, 42, 92, 10
     COMBOBOX        IDC_REFRESH, 112, 40, 170, 120, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
-    GROUPBOX        "Actions", -1, 7, 68, 286, 100
+    GROUPBOX        "Actions", -1, 7, 68, 286, 114
     LTEXT           "Wait for a service up to:", -1, 16, 85, 92, 10
     EDITTEXT        IDC_TIMEOUT, 112, 83, 36, 13, ES_NUMBER | WS_TABSTOP
     LTEXT           "seconds", -1, 154, 85, 60, 10
     AUTOCHECKBOX    "Ask before stopping, restarting, pausing, killing or disabling", IDC_CONFIRM, 16, 104, 270, 10, WS_TABSTOP
     AUTOCHECKBOX    "Protect services that are critical to Windows (recommended)", IDC_PROTECT, 16, 118, 270, 10, WS_TABSTOP
     AUTOCHECKBOX    "Always start as administrator", IDC_ELEVATE, 16, 132, 270, 10, WS_TABSTOP
-    PUSHBUTTON      "Reset column layout", IDC_RESET_COLUMNS, 16, 148, 100, 14, WS_TABSTOP
-    DEFPUSHBUTTON   "OK", IDOK, 188, 176, 50, 15
-    PUSHBUTTON      "Cancel", IDCANCEL, 243, 176, 50, 15
+    AUTOCHECKBOX    "Look up online whether services can be disabled", IDC_ONLINE, 16, 146, 270, 10, WS_TABSTOP
+    PUSHBUTTON      "Reset column layout", IDC_RESET_COLUMNS, 16, 162, 100, 14, WS_TABSTOP
+    DEFPUSHBUTTON   "OK", IDOK, 188, 190, 50, 15
+    PUSHBUTTON      "Cancel", IDCANCEL, 243, 190, 50, 15
+END
+
+IDD_PAGE_GENERAL DIALOGEX 0, 0, 320, 250
+STYLE DS_SHELLFONT | WS_CHILD | WS_DISABLED | WS_CAPTION
+CAPTION "General"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    EDITTEXT        IDC_GEN_TEXT, 7, 7, 306, 214, ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL | WS_TABSTOP
+    PUSHBUTTON      "Open file location", IDC_GEN_OPEN, 7, 228, 74, 14, WS_TABSTOP
+    PUSHBUTTON      "Check on VirusTotal", IDC_GEN_VT, 85, 228, 80, 14, WS_TABSTOP
+    PUSHBUTTON      "Search online", IDC_GEN_SEARCH, 169, 228, 64, 14, WS_TABSTOP
+    PUSHBUTTON      "Copy", IDC_GEN_COPY, 263, 228, 50, 14, WS_TABSTOP
+END
+
+IDD_PAGE_CONFIG DIALOGEX 0, 0, 320, 250
+STYLE DS_SHELLFONT | WS_CHILD | WS_DISABLED | WS_CAPTION
+CAPTION "Configuration"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "Display name:", -1, 7, 9, 70, 10
+    EDITTEXT        IDC_CFG_NAME, 80, 7, 233, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "Description:", -1, 7, 27, 70, 10
+    EDITTEXT        IDC_CFG_DESC, 80, 25, 233, 44, ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "Start type:", -1, 7, 78, 70, 10
+    COMBOBOX        IDC_CFG_START, 80, 76, 140, 80, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    GROUPBOX        "Log on as", -1, 7, 96, 306, 102
+    AUTORADIOBUTTON "Local System (full control of the PC)", IDC_CFG_SYSTEM, 16, 110, 280, 10, WS_GROUP | WS_TABSTOP
+    AUTORADIOBUTTON "Local Service (limited rights)", IDC_CFG_LOCALSVC, 16, 123, 280, 10
+    AUTORADIOBUTTON "Network Service (limited rights, can use the network)", IDC_CFG_NETSVC, 16, 136, 280, 10
+    AUTORADIOBUTTON "This account:", IDC_CFG_ACCOUNT, 16, 151, 66, 10
+    EDITTEXT        IDC_CFG_USER, 90, 149, 214, 13, ES_AUTOHSCROLL | WS_GROUP | WS_TABSTOP
+    LTEXT           "Password:", -1, 28, 167, 58, 10
+    EDITTEXT        IDC_CFG_PASS, 90, 165, 214, 13, ES_PASSWORD | ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "Confirm password:", -1, 28, 182, 60, 10
+    EDITTEXT        IDC_CFG_PASS2, 90, 180, 214, 13, ES_PASSWORD | ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "", IDC_CFG_NOTE, 7, 205, 306, 40
+END
+
+IDD_PAGE_RECOVERY DIALOGEX 0, 0, 320, 250
+STYLE DS_SHELLFONT | WS_CHILD | WS_DISABLED | WS_CAPTION
+CAPTION "Recovery"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "What Windows does when the service fails:", -1, 7, 7, 306, 10
+    LTEXT           "First failure:", -1, 7, 25, 100, 10
+    COMBOBOX        IDC_REC_1, 110, 23, 150, 80, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "Second failure:", -1, 7, 43, 100, 10
+    COMBOBOX        IDC_REC_2, 110, 41, 150, 80, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "Later failures:", -1, 7, 61, 100, 10
+    COMBOBOX        IDC_REC_3, 110, 59, 150, 80, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "Reset the failure count after:", -1, 7, 81, 100, 10
+    EDITTEXT        IDC_REC_RESET, 110, 79, 36, 13, ES_NUMBER | WS_TABSTOP
+    LTEXT           "days", -1, 151, 81, 60, 10
+    LTEXT           "Wait before acting:", -1, 7, 99, 100, 10
+    EDITTEXT        IDC_REC_DELAY, 110, 97, 36, 13, ES_NUMBER | WS_TABSTOP
+    LTEXT           "minutes", -1, 151, 99, 60, 10
+    AUTOCHECKBOX    "Also act when the service stops with an error (not only when it crashes)", IDC_REC_NONCRASH, 7, 117, 306, 10, WS_TABSTOP
+    GROUPBOX        "Program to run (for the action: Run a program)", -1, 7, 134, 306, 34
+    EDITTEXT        IDC_REC_CMD, 16, 148, 288, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "", IDC_REC_NOTE, 7, 176, 306, 60
+END
+
+IDD_PAGE_DEPS DIALOGEX 0, 0, 320, 250
+STYLE DS_SHELLFONT | WS_CHILD | WS_DISABLED | WS_CAPTION
+CAPTION "Dependencies"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "Services this one needs, and services that need it:", -1, 7, 7, 306, 10
+    CONTROL         "", IDC_DEP_TREE, "SysTreeView32", TVS_HASBUTTONS | TVS_HASLINES | TVS_LINESATROOT | TVS_SHOWSELALWAYS | WS_BORDER | WS_TABSTOP, 7, 20, 306, 222
+END
+
+IDD_PAGE_EVENTS DIALOGEX 0, 0, 320, 250
+STYLE DS_SHELLFONT | WS_CHILD | WS_DISABLED | WS_CAPTION
+CAPTION "History"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "", IDC_EVT_INFO, 7, 7, 306, 10
+    EDITTEXT        IDC_EVT_TEXT, 7, 20, 306, 222, ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL | WS_TABSTOP
+END
+
+IDD_SUMMARY DIALOGEX 0, 0, 380, 290
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "About the selected services"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    EDITTEXT        IDC_SUM_TEXT, 7, 7, 366, 256, ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL | WS_TABSTOP
+    PUSHBUTTON      "Copy", IDC_SUM_COPY, 7, 270, 50, 14, WS_TABSTOP
+    DEFPUSHBUTTON   "Close", IDOK, 323, 270, 50, 14, WS_TABSTOP
+END
+
+IDD_CHANGES DIALOGEX 0, 0, 380, 270
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Review changes"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "", IDC_CHG_INTRO, 7, 7, 366, 34
+    CONTROL         "", IDC_CHG_LIST, "SysListView32", LVS_REPORT | LVS_SHOWSELALWAYS | LVS_NOSORTHEADER | WS_BORDER | WS_TABSTOP, 7, 44, 366, 196
+    DEFPUSHBUTTON   "Apply", IDOK, 269, 248, 50, 15, WS_TABSTOP
+    PUSHBUTTON      "Cancel", IDCANCEL, 323, 248, 50, 15, WS_TABSTOP
 END
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 2,0,0,0
- PRODUCTVERSION 2,0,0,0
+ FILEVERSION 2,1,0,0
+ PRODUCTVERSION 2,1,0,0
  FILEFLAGSMASK 0x3fL
  FILEFLAGS 0x0L
  FILEOS VOS_NT_WINDOWS32
@@ -44,11 +145,11 @@ BEGIN
             VALUE "CompanyName", "Akshaya Simha"
             VALUE "FileDescription", "Windows Services Manager"
             VALUE "LegalCopyright", "\251 2026 Akshaya Simha"
-            VALUE "FileVersion", "2.0.0.0"
+            VALUE "FileVersion", "2.1.0.0"
             VALUE "InternalName", "ServicesManager"
             VALUE "OriginalFilename", "ServicesManager.exe"
             VALUE "ProductName", "Windows Services Manager"
-            VALUE "ProductVersion", "2.0.0.0"
+            VALUE "ProductVersion", "2.1.0.0"
         END
     END
     BLOCK "VarFileInfo"

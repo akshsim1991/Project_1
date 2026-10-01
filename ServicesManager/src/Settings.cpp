@@ -5,8 +5,9 @@ const int kRefreshChoices[] = {0, 2, 5, 10, 30, 60};
 const int kRefreshChoiceCount = (int)(sizeof(kRefreshChoices) / sizeof(kRefreshChoices[0]));
 
 namespace {
-const int kDefaultWidths[kColumnCount] = {230, 150, 90, 150, 85, 60, 120, 360, 300, 170};
-const unsigned kDefaultVisible = ~((1u << kColPath) | (1u << kColCompany)) & ((1u << kColumnCount) - 1);
+const int kDefaultWidths[kColumnCount] = {230, 150, 90, 150, 85, 60, 120, 360, 300, 170, 90, 150};
+const unsigned kDefaultVisible =
+    ~((1u << kColPath) | (1u << kColCompany) | (1u << kColBootDelay)) & ((1u << kColumnCount) - 1);
 
 DWORD ReadDword(HKEY key, const wchar_t* name, DWORD def) {
     DWORD v = 0, size = sizeof(v);
@@ -44,10 +45,14 @@ void Settings::Load() {
     confirmActions = ReadDword(key, L"ConfirmActions", 1) != 0;
     protectCritical = ReadDword(key, L"ProtectCritical", 1) != 0;
     alwaysElevate = ReadDword(key, L"AlwaysElevate", 0) != 0;
+    onlineAdvice = ReadDword(key, L"OnlineAdvice", 1) != 0;
     filter = Clamp((int)ReadDword(key, L"Filter", 0), 0, kFilterCount - 1);
     sortColumn = Clamp((int)ReadDword(key, L"SortColumn", 0), 0, kColumnCount - 1);
     sortDescending = ReadDword(key, L"SortDescending", 0) != 0;
-    visibleColumns = ReadDword(key, L"VisibleColumns", kDefaultVisible) & ((1u << kColumnCount) - 1);
+    // Columns added in a newer version start with their default visibility.
+    const unsigned known = (1u << (DWORD)ReadDword(key, L"ColumnCount", kColCompany + 1)) - 1;
+    visibleColumns = ((ReadDword(key, L"VisibleColumns", kDefaultVisible) & known) | (kDefaultVisible & ~known)) &
+                     ((1u << kColumnCount) - 1);
     visibleColumns |= 1u << kColDisplayName;  // the name column is always shown
 
     int widths[kColumnCount], order[kColumnCount];
@@ -88,10 +93,12 @@ void Settings::Save() const {
     WriteDword(key, L"ConfirmActions", confirmActions ? 1 : 0);
     WriteDword(key, L"ProtectCritical", protectCritical ? 1 : 0);
     WriteDword(key, L"AlwaysElevate", alwaysElevate ? 1 : 0);
+    WriteDword(key, L"OnlineAdvice", onlineAdvice ? 1 : 0);
     WriteDword(key, L"Filter", (DWORD)filter);
     WriteDword(key, L"SortColumn", (DWORD)sortColumn);
     WriteDword(key, L"SortDescending", sortDescending ? 1 : 0);
     WriteDword(key, L"VisibleColumns", visibleColumns);
+    WriteDword(key, L"ColumnCount", kColumnCount);
     RegSetValueExW(key, L"ColumnWidths", 0, REG_BINARY, (const BYTE*)columnWidth, sizeof(columnWidth));
     RegSetValueExW(key, L"ColumnOrder", 0, REG_BINARY, (const BYTE*)columnOrder, sizeof(columnOrder));
     RegCloseKey(key);

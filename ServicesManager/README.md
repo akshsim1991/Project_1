@@ -7,9 +7,11 @@ needs to run.
 
 © 2026 Akshaya Simha. Developed for faster experience.
 
-Version 2.0 is a rewrite of the original VB.NET app (`Windows Services.zip`)
-as a single native executable: about 400 KB, no .NET or other runtime
+Version 2 is a rewrite of the original VB.NET app (`Windows Services.zip`)
+as a single native executable: about 600 KB, no .NET or other runtime
 needed, starts instantly, and never freezes while a service is slow.
+Version 2.1 adds the details window, online "can it be disabled?" advice,
+start-up impact, security warnings, profiles, snapshots and undo.
 
 ## Features
 
@@ -40,6 +42,88 @@ needed, starts instantly, and never freezes while a service is slow.
 * Readable descriptions: `@file.dll,-123` resource references are resolved
   into text.
 * Hover a row to see its full description and command line.
+
+**Details: double-click a service** (or press Enter / Alt+Enter)
+
+* **General:** a full report on the service, which you can copy:
+  * **Can it be disabled?** Online advice (see below).
+  * Status, process ID, how long it has been running, memory and CPU time.
+  * Which other services share its process.
+  * Start type, and how much it slowed down Windows start-up.
+  * Command line, program file, version, company and digital signature
+    (including Windows catalog signatures).
+  * The account it runs as, warnings, recovery settings and dependencies.
+  * Buttons: Open file location, Check on VirusTotal (sends only the file's
+    SHA-256 hash, never the file), and Search online.
+* **Configuration (editable):** display name, description, start type, and
+  the log-on account: Local System, Local Service, Network Service, or a
+  user account with password. Choosing a user account grants it "Log on as
+  a service", as Windows' own console does.
+* **Recovery (editable):** what Windows does on the first, second and later
+  failures (take no action, restart the service, run a program, restart
+  the computer), the wait time, when the failure count resets, and whether
+  to act on error stops too.
+* **Dependencies:** a tree of the services it needs (all levels) and the
+  services that need it.
+* **History:** the most recent System event-log entries about the
+  service, such as starts, stops, crashes and failed starts.
+
+Select several services and double-click (or press Enter) to get **one
+summary** of all of them, with the advice for each.
+
+**"Can it be disabled?" advice (online)**
+
+The advice comes from `data/service-advice.tsv` in this repository and
+covers about 200 common Windows services. Each has a verdict and a
+one-line reason:
+
+* **Do not disable:** Windows or security needs it.
+* **Disable only if you don't need it:** names the feature that stops
+  working (printing, Bluetooth, Xbox games, Remote Desktop…).
+* **Usually safe to disable:** for example telemetry, retail demo, fax.
+
+The list is downloaded the first time you open details in a session. It
+is saved, so without internet the saved copy is shown (with its date).
+Without internet and with no saved copy, the window says so. Turn it off in
+Settings ("Look up online whether services can be disabled"). To improve the
+advice, edit the `.tsv` file on GitHub; everyone gets the update without a
+new version of the program.
+
+**Start-up impact and warnings**
+
+* **Boot delay** column and "Slowed down start-up" filter: Windows records
+  services that delayed start-up (Diagnostics-Performance log, event 103).
+  This needs administrator rights.
+* **Warnings** column and "Needs attention" filter:
+  * Program file missing.
+  * Third-party program with no digital signature, or a broken or untrusted
+    signature.
+  * Running from a user, AppData or Temp folder.
+  * Unquoted path with spaces (a known security hole).
+
+**Profiles, snapshots and undo** (the **Profiles** button)
+
+* **Built-in profiles:**
+  * Privacy: reduce telemetry.
+  * Lighter: fewer background services.
+  * No Xbox (not a gamer).
+  * No printer or scanner.
+  * Security hardening.
+* **Review before applying:** every profile opens a review window listing
+  each change (now → new) with a tick box. Critical services are protected.
+  Services not on this PC are skipped.
+* **Your own profiles:** select services and choose "Save as a profile" to
+  save their start types and re-apply them later, or on another PC (copy the
+  `.wsm` file).
+* **Snapshots:** save the start types of every service, and restore them
+  later through the same review window.
+* **Automatic snapshot before every change:** before any start-type change
+  (toolbar, Properties, profile, restore or undo), all start types are saved
+  to `Snapshots\Automatic`. The newest 30 are kept.
+* **Undo** (Ctrl+Z) reverts the last start-type changes, up to 20 steps.
+
+Profiles and snapshots are plain text files in
+`%LOCALAPPDATA%\WindowsServicesManager\Profiles` and `...\Snapshots`.
 
 **Actions** (toolbar, right-click menu or keyboard)
 
@@ -92,6 +176,7 @@ needed, starts instantly, and never freezes while a service is slow.
 | Refresh the list every: never, 2, 5, 10 or 30 seconds, 1 minute | 5 seconds |
 | Wait for a service up to (seconds) | 30 |
 | Ask before stopping, restarting, pausing, killing or disabling | On |
+| Look up online whether services can be disabled | On |
 | Protect services that are critical to Windows | On |
 | Always start as administrator | Off |
 | Reset column layout | — |
@@ -103,7 +188,9 @@ filter are saved in `HKEY_CURRENT_USER\Software\WindowsServicesManager`.
 
 | Shortcut | Action |
 |---|---|
-| F5 | Refresh |
+| Double-click / Enter / Alt+Enter | Details (several selected: summary) |
+| Ctrl+Z | Undo the last start-type change |
+| F5 | Refresh (also re-checks signatures and boot delays) |
 | Ctrl+F | Search (Esc clears it, Enter or ↓ moves to the list) |
 | Ctrl+A | Select all |
 | Ctrl+C | Copy service names |
@@ -148,7 +235,12 @@ Control may warn about it.
 | `src/Worker.*` | Background thread: refreshes and actions run there, one at a time, so the window never freezes |
 | `src/ServiceList.*` | Virtual list view: only visible rows are formatted; sorting, filtering, colours, columns and selection kept across refreshes |
 | `src/MainWindow.*` | Window, toolbar, status bar, menus and the action flow (checks, confirmation, progress, results, follow-ups) |
-| `src/Dialogs.*` | Settings dialog |
+| `src/Details.*` | Details window (General, Configuration, Recovery, Dependencies, History) and the multi-service summary |
+| `src/Inspect.*` | Signatures (embedded and catalog), SHA-256, process memory/CPU, recovery settings, configuration changes, event log, boot delays |
+| `src/Advice.*` | Downloads, caches and looks up the "can it be disabled?" list (WinHTTP) |
+| `src/Profiles.*` | Profiles, snapshots, automatic snapshots |
+| `data/service-advice.tsv` | The advice list (downloaded by the app from GitHub) |
+| `src/Dialogs.*` | Settings dialog and the review-changes window |
 | `src/Settings.*` | Saved preferences |
 | `src/Toolbar.*`, `src/Theme.*` | Self-drawn toolbar and status bar, light and dark palette (shared with Feather PDF) |
 
@@ -167,3 +259,7 @@ Control may warn about it.
   boot, sign in, network and stay secure, but cannot know every PC's
   special setup.
 * Remote computers are not supported yet.
+* The advice is general guidance for home PCs. Company-managed PCs may need
+  services the list calls safe to disable.
+* Start-up impact is only known for services Windows itself reported as
+  slowing down start-up.

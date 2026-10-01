@@ -16,7 +16,9 @@ public:
     bool Start(HWND notify);
     void Stop();
 
-    void Refresh();               // skipped if a refresh is already queued
+    // Skipped if a refresh is already queued. `full` also re-checks program
+    // signatures and the boot-delay log (F5).
+    void Refresh(bool full = false);
     void Run(OpRequest&& request);
     void CancelActions();         // stops the running batch after the current wait
     bool Busy() const { return m_busy; }
@@ -24,11 +26,12 @@ public:
 private:
     struct Job {
         bool refresh = true;
+        bool full = false;
         OpRequest request;
     };
     static DWORD WINAPI ThreadProc(LPVOID self);
     void Loop();
-    void DoRefresh();
+    void DoRefresh(bool full = false);
     void DoBatch(OpRequest& request);
     void Push(Job&& job);
 
@@ -40,5 +43,5 @@ private:
     bool m_quit = false;
     std::atomic<bool> m_cancel{false};
     std::atomic<bool> m_busy{false};  // a batch of actions is running
-    CompanyCache m_companies;         // worker thread only
+    EnumCache m_cache;                // worker thread only
 };

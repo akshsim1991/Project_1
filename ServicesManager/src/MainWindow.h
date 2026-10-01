@@ -1,6 +1,7 @@
 // MainWindow.h - the top-level window: toolbar, service table, status bar,
 // menus and the action flow (checks, confirmation, progress, results).
 #pragma once
+#include "Profiles.h"
 #include "ServiceList.h"
 #include "Settings.h"
 #include "Toolbar.h"
@@ -45,6 +46,17 @@ private:
     void OpenLocation();
     void SearchOnline();
 
+    // phase 2: details, profiles, snapshots, undo
+    void ShowDetails();
+    void ShowProfilesMenu();
+    void ApplyProfile(const Profile& p, const std::wstring& title);
+    void SaveSnapshot();
+    void RestoreSnapshot();
+    void SaveSelectedAsProfile();
+    void OpenDataFolder(const wchar_t* sub);
+    void Undo();
+    void RecordUndo(const OpRequest& req);
+
     void SetRefreshTimer();
     void ApplyTheme();
 
@@ -62,4 +74,13 @@ private:
     DWORD m_listError = 0;
     bool m_running = false;       // a batch of actions is in progress
     std::wstring m_opText;        // progress / last result shown in the status bar
+
+    // Start-type changes that can be undone (newest last).
+    struct UndoEntry {
+        std::vector<std::wstring> names, displayNames;
+        std::vector<StartMode> modes;  // the start types before the change
+    };
+    std::vector<UndoEntry> m_undo;
+    bool m_undoing = false;
+    std::vector<Profile> m_menuProfiles;  // what the Profiles menu items refer to
 };

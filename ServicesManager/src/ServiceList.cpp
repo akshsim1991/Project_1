@@ -55,6 +55,8 @@ const wchar_t* ServiceList::ColumnTitle(int column) {
         case kColDescription: return L"Description";
         case kColPath: return L"Program";
         case kColCompany: return L"Company";
+        case kColBootDelay: return L"Boot delay";
+        case kColWarnings: return L"Warnings";
         default: return L"";
     }
 }
@@ -71,6 +73,13 @@ std::wstring ServiceList::CellText(const ServiceInfo& s, int column) {
         case kColDescription: return s.description;
         case kColPath: return s.binaryPath;
         case kColCompany: return s.company;
+        case kColBootDelay: {
+            if (!s.bootDelayMs) return {};
+            wchar_t buf[32];
+            swprintf_s(buf, L"%.1f s", s.bootDelayMs / 1000.0);
+            return buf;
+        }
+        case kColWarnings: return Svc::WarningsText(s.warnings);
         default: return {};
     }
 }
@@ -105,7 +114,7 @@ void ServiceList::BuildColumns() {
         if (!(m_settings->visibleColumns & (1u << c))) continue;
         LVCOLUMNW col{};
         col.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_FMT;
-        col.fmt = c == kColPid ? LVCFMT_RIGHT : LVCFMT_LEFT;
+        col.fmt = (c == kColPid || c == kColBootDelay) ? LVCFMT_RIGHT : LVCFMT_LEFT;
         col.cx = Dpi(m_settings->columnWidth[c], m_dpi);
         col.pszText = const_cast<wchar_t*>(ColumnTitle(c));
         ListView_InsertColumn(m_list, (int)m_cols.size(), &col);
@@ -208,6 +217,12 @@ bool ServiceList::Matches(const ServiceInfo& s) const {
         case kFilterCritical:
             if (s.safety != Safety::Critical) return false;
             break;
+        case kFilterAttention:
+            if (!s.warnings) return false;
+            break;
+        case kFilterBootDelay:
+            if (!s.bootDelayMs) return false;
+            break;
         default: break;
     }
     if (m_searchLower.empty()) return true;
@@ -231,6 +246,9 @@ void ServiceList::ApplyView() {
             case kColStartType: r = StartRank(a) - StartRank(b); break;
             case kColSafety: r = (int)a.safety - (int)b.safety; break;
             case kColPid: r = a.pid < b.pid ? -1 : a.pid > b.pid ? 1 : 0; break;
+            case kColBootDelay:
+                r = a.bootDelayMs < b.bootDelayMs ? -1 : a.bootDelayMs > b.bootDelayMs ? 1 : 0;
+                break;
             default: r = CompareText(CellText(a, col), CellText(b, col)); break;
         }
         if (r == 0) r = CompareText(a.displayName, b.displayName);  // stable tie-break
@@ -381,6 +399,10 @@ bool ServiceList::OnNotify(NMHDR* hdr, LRESULT& result) {
             SortBy(ColumnAt(((NMLISTVIEW*)hdr)->iSubItem));
             result = 0;
             return true;
+        case LVN_ITEMACTIVATE:
+            if (onActivate) onActivate();
+            result = 0;
+            return true;
         case LVN_ITEMCHANGED:
         case LVN_ODSTATECHANGED:
             if (!m_updating && onSelectionChanged) onSelectionChanged();
@@ -418,6 +440,12 @@ bool ServiceList::OnNotify(NMHDR* hdr, LRESULT& result) {
                                 cd->clrText = s.safety == Safety::Critical     ? th.danger
                                               : s.safety == Safety::ThirdParty ? th.thirdParty
                                                                                : th.listDim;
+                                break;
+                            case kColWarnings:
+                                cd->clrText = th.danger;
+                                break;
+                            case kColBootDelay:
+                                cd->clrText = th.pending;
                                 break;
                             case kColName:
                             case kColDescription:
@@ -475,7 +503,7 @@ LRESULT ServiceList::DrawHeader(NMCUSTOMDRAW* cd) {
     SetBkMode(cd->hdc, TRANSPARENT);
     SetTextColor(cd->hdc, th.barText);
     DrawTextW(cd->hdc, ColumnTitle(column), -1, &text,
-              (column == kColPid ? DT_RIGHT : DT_LEFT) | DT_VCENTER | DT_SINGLELINE |
+              (column == kColPid || column == kColBootDelay ? DT_RIGHT : DT_LEFT) | DT_VCENTER | DT_SINGLELINE |
                   DT_END_ELLIPSIS | DT_NOPREFIX);
     SelectObject(cd->hdc, oldFont);
     if (sorted) {
