@@ -251,10 +251,10 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
                 return 0;
             }
             {
-                WINDOWPLACEMENT wp{sizeof(wp)};
-                if (GetWindowPlacement(m_hwnd, &wp)) {
-                    if (wp.showCmd != SW_SHOWMAXIMIZED) wp.showCmd = SW_SHOWNORMAL;
-                    m_settings.placement = wp;
+                WINDOWPLACEMENT place{sizeof(place)};
+                if (GetWindowPlacement(m_hwnd, &place)) {
+                    if (place.showCmd != SW_SHOWMAXIMIZED) place.showCmd = SW_SHOWNORMAL;
+                    m_settings.placement = place;
                     m_settings.hasPlacement = true;
                 }
                 m_settings.Save();

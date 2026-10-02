@@ -83,7 +83,7 @@ void History::Load(int keepDays, bool demo) {
         if (end == std::string::npos) end = data.size();
         long long t = 0;
         int p = 0, ac = 0, ch = 0, rate = 0;
-        if (sscanf(data.c_str() + pos, "%lld,%d,%d,%d,%d", &t, &p, &ac, &ch, &rate) >= 4 && t > 0 && p >= 0 && p <= 100) {
+        if (sscanf_s(data.c_str() + pos, "%lld,%d,%d,%d,%d", &t, &p, &ac, &ch, &rate) >= 4 && t > 0 && p >= 0 && p <= 100) {
             if (t >= oldest && t <= now + 300) {
                 Sample s{t, p, ac != 0, ch != 0, rate};
                 m_samples.push_back(s);

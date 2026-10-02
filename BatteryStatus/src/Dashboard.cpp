@@ -202,7 +202,7 @@ void Dashboard::Paint(HDC hdc) {
         Font state(fonts.Fam(), 18 * s, FontStyleBold, UnitPixel);
         Font body(fonts.Fam(), 13.5f * s, FontStyleRegular, UnitPixel);
         Font bodyBold(fonts.Fam(), 13.5f * s, FontStyleBold, UnitPixel);
-        Font small(fonts.Fam(), 12 * s, FontStyleRegular, UnitPixel);
+        Font smallFont(fonts.Fam(), 12 * s, FontStyleRegular, UnitPixel);
         Font title(fonts.Fam(), 14 * s, FontStyleBold, UnitPixel);
         const Summary& sm = m_summary;
         const int pct = std::max(0, sm.percent);
@@ -280,7 +280,7 @@ void Dashboard::Paint(HDC hdc) {
                 const float lx = W - m - 14 * s - 190 * s, ly = gTop + 13 * s;
                 SolidBrush band(p.chargeBand);
                 g.FillRectangle(&band, lx, ly, 18 * s, 12 * s);
-                Text(g, L"On the charger", small, p.dim, RectF(lx + 24 * s, ly - 2 * s, 160 * s, 16 * s));
+                Text(g, L"On the charger", smallFont, p.dim, RectF(lx + 24 * s, ly - 2 * s, 160 * s, 16 * s));
             }
             const float pl = m + 52 * s, pr = W - m - 18 * s, pt = gTop + 42 * s, pb = gTop + gH - 30 * s;
             if (pb - pt > 30 * s && pr - pl > 60 * s) {
@@ -293,7 +293,7 @@ void Dashboard::Paint(HDC hdc) {
                 Pen grid(p.grid, 1);
                 for (int v = 0; v <= 100; v += 25) {
                     g.DrawLine(&grid, pl, Y(v), pr, Y(v));
-                    Text(g, std::to_wstring(v) + L"%", small, p.dim, RectF(m + 4 * s, Y(v) - 8 * s, 42 * s, 16 * s),
+                    Text(g, std::to_wstring(v) + L"%", smallFont, p.dim, RectF(m + 4 * s, Y(v) - 8 * s, 42 * s, 16 * s),
                          StringAlignmentFar);
                 }
                 // Time labels.
@@ -315,7 +315,7 @@ void Dashboard::Paint(HDC hdc) {
                 for (int64_t t = first; t <= m_t1; t += step) {
                     if (t < m_t0) continue;
                     g.DrawLine(&grid, X(t), pt, X(t), pb);
-                    Text(g, TimeLabel(t, m_hours), small, p.dim, RectF(X(t) - 40 * s, pb + 6 * s, 80 * s, 16 * s),
+                    Text(g, TimeLabel(t, m_hours), smallFont, p.dim, RectF(X(t) - 40 * s, pb + 6 * s, 80 * s, 16 * s),
                          StringAlignmentCenter);
                 }
                 // Alert levels.
@@ -402,7 +402,7 @@ void Dashboard::Paint(HDC hdc) {
                         }
                         RectF box;
                         StringFormat fmt;
-                        g.MeasureString(label.c_str(), (INT)label.size(), &small, PointF(0, 0), &fmt, &box);
+                        g.MeasureString(label.c_str(), (INT)label.size(), &smallFont, PointF(0, 0), &fmt, &box);
                         float bx = hx + 10 * s;
                         if (bx + box.Width + 12 * s > pr) bx = hx - box.Width - 22 * s;
                         const float by = std::max(pt, hy - 34 * s);
@@ -412,12 +412,12 @@ void Dashboard::Paint(HDC hdc) {
                         Pen tpen(p.cardBorder, 1);
                         g.FillPath(&tb, &tip);
                         g.DrawPath(&tpen, &tip);
-                        Text(g, label, small, p.text, RectF(bx + 6 * s, by + 4 * s, box.Width + 4 * s, box.Height));
+                        Text(g, label, smallFont, p.text, RectF(bx + 6 * s, by + 4 * s, box.Width + 4 * s, box.Height));
                     }
                 }
             }
         } else {
-            WrappedText(g, L"Make the window taller to see the history graph.", small, p.dim,
+            WrappedText(g, L"Make the window taller to see the history graph.", smallFont, p.dim,
                         RectF(m, gTop, W - 2 * m, 40 * s));
         }
     }
