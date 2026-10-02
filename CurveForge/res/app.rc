@@ -1,0 +1,163 @@
+// app.rc - icon, manifest, version information and dialogs.
+#include <windows.h>
+#include <commctrl.h>
+#include "resource.h"
+
+IDI_APP ICON "app.ico"
+
+1 RT_MANIFEST "app.manifest"
+
+IDD_SETTINGS DIALOGEX 0, 0, 280, 182
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Settings"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    GROUPBOX        "Appearance", -1, 7, 7, 266, 52
+    LTEXT           "Theme:", -1, 16, 23, 100, 10
+    COMBOBOX        IDC_SE_THEME, 122, 21, 140, 80, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    AUTOCHECKBOX    "Grid lines on the graph", IDC_SE_GRID, 16, 41, 250, 10, WS_TABSTOP
+    GROUPBOX        "Results", -1, 7, 64, 266, 92
+    LTEXT           "Significant digits:", -1, 16, 80, 100, 10
+    COMBOBOX        IDC_SE_DIGITS, 122, 78, 140, 120, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "Confidence level:", -1, 16, 98, 100, 10
+    COMBOBOX        IDC_SE_CONF, 122, 96, 140, 80, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    AUTOCHECKBOX    "Fit again automatically after every change", IDC_SE_AUTOFIT, 16, 116, 250, 10, WS_TABSTOP
+    LTEXT           "The confidence level is used for parameter intervals, the bands on the graph and predictions.", -1, 16, 130, 250, 20
+    DEFPUSHBUTTON   "OK", IDOK, 168, 162, 50, 15
+    PUSHBUTTON      "Cancel", IDCANCEL, 223, 162, 50, 15
+END
+
+IDD_PARAMS DIALOGEX 0, 0, 380, 236
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Parameters"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "", IDC_PA_INFO, 7, 7, 366, 18
+    CONTROL         "", IDC_PA_LIST, "SysListView32", LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | LVS_NOSORTHEADER | WS_BORDER | WS_TABSTOP, 7, 27, 366, 104
+    LTEXT           "Starting value:", -1, 7, 140, 70, 10
+    EDITTEXT        IDC_PA_INIT, 80, 138, 90, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    AUTOCHECKBOX    "Fixed: keep this value, do not fit it", IDC_PA_FIXED, 180, 140, 190, 10, WS_TABSTOP
+    LTEXT           "Lowest allowed:", -1, 7, 158, 70, 10
+    EDITTEXT        IDC_PA_LO, 80, 156, 90, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "Highest allowed:", -1, 180, 158, 70, 10
+    EDITTEXT        IDC_PA_HI, 252, 156, 90, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "Leave a box empty for automatic (starting value) or no limit.", -1, 7, 176, 366, 10
+    PUSHBUTTON      "Use fitted values as starting values", IDC_PA_USEFIT, 7, 214, 140, 15, WS_TABSTOP
+    PUSHBUTTON      "Reset all", IDC_PA_RESET, 152, 214, 60, 15, WS_TABSTOP
+    DEFPUSHBUTTON   "OK", IDOK, 268, 214, 50, 15
+    PUSHBUTTON      "Cancel", IDCANCEL, 323, 214, 50, 15
+END
+
+IDD_PREDICT DIALOGEX 0, 0, 360, 262
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Predict and calculate"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    GROUPBOX        "y for a given x", -1, 7, 7, 346, 54
+    LTEXT           "x:", -1, 16, 22, 20, 10
+    EDITTEXT        IDC_PR_X, 40, 20, 90, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "", IDC_PR_X_OUT, 140, 20, 206, 38
+    GROUPBOX        "x for a given y", -1, 7, 65, 346, 40
+    LTEXT           "y:", -1, 16, 80, 20, 10
+    EDITTEXT        IDC_PR_Y, 40, 78, 90, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "", IDC_PR_Y_OUT, 140, 78, 206, 24
+    GROUPBOX        "Area under the curve (integral)", -1, 7, 109, 346, 40
+    LTEXT           "From:", -1, 16, 124, 22, 10
+    EDITTEXT        IDC_PR_A, 40, 122, 60, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "to:", -1, 106, 124, 12, 10
+    EDITTEXT        IDC_PR_B, 120, 122, 60, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "", IDC_PR_AREA_OUT, 190, 124, 156, 22
+    GROUPBOX        "Table of fitted values", -1, 7, 153, 346, 58
+    LTEXT           "From:", -1, 16, 168, 22, 10
+    EDITTEXT        IDC_PR_T0, 40, 166, 60, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "to:", -1, 106, 168, 12, 10
+    EDITTEXT        IDC_PR_T1, 120, 166, 60, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "Points:", -1, 188, 168, 26, 10
+    EDITTEXT        IDC_PR_TN, 216, 166, 40, 13, ES_AUTOHSCROLL | ES_NUMBER | WS_TABSTOP
+    PUSHBUTTON      "Copy table", IDC_PR_TCOPY, 16, 188, 70, 15, WS_TABSTOP
+    PUSHBUTTON      "Add to the data as new columns", IDC_PR_TADD, 92, 188, 130, 15, WS_TABSTOP
+    PUSHBUTTON      "Copy results", IDC_PR_COPY, 7, 240, 70, 15, WS_TABSTOP
+    DEFPUSHBUTTON   "Close", IDCANCEL, 303, 240, 50, 15
+END
+
+IDD_TABLE DIALOGEX 0, 0, 560, 270
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME
+CAPTION "Results"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "", IDC_TB_INFO, 7, 7, 466, 20
+    CONTROL         "", IDC_TB_LIST, "SysListView32", LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | WS_BORDER | WS_TABSTOP, 7, 29, 466, 212
+    DEFPUSHBUTTON   "Use selected model", IDC_TB_USE, 7, 248, 90, 15, WS_TABSTOP
+    PUSHBUTTON      "Copy", IDC_TB_COPY, 102, 248, 50, 15, WS_TABSTOP
+    PUSHBUTTON      "Save as CSV...", IDC_TB_SAVE, 157, 248, 70, 15, WS_TABSTOP
+    PUSHBUTTON      "Close", IDCANCEL, 423, 248, 50, 15
+END
+
+IDD_BATCH DIALOGEX 0, 0, 360, 220
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Batch fit"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "", IDC_BA_INFO, 7, 7, 346, 20
+    AUTORADIOBUTTON "Every other number column of this table (each as Y, with the same X)", IDC_BA_COLUMNS, 7, 30, 346, 10, WS_GROUP | WS_TABSTOP
+    AUTORADIOBUTTON "These files (X and Y columns are found by name, otherwise by position):", IDC_BA_FILES, 7, 44, 346, 10
+    LISTBOX         IDC_BA_LIST, 18, 58, 278, 132, LBS_NOINTEGRALHEIGHT | LBS_EXTENDEDSEL | WS_VSCROLL | WS_HSCROLL | WS_BORDER | WS_TABSTOP
+    PUSHBUTTON      "Add files...", IDC_BA_ADD, 301, 58, 52, 15, WS_TABSTOP
+    PUSHBUTTON      "Remove", IDC_BA_REMOVE, 301, 77, 52, 15, WS_TABSTOP
+    DEFPUSHBUTTON   "Run", IDOK, 248, 198, 50, 15
+    PUSHBUTTON      "Cancel", IDCANCEL, 303, 198, 50, 15
+END
+
+IDD_FORMULA DIALOGEX 0, 0, 330, 150
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "New column from a formula"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "Column name:", -1, 7, 9, 55, 10
+    EDITTEXT        IDC_FO_NAME, 64, 7, 259, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "Formula:", -1, 7, 27, 55, 10
+    EDITTEXT        IDC_FO_EXPR, 64, 25, 259, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "", IDC_FO_VARS, 7, 44, 316, 78
+    DEFPUSHBUTTON   "Add column", IDOK, 218, 128, 50, 15
+    PUSHBUTTON      "Cancel", IDCANCEL, 273, 128, 50, 15
+END
+
+IDD_INPUT DIALOGEX 0, 0, 260, 66
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "CurveForge"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "", IDC_IN_PROMPT, 7, 7, 246, 10
+    EDITTEXT        IDC_IN_TEXT, 7, 20, 246, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    DEFPUSHBUTTON   "OK", IDOK, 148, 44, 50, 15
+    PUSHBUTTON      "Cancel", IDCANCEL, 203, 44, 50, 15
+END
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION 1,0,0,0
+ PRODUCTVERSION 1,0,0,0
+ FILEFLAGSMASK 0x3fL
+ FILEFLAGS 0x0L
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_APP
+ FILESUBTYPE VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "CompanyName", "Akshaya Simha"
+            VALUE "FileDescription", "CurveForge"
+            VALUE "FileVersion", "1.0.0.0"
+            VALUE "InternalName", "CurveForge"
+            VALUE "LegalCopyright", "\251 2026 Akshaya Simha"
+            VALUE "OriginalFilename", "CurveForge.exe"
+            VALUE "ProductName", "CurveForge"
+            VALUE "ProductVersion", "1.0.0.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END
