@@ -1,0 +1,48 @@
+name: Battery Status
+
+on:
+  push:
+    paths: ["BatteryStatus/**", ".github/workflows/batterystatus.yml"]
+  pull_request:
+    paths: ["BatteryStatus/**", ".github/workflows/batterystatus.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-msvc:
+    name: Windows x64 (MSVC)
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: BatteryStatus
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S . -B build -A x64
+      - name: Build (Release)
+        run: cmake --build build --config Release --parallel
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory dist | Out-Null
+          Copy-Item build/Release/BatteryStatus.exe dist/
+          Copy-Item README.md dist/
+          Get-Item dist/BatteryStatus.exe | Select-Object Name, Length
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WindowsBatteryStatus-x64
+          path: BatteryStatus/dist/
+
+  mingw:
+    name: Cross-compile check (MinGW-w64)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: BatteryStatus
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y g++-mingw-w64-x86-64
+      - run: cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=cmake/mingw-w64-x86_64.cmake -DCMAKE_BUILD_TYPE=Release
+      - run: cmake --build build --parallel
