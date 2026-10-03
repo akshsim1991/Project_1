@@ -1,0 +1,48 @@
+name: Clipboard Manager
+
+on:
+  push:
+    paths: ["ClipboardManager/**", ".github/workflows/clipboardmanager.yml"]
+  pull_request:
+    paths: ["ClipboardManager/**", ".github/workflows/clipboardmanager.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-msvc:
+    name: Windows x64 (MSVC)
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: ClipboardManager
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S . -B build -A x64
+      - name: Build (Release)
+        run: cmake --build build --config Release --parallel
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory dist | Out-Null
+          Copy-Item build/Release/ClipboardManager.exe dist/
+          Copy-Item README.md dist/
+          Get-Item dist/ClipboardManager.exe | Select-Object Name, Length
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ClipboardManager-x64
+          path: ClipboardManager/dist/
+
+  mingw:
+    name: Cross-compile check (MinGW-w64)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ClipboardManager
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y g++-mingw-w64-x86-64
+      - run: cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=cmake/mingw-w64-x86_64.cmake -DCMAKE_BUILD_TYPE=Release
+      - run: cmake --build build --parallel

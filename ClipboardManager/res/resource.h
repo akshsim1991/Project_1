@@ -1,0 +1,14 @@
+// resource.h - resource ids.
+#define IDI_APP 1
+#define IDD_SETTINGS 101
+#define IDC_IMAGES 1001
+#define IDC_FILES 1002
+#define IDC_DELETE_DAYS 1003
+#define IDC_FOLDER 1004
+#define IDC_OPEN_FOLDER 1005
+#define IDC_HOTKEY 1010
+#define IDC_PASTE_ENTER 1011
+#define IDC_THEME 1020
+#define IDC_AUTOSTART 1021
+#define IDC_STARTTRAY 1022
+#define IDC_CLOSETRAY 1023
