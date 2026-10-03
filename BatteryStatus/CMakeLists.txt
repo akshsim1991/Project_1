@@ -11,6 +11,7 @@ add_executable(BatteryStatus WIN32
   src/Battery.cpp
   src/History.cpp
   src/Alerts.cpp
+  src/AlertBox.cpp
   src/Summary.cpp
   src/TrayIcon.cpp
   src/Dashboard.cpp

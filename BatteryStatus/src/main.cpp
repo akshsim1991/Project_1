@@ -59,7 +59,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
         } else {
             MSG msg;
             while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
-                if (!IsDialogMessageW(window.Hwnd(), &msg)) {
+                // Keyboard navigation (Tab, Enter, Esc) in whichever of our
+                // windows the message is for: the main window or the alert.
+                HWND root = msg.hwnd ? GetAncestor(msg.hwnd, GA_ROOT) : nullptr;
+                if (!root || !IsDialogMessageW(root, &msg)) {
                     TranslateMessage(&msg);
                     DispatchMessageW(&msg);
                 }

@@ -1,5 +1,6 @@
 // MainWindow.h - the window, the tray icon, polling, alerts and commands.
 #pragma once
+#include "AlertBox.h"
 #include "Alerts.h"
 #include "Dashboard.h"
 #include "History.h"
@@ -40,6 +41,7 @@ private:
     Toolbar m_toolbar;
     Dashboard m_dashboard;
     TrayIcon m_tray;
+    AlertBox m_alertBox;
     History m_history;
     Alerts m_alerts;
     PowerSnapshot m_power;

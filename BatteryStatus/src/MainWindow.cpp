@@ -169,6 +169,11 @@ void MainWindow::Poll(bool details) {
     if (m_power.hasBattery) title = std::to_wstring(m_power.percent) + L"% \x2014 " APP_NAME;
     if (Battery::Demo()) title += L" (demo)";
     SetWindowTextW(m_hwnd, title.c_str());
+    // The low/critical window is no longer needed once the charger is in
+    // (or the level has risen above the low level again).
+    if (m_alertBox.IsOpen() && m_power.hasBattery &&
+        (m_power.onAc || m_power.percent > m_settings.lowPercent + 2))
+        m_alertBox.Close();
     HandleAlerts();
 }
 
@@ -177,9 +182,10 @@ void MainWindow::HandleAlerts() {
     for (const AlertEvent& e : events) {
         m_tray.Notify(e.title, e.text, e.urgent);
         PlayAlertSound(m_settings.sound, m_settings.soundFile, e.urgent);
+        // Our own window, not MessageBox: it does not block updates and can
+        // close itself when the charger is plugged in.
         if (e.urgent && m_settings.messageBox)
-            MessageBoxW(nullptr, (e.title + L"\n\n" + e.text).c_str(), APP_NAME,
-                        MB_OK | MB_ICONWARNING | MB_SYSTEMMODAL | MB_SETFOREGROUND);
+            m_alertBox.Show(nullptr, e.title, e.text, e.kind == AlertEvent::Critical);
     }
 }
 

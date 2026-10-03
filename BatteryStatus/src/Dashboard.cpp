@@ -86,7 +86,7 @@ void Text(Graphics& g, const std::wstring& t, const Font& f, const Color& c, Rec
 }
 
 void WrappedText(Graphics& g, const std::wstring& t, const Font& f, const Color& c, RectF r) {
-    StringFormat fmt;
+    StringFormat fmt(StringFormat::GenericTypographic());
     fmt.SetTrimming(StringTrimmingEllipsisWord);
     SolidBrush b(c);
     g.DrawString(t.c_str(), (INT)t.size(), &f, r, &fmt, &b);
@@ -250,14 +250,26 @@ void Dashboard::Paint(HDC hdc) {
         const float top = m + 136 * s;
         const float rowH = 23 * s, head = 34 * s;
         const float cw = (W - 3 * m) / 2;
-        const float labelW = std::min(150 * s, cw * 0.38f);
+        // Measure without GDI+'s extra padding (which made every row look like
+        // two lines on Windows).
+        const StringFormat* typo = StringFormat::GenericTypographic();
+        auto textWidth = [&](const std::wstring& t, const Font& f) {
+            RectF box;
+            g.MeasureString(t.c_str(), (INT)t.size(), &f, PointF(0, 0), typo, &box);
+            return box.Width;
+        };
+        // The label column fits the longest label (within reason).
+        float widest = 0;
+        for (const auto* list : {&sm.health, &sm.session})
+            for (const InfoRow& r : *list) widest = std::max(widest, textWidth(r.label, body));
+        const float labelW = std::min(widest + 18 * s, cw * 0.45f);
         const float valueW = std::max(40.0f, cw - 28 * s - labelW);
         auto linesFor = [&](const InfoRow& r) {
-            RectF box;
-            StringFormat fmt;
             const Font& f = r.tone == kNormal ? body : bodyBold;
-            g.MeasureString(r.value.c_str(), (INT)r.value.size(), &f, RectF(0, 0, valueW, 10000), &fmt, &box);
-            return std::max(1, (int)std::ceil(box.Height / (f.GetHeight(&g) * 1.02f) - 0.05f));
+            if (textWidth(r.value, f) <= valueW - 2 * s) return 1;
+            RectF box;
+            g.MeasureString(r.value.c_str(), (INT)r.value.size(), &f, RectF(0, 0, valueW, 10000), typo, &box);
+            return std::max(1, (int)std::lround(box.Height / f.GetHeight(&g)));
         };
         auto cardHeight = [&](const std::vector<InfoRow>& list) {
             float h = head + 10 * s;
@@ -272,7 +284,7 @@ void Dashboard::Paint(HDC hdc) {
             for (const InfoRow& r : list) {
                 const int lines = linesFor(r);
                 const float h = rowH * lines - (lines > 1 ? 4 * s * (lines - 1) : 0);
-                Text(g, r.label, body, p.dim, RectF(x + 14 * s, y, labelW, rowH));
+                WrappedText(g, r.label, body, p.dim, RectF(x + 14 * s, y, labelW - 6 * s, h + 2 * s));
                 WrappedText(g, r.value, r.tone == kNormal ? body : bodyBold, ToneColor(p, r.tone),
                             RectF(x + 14 * s + labelW, y, valueW, h + 2 * s));
                 y += h;

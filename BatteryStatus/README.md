@@ -82,8 +82,10 @@ are fixed:
 * Optional: charger connected and disconnected.
 * **Repeat** every 5 minutes until dealt with (plugged in or unplugged), or
   only once.
-* Shown as Windows notifications. Optionally also as a message box for low
-  and critical, like version 1.2.
+* Shown as Windows notifications. Optionally also as a message window for
+  low and critical, like version 1.2. It stays on top but does not block
+  anything, shows the newest level instead of stacking up, and **closes by
+  itself when the charger is plugged in**.
 * Sound: none, Windows notification, Windows alarm, or your own WAV file,
   with a Test button.
 * **Pause alerts for 1 hour** from the tray or the More menu.
@@ -158,6 +160,7 @@ is not code-signed, so Windows SmartScreen may warn about it.
 | `src/History.*` | Recording, loading, pruning and exporting the history; drain/charge speeds; last plug/unplug times |
 | `src/Summary.*` | Estimates and wording shared by the window, tooltip and copied summary |
 | `src/Alerts.*` | Alert rules: once, then repeat; reset when the situation changes; pause |
+| `src/AlertBox.*` | The low/critical message window that closes itself when plugged in |
 | `src/TrayIcon.*` | The drawn tray icon, tooltip and notifications |
 | `src/Dashboard.*` | Gauge, cards and the history graph (GDI+) |
 | `src/MainWindow.*` | Window, polling, tray behaviour, commands, battery report, export |
