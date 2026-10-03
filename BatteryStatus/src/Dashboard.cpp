@@ -245,21 +245,37 @@ void Dashboard::Paint(HDC hdc) {
             Text(g, sm.advice, bodyBold, ToneColor(p, sm.adviceTone), RectF(tx, m + 104 * s, tw, 20 * s));
 
         // ---- Cards ----
+        // Values never get cut off: a value too long for its line wraps onto
+        // more lines, and the cards grow to fit.
         const float top = m + 136 * s;
         const float rowH = 23 * s, head = 34 * s;
-        const size_t rows = std::max(sm.health.size(), sm.session.size());
-        const float cardH = head + rowH * (float)std::max<size_t>(rows, 3) + 10 * s;
         const float cw = (W - 3 * m) / 2;
+        const float labelW = std::min(150 * s, cw * 0.38f);
+        const float valueW = std::max(40.0f, cw - 28 * s - labelW);
+        auto linesFor = [&](const InfoRow& r) {
+            RectF box;
+            StringFormat fmt;
+            const Font& f = r.tone == kNormal ? body : bodyBold;
+            g.MeasureString(r.value.c_str(), (INT)r.value.size(), &f, RectF(0, 0, valueW, 10000), &fmt, &box);
+            return std::max(1, (int)std::ceil(box.Height / (f.GetHeight(&g) * 1.02f) - 0.05f));
+        };
+        auto cardHeight = [&](const std::vector<InfoRow>& list) {
+            float h = head + 10 * s;
+            for (const InfoRow& r : list) h += rowH * linesFor(r) - (linesFor(r) > 1 ? 4 * s * (linesFor(r) - 1) : 0);
+            return h;
+        };
+        const float cardH = std::max({cardHeight(sm.health), cardHeight(sm.session), head + rowH * 3 + 10 * s});
         auto drawCard = [&](float x, const wchar_t* heading, const std::vector<InfoRow>& list) {
             Card(g, p, RectF(x, top, cw, cardH), s);
             Text(g, heading, title, p.text, RectF(x + 14 * s, top + 10 * s, cw - 28 * s, 20 * s));
             float y = top + head;
-            const float labelW = std::min(170 * s, cw * 0.46f);
             for (const InfoRow& r : list) {
+                const int lines = linesFor(r);
+                const float h = rowH * lines - (lines > 1 ? 4 * s * (lines - 1) : 0);
                 Text(g, r.label, body, p.dim, RectF(x + 14 * s, y, labelW, rowH));
-                Text(g, r.value, r.tone == kNormal ? body : bodyBold, ToneColor(p, r.tone),
-                     RectF(x + 14 * s + labelW, y, cw - 28 * s - labelW, rowH));
-                y += rowH;
+                WrappedText(g, r.value, r.tone == kNormal ? body : bodyBold, ToneColor(p, r.tone),
+                            RectF(x + 14 * s + labelW, y, valueW, h + 2 * s));
+                y += h;
             }
             if (list.empty()) Text(g, L"Nothing to show yet.", body, p.dim, RectF(x + 14 * s, y, cw - 28 * s, rowH));
         };
@@ -352,30 +368,45 @@ void Dashboard::Paint(HDC hdc) {
                     spanEnd = b.time;
                 }
                 flushSpan();
-                // The level: one point per pixel, broken at gaps (sleep, shut down).
+                // The level, broken at gaps (sleep, shut down). Every sample is
+                // kept: short stretches (a few minutes in the 7-day view) must not
+                // disappear, and a stretch of one sample is drawn as a dot.
                 std::vector<std::vector<PointF>> lines(1);
-                int lastPx = -100000;
                 int64_t lastT = 0;
                 for (const Sample& smp : samples) {
                     if (smp.time < m_t0 - 3600) continue;
                     if (lastT && smp.time - lastT > 30 * 60 && !lines.back().empty()) lines.emplace_back();
                     lastT = smp.time;
-                    const PointF pnt(X(smp.time), Y(smp.percent));
-                    const int px = (int)pnt.X;
-                    if (px == lastPx && !lines.back().empty()) lines.back().back() = pnt;
-                    else lines.back().push_back(pnt);
-                    lastPx = px;
+                    lines.back().emplace_back(X(smp.time), Y(smp.percent));
                 }
                 Pen line(p.line, 2.2f * s);
                 line.SetLineJoin(LineJoinRound);
                 SolidBrush area(p.fillTop);
+                SolidBrush dotBrush(p.line);
                 for (auto& l : lines) {
-                    if (l.size() < 2) continue;
+                    if (l.empty()) continue;
+                    if (l.size() == 1 || l.back().X - l.front().X < 2 * s) {
+                        // Too short for a line: a dot (with a stroke if the level moved).
+                        float lo = l[0].Y, hi = l[0].Y;
+                        for (const PointF& q : l) {
+                            lo = std::min(lo, q.Y);
+                            hi = std::max(hi, q.Y);
+                        }
+                        const float cx = (l.front().X + l.back().X) / 2;
+                        if (hi - lo > 1) g.DrawLine(&line, cx, lo, cx, hi);
+                        g.FillEllipse(&dotBrush, cx - 3 * s, l.back().Y - 3 * s, 6 * s, 6 * s);
+                        continue;
+                    }
                     std::vector<PointF> poly = l;
                     poly.emplace_back(l.back().X, pb);
                     poly.emplace_back(l.front().X, pb);
                     g.FillPolygon(&area, poly.data(), (INT)poly.size());
                     g.DrawLines(&line, l.data(), (INT)l.size());
+                }
+                // The current level is always marked.
+                if (!samples.empty() && samples.back().time >= m_t0) {
+                    const Sample& last = samples.back();
+                    g.FillEllipse(&dotBrush, X(last.time) - 3.5f * s, Y(last.percent) - 3.5f * s, 7 * s, 7 * s);
                 }
                 g.ResetClip();
                 if (samples.size() < 2)

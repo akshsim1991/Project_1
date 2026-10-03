@@ -38,12 +38,16 @@ are fixed:
 
 **Battery** card (read from the battery driver)
 
-* **Health**: what a full charge holds now compared with when it was new,
-  for example "89% — good". Below 80% it says worn; below 60%, replace soon.
+* **Health**: how much of its original capacity the battery still holds,
+  in full words, for example "73% of its original capacity". **Condition**
+  then says what was lost: "Worn — lost 27% of its capacity since new". It
+  is *Good* from 80%, *Worn* from 60%, and *Replace soon* below that.
 * A full charge holds, for example "49.8 Wh (new: 56.0 Wh)", plus the
   energy in the battery now.
 * **Charge cycles**.
-* **Power**: charging at, or using, so many watts.
+* **Power**: charging at, or using, so many watts. Some batteries (many HP
+  laptops, for example) do not report this; it is then **measured** from the
+  change in stored energy over a few minutes, and marked "(measured)".
 * Voltage and temperature, when the battery reports them.
 * Model, manufacturer, chemistry and manufacturing date.
 * PCs with two batteries show totals.
@@ -53,7 +57,8 @@ are fixed:
 * Plugged in / unplugged since when, and for how long. This also works
   after a restart, from the history.
 * Charged since plugged in, or used since unplugged (in %).
-* Charging or drain speed (% per hour), and Windows' own estimate.
+* **Battery use** or **Charging speed** in plain words, for example "About 6%
+  of the battery per hour (8.1 W)", and Windows' own estimate.
 * **A full battery lasts about…**, based on your own usage history.
 * Battery saver on or off.
 
@@ -89,8 +94,9 @@ are fixed:
   with a bolt when charging), or the percentage as a number. It adapts to a
   light or dark taskbar.
 * The tooltip shows the level, state and time left or time to full.
-* Click to show or hide the window. Right-click for: Open, Pause alerts,
-  Start with Windows, Settings, About and Exit.
+* A single click opens the window, even when it is minimised. Right-click
+  for: Open or Hide, Pause alerts, Start with Windows, Settings, About and
+  Exit.
 * Minimising or closing the window keeps it running in the tray (the close
   behaviour can be changed). The first time, a notification says so.
 

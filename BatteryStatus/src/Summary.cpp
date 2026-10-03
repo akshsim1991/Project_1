@@ -16,10 +16,15 @@ std::wstring Watts(int mW) {
     return b;
 }
 
-std::wstring PerHour(double v) {
-    wchar_t b[32];
-    swprintf_s(b, L"%.0f%% per hour", std::fabs(v));
-    return b;
+// "About 6% of the battery per hour (8.1 W)".
+std::wstring Speed(double pctPerHour, int mW) {
+    wchar_t b[96];
+    const double v = std::fabs(pctPerHour);
+    if (v >= 10) swprintf_s(b, L"About %.0f%% of the battery per hour", v);
+    else swprintf_s(b, L"About %.1f%% of the battery per hour", v);
+    std::wstring out = b;
+    if (mW) out += L" (" + Watts(mW) + L")";
+    return out;
 }
 
 // Percent at a moment, from the history (nearest sample at or after t).
@@ -30,7 +35,8 @@ int PercentAt(const History& h, int64_t t) {
 }
 }  // namespace
 
-Summary Summarize(const PowerSnapshot& s, const History& h, const Settings& set, int64_t now, int64_t pausedUntil) {
+Summary Summarize(const PowerSnapshot& s, const History& h, const Settings& set, int64_t now, int64_t pausedUntil,
+                  int measuredRate) {
     Summary m;
     m.hasBattery = s.hasBattery;
     m.percent = s.percent;
@@ -42,9 +48,17 @@ Summary Summarize(const PowerSnapshot& s, const History& h, const Settings& set,
         return m;
     }
     const int pct = std::max(0, s.percent);
-    const double speed = h.PercentPerHour(now, 30 * 60);  // + charging, - discharging
     const unsigned full = s.FullCapacity(), cur = s.CurrentCapacity();
-    const int rate = s.RateKnown() ? s.Rate() : 0;
+    // Power: from the battery, or measured from the change in stored energy.
+    const bool reported = s.RateKnown() && s.Rate() != 0;
+    const int rate = reported ? s.Rate() : measuredRate;
+    // Speed in % per hour (+ charging, - discharging): from the power when
+    // known (steady and exact), otherwise from the level history.
+    double speed = NAN;
+    if (rate && full) speed = 100.0 * rate / full;
+    else speed = h.PercentPerHour(now, 2 * 3600);
+    // Only trust a speed that matches the state (no "charging" speed on battery).
+    if (!std::isnan(speed) && ((s.onAc && speed < 0) || (!s.onAc && speed > 0))) speed = NAN;
 
     // State and estimate.
     if (s.onAc) {
@@ -100,19 +114,26 @@ Summary Summarize(const PowerSnapshot& s, const History& h, const Settings& set,
     // Health card.
     const int health = s.HealthPercent();
     if (health >= 0) {
-        InfoRow r{L"Health", std::to_wstring(health) + L"%"};
-        if (health >= 80) {
-            r.value += L" \x2014 good";
-            r.tone = kGood;
+        // Say it in full: "73% of its original capacity" and what was lost.
+        const int lost = std::max(0, 100 - health);
+        InfoRow h1{L"Health", std::to_wstring(health) + L"% of its original capacity"};
+        InfoRow h2{L"Condition", L""};
+        if (health >= 100) {
+            h2.value = L"Like new \x2014 no capacity lost yet";
+            h1.tone = h2.tone = kGood;
+        } else if (health >= 80) {
+            h2.value = L"Good \x2014 lost " + std::to_wstring(lost) + L"% of its capacity since new";
+            h1.tone = h2.tone = kGood;
         } else if (health >= 60) {
-            r.value += L" \x2014 worn";
-            r.tone = kWarn;
+            h2.value = L"Worn \x2014 lost " + std::to_wstring(lost) + L"% of its capacity since new";
+            h1.tone = h2.tone = kWarn;
         } else {
-            r.value += L" \x2014 replace soon";
-            r.tone = kBad;
+            h2.value = L"Replace soon \x2014 lost " + std::to_wstring(lost) + L"% of its capacity since new";
+            h1.tone = h2.tone = kBad;
         }
-        m.health.push_back(r);
-        m.health.push_back({L"A full charge holds", Wh(full) + L"  (new: " + Wh(s.DesignCapacity()) + L")"});
+        m.health.push_back(h1);
+        m.health.push_back(h2);
+        m.health.push_back({L"A full charge holds", Wh(full) + L"  (when new: " + Wh(s.DesignCapacity()) + L")"});
     } else {
         m.health.push_back({L"Health", L"Not reported by this battery"});
     }
@@ -126,9 +147,12 @@ Summary Summarize(const PowerSnapshot& s, const History& h, const Settings& set,
         if (b.voltage) volts = b.voltage;
     }
     if (cycles >= 0) m.health.push_back({L"Charge cycles", std::to_wstring(cycles)});
-    if (s.RateKnown()) {
-        std::wstring v = rate > 0 ? L"Charging at " + Watts(rate) : rate < 0 ? L"Using " + Watts(rate) : L"0 W";
+    if (rate) {
+        std::wstring v = rate > 0 ? L"Charging at " + Watts(rate) : L"Using " + Watts(rate);
+        if (!reported) v += L" (measured)";
         m.health.push_back({L"Power", v});
+    } else if (s.RateKnown()) {
+        m.health.push_back({L"Power", L"0 W"});
     }
     if (volts) {
         wchar_t b[32];
@@ -162,7 +186,7 @@ Summary Summarize(const PowerSnapshot& s, const History& h, const Settings& set,
                 m.session.push_back({L"Charged since plugged in", (gained >= 0 ? L"+" : L"") + std::to_wstring(gained) + L"%"});
             }
         }
-        if (s.charging && speed > 0) m.session.push_back({L"Charging speed", PerHour(speed)});
+        if (s.charging && speed > 0) m.session.push_back({L"Charging speed", Speed(speed, rate)});
         if (unpluggedAt) m.session.push_back({L"Last unplugged", FormatClock(unpluggedAt)});
     } else {
         if (unpluggedAt) {
@@ -170,7 +194,7 @@ Summary Summarize(const PowerSnapshot& s, const History& h, const Settings& set,
             const int start = PercentAt(h, unpluggedAt);
             if (start >= 0) m.session.push_back({L"Used since unplugged", std::to_wstring(std::max(0, start - pct)) + L"%"});
         }
-        if (speed < 0) m.session.push_back({L"Drain speed", PerHour(speed)});
+        if (speed < 0) m.session.push_back({L"Battery use", Speed(speed, rate)});
         if (s.secondsLeft > 0) m.session.push_back({L"Windows' estimate", FormatDuration(s.secondsLeft) + L" left"});
         if (pluggedAt) m.session.push_back({L"Last plugged in", FormatClock(pluggedAt)});
     }

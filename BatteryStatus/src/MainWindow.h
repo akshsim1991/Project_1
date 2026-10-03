@@ -19,6 +19,7 @@ private:
     void OnCommand(int id);
     void Layout();
     void Poll(bool details);
+    int MeasuredRate();  // mW from the change in stored energy (0 = not yet known)
     void HandleAlerts();
     void UpdateRangeButtons();
     void ShowWindowFromTray();
@@ -43,6 +44,14 @@ private:
     Alerts m_alerts;
     PowerSnapshot m_power;
     Summary m_summary;
+    // Stored energy over the last minutes, for batteries that do not report
+    // their power: {time, mWh, on charger}.
+    struct EnergySample {
+        int64_t time;
+        unsigned mWh;
+        bool ac;
+    };
+    std::vector<EnergySample> m_energy;
     UINT m_taskbarCreated = 0;
     int m_dpi = 96;
     bool m_quitting = false;

@@ -12,8 +12,7 @@
 #include "resource.h"
 
 namespace {
-constexpr UINT_PTR kPollTimer = 1;     // percentage, state (every few seconds)
-constexpr UINT_PTR kDetailTimer = 2;   // driver details (every 30 s)
+constexpr UINT_PTR kPollTimer = 1;     // everything (every few seconds)
 constexpr UINT_PTR kRedrawTimer = 3;   // durations in the window (every 30 s)
 
 int HoursFor(int id) {
@@ -78,7 +77,6 @@ bool MainWindow::Create(HINSTANCE inst, bool startHidden) {
     Poll(true);
     UpdateRangeButtons();
     SetTimers();
-    SetTimer(m_hwnd, kDetailTimer, 30 * 1000, nullptr);
     SetTimer(m_hwnd, kRedrawTimer, 30 * 1000, nullptr);
     if (!startHidden) {
         ShowWindow(m_hwnd, m_settings.hasPlacement && m_settings.placement.showCmd == SW_SHOWMAXIMIZED ? SW_SHOWMAXIMIZED
@@ -120,23 +118,48 @@ void MainWindow::UpdateRangeButtons() {
 // ===========================================================================
 // Polling
 // ===========================================================================
+int MainWindow::MeasuredRate() {
+    // Use the newest stretch with the same power source and no gap (sleep).
+    if (m_energy.size() < 2) return 0;
+    const EnergySample& last = m_energy.back();
+    const int64_t maxGap = std::max<int64_t>(120, 3 * (int64_t)m_settings.refreshSeconds);
+    size_t i = m_energy.size() - 1;
+    while (i > 0 && m_energy[i - 1].ac == last.ac && m_energy[i].time - m_energy[i - 1].time <= maxGap &&
+           last.time - m_energy[i - 1].time <= 20 * 60)
+        --i;
+    const EnergySample& first = m_energy[i];
+    const int64_t span = last.time - first.time;
+    if (span < 180 || last.mWh == first.mWh) return 0;  // need 3 minutes and a change
+    const double mW = ((double)last.mWh - (double)first.mWh) * 3600.0 / (double)span;
+    // On the charger the energy can only rise; on battery only fall.
+    if ((last.ac && mW < 0) || (!last.ac && mW > 0)) return 0;
+    return (int)std::lround(mW);
+}
+
 void MainWindow::Poll(bool details) {
+    (void)details;
     PowerSnapshot fresh;
-    Battery::Read(fresh, details || m_power.batteries.empty());
-    // Keep the last driver details between detail reads.
-    if (!details && fresh.batteries.empty() && !Battery::Demo()) fresh.batteries = m_power.batteries;
+    // The driver is read every time: it is quick, and the stored energy is
+    // needed to measure the power.
+    Battery::Read(fresh, true);
     m_power = std::move(fresh);
     const int64_t now = History::Now();
+    const unsigned energy = m_power.CurrentCapacity();
+    if (energy && m_power.hasBattery) {
+        if (!m_energy.empty() && (m_energy.back().ac != m_power.onAc || now < m_energy.back().time)) m_energy.clear();
+        if (m_energy.empty() || now > m_energy.back().time) m_energy.push_back({now, energy, m_power.onAc});
+        while (!m_energy.empty() && now - m_energy.front().time > 25 * 60) m_energy.erase(m_energy.begin());
+    }
     if (m_power.hasBattery && m_power.percent >= 0) {
         Sample s;
         s.time = now;
         s.percent = m_power.percent;
         s.ac = m_power.onAc;
         s.charging = m_power.charging;
-        s.rate = m_power.RateKnown() ? m_power.Rate() : 0;
+        s.rate = m_power.RateKnown() && m_power.Rate() ? m_power.Rate() : MeasuredRate();
         m_history.Record(s);
     }
-    m_summary = Summarize(m_power, m_history, m_settings, now, m_alerts.PausedUntil());
+    m_summary = Summarize(m_power, m_history, m_settings, now, m_alerts.PausedUntil(), MeasuredRate());
     m_tray.Update(m_power.hasBattery, m_power.percent, m_power.charging, m_power.onAc, m_settings.lowPercent,
                   m_settings.trayStyle, m_summary.Tooltip());
     if (IsWindowVisible(m_hwnd) && !IsIconic(m_hwnd))
@@ -186,7 +209,6 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         case WM_TIMER:
             if (wp == kPollTimer) Poll(false);
-            else if (wp == kDetailTimer) Poll(true);
             else if (wp == kRedrawTimer && IsWindowVisible(m_hwnd)) InvalidateRect(m_dashboard.Hwnd(), nullptr, FALSE);
             return 0;
         case WM_POWERBROADCAST:
@@ -196,12 +218,12 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             return TRUE;
         case WM_APP_TRAY:
             switch (LOWORD(lp)) {
+                // Windows sends both WM_LBUTTONUP and NIN_SELECT for one click,
+                // so a click only ever opens (never toggles) the window.
                 case WM_LBUTTONUP:
+                case WM_LBUTTONDBLCLK:
                 case NIN_SELECT:
-                case NIN_KEYSELECT:
-                    if (IsWindowVisible(m_hwnd) && !IsIconic(m_hwnd) && GetForegroundWindow() == m_hwnd) HideToTray();
-                    else ShowWindowFromTray();
-                    break;
+                case NIN_KEYSELECT: ShowWindowFromTray(); break;
                 case WM_CONTEXTMENU:
                 case WM_RBUTTONUP: ShowTrayMenu(); break;
                 case NIN_BALLOONUSERCLICK: ShowWindowFromTray(); break;
@@ -267,7 +289,6 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         case WM_DESTROY:
             KillTimer(m_hwnd, kPollTimer);
-            KillTimer(m_hwnd, kDetailTimer);
             KillTimer(m_hwnd, kRedrawTimer);
             m_tray.Remove();
             PostQuitMessage(0);
@@ -280,9 +301,10 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
 // Tray and window visibility
 // ===========================================================================
 void MainWindow::ShowWindowFromTray() {
-    if (!IsWindowVisible(m_hwnd)) ShowWindow(m_hwnd, SW_SHOW);
-    if (IsIconic(m_hwnd)) ShowWindow(m_hwnd, SW_RESTORE);
+    // SW_RESTORE both shows a hidden window and un-minimises it.
+    ShowWindow(m_hwnd, IsIconic(m_hwnd) ? SW_RESTORE : SW_SHOW);
     SetForegroundWindow(m_hwnd);
+    BringWindowToTop(m_hwnd);
     Poll(false);
     AskAutostartOnce();
 }
@@ -294,7 +316,6 @@ void MainWindow::HideToTray() {
         m_settings.hasPlacement = true;
     }
     ShowWindow(m_hwnd, SW_HIDE);
-    if (IsIconic(m_hwnd)) ShowWindow(m_hwnd, SW_RESTORE), ShowWindow(m_hwnd, SW_HIDE);
 }
 
 void MainWindow::ShowTrayMenu() {
@@ -304,7 +325,8 @@ void MainWindow::ShowTrayMenu() {
                                              : std::wstring(L"No battery");
     AppendMenuW(m, MF_STRING | MF_GRAYED, 0, head.c_str());
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(m, MF_STRING, ID_OPEN, IsWindowVisible(m_hwnd) ? L"&Hide the window" : L"&Open " APP_NAME);
+    AppendMenuW(m, MF_STRING, ID_OPEN,
+                IsWindowVisible(m_hwnd) && !IsIconic(m_hwnd) ? L"&Hide the window" : L"&Open " APP_NAME);
     SetMenuDefaultItem(m, ID_OPEN, FALSE);
     if (m_alerts.Paused(now))
         AppendMenuW(m, MF_STRING, ID_RESUME_ALERTS, (L"&Resume alerts (paused until " + FormatClock(m_alerts.PausedUntil()) + L")").c_str());
@@ -365,7 +387,7 @@ void MainWindow::OnCommand(int id) {
         case ID_SETTINGS: ShowSettings(); break;
         case ID_ABOUT: ShowAbout(); break;
         case ID_OPEN:
-            if (IsWindowVisible(m_hwnd)) HideToTray();
+            if (IsWindowVisible(m_hwnd) && !IsIconic(m_hwnd)) HideToTray();
             else ShowWindowFromTray();
             break;
         case ID_HIDE: HideToTray(); break;

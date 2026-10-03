@@ -27,4 +27,8 @@ struct Summary {
     std::wstring Text() const;     // everything, for the clipboard
 };
 
-Summary Summarize(const PowerSnapshot& s, const History& h, const Settings& set, int64_t now, int64_t pausedUntil);
+// `measuredRate` (mW, + charging, - discharging, 0 = unknown) is the power
+// worked out from the change in stored energy, for batteries that do not
+// report their own rate.
+Summary Summarize(const PowerSnapshot& s, const History& h, const Settings& set, int64_t now, int64_t pausedUntil,
+                  int measuredRate);
