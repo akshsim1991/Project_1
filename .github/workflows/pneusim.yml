@@ -1,0 +1,62 @@
+name: PneuSim
+
+on:
+  push:
+    paths: ["PneuSim/**", "PneuSim.Tests/**", ".github/workflows/pneusim.yml"]
+  pull_request:
+    paths: ["PneuSim/**", "PneuSim.Tests/**", ".github/workflows/pneusim.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Windows build, tests + package
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Build PneuSim (Release)
+        run: dotnet build PneuSim/PneuSim.vbproj -c Release
+
+      - name: Simulation tests
+        working-directory: PneuSim.Tests
+        shell: pwsh
+        run: |
+          dotnet build PneuSim.Tests.vbproj -c Release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory test-run -Force | Out-Null
+          Push-Location test-run
+          & ..\bin\Release\net472\PneuSim.Tests.exe
+          $failures = $LASTEXITCODE
+          Pop-Location
+          if ($failures -ne 0) { Write-Error "$failures test(s) failed"; exit 1 }
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $dist = "dist/PneuSim"
+          New-Item -ItemType Directory "$dist/Examples", "$dist/Generated examples" -Force | Out-Null
+          Copy-Item PneuSim/bin/Release/net472/PneuSim.exe, PneuSim/bin/Release/net472/PneuSim.exe.config $dist
+          Copy-Item PneuSim/README.md $dist
+          $out = "PneuSim.Tests/test-run/out"
+          Copy-Item "$out/ex*.pneu" "$dist/Examples"
+          Copy-Item "$out/electro_*.pneu", "$out/cascade_*.pneu" "$dist/Generated examples"
+          Get-ChildItem -Recurse dist | Select-Object FullName, Length
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PneuSim-Windows
+          path: dist/
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: PneuSim-test-renders
+          path: PneuSim.Tests/test-run/out/*.png
+          if-no-files-found: ignore
