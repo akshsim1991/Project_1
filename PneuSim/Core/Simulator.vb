@@ -1,26 +1,31 @@
 ''' <summary>
-''' Solves the pneumatic network and advances time.
+''' Solves the pneumatic and electrical networks and advances time.
 '''
-''' Every port is a node. Tubes and the open passages inside valves are edges. Nodes joined by
-''' edges form a group; a group linked to a supply is pressurized, a group linked to an open
-''' exhaust is vented, and any other group keeps the pressure trapped inside it.
-''' Flow control valves give edges a reduced, possibly direction dependent, capacity that
-''' slows down the cylinders fed or vented through them.
+''' Every port is a node. Tubes, wires, open valve passages and closed contacts are edges. An
+''' edge may allow flow in one direction only (check valves) and may limit the pressure passed
+''' on (pressure regulators).
+''' - Pressurized: reachable from a supply (pneumatic) or from +24 V (electric).
+''' - Exhausted: not pressurized, and air can flow from it to an open exhaust (or 0 V).
+''' - Floating: neither; pneumatic ports keep the pressure trapped in them.
+''' Edge capacities below 1 (flow control valves) slow down the cylinders fed or vented through them.
 ''' </summary>
 Public Class Simulator
 
     Private Structure Edge
         Public A As Integer
         Public B As Integer
-        ''' <summary>Capacity for air flowing from A to B.</summary>
+        ''' <summary>Capacity for flow from A to B (0 = blocked).</summary>
         Public AB As Double
-        ''' <summary>Capacity for air flowing from B to A.</summary>
+        ''' <summary>Capacity for flow from B to A (0 = blocked).</summary>
         Public BA As Double
+        ''' <summary>Highest pressure passed on from A to B.</summary>
+        Public LimitAB As Double
     End Structure
 
-    ''' <summary>Pilot pressure (bar) needed to switch a valve.</summary>
+    ''' <summary>Default pilot pressure (bar) needed to switch a valve.</summary>
     Public Const PilotThreshold As Double = 1.5
-    Private Const MaxLogicPasses As Integer = 40
+    Public Const ControlVoltage As Double = 24
+    Private Const MaxLogicPasses As Integer = 60
     Private Const HistoryInterval As Double = 0.05
     Private Const HistoryLength As Double = 60
 
@@ -28,6 +33,7 @@ Public Class Simulator
     Private _ports As New List(Of Port)
     Private ReadOnly _edges As New List(Of Edge)
     Private ReadOnly _supplies As New Dictionary(Of Integer, Double)
+    Private ReadOnly _exhausts As New HashSet(Of Integer)
     Private _nextSample As Double
 
     Public Sub New(circuit As Circuit)
@@ -42,7 +48,7 @@ Public Class Simulator
 
     Public Property Time As Double
 
-    ''' <summary>Problems found during the last solve (open ports blowing air, oscillation...).</summary>
+    ''' <summary>Problems found during the last solve (open ports blowing air, short circuits, oscillation).</summary>
     Public ReadOnly Property Warnings As New List(Of String)
 
     ''' <summary>Recorded (time, value) samples for the displacement-step diagram.</summary>
@@ -50,15 +56,23 @@ Public Class Simulator
 
     ' ------------------------------------------------------------ used by elements
 
-    Public Sub AddEdge(a As Port, b As Port, Optional capacityAB As Double = 1, Optional capacityBA As Double = 1)
+    Public Sub AddEdge(a As Port, b As Port, Optional capacityAB As Double = 1, Optional capacityBA As Double = 1,
+                       Optional pressureLimitAB As Double = Double.PositiveInfinity)
         If a Is Nothing OrElse b Is Nothing Then Return
-        _edges.Add(New Edge With {.A = a.NodeIndex, .B = b.NodeIndex, .AB = capacityAB, .BA = capacityBA})
+        _edges.Add(New Edge With {.A = a.NodeIndex, .B = b.NodeIndex, .AB = capacityAB, .BA = capacityBA,
+                                  .LimitAB = pressureLimitAB})
     End Sub
 
+    ''' <summary>Registers a pressure source (pneumatic supply, or +24 V for electric ports).</summary>
     Public Sub AddSupply(p As Port, pressure As Double)
         Dim existing As Double
         _supplies.TryGetValue(p.NodeIndex, existing)
         _supplies(p.NodeIndex) = Math.Max(existing, pressure)
+    End Sub
+
+    ''' <summary>Registers a port that is always open to atmosphere (silencer) or 0 V.</summary>
+    Public Sub AddExhaust(p As Port)
+        _exhausts.Add(p.NodeIndex)
     End Sub
 
     ''' <summary>True if a cylinder carrying the named position mark is at that end position.</summary>
@@ -66,6 +80,15 @@ Public Class Simulator
         If String.IsNullOrWhiteSpace(mark) Then Return False
         For Each cyl In _circuit.Elements.OfType(Of CylinderBase)()
             If cyl.IsAtMark(mark) Then Return True
+        Next
+        Return False
+    End Function
+
+    ''' <summary>True if a relay, timer relay or solenoid coil with this label is active.</summary>
+    Public Function IsCoilActive(label As String) As Boolean
+        If String.IsNullOrWhiteSpace(label) Then Return False
+        For Each coil In _circuit.Elements.OfType(Of ElectricCoil)()
+            If coil.Active AndAlso String.Equals(coil.Label, label.Trim(), StringComparison.OrdinalIgnoreCase) Then Return True
         Next
         Return False
     End Function
@@ -94,7 +117,7 @@ Public Class Simulator
         RecordHistory()
     End Sub
 
-    ''' <summary>Solves pressures and lets valves switch until the circuit is stable.</summary>
+    ''' <summary>Solves the networks and lets valves, relays and contacts switch until the circuit is stable.</summary>
     Public Sub RunLogic()
         For pass = 1 To MaxLogicPasses
             Solve()
@@ -105,7 +128,7 @@ Public Class Simulator
             If Not changed Then Return
         Next
         Solve()
-        Warnings.Add("The circuit does not settle: valves keep switching (oscillation).")
+        Warnings.Add("The circuit does not settle: valves or relays keep switching (oscillation).")
     End Sub
 
     Private Sub RecordHistory()
@@ -116,7 +139,7 @@ Public Class Simulator
             If TypeOf e Is CylinderBase Then
                 value = DirectCast(e, CylinderBase).Position
             ElseIf TypeOf e Is DirectionalValve Then
-                value = DirectCast(e, DirectionalValve).State
+                value = DirectCast(e, DirectionalValve).DiagramValue
             Else
                 Continue For
             End If
@@ -142,6 +165,7 @@ Public Class Simulator
         Next
         _edges.Clear()
         _supplies.Clear()
+        _exhausts.Clear()
         Warnings.Clear()
 
         For Each t In _circuit.Tubes
@@ -153,7 +177,60 @@ Public Class Simulator
         Next
 
         Dim n = _ports.Count
-        ' Union-find over all edges.
+        Dim isExhaust(n - 1) As Boolean
+        For i = 0 To n - 1
+            Dim p = _ports(i)
+            isExhaust(i) = _exhausts.Contains(i) OrElse (p.VentsWhenOpen AndAlso p.ConnectionCount = 0)
+        Next
+
+        ' Directed adjacency: outgoing(u) holds (v, edge index) for every allowed flow u -> v.
+        Dim outgoing(n - 1) As List(Of Integer())
+        Dim incoming(n - 1) As List(Of Integer)
+        For i = 0 To n - 1
+            outgoing(i) = New List(Of Integer())
+            incoming(i) = New List(Of Integer)
+        Next
+        For k = 0 To _edges.Count - 1
+            Dim ed = _edges(k)
+            If ed.AB > 0 Then outgoing(ed.A).Add({ed.B, k, 0}) : incoming(ed.B).Add(ed.A)
+            If ed.BA > 0 Then outgoing(ed.B).Add({ed.A, k, 1}) : incoming(ed.A).Add(ed.B)
+        Next
+
+        ' 1. Pressure reachable from the supplies (best pressure over all paths).
+        Dim fed(n - 1) As Double
+        Dim queue As New Queue(Of Integer)
+        For Each kv In _supplies
+            If kv.Value > fed(kv.Key) Then fed(kv.Key) = kv.Value
+            queue.Enqueue(kv.Key)
+        Next
+        While queue.Count > 0
+            Dim u = queue.Dequeue()
+            For Each o In outgoing(u)
+                Dim limit = If(o(2) = 0, _edges(o(1)).LimitAB, Double.PositiveInfinity)
+                Dim cand = Math.Min(fed(u), limit)
+                If cand > fed(o(0)) + 0.000001 Then
+                    fed(o(0)) = cand
+                    queue.Enqueue(o(0))
+                End If
+            Next
+        End While
+
+        ' 2. Ports that can vent: from each exhaust, walk backwards against the flow direction.
+        Dim vents(n - 1) As Boolean
+        For i = 0 To n - 1
+            If isExhaust(i) AndAlso fed(i) <= 0 Then vents(i) = True : queue.Enqueue(i)
+        Next
+        While queue.Count > 0
+            Dim v = queue.Dequeue()
+            For Each u In incoming(v)
+                If Not vents(u) AndAlso fed(u) <= 0 Then
+                    vents(u) = True
+                    queue.Enqueue(u)
+                End If
+            Next
+        End While
+
+        ' 3. Remaining ports hold trapped pressure, shared within each connected pocket.
         Dim parent(n - 1) As Integer
         For i = 0 To n - 1
             parent(i) = i
@@ -166,44 +243,41 @@ Public Class Simulator
                 End While
                 Return i
             End Function
+        Dim isFloating = Function(i As Integer) fed(i) <= 0 AndAlso Not vents(i)
         For Each ed In _edges
-            Dim ra = find(ed.A), rb = find(ed.B)
-            If ra <> rb Then parent(ra) = rb
+            If (ed.AB > 0 OrElse ed.BA > 0) AndAlso isFloating(ed.A) AndAlso isFloating(ed.B) Then
+                Dim ra = find(ed.A), rb = find(ed.B)
+                If ra <> rb Then parent(ra) = rb
+            End If
         Next
-
-        Dim groupSupply(n - 1) As Double
-        Dim groupExhaust(n - 1) As Boolean
-        Dim groupTrapped(n - 1) As Double
-        Dim isExhaust(n - 1) As Boolean
+        Dim trapped(n - 1) As Double
         For i = 0 To n - 1
-            Dim p = _ports(i)
-            Dim root = find(i)
-            isExhaust(i) = p.VentsWhenOpen AndAlso p.ConnectionCount = 0
-            If isExhaust(i) Then groupExhaust(root) = True
-            groupTrapped(root) = Math.Max(groupTrapped(root), p.Pressure)
-        Next
-        For Each kv In _supplies
-            Dim root = find(kv.Key)
-            groupSupply(root) = Math.Max(groupSupply(root), kv.Value)
+            If isFloating(i) AndAlso _ports(i).Kind = PortKind.Pneumatic Then
+                Dim root = find(i)
+                trapped(root) = Math.Max(trapped(root), _ports(i).Pressure)
+            End If
         Next
 
         Dim leaking As New HashSet(Of CircuitElement)
+        Dim shortCircuit = False
         For i = 0 To n - 1
             Dim p = _ports(i)
-            Dim root = find(i)
             p.Factor = 0
-            If groupSupply(root) > 0 Then
+            If fed(i) > 0 Then
                 p.State = PortState.Pressurized
-                p.Pressure = groupSupply(root)
-                If isExhaust(i) AndAlso TypeOf p.Owner IsNot DirectionalValve Then leaking.Add(p.Owner)
-            ElseIf groupExhaust(root) Then
+                p.Pressure = fed(i)
+                If isExhaust(i) Then
+                    If p.Kind = PortKind.Electric Then shortCircuit = True Else leaking.Add(p.Owner)
+                End If
+            ElseIf vents(i) Then
                 p.State = PortState.Exhausted
                 p.Pressure = 0
             Else
                 p.State = PortState.Floating
-                p.Pressure = groupTrapped(root)
+                p.Pressure = If(p.Kind = PortKind.Pneumatic, trapped(find(i)), 0)
             End If
         Next
+        If shortCircuit Then Warnings.Add("Short circuit: +24 V is connected directly to 0 V.")
         For Each e In leaking
             Warnings.Add($"Compressed air escapes from an open port of {e}.")
         Next

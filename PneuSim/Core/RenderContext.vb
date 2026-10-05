@@ -6,14 +6,19 @@ Public Class RenderContext
 
     Public Shared ReadOnly PressureColor As Color = Color.FromArgb(0, 84, 200)
     Public Shared ReadOnly IdleTubeColor As Color = Color.FromArgb(120, 170, 230)
+    Public Shared ReadOnly EnergizedColor As Color = Color.FromArgb(215, 30, 30)
 
     Public Property Simulating As Boolean
+
+    ''' <summary>True when drawing on the editing canvas (shows helper marks such as bend points).</summary>
+    Public Property Interactive As Boolean
 
     Public ReadOnly Line As New Pen(Color.Black, 1.6F)
     Public ReadOnly Thin As New Pen(Color.Black, 1.0F)
     Public ReadOnly Dashed As New Pen(Color.Black, 1.2F) With {.DashStyle = DashStyle.Dash}
     Public ReadOnly Pressure As New Pen(PressureColor, 2.4F)
     Public ReadOnly PressureDashed As New Pen(PressureColor, 1.8F) With {.DashStyle = DashStyle.Dash}
+    Public ReadOnly Energized As New Pen(EnergizedColor, 2.0F)
     Public ReadOnly Font As New Font("Segoe UI", 8.0F)
     Public ReadOnly SmallFont As New Font("Segoe UI", 7.0F)
     Public ReadOnly TextBrush As New SolidBrush(Color.Black)
@@ -22,7 +27,9 @@ Public Class RenderContext
 
     ''' <summary>Pen for a line carrying the air of the given port.</summary>
     Public Function PenFor(p As Port) As Pen
-        If Simulating AndAlso p IsNot Nothing AndAlso p.IsPressurized Then Return Pressure
+        If Simulating AndAlso p IsNot Nothing AndAlso p.IsPressurized Then
+            Return If(p.Kind = PortKind.Electric, Energized, Pressure)
+        End If
         Return Line
     End Function
 
@@ -33,7 +40,7 @@ Public Class RenderContext
 
     Public Sub Dispose() Implements IDisposable.Dispose
         Line.Dispose() : Thin.Dispose() : Dashed.Dispose()
-        Pressure.Dispose() : PressureDashed.Dispose()
+        Pressure.Dispose() : PressureDashed.Dispose() : Energized.Dispose()
         Font.Dispose() : SmallFont.Dispose()
         TextBrush.Dispose() : MarkBrush.Dispose() : BodyBrush.Dispose()
     End Sub

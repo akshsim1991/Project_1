@@ -3,7 +3,7 @@ Imports System.Globalization
 Imports System.Reflection
 Imports System.Xml.Linq
 
-''' <summary>A pneumatic line between two ports.</summary>
+''' <summary>A pneumatic tube or an electrical wire between two ports.</summary>
 Public Class Tube
     Public Sub New(a As Port, b As Port)
         Me.A = a
@@ -13,6 +13,18 @@ Public Class Tube
     Public ReadOnly Property A As Port
     Public ReadOnly Property B As Port
 
+    ''' <summary>
+    ''' User-chosen position of the middle segment (X for a vertical middle segment, Y for a
+    ''' horizontal one). Nothing means "half way".
+    ''' </summary>
+    Public Property Mid As Single?
+
+    Public ReadOnly Property IsElectric As Boolean
+        Get
+            Return A.Kind = PortKind.Electric
+        End Get
+    End Property
+
     Public ReadOnly Property IsPressurized As Boolean
         Get
             Return A.IsPressurized
@@ -20,24 +32,45 @@ Public Class Tube
     End Property
 
     Public Function Route() As PointF()
-        Return RouteBetween(A.WorldPos(), A.WorldDir(), B.WorldPos(), B.WorldDir())
+        Return RouteBetween(A.WorldPos(), A.WorldDir(), B.WorldPos(), B.WorldDir(), Mid)
+    End Function
+
+    ''' <summary>Which coordinate <see cref="Mid"/> moves: "X", "Y", or Nothing if the route has no middle segment.</summary>
+    Public Function MidAxis() As String
+        Dim da = EffectiveDir(A.WorldPos(), A.WorldDir(), B.WorldPos())
+        Dim db = EffectiveDir(B.WorldPos(), B.WorldDir(), A.WorldPos())
+        Dim aHoriz = Math.Abs(da.X) > 0.5F, bHoriz = Math.Abs(db.X) > 0.5F
+        If aHoriz AndAlso bHoriz Then Return "X"
+        If Not aHoriz AndAlso Not bHoriz Then Return "Y"
+        Return Nothing
+    End Function
+
+    ''' <summary>Direction a tube leaves a port; junctions pick the axis pointing towards the other end.</summary>
+    Private Shared Function EffectiveDir(p As PointF, d As PointF, other As PointF) As PointF
+        If d.X <> 0 OrElse d.Y <> 0 Then Return d
+        Dim dx = other.X - p.X, dy = other.Y - p.Y
+        If Math.Abs(dx) > Math.Abs(dy) Then Return New PointF(Math.Sign(dx), 0)
+        Return New PointF(0, If(dy = 0, 1, Math.Sign(dy)))
     End Function
 
     ''' <summary>Builds an orthogonal (right-angled) path between two ports.</summary>
-    Public Shared Function RouteBetween(a As PointF, da As PointF, b As PointF, db As PointF) As PointF()
-        Const lead = 10.0F
-        Dim p1 As New PointF(a.X + da.X * lead, a.Y + da.Y * lead)
-        Dim p3 As New PointF(b.X + db.X * lead, b.Y + db.Y * lead)
+    Public Shared Function RouteBetween(a As PointF, da As PointF, b As PointF, db As PointF, Optional mid As Single? = Nothing) As PointF()
+        Dim leadA = If(da.X = 0 AndAlso da.Y = 0, 0.0F, 10.0F)
+        Dim leadB = If(db.X = 0 AndAlso db.Y = 0, 0.0F, 10.0F)
+        da = EffectiveDir(a, da, b)
+        db = EffectiveDir(b, db, a)
+        Dim p1 As New PointF(a.X + da.X * leadA, a.Y + da.Y * leadA)
+        Dim p3 As New PointF(b.X + db.X * leadB, b.Y + db.Y * leadB)
         Dim aHoriz = Math.Abs(da.X) > 0.5F
         Dim bHoriz = Math.Abs(db.X) > 0.5F
         Dim pts As New List(Of PointF) From {a, p1}
 
         If aHoriz AndAlso bHoriz Then
-            Dim midX = (p1.X + p3.X) / 2
+            Dim midX = If(mid, (p1.X + p3.X) / 2)
             pts.Add(New PointF(midX, p1.Y))
             pts.Add(New PointF(midX, p3.Y))
         ElseIf Not aHoriz AndAlso Not bHoriz Then
-            Dim midY = (p1.Y + p3.Y) / 2
+            Dim midY = If(mid, (p1.Y + p3.Y) / 2)
             pts.Add(New PointF(p1.X, midY))
             pts.Add(New PointF(p3.X, midY))
         ElseIf aHoriz Then
@@ -47,7 +80,10 @@ Public Class Tube
         End If
         pts.Add(p3)
         pts.Add(b)
-        Return Simplify(pts)
+        Dim result = Simplify(pts)
+        ' Coincident ends: keep a (zero length) segment so drawing code always gets two points.
+        If result.Length < 2 Then Return {a, b}
+        Return result
     End Function
 
     Private Shared Function Simplify(pts As List(Of PointF)) As PointF()
@@ -88,7 +124,7 @@ Public Class Tube
     End Function
 End Class
 
-''' <summary>The circuit document: elements, tubes, and file input/output.</summary>
+''' <summary>The circuit document: elements, tubes and wires, and file input/output.</summary>
 Public Class Circuit
     Public ReadOnly Property Elements As New List(Of CircuitElement)
     Public ReadOnly Property Tubes As New List(Of Tube)
@@ -104,7 +140,7 @@ Public Class Circuit
         e.X = x
         e.Y = y
         If label IsNot Nothing Then e.Label = label
-        If e.Id = 0 Then e.Id = _nextId
+        If e.Id = 0 OrElse Elements.Any(Function(o) o.Id = e.Id) Then e.Id = _nextId
         _nextId = Math.Max(_nextId, e.Id + 1)
         Elements.Add(e)
         Return e
@@ -117,8 +153,14 @@ Public Class Circuit
         Elements.Remove(e)
     End Sub
 
+    ''' <summary>True if a tube may join the two ports.</summary>
+    Public Shared Function CanConnect(a As Port, b As Port) As Boolean
+        Return a IsNot Nothing AndAlso b IsNot Nothing AndAlso a IsNot b AndAlso
+               a.Owner IsNot b.Owner AndAlso a.Kind = b.Kind
+    End Function
+
     Public Function Connect(a As Port, b As Port) As Tube
-        If a Is Nothing OrElse b Is Nothing OrElse a Is b Then Return Nothing
+        If Not CanConnect(a, b) Then Return Nothing
         If Tubes.Any(Function(t) (t.A Is a AndAlso t.B Is b) OrElse (t.A Is b AndAlso t.B Is a)) Then Return Nothing
         Dim tube As New Tube(a, b)
         Tubes.Add(tube)
@@ -127,7 +169,7 @@ Public Class Circuit
         Return tube
     End Function
 
-    ''' <summary>Convenience overload used by the example circuits.</summary>
+    ''' <summary>Convenience overload used by the examples and the circuit generator.</summary>
     Public Function Connect(a As CircuitElement, aPort As String, b As CircuitElement, bPort As String) As Tube
         Return Connect(a.GetPort(aPort), b.GetPort(bPort))
     End Function
@@ -139,10 +181,11 @@ Public Class Circuit
         End If
     End Sub
 
-    ''' <summary>Removes tubes whose ports no longer exist (after an element's configuration changed).</summary>
+    ''' <summary>Removes tubes whose ports no longer exist or no longer match (after a configuration change).</summary>
     Public Sub CleanupTubes()
         For Each t In Tubes.Where(Function(tb) Not tb.A.Owner.Ports.Contains(tb.A) OrElse
-                                               Not tb.B.Owner.Ports.Contains(tb.B)).ToList()
+                                               Not tb.B.Owner.Ports.Contains(tb.B) OrElse
+                                               tb.A.Kind <> tb.B.Kind).ToList()
             RemoveTube(t)
         Next
     End Sub
@@ -185,9 +228,51 @@ Public Class Circuit
     ' ---------------------------------------------------------------- file format
 
     Public Sub Save(path As String)
+        ToXDocument(Elements).Save(path)
+    End Sub
+
+    Public Shared Function Load(path As String) As Circuit
+        Return FromXDocument(XDocument.Load(path))
+    End Function
+
+    ''' <summary>Serializes the circuit (used for undo snapshots).</summary>
+    Public Function ToXml() As String
+        Return ToXDocument(Elements).ToString(SaveOptions.DisableFormatting)
+    End Function
+
+    Public Shared Function FromXml(xml As String) As Circuit
+        Return FromXDocument(XDocument.Parse(xml))
+    End Function
+
+    ''' <summary>Serializes some elements and the tubes between them (used for copy and paste).</summary>
+    Public Function ExtractXml(subset As IEnumerable(Of CircuitElement)) As String
+        Return ToXDocument(subset.ToList()).ToString(SaveOptions.DisableFormatting)
+    End Function
+
+    ''' <summary>Adds the elements of a serialized fragment, shifted by an offset. Returns the new elements.</summary>
+    Public Function Merge(xml As String, dx As Single, dy As Single) As List(Of CircuitElement)
+        Dim fragment = FromXml(xml)
+        Dim added As New List(Of CircuitElement)
+        For Each e In fragment.Elements
+            e.Id = 0
+            Add(e, e.X + dx, e.Y + dy)
+            added.Add(e)
+        Next
+        For Each t In fragment.Tubes
+            t.A.ConnectionCount -= 1
+            t.B.ConnectionCount -= 1
+            Dim nt = Connect(t.A, t.B)
+            If nt IsNot Nothing AndAlso t.Mid.HasValue Then
+                nt.Mid = t.Mid.Value + If(nt.MidAxis() = "X", dx, dy)
+            End If
+        Next
+        Return added
+    End Function
+
+    Private Function ToXDocument(subset As List(Of CircuitElement)) As XDocument
         Dim inv = CultureInfo.InvariantCulture
-        Dim root As New XElement("PneuSimCircuit", New XAttribute("version", 1))
-        For Each e In Elements
+        Dim root As New XElement("PneuSimCircuit", New XAttribute("version", 2))
+        For Each e In subset
             Dim xe As New XElement("Element",
                 New XAttribute("type", e.TypeName),
                 New XAttribute("id", e.Id),
@@ -201,17 +286,19 @@ Public Class Circuit
             Next
             root.Add(xe)
         Next
-        For Each t In Tubes
-            root.Add(New XElement("Tube",
+        Dim set_ = New HashSet(Of CircuitElement)(subset)
+        For Each t In Tubes.Where(Function(tb) set_.Contains(tb.A.Owner) AndAlso set_.Contains(tb.B.Owner))
+            Dim xt As New XElement("Tube",
                 New XAttribute("from", t.A.Owner.Id), New XAttribute("fromPort", t.A.Name),
-                New XAttribute("to", t.B.Owner.Id), New XAttribute("toPort", t.B.Name)))
+                New XAttribute("to", t.B.Owner.Id), New XAttribute("toPort", t.B.Name))
+            If t.Mid.HasValue Then xt.Add(New XAttribute("mid", t.Mid.Value.ToString(inv)))
+            root.Add(xt)
         Next
-        Call New XDocument(root).Save(path)
-    End Sub
+        Return New XDocument(root)
+    End Function
 
-    Public Shared Function Load(path As String) As Circuit
+    Private Shared Function FromXDocument(doc As XDocument) As Circuit
         Dim inv = CultureInfo.InvariantCulture
-        Dim doc = XDocument.Load(path)
         If doc.Root Is Nothing OrElse doc.Root.Name.LocalName <> "PneuSimCircuit" Then
             Throw New InvalidOperationException("This is not a PneuSim circuit file.")
         End If
@@ -234,17 +321,20 @@ Public Class Circuit
                         value = Convert.ChangeType(raw, prop.PropertyType, inv)
                     End If
                     prop.SetValue(e, value)
-                Catch ex As FormatException
+                Catch ex As Exception When TypeOf ex Is FormatException OrElse TypeOf ex Is ArgumentException
                     ' Ignore a malformed value and keep the default.
                 End Try
             Next
+            Dim original = e.Id
             c.Add(e, Single.Parse(CStr(xe.Attribute("x")), inv), Single.Parse(CStr(xe.Attribute("y")), inv))
-            byId(e.Id) = e
+            byId(original) = e
         Next
         For Each xt In doc.Root.Elements("Tube")
             Dim a As CircuitElement = Nothing, b As CircuitElement = Nothing
             If byId.TryGetValue(CInt(xt.Attribute("from")), a) AndAlso byId.TryGetValue(CInt(xt.Attribute("to")), b) Then
-                c.Connect(a.GetPort(CStr(xt.Attribute("fromPort"))), b.GetPort(CStr(xt.Attribute("toPort"))))
+                Dim t = c.Connect(a.GetPort(CStr(xt.Attribute("fromPort"))), b.GetPort(CStr(xt.Attribute("toPort"))))
+                Dim mid = xt.Attribute("mid")
+                If t IsNot Nothing AndAlso mid IsNot Nothing Then t.Mid = Single.Parse(mid.Value, inv)
             End If
         Next
         Return c

@@ -7,7 +7,9 @@ Public Module Examples
         ("3. OR: operation from two places (shuttle valve)", AddressOf OrControl),
         ("4. AND: two-hand safety control (two-pressure valve)", AddressOf TwoHandControl),
         ("5. Automatic reciprocation with limit valves", AddressOf Reciprocation),
-        ("6. Delayed return with a time delay valve", AddressOf DelayedReturn)
+        ("6. Delayed return with a time delay valve", AddressOf DelayedReturn),
+        ("7. Electro-pneumatic: direct control with a solenoid valve", AddressOf ElectroDirect),
+        ("8. Electro-pneumatic: self-holding circuit with start / stop and lamp", AddressOf ElectroLatch)
     }
 
     Private Function DirectSingleActing() As Circuit
@@ -121,6 +123,67 @@ Public Module Examples
         c.Connect(s2, "1", timer, "1")
         c.Connect(lim2, "2", timer, "12")
         c.Connect(s3, "1", lim2, "1")
+        Return c
+    End Function
+
+    ''' <summary>Cylinder with a 5/2 single-solenoid valve; shared by the electro-pneumatic examples.</summary>
+    Private Function SolenoidPowerPart(c As Circuit) As Valve52
+        Dim cyl = c.Add(New DoubleActingCylinder(), 200, 60, "1A")
+        Dim v = c.Add(V52(ValveActuator.Solenoid, ValveReturn.Spring), 110, 190, "1V1")
+        v.SolenoidLabel = "1M1"
+        Dim s = c.Add(New AirSupply(), 200, 290, "0Z")
+        c.Connect(v, "4", cyl, "1")
+        c.Connect(v, "2", cyl, "2")
+        c.Connect(s, "1", v, "1")
+        Return v
+    End Function
+
+    Private Function ElectroDirect() As Circuit
+        Dim c As New Circuit()
+        SolenoidPowerPart(c)
+        Dim plus = c.Add(New PowerTerminal(), 450, 60)
+        Dim s1 = c.Add(Contact(ContactOperator.PushButton, False, "S1"), 450, 120)
+        Dim coil = c.Add(New ElectricCoil() With {.Kind = CoilKind.Solenoid, .Label = "1M1"}, 450, 220)
+        Dim zero = c.Add(New PowerTerminal() With {.Polarity = Polarity.Zero0V}, 450, 300)
+        c.Connect(plus, "1", s1, "1")
+        c.Connect(s1, "2", coil, "A1")
+        c.Connect(coil, "A2", zero, "1")
+        Return c
+    End Function
+
+    Private Function ElectroLatch() As Circuit
+        Dim c As New Circuit()
+        SolenoidPowerPart(c)
+        ' Rung 1: S0 (stop, NC) in series with S1 (start) in parallel with the holding contact K1.
+        Dim p1 = c.Add(New PowerTerminal(), 450, 40)
+        Dim s0 = c.Add(Contact(ContactOperator.PushButton, True, "S0"), 450, 100)
+        Dim s1 = c.Add(Contact(ContactOperator.PushButton, False, "S1"), 450, 190)
+        Dim hold = c.Add(Contact(ContactOperator.Relay, False, "", "K1"), 530, 190)
+        Dim k1 = c.Add(New ElectricCoil() With {.Label = "K1"}, 450, 290)
+        Dim z1 = c.Add(New PowerTerminal() With {.Polarity = Polarity.Zero0V}, 450, 370)
+        c.Connect(p1, "1", s0, "1")
+        c.Connect(s0, "2", s1, "1")
+        c.Connect(s0, "2", hold, "1")
+        c.Connect(s1, "2", k1, "A1")
+        Dim join = c.Connect(hold, "2", k1, "A1")
+        join.Mid = 280
+        c.Connect(k1, "A2", z1, "1")
+        ' Rung 2: K1 operates the valve solenoid. Rung 3: K1 lights the lamp.
+        Dim p2 = c.Add(New PowerTerminal(), 650, 40)
+        Dim k1a = c.Add(Contact(ContactOperator.Relay, False, "", "K1"), 650, 100)
+        Dim sol = c.Add(New ElectricCoil() With {.Kind = CoilKind.Solenoid, .Label = "1M1"}, 650, 290)
+        Dim z2 = c.Add(New PowerTerminal() With {.Polarity = Polarity.Zero0V}, 650, 370)
+        c.Connect(p2, "1", k1a, "1")
+        c.Connect(k1a, "2", sol, "A1")
+        c.Connect(sol, "A2", z2, "1")
+        Dim p3 = c.Add(New PowerTerminal(), 770, 40)
+        Dim k1b = c.Add(Contact(ContactOperator.Relay, False, "", "K1"), 770, 100)
+        Dim lamp = c.Add(New ElectricCoil() With {.Kind = CoilKind.Lamp, .Label = "H1"}, 770, 290)
+        Dim z3 = c.Add(New PowerTerminal() With {.Polarity = Polarity.Zero0V}, 770, 370)
+        c.Connect(p3, "1", k1b, "1")
+        c.Connect(k1b, "2", lamp, "A1")
+        c.Connect(lamp, "A2", z3, "1")
+        c.Add(New TextNote() With {.Text = "Press S1 to start, S0 to stop." & vbCrLf & "K1 holds itself through its own contact."}, 450, 420)
         Return c
     End Function
 End Module

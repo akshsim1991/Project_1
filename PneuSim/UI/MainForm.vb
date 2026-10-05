@@ -31,6 +31,13 @@ Public Class MainForm
     Private _filePath As String
     Private _dirty As Boolean
 
+    ' Undo history: snapshots of the circuit after each change.
+    Private ReadOnly _history As New List(Of String)
+    Private _historyIndex As Integer = -1
+    Private Const MaxHistory = 100
+    Private _menuUndo, _menuRedo As ToolStripMenuItem
+    Private _btnUndo, _btnRedo As ToolStripButton
+
     Public Sub New()
         Text = AppName
         Font = New Font("Segoe UI", 9)
@@ -40,8 +47,11 @@ Public Class MainForm
         Icon = Icons.AppIcon()
 
         BuildLayout()
-        AddHandler _canvas.SelectionChanged, Sub() _properties.SelectedObject = _canvas.SelectedElement
-        AddHandler _canvas.CircuitModified, Sub() MarkDirty()
+        AddHandler _canvas.SelectionChanged, Sub() _properties.SelectedObjects = _canvas.SelectedElements.Cast(Of Object)().ToArray()
+        AddHandler _canvas.CircuitModified, Sub() OnCircuitModified()
+        AddHandler _canvas.CommandKey, Sub(s, cmd)
+                                           If cmd = "Undo" Then Undo() Else Redo()
+                                       End Sub
         AddHandler _canvas.ElementOperated, AddressOf OnElementOperated
         AddHandler _canvas.StatusMessage, Sub(s, msg) _statusMessage.Text = msg
         AddHandler _properties.PropertyValueChanged, AddressOf OnPropertyValueChanged
@@ -135,17 +145,25 @@ Public Class MainForm
         file.DropDownItems.Add(New ToolStripSeparator())
         file.DropDownItems.Add(Item("E&xit", Sub() Close()))
 
+        ' Edit shortcuts are handled by the canvas so they do not steal keys from the property grid.
         Dim edit = New ToolStripMenuItem("&Edit")
-        Dim del = Item("&Delete", Sub() _canvas.DeleteSelection())
-        del.ShortcutKeyDisplayString = "Del"
-        Dim rot = Item("&Rotate 90°", Sub() _canvas.RotateSelection())
-        rot.ShortcutKeyDisplayString = "R"
-        edit.DropDownItems.AddRange({del, rot})
+        _menuUndo = Item("&Undo", Sub() Undo()) : _menuUndo.ShortcutKeyDisplayString = "Ctrl+Z"
+        _menuRedo = Item("&Redo", Sub() Redo()) : _menuRedo.ShortcutKeyDisplayString = "Ctrl+Y"
+        Dim cut = Item("Cu&t", Sub() _canvas.CutSelection()) : cut.ShortcutKeyDisplayString = "Ctrl+X"
+        Dim copy = Item("&Copy", Sub() _canvas.CopySelection()) : copy.ShortcutKeyDisplayString = "Ctrl+C"
+        Dim paste = Item("&Paste", Sub() _canvas.Paste()) : paste.ShortcutKeyDisplayString = "Ctrl+V"
+        Dim dup = Item("D&uplicate", Sub() _canvas.DuplicateSelection()) : dup.ShortcutKeyDisplayString = "Ctrl+D"
+        Dim all = Item("Select &All", Sub() _canvas.SelectAll()) : all.ShortcutKeyDisplayString = "Ctrl+A"
+        Dim del = Item("&Delete", Sub() _canvas.DeleteSelection()) : del.ShortcutKeyDisplayString = "Del"
+        Dim rot = Item("&Rotate 90°", Sub() _canvas.RotateSelection()) : rot.ShortcutKeyDisplayString = "R"
+        edit.DropDownItems.AddRange({_menuUndo, _menuRedo, New ToolStripSeparator(), cut, copy, paste, dup,
+                                     New ToolStripSeparator(), all, del, rot})
 
         Dim view = New ToolStripMenuItem("&View")
         view.DropDownItems.Add(Item("Zoom &In", Sub() SetZoom(_canvas.Zoom * 1.2F), Keys.Control Or Keys.Oemplus))
         view.DropDownItems.Add(Item("Zoom &Out", Sub() SetZoom(_canvas.Zoom / 1.2F), Keys.Control Or Keys.OemMinus))
         view.DropDownItems.Add(Item("&Actual Size", Sub() SetZoom(1), Keys.Control Or Keys.D0))
+        view.DropDownItems.Add(Item("Zoom to &Fit", Sub() FitView(), Keys.Control Or Keys.D9))
         Dim diag = Item("Displacement-step &Diagram", Nothing)
         diag.Checked = True
         diag.CheckOnClick = True
@@ -169,7 +187,10 @@ Public Class MainForm
         help.DropDownItems.Add(Item("&Quick Guide", AddressOf OnQuickGuide, Keys.F1))
         help.DropDownItems.Add(Item("&About PneuSim", AddressOf OnAbout))
 
-        menu.Items.AddRange({file, edit, view, sim, exMenu, help})
+        Dim tools = New ToolStripMenuItem("&Tools")
+        tools.DropDownItems.Add(Item("&Circuit Generator (from a sequence)...", AddressOf OnGenerator, Keys.Control Or Keys.G))
+
+        menu.Items.AddRange({file, edit, view, sim, tools, exMenu, help})
         MainMenuStrip = menu
         Return menu
     End Function
@@ -179,6 +200,12 @@ Public Class MainForm
         bar.Items.Add(Button("New", Icons.NewFile, AddressOf OnNew))
         bar.Items.Add(Button("Open", Icons.Open, AddressOf OnOpen))
         bar.Items.Add(Button("Save", Icons.Save, AddressOf OnSave))
+        bar.Items.Add(New ToolStripSeparator())
+        _btnUndo = Button("Undo", Icons.UndoIcon(False), Sub() Undo())
+        _btnRedo = Button("Redo", Icons.UndoIcon(True), Sub() Redo())
+        bar.Items.AddRange({_btnUndo, _btnRedo})
+        bar.Items.Add(New ToolStripSeparator())
+        bar.Items.Add(Button("Generator", Icons.Wand, AddressOf OnGenerator))
         bar.Items.Add(New ToolStripSeparator())
         _btnStart = Button("Start", Icons.Play, AddressOf OnStart)
         _btnPause = Button("Pause", Icons.Pause, AddressOf OnPause)
@@ -195,6 +222,7 @@ Public Class MainForm
         bar.Items.Add(New ToolStripSeparator())
         bar.Items.Add(Button("Zoom in", Icons.ZoomIn, Sub() SetZoom(_canvas.Zoom * 1.2F)))
         bar.Items.Add(Button("Zoom out", Icons.ZoomOut, Sub() SetZoom(_canvas.Zoom / 1.2F)))
+        bar.Items.Add(Button("Fit", Icons.ZoomIn, Sub() FitView()))
         Return bar
     End Function
 
@@ -223,7 +251,52 @@ Public Class MainForm
         _filePath = path
         _dirty = False
         _properties.SelectedObject = Nothing
+        _history.Clear()
+        _history.Add(c.ToXml())
+        _historyIndex = 0
         UpdateTitle()
+        UpdateUndoButtons()
+        _canvas.ScrollToCircuit()
+    End Sub
+
+    ''' <summary>Records an undo snapshot after every change.</summary>
+    Private Sub OnCircuitModified()
+        If _historyIndex < _history.Count - 1 Then _history.RemoveRange(_historyIndex + 1, _history.Count - _historyIndex - 1)
+        _history.Add(_canvas.Circuit.ToXml())
+        If _history.Count > MaxHistory Then _history.RemoveAt(0)
+        _historyIndex = _history.Count - 1
+        MarkDirty()
+        UpdateUndoButtons()
+    End Sub
+
+    Private Sub Undo()
+        If _running OrElse _historyIndex <= 0 Then Return
+        _historyIndex -= 1
+        RestoreSnapshot()
+    End Sub
+
+    Private Sub Redo()
+        If _running OrElse _historyIndex >= _history.Count - 1 Then Return
+        _historyIndex += 1
+        RestoreSnapshot()
+    End Sub
+
+    Private Sub RestoreSnapshot()
+        Dim c = Circuit.FromXml(_history(_historyIndex))
+        _canvas.Circuit = c
+        _simulator = New Simulator(c)
+        _canvas.Simulator = _simulator
+        _properties.SelectedObject = Nothing
+        MarkDirty()
+        UpdateUndoButtons()
+    End Sub
+
+    Private Sub UpdateUndoButtons()
+        If _btnUndo Is Nothing Then Return
+        Dim canUndo = Not _running AndAlso _historyIndex > 0
+        Dim canRedo = Not _running AndAlso _historyIndex < _history.Count - 1
+        _btnUndo.Enabled = canUndo : _menuUndo.Enabled = canUndo
+        _btnRedo.Enabled = canRedo : _menuRedo.Enabled = canRedo
     End Sub
 
     Private Sub MarkDirty()
@@ -317,6 +390,27 @@ Public Class MainForm
         Return bmp
     End Function
 
+    Private Sub OnGenerator(sender As Object, e As EventArgs)
+        If _running Then Return
+        Using dlg As New GeneratorDialog()
+            If dlg.ShowDialog(Me) <> DialogResult.OK OrElse dlg.Result Is Nothing Then Return
+            If Not ConfirmDiscard() Then Return
+            NewCircuit(dlg.Result.Circuit)
+            FitView()
+            _dirty = True
+            UpdateTitle()
+            _statusMessage.Text = "Circuit generated. Press Start (F9), then press the start button S1 / 1S0."
+            Using info As New Form() With {.Text = "Generated circuit", .Size = New Size(760, 480), .StartPosition = FormStartPosition.CenterParent,
+                                           .ShowInTaskbar = False, .Font = Font}
+                Dim box As New TextBox() With {.Multiline = True, .ReadOnly = True, .Dock = DockStyle.Fill, .ScrollBars = ScrollBars.Both,
+                                               .WordWrap = False, .Font = New Font("Consolas", 9), .BackColor = Color.White,
+                                               .Text = dlg.Result.Explanation.Replace(vbLf, vbCrLf).Replace(vbCr & vbCrLf, vbCrLf)}
+                info.Controls.Add(box)
+                info.ShowDialog(Me)
+            End Using
+        End Using
+    End Sub
+
     Private Sub OpenExample(build As Func(Of Circuit))
         If Not ConfirmDiscard() Then Return
         NewCircuit(build())
@@ -342,7 +436,12 @@ Public Class MainForm
         _canvas.Circuit.CleanupTubes()
         _properties.Refresh()
         _canvas.Invalidate()
-        MarkDirty()
+        OnCircuitModified()
+    End Sub
+
+    Private Sub FitView()
+        _canvas.ZoomToFit()
+        UpdateUiState()
     End Sub
 
     Private Sub SetZoom(z As Single)
@@ -444,6 +543,7 @@ Public Class MainForm
             _statusMode.Text = "Edit mode"
         End If
         _statusZoom.Text = $"Zoom {_canvas.Zoom * 100:0}%"
+        UpdateUndoButtons()
     End Sub
 
     ' ================================================================= help
@@ -452,25 +552,37 @@ Public Class MainForm
         MessageBox.Show(
 "BUILDING A CIRCUIT
 • Click a component in the library, then click on the drawing area (or drag it there).
-• Drag from one port (small circle) to another to connect them with a tube.
-• Drag components to move them. Press R to rotate, Del to delete.
-• Select a component to edit its properties on the right (label, actuation, stroke time, flow...).
+• Drag from one port (small circle) to another to connect them. Red circles are electrical terminals.
+• Drag components to move them; drag a box to select several. Ctrl+click adds to the selection.
+• R rotates, Del deletes, arrow keys nudge. Ctrl+Z / Ctrl+Y undo and redo.
+• Ctrl+C, Ctrl+X, Ctrl+V and Ctrl+D copy, cut, paste and duplicate.
+• Drag the middle segment of a tube to move it. Use tube / wire junctions as branch or bend points.
+• Edit properties on the right: label, actuation, solenoid names, stroke time, pressures, delays...
 • Ctrl + mouse wheel zooms.
 
+ELECTRO-PNEUMATICS
+• Wire +24 V and 0 V connections, contacts and coils. A valve with solenoid actuation switches when
+  a 'Valve solenoid' coil with the same label (e.g. 1M1) is energized.
+• Relay contacts follow the relay coil whose label is set as their Reference (e.g. K1).
+• Proximity sensors and limit switches use a cylinder position mark as Reference (e.g. 1B2).
+
 SIMULATING
-• Press Start (F9). Pressurized lines turn dark blue.
-• Click push-button valves (hold the mouse button) and selector switches to operate them.
-• Roller lever valves are operated by a cylinder when its rod reaches the position mark
-  with the same name (set 'Retracted mark' / 'Extended mark' on the cylinder and
-  'Roller mark' on the valve, e.g. 1S1 and 1S2).
+• Press Start (F9). Pressurized tubes turn dark blue, live wires turn red.
+• Click push buttons (hold the mouse button) and selector switches. Clicking a solenoid valve
+  operates its manual override.
+• Roller lever valves are operated when a cylinder reaches the position mark with the same name.
 • One-way flow control valves throttle air flowing from port 2 to port 1 (free flow 1 → 2).
-• The displacement-step diagram at the bottom records cylinder movements and valve states.
-• Stop (F11) resets everything to its initial state.",
+• The displacement-step diagram at the bottom records cylinders and labelled valves.
+• Stop (F11) resets everything.
+
+CIRCUIT GENERATOR (Ctrl+G)
+• Type a sequence such as A+ B+ B- A- and PneuSim designs the complete circuit, either
+  electro-pneumatic (relay step chain) or pneumatic (cascade method), with an explanation.",
             "PneuSim Quick Guide", MessageBoxButtons.OK, MessageBoxIcon.Information)
     End Sub
 
     Private Sub OnAbout(sender As Object, e As EventArgs)
-        MessageBox.Show($"{AppName} 1.0{vbCrLf}Pneumatic circuit design and simulation{vbCrLf}{vbCrLf}" &
+        MessageBox.Show($"{AppName} 2.0{vbCrLf}Pneumatic and electro-pneumatic circuit design and simulation{vbCrLf}{vbCrLf}" &
                         "Symbols follow ISO 1219. Intended for learning and training.",
                         "About " & AppName, MessageBoxButtons.OK, MessageBoxIcon.Information)
     End Sub
@@ -540,6 +652,28 @@ Public Module Icons
                             g.DrawLine(p, 3, 3, 13, 13)
                             g.DrawLine(p, 13, 3, 3, 13)
                         End Using
+                    End Sub)
+    End Function
+
+    Public Function UndoIcon(redo As Boolean) As Image
+        Return Draw(Sub(g)
+                        If redo Then
+                            g.TranslateTransform(16, 0)
+                            g.ScaleTransform(-1, 1)
+                        End If
+                        Using p As New Pen(Color.SteelBlue, 2)
+                            g.DrawArc(p, 3, 4, 11, 10, 180, 200)
+                        End Using
+                        g.FillPolygon(Brushes.SteelBlue, {New Point(0, 6), New Point(7, 6), New Point(3, 12)})
+                    End Sub)
+    End Function
+
+    Public Function Wand() As Image
+        Return Draw(Sub(g)
+                        Using p As New Pen(Color.DimGray, 2.5F)
+                            g.DrawLine(p, 2, 14, 10, 6)
+                        End Using
+                        g.FillPolygon(Brushes.Gold, {New Point(12, 0), New Point(13, 3), New Point(16, 4), New Point(13, 5), New Point(12, 8), New Point(11, 5), New Point(8, 4), New Point(11, 3)})
                     End Sub)
     End Function
 

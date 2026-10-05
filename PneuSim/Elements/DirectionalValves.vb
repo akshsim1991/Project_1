@@ -1,31 +1,45 @@
 Imports System.ComponentModel
 
-''' <summary>How the valve is switched into its actuated (left) position.</summary>
+''' <summary>How the valve is switched into its left (a) position.</summary>
 Public Enum ValveActuator
     <Description("Push button")> PushButton
     <Description("Selector switch (detented)")> Selector
     <Description("Roller lever")> RollerLever
     <Description("Pneumatic pilot")> Pilot
     <Description("Pneumatic pilot with time delay")> DelayedPilot
-End Enum
-
-''' <summary>How the valve returns to its normal (right) position.</summary>
-Public Enum ValveReturn
-    Spring
-    Pilot
+    <Description("Solenoid")> Solenoid
 End Enum
 
 ''' <summary>
-''' Two-position directional control valve drawn to ISO 1219. The right box is the normal
-''' position (state 0), the left box the actuated position (state 1). Working ports stay fixed;
-''' the boxes slide so the active box sits over the ports.
+''' The right-hand actuator. Two-position valves: what returns the valve to normal.
+''' Three-position valves: the actuator for the right (b) position; the valve is always spring centred.
+''' </summary>
+Public Enum ValveReturn
+    Spring
+    Pilot
+    Solenoid
+End Enum
+
+''' <summary>Centre position of a 5/3-way valve.</summary>
+Public Enum CentrePosition
+    <Description("Closed centre")> Closed
+    <Description("Exhaust centre")> Exhausted
+    <Description("Pressure centre")> Pressurized
+End Enum
+
+''' <summary>
+''' Directional control valve with two or three positions, drawn to ISO 1219.
+''' Box order, left to right: position 1 (a), position 0 (normal), and for 3-position valves
+''' position 2 (b). Working ports stay fixed under the normal box; the boxes slide so the
+''' active box sits over the ports.
 ''' </summary>
 Public MustInherit Class DirectionalValve
     Inherits CircuitElement
 
-    Protected Const ActW As Single = 20
     Protected Const BoxTop As Single = 10
     Protected Const BoxBottom As Single = 50
+    Private Const SpringW As Single = 14
+    Private Const RestIndex As Integer = 1
 
     Protected Structure WorkingPort
         Public Name As String
@@ -53,7 +67,20 @@ Public MustInherit Class DirectionalValve
     Protected MustOverride ReadOnly Property LeftPilotName As String
     Protected MustOverride ReadOnly Property RightPilotName As String
 
-    <Category("Actuation"), DisplayName("Actuation"), Description("How the valve is switched.")>
+    Protected Overridable ReadOnly Property PositionCount As Integer
+        Get
+            Return 2
+        End Get
+    End Property
+
+    ''' <summary>Width reserved at each end for the actuator (and centring spring).</summary>
+    Protected ReadOnly Property ActW As Single
+        Get
+            Return If(PositionCount = 3, 20 + SpringW, 20)
+        End Get
+    End Property
+
+    <Category("Actuation"), DisplayName("Actuation"), Description("How the valve is switched into position a (left box).")>
     Public Property Actuator As ValveActuator
         Get
             Return _actuator
@@ -64,7 +91,8 @@ Public MustInherit Class DirectionalValve
         End Set
     End Property
 
-    <Category("Actuation"), DisplayName("Return"), Description("Spring return, or a second pilot signal (memory valve).")>
+    <Category("Actuation"), DisplayName("Return / right actuator"),
+     Description("2-position valves: spring return, or a second pilot / solenoid (memory valve). 3-position valves: actuator for position b; the valve is spring centred.")>
     Public Property ReturnType As ValveReturn
         Get
             Return _return
@@ -74,6 +102,12 @@ Public MustInherit Class DirectionalValve
             RebuildPorts()
         End Set
     End Property
+
+    <Category("Actuation"), DisplayName("Solenoid (left)"), Description("Label of the solenoid coil that operates position a, e.g. 1M1.")>
+    Public Property SolenoidLabel As String = "1M1"
+
+    <Category("Actuation"), DisplayName("Solenoid (right)"), Description("Label of the solenoid coil on the right side, e.g. 1M2.")>
+    Public Property ReturnSolenoidLabel As String = "1M2"
 
     <Category("Actuation"), DisplayName("Roller mark"),
      Description("For roller lever valves: the cylinder position mark that operates the roller, e.g. 1S2.")>
@@ -89,23 +123,49 @@ Public MustInherit Class DirectionalValve
         End Set
     End Property
 
-    ''' <summary>0 = normal position, 1 = actuated.</summary>
+    ''' <summary>0 = normal position, 1 = position a (left), 2 = position b (right, 3-position valves).</summary>
     <Browsable(False)> Public ReadOnly Property State As Integer
         Get
             Return _state
         End Get
     End Property
 
+    ''' <summary>Value plotted in the diagram: 1 = a, 0 = normal (2-position) or b (3-position), 0.5 = centre.</summary>
+    <Browsable(False)> Public ReadOnly Property DiagramValue As Double
+        Get
+            If PositionCount = 2 Then Return _state
+            Return If(_state = 1, 1.0, If(_state = 2, 0.0, 0.5))
+        End Get
+    End Property
+
+    Private Function BoxIndex(position As Integer) As Integer
+        Return If(position = 1, 0, If(position = 0, 1, 2))
+    End Function
+
+    Private Function PositionAt(index As Integer) As Integer
+        Return If(index = 0, 1, If(index = 1, 0, 2))
+    End Function
+
+    Private ReadOnly Property Shift As Single
+        Get
+            Return (RestIndex - BoxIndex(_state)) * BoxWidth
+        End Get
+    End Property
+
+    Private ReadOnly Property TotalWidth As Single
+        Get
+            Return 2 * ActW + PositionCount * BoxWidth
+        End Get
+    End Property
+
     Protected Sub RebuildPorts()
-        Dim shift = _state * BoxWidth
+        Dim s = Shift
         Dim wanted As New List(Of Port)
         For Each wp In WorkingPorts()
-            wanted.Add(MakePort(wp.Name, ActW + BoxWidth + wp.Offset, If(wp.Top, 0F, 60.0F), 0, If(wp.Top, -1.0F, 1.0F), wp.Vents))
+            wanted.Add(MakePort(wp.Name, ActW + RestIndex * BoxWidth + wp.Offset, If(wp.Top, 0F, 60.0F), 0, If(wp.Top, -1.0F, 1.0F), wp.Vents))
         Next
-        If HasLeftPilot Then wanted.Add(MakePort(LeftPilotName, shift, 30, -1, 0, False))
-        If _return = ValveReturn.Pilot Then
-            wanted.Add(MakePort(RightPilotName, 2 * ActW + 2 * BoxWidth + shift, 30, 1, 0, False))
-        End If
+        If HasLeftPilot Then wanted.Add(MakePort(LeftPilotName, s, 30, -1, 0, False))
+        If _return = ValveReturn.Pilot Then wanted.Add(MakePort(RightPilotName, TotalWidth + s, 30, 1, 0, False))
         Ports.Clear()
         Ports.AddRange(wanted)
     End Sub
@@ -133,8 +193,8 @@ Public MustInherit Class DirectionalValve
 
     Public Overrides ReadOnly Property LocalBounds As RectangleF
         Get
-            Dim shift = _state * BoxWidth
-            Return RectangleF.FromLTRB(shift, 0, 2 * ActW + 2 * BoxWidth + shift, 60)
+            Dim s = Shift
+            Return RectangleF.FromLTRB(s, 0, TotalWidth + s, 60)
         End Get
     End Property
 
@@ -147,21 +207,22 @@ Public MustInherit Class DirectionalValve
     ' ---------------------------------------------------------------- drawing
 
     Public Overrides Sub DrawSymbol(g As Graphics, r As RenderContext)
-        Dim shift = _state * BoxWidth
+        Dim s = Shift
         Dim wps = WorkingPorts()
 
         ' Port stubs from the fixed connection points to the box edge.
         For Each wp In wps
             Dim p = GetPort(wp.Name)
-            Dim x = ActW + BoxWidth + wp.Offset
+            Dim x = ActW + RestIndex * BoxWidth + wp.Offset
             g.DrawLine(r.PenFor(p), x, If(wp.Top, 0, 60), x, If(wp.Top, BoxTop, BoxBottom))
             If wp.Vents AndAlso p.ConnectionCount = 0 Then
                 Symbols.Exhaust(g, r.Line, New PointF(x, 60), New PointF(0, 1))
             End If
         Next
 
-        For position = 0 To 1
-            Dim boxX = ActW + shift + If(position = 1, 0, BoxWidth)
+        For index = 0 To PositionCount - 1
+            Dim position = PositionAt(index)
+            Dim boxX = ActW + s + index * BoxWidth
             g.FillRectangle(r.BodyBrush, boxX, BoxTop, BoxWidth, BoxBottom - BoxTop)
             g.DrawRectangle(r.Line, boxX, BoxTop, BoxWidth, BoxBottom - BoxTop)
             Dim active = position = _state
@@ -176,9 +237,42 @@ Public MustInherit Class DirectionalValve
             Next
         Next
 
-        DrawLeftActuator(g, r, ActW + shift)
-        DrawRightReturn(g, r, ActW + 2 * BoxWidth + shift)
+        Dim leftEdge = ActW + s
+        Dim rightEdge = ActW + PositionCount * BoxWidth + s
+        Dim cy = (BoxTop + BoxBottom) / 2
+        If PositionCount = 3 Then
+            Symbols.Spring(g, r.Line, leftEdge - SpringW, leftEdge, cy + 10, 5)
+            Symbols.Spring(g, r.Line, rightEdge, rightEdge + SpringW, cy + 10, 5)
+        End If
+        Dim inset = If(PositionCount = 3, SpringW, 0F)
+        DrawActuator(g, r, LeftKind(), leftEdge - inset, -1, _state = 1, LeftPilotName, SolenoidLabel)
+        Dim rightKind = RightKindForDrawing()
+        If rightKind IsNot Nothing Then
+            DrawActuator(g, r, rightKind, rightEdge + inset, +1, _state = If(PositionCount = 3, 2, 0) AndAlso r.Simulating AndAlso RightActive, RightPilotName, ReturnSolenoidLabel)
+        End If
+        If PositionCount = 3 Then
+            ' Lines joining the actuators to the outer boxes across the centring springs.
+            g.DrawLine(r.Thin, leftEdge - SpringW, cy, leftEdge, cy)
+            g.DrawLine(r.Thin, rightEdge, cy, rightEdge + SpringW, cy)
+        End If
     End Sub
+
+    ' Last computed right-hand actuation, used only for drawing.
+    Private _rightActive As Boolean
+    Private ReadOnly Property RightActive As Boolean
+        Get
+            Return _rightActive
+        End Get
+    End Property
+
+    Private Function LeftKind() As String
+        Return _actuator.ToString()
+    End Function
+
+    Private Function RightKindForDrawing() As String
+        If _return = ValveReturn.Spring Then Return If(PositionCount = 3, Nothing, "Spring")
+        Return _return.ToString()
+    End Function
 
     Private Shared Function FindWorking(wps As WorkingPort(), name As String) As WorkingPort
         Return wps.First(Function(w) w.Name = name)
@@ -188,72 +282,85 @@ Public MustInherit Class DirectionalValve
         Return New PointF(boxX + wp.Offset, If(wp.Top, BoxTop + inset, BoxBottom - inset))
     End Function
 
-    Private Sub DrawLeftActuator(g As Graphics, r As RenderContext, edge As Single)
+    ''' <summary>
+    ''' Draws an actuator symbol attached at x = <paramref name="edge"/>, extending outwards
+    ''' (to the left when <paramref name="dir"/> is -1, to the right when +1).
+    ''' </summary>
+    Private Sub DrawActuator(g As Graphics, r As RenderContext, kind As String, edge As Single, dir As Integer,
+                             operated As Boolean, pilotName As String, solenoid As String)
         Dim cy = (BoxTop + BoxBottom) / 2
-        Dim pressedPen = If(r.Simulating AndAlso _state = 1, r.Pressure, r.Line)
-        Select Case _actuator
-            Case ValveActuator.PushButton
-                g.DrawLine(r.Line, edge, cy, edge - 12, cy)
-                g.DrawLine(pressedPen, edge - 12, cy - 8, edge - 12, cy + 8)
-                g.DrawArc(pressedPen, edge - 18, cy - 8, 12, 16, 90, 180)
-            Case ValveActuator.Selector
-                g.DrawLine(r.Line, edge, cy, edge - 8, cy)
-                g.DrawLine(pressedPen, edge - 8, cy, edge - 18, cy - 12)
-                ' Detent notches.
-                g.DrawLine(r.Thin, edge - 4, cy + 6, edge - 16, cy + 6)
-                For Each nx In {edge - 6, edge - 14}
-                    g.DrawLine(r.Thin, nx, cy + 6, nx + 2, cy + 3)
-                    g.DrawLine(r.Thin, nx + 2, cy + 3, nx + 4, cy + 6)
+        Dim x = Function(t As Single) edge + dir * t
+        Dim pressedPen = If(r.Simulating AndAlso operated, r.Pressure, r.Line)
+        Select Case kind
+            Case "Spring"
+                Symbols.Spring(g, r.Line, edge, x(18), cy, 7)
+            Case "PushButton"
+                g.DrawLine(r.Line, edge, cy, x(12), cy)
+                g.DrawLine(pressedPen, x(12), cy - 8, x(12), cy + 8)
+                If dir < 0 Then
+                    g.DrawArc(pressedPen, x(18), cy - 8, 12, 16, 90, 180)
+                Else
+                    g.DrawArc(pressedPen, x(6), cy - 8, 12, 16, 270, 180)
+                End If
+            Case "Selector"
+                g.DrawLine(r.Line, edge, cy, x(8), cy)
+                g.DrawLine(pressedPen, x(8), cy, x(18), cy - 12)
+                g.DrawLine(r.Thin, x(4), cy + 6, x(16), cy + 6)
+                For Each t In {6.0F, 14.0F}
+                    g.DrawLine(r.Thin, x(t), cy + 6, x(t + 2), cy + 3)
+                    g.DrawLine(r.Thin, x(t + 2), cy + 3, x(t + 4), cy + 6)
                 Next
-            Case ValveActuator.RollerLever
-                g.DrawLine(r.Line, edge, cy, edge - 10, cy)
-                g.FillEllipse(r.BodyBrush, edge - 19, cy - 5, 10, 10)
-                g.DrawEllipse(pressedPen, edge - 19, cy - 5, 10, 10)
+            Case "RollerLever"
+                g.DrawLine(r.Line, edge, cy, x(10), cy)
+                Dim cx = x(14)
+                g.FillEllipse(r.BodyBrush, cx - 5, cy - 5, 10, 10)
+                g.DrawEllipse(pressedPen, cx - 5, cy - 5, 10, 10)
                 If Not String.IsNullOrWhiteSpace(TriggerMark) Then
                     Dim sz = g.MeasureString(TriggerMark, r.SmallFont)
-                    g.DrawString(TriggerMark, r.SmallFont, r.MarkBrush, edge - 14 - sz.Width / 2, cy - 8 - sz.Height)
+                    g.DrawString(TriggerMark, r.SmallFont, r.MarkBrush, cx - sz.Width / 2, cy - 8 - sz.Height)
                 End If
-            Case ValveActuator.Pilot, ValveActuator.DelayedPilot
-                Dim port = GetPort(LeftPilotName)
-                g.DrawLine(r.DashedFor(port), edge - ActW, cy, edge - 6, cy)
-                Using b As New SolidBrush(If(r.Simulating AndAlso port.IsPressurized, RenderContext.PressureColor, Color.Black))
-                    g.FillPolygon(b, {New PointF(edge, cy), New PointF(edge - 7, cy - 4), New PointF(edge - 7, cy + 4)})
+            Case "Pilot", "DelayedPilot"
+                Dim port = GetPort(pilotName)
+                g.DrawLine(r.DashedFor(port), x(20), cy, x(6), cy)
+                Using b As New SolidBrush(If(r.Simulating AndAlso port IsNot Nothing AndAlso port.IsPressurized, RenderContext.PressureColor, Color.Black))
+                    g.FillPolygon(b, {New PointF(edge, cy), New PointF(x(7), cy - 4), New PointF(x(7), cy + 4)})
                 End Using
-                If _actuator = ValveActuator.DelayedPilot Then
-                    ' Small clock face and the set delay.
-                    g.FillEllipse(r.BodyBrush, edge - 17, cy - 22, 12, 12)
-                    g.DrawEllipse(r.Thin, edge - 17, cy - 22, 12, 12)
-                    g.DrawLine(r.Thin, edge - 11, cy - 16, edge - 11, cy - 20)
-                    g.DrawLine(r.Thin, edge - 11, cy - 16, edge - 8, cy - 16)
+                If kind = "DelayedPilot" Then
+                    Dim cx = x(11)
+                    g.FillEllipse(r.BodyBrush, cx - 6, cy - 22, 12, 12)
+                    g.DrawEllipse(r.Thin, cx - 6, cy - 22, 12, 12)
+                    g.DrawLine(r.Thin, cx, cy - 16, cx, cy - 20)
+                    g.DrawLine(r.Thin, cx, cy - 16, cx + 3, cy - 16)
                     Dim txt = If(r.Simulating, $"{Math.Min(_timer, _delay):0.0}/{_delay:0.0} s", $"t = {_delay:0.0#} s")
                     g.DrawString(txt, r.SmallFont, r.TextBrush, edge - 4, cy - 34)
                 End If
+            Case "Solenoid"
+                Dim x1 = Math.Min(x(4), x(14)), x2 = Math.Max(x(4), x(14))
+                Using fill As New SolidBrush(If(r.Simulating AndAlso operated, Color.FromArgb(255, 205, 205), Color.White))
+                    g.FillRectangle(fill, x1, cy - 9, x2 - x1, 18)
+                End Using
+                g.DrawRectangle(If(r.Simulating AndAlso operated, r.Energized, r.Line), x1, cy - 9, x2 - x1, 18)
+                g.DrawLine(r.Line, x1, cy + 9, x2, cy - 9)
+                g.DrawLine(r.Line, edge, cy, x(4), cy)
+                If Not String.IsNullOrWhiteSpace(solenoid) Then
+                    Dim sz = g.MeasureString(solenoid, r.SmallFont)
+                    g.DrawString(solenoid, r.SmallFont, r.TextBrush, (x1 + x2) / 2 - sz.Width / 2, cy - 11 - sz.Height)
+                End If
         End Select
-    End Sub
-
-    Private Sub DrawRightReturn(g As Graphics, r As RenderContext, edge As Single)
-        Dim cy = (BoxTop + BoxBottom) / 2
-        If _return = ValveReturn.Spring Then
-            Symbols.Spring(g, r.Line, edge, edge + ActW - 2, cy, 7)
-        Else
-            Dim port = GetPort(RightPilotName)
-            g.DrawLine(r.DashedFor(port), edge + 6, cy, edge + ActW, cy)
-            Using b As New SolidBrush(If(r.Simulating AndAlso port.IsPressurized, RenderContext.PressureColor, Color.Black))
-                g.FillPolygon(b, {New PointF(edge, cy), New PointF(edge + 7, cy - 4), New PointF(edge + 7, cy + 4)})
-            End Using
-        End If
     End Sub
 
     ' ---------------------------------------------------------------- simulation
 
     <Browsable(False)> Public Overrides ReadOnly Property IsManuallyOperated As Boolean
         Get
-            Return _actuator = ValveActuator.PushButton OrElse _actuator = ValveActuator.Selector
+            ' Solenoid valves have a manual override button.
+            Return _actuator = ValveActuator.PushButton OrElse _actuator = ValveActuator.Selector OrElse
+                   _actuator = ValveActuator.Solenoid
         End Get
     End Property
 
-    Public Overrides Sub OnSimMouseDown()
-        If _actuator = ValveActuator.PushButton Then _manualPressed = True
+    Public Overrides Sub OnSimMouseDown(local As PointF)
+        If _actuator = ValveActuator.PushButton OrElse _actuator = ValveActuator.Solenoid Then _manualPressed = True
         If _actuator = ValveActuator.Selector Then _detentOn = Not _detentOn
     End Sub
 
@@ -266,6 +373,7 @@ Public MustInherit Class DirectionalValve
         MyBase.ResetSim()
         _manualPressed = False
         _detentOn = False
+        _rightActive = False
         _timer = 0
     End Sub
 
@@ -275,22 +383,35 @@ Public MustInherit Class DirectionalValve
         Next
     End Sub
 
+    Private Function PilotOn(name As String) As Boolean
+        Dim p = GetPort(name)
+        Return p IsNot Nothing AndAlso p.Pressure >= Simulator.PilotThreshold
+    End Function
+
     Public Overrides Function UpdateLogic(sim As Simulator) As Boolean
         Dim leftActive As Boolean
         Select Case _actuator
             Case ValveActuator.PushButton : leftActive = _manualPressed
             Case ValveActuator.Selector : leftActive = _detentOn
             Case ValveActuator.RollerLever : leftActive = sim.IsMarkActive(TriggerMark)
-            Case ValveActuator.Pilot : leftActive = GetPort(LeftPilotName).Pressure >= Simulator.PilotThreshold
-            Case ValveActuator.DelayedPilot
-                leftActive = GetPort(LeftPilotName).Pressure >= Simulator.PilotThreshold AndAlso _timer >= _delay - 0.000001
+            Case ValveActuator.Pilot : leftActive = PilotOn(LeftPilotName)
+            Case ValveActuator.DelayedPilot : leftActive = PilotOn(LeftPilotName) AndAlso _timer >= _delay - 0.000001
+            Case ValveActuator.Solenoid : leftActive = _manualPressed OrElse sim.IsCoilActive(SolenoidLabel)
         End Select
 
+        Dim rightActive As Boolean
+        Select Case _return
+            Case ValveReturn.Pilot : rightActive = PilotOn(RightPilotName)
+            Case ValveReturn.Solenoid : rightActive = sim.IsCoilActive(ReturnSolenoidLabel)
+        End Select
+        _rightActive = rightActive
+
         Dim newState = _state
-        If _return = ValveReturn.Spring Then
+        If PositionCount = 3 Then
+            newState = If(leftActive AndAlso Not rightActive, 1, If(rightActive AndAlso Not leftActive, 2, 0))
+        ElseIf _return = ValveReturn.Spring Then
             newState = If(leftActive, 1, 0)
         Else
-            Dim rightActive = GetPort(RightPilotName).Pressure >= Simulator.PilotThreshold
             If leftActive AndAlso Not rightActive Then newState = 1
             If rightActive AndAlso Not leftActive Then newState = 0
         End If
@@ -301,11 +422,7 @@ Public MustInherit Class DirectionalValve
 
     Public Overrides Sub UpdateDynamics(sim As Simulator, dt As Double)
         If _actuator = ValveActuator.DelayedPilot Then
-            If GetPort(LeftPilotName).Pressure >= Simulator.PilotThreshold Then
-                _timer += dt
-            Else
-                _timer = 0
-            End If
+            If PilotOn(LeftPilotName) Then _timer += dt Else _timer = 0
         End If
     End Sub
 
@@ -316,17 +433,59 @@ Public MustInherit Class DirectionalValve
             Case ValveActuator.Selector : a = "selector switch"
             Case ValveActuator.RollerLever : a = "roller lever"
             Case ValveActuator.Pilot : a = "pneumatic pilot"
+            Case ValveActuator.Solenoid : a = "solenoid"
             Case Else : a = "time delay"
         End Select
-        Return a & If(_return = ValveReturn.Spring, ", spring return", ", pilot return")
+        If PositionCount = 3 Then
+            Return a & If(_return = ValveReturn.Spring, ", spring centred", $" / {_return.ToString().ToLowerInvariant()}, spring centred")
+        End If
+        Select Case _return
+            Case ValveReturn.Spring : Return a & ", spring return"
+            Case ValveReturn.Pilot : Return a & ", pilot return"
+            Case Else : Return a & ", solenoid return"
+        End Select
+    End Function
+End Class
+
+''' <summary>2/2-way valve (on/off).</summary>
+Public Class Valve22
+    Inherits DirectionalValve
+
+    Public Sub New()
+        RebuildPorts()
+    End Sub
+
+    Public Overrides ReadOnly Property TypeName As String = "Valve22"
+
+    Public Overrides ReadOnly Property DisplayName As String
+        Get
+            Return $"2/2-way valve ({If(NormallyOpen, "NO", "NC")}), {ActuationText()}"
+        End Get
+    End Property
+
+    <Category("Valve"), DisplayName("Normally open"), Description("False: closed at rest (NC). True: open at rest (NO).")>
+    Public Property NormallyOpen As Boolean
+
+    Protected Overrides ReadOnly Property BoxWidth As Single = 40
+    Protected Overrides ReadOnly Property LeftPilotName As String = "12"
+    Protected Overrides ReadOnly Property RightPilotName As String = "10"
+
+    Protected Overrides Function WorkingPorts() As WorkingPort()
+        Return {New WorkingPort("2", 20, True), New WorkingPort("1", 20, False)}
+    End Function
+
+    Protected Overrides Function Flows(position As Integer) As String()()
+        Return If((position = 1) Xor NormallyOpen, {New String() {"1", "2"}}, Array.Empty(Of String())())
+    End Function
+
+    Protected Overrides Function ClosedPorts(position As Integer) As String()
+        Return If((position = 1) Xor NormallyOpen, Array.Empty(Of String)(), {"1", "2"})
     End Function
 End Class
 
 ''' <summary>3/2-way directional control valve.</summary>
 Public Class Valve32
     Inherits DirectionalValve
-
-    Private _normallyOpen As Boolean
 
     Public Sub New()
         RebuildPorts()
@@ -336,19 +495,12 @@ Public Class Valve32
 
     Public Overrides ReadOnly Property DisplayName As String
         Get
-            Return $"3/2-way valve ({If(_normallyOpen, "NO", "NC")}), {ActuationText()}"
+            Return $"3/2-way valve ({If(NormallyOpen, "NO", "NC")}), {ActuationText()}"
         End Get
     End Property
 
     <Category("Valve"), DisplayName("Normally open"), Description("False: 1 is closed at rest (NC). True: 1 is connected to 2 at rest (NO).")>
     Public Property NormallyOpen As Boolean
-        Get
-            Return _normallyOpen
-        End Get
-        Set(value As Boolean)
-            _normallyOpen = value
-        End Set
-    End Property
 
     Protected Overrides ReadOnly Property BoxWidth As Single = 40
     Protected Overrides ReadOnly Property LeftPilotName As String = "12"
@@ -359,13 +511,48 @@ Public Class Valve32
     End Function
 
     Protected Overrides Function Flows(position As Integer) As String()()
-        Dim open = (position = 1) Xor _normallyOpen
+        Dim open = (position = 1) Xor NormallyOpen
         Return If(open, {New String() {"1", "2"}}, {New String() {"2", "3"}})
     End Function
 
     Protected Overrides Function ClosedPorts(position As Integer) As String()
-        Dim open = (position = 1) Xor _normallyOpen
+        Dim open = (position = 1) Xor NormallyOpen
         Return If(open, {"3"}, {"1"})
+    End Function
+End Class
+
+''' <summary>4/2-way directional control valve (one common exhaust).</summary>
+Public Class Valve42
+    Inherits DirectionalValve
+
+    Public Sub New()
+        RebuildPorts()
+    End Sub
+
+    Public Overrides ReadOnly Property TypeName As String = "Valve42"
+
+    Public Overrides ReadOnly Property DisplayName As String
+        Get
+            Return $"4/2-way valve, {ActuationText()}"
+        End Get
+    End Property
+
+    Protected Overrides ReadOnly Property BoxWidth As Single = 40
+    Protected Overrides ReadOnly Property LeftPilotName As String = "14"
+    Protected Overrides ReadOnly Property RightPilotName As String = "12"
+
+    Protected Overrides Function WorkingPorts() As WorkingPort()
+        Return {New WorkingPort("4", 10, True), New WorkingPort("2", 30, True),
+                New WorkingPort("1", 10, False), New WorkingPort("3", 30, False, vents:=True)}
+    End Function
+
+    Protected Overrides Function Flows(position As Integer) As String()()
+        If position = 1 Then Return {New String() {"1", "4"}, New String() {"2", "3"}}
+        Return {New String() {"1", "2"}, New String() {"4", "3"}}
+    End Function
+
+    Protected Overrides Function ClosedPorts(position As Integer) As String()
+        Return Array.Empty(Of String)()
     End Function
 End Class
 
@@ -401,6 +588,73 @@ Public Class Valve52
     End Function
 
     Protected Overrides Function ClosedPorts(position As Integer) As String()
-        Return {}
+        Return Array.Empty(Of String)()
+    End Function
+End Class
+
+''' <summary>5/3-way directional control valve, spring centred.</summary>
+Public Class Valve53
+    Inherits DirectionalValve
+
+    Public Sub New()
+        Actuator = ValveActuator.Pilot
+        ReturnType = ValveReturn.Pilot
+    End Sub
+
+    Public Overrides ReadOnly Property TypeName As String = "Valve53"
+
+    Public Overrides ReadOnly Property DisplayName As String
+        Get
+            Return $"5/3-way valve ({DescribeCentre()}), {ActuationText()}"
+        End Get
+    End Property
+
+    <Category("Valve"), DisplayName("Centre position"),
+     Description("Closed: all ports blocked (cylinder stops and holds). Exhausted: 2 and 4 vented (cylinder free). Pressurized: 1 to 2 and 4.")>
+    Public Property Centre As CentrePosition = CentrePosition.Closed
+
+    Private Function DescribeCentre() As String
+        Select Case Centre
+            Case CentrePosition.Exhausted : Return "exhaust centre"
+            Case CentrePosition.Pressurized : Return "pressure centre"
+            Case Else : Return "closed centre"
+        End Select
+    End Function
+
+    Protected Overrides ReadOnly Property PositionCount As Integer
+        Get
+            Return 3
+        End Get
+    End Property
+
+    Protected Overrides ReadOnly Property BoxWidth As Single = 60
+    Protected Overrides ReadOnly Property LeftPilotName As String = "14"
+    Protected Overrides ReadOnly Property RightPilotName As String = "12"
+
+    Protected Overrides Function WorkingPorts() As WorkingPort()
+        Return {New WorkingPort("4", 20, True), New WorkingPort("2", 40, True),
+                New WorkingPort("5", 10, False, vents:=True), New WorkingPort("1", 30, False),
+                New WorkingPort("3", 50, False, vents:=True)}
+    End Function
+
+    Protected Overrides Function Flows(position As Integer) As String()()
+        Select Case position
+            Case 1 : Return {New String() {"1", "4"}, New String() {"2", "3"}}
+            Case 2 : Return {New String() {"1", "2"}, New String() {"4", "5"}}
+        End Select
+        Select Case Centre
+            Case CentrePosition.Exhausted : Return {New String() {"4", "5"}, New String() {"2", "3"}}
+            Case CentrePosition.Pressurized : Return {New String() {"1", "4"}, New String() {"1", "2"}}
+            Case Else : Return Array.Empty(Of String())()
+        End Select
+    End Function
+
+    Protected Overrides Function ClosedPorts(position As Integer) As String()
+        If position <> 0 Then Return Array.Empty(Of String)()
+        Select Case Centre
+            Case CentrePosition.Exhausted : Return {"1"}
+            Case CentrePosition.Pressurized : Return {"5", "3"}
+            Case Else : Return {"4", "2", "5", "1", "3"}
+        End Select
     End Function
 End Class

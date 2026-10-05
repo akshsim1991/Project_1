@@ -9,7 +9,13 @@ Public Enum PortState
     Exhausted
 End Enum
 
-''' <summary>A pneumatic connection point on a circuit element.</summary>
+''' <summary>What a port carries; only ports of the same kind can be connected.</summary>
+Public Enum PortKind
+    Pneumatic
+    Electric
+End Enum
+
+''' <summary>A pneumatic or electrical connection point on a circuit element.</summary>
 Public Class Port
     Public Sub New(owner As CircuitElement, name As String)
         Me.Owner = owner
@@ -25,6 +31,15 @@ Public Class Port
     Public Property Direction As PointF
     ''' <summary>True if the port vents to atmosphere when no tube is attached (valve exhausts, cylinder ports).</summary>
     Public Property VentsWhenOpen As Boolean
+
+    Public Property Kind As PortKind = PortKind.Pneumatic
+
+    ''' <summary>True for junction points, whose tubes may leave in any direction.</summary>
+    Public ReadOnly Property IsOmnidirectional As Boolean
+        Get
+            Return Direction.X = 0 AndAlso Direction.Y = 0
+        End Get
+    End Property
 
     ''' <summary>Number of tubes attached; maintained by <see cref="Circuit"/>.</summary>
     Public Property ConnectionCount As Integer
@@ -92,11 +107,12 @@ Public MustInherit Class CircuitElement
     End Property
 
     Protected Function AddPort(name As String, x As Single, y As Single, dx As Single, dy As Single,
-                               Optional vents As Boolean = False) As Port
+                               Optional vents As Boolean = False, Optional kind As PortKind = PortKind.Pneumatic) As Port
         Dim p As New Port(Me, name) With {
             .Local = New PointF(x, y),
             .Direction = New PointF(dx, dy),
-            .VentsWhenOpen = vents
+            .VentsWhenOpen = vents,
+            .Kind = kind
         }
         Ports.Add(p)
         Return p
@@ -195,7 +211,8 @@ Public MustInherit Class CircuitElement
         End Get
     End Property
 
-    Public Overridable Sub OnSimMouseDown()
+    ''' <summary>Mouse pressed on the element during simulation; <paramref name="local"/> is in local coordinates.</summary>
+    Public Overridable Sub OnSimMouseDown(local As PointF)
     End Sub
 
     Public Overridable Sub OnSimMouseUp()

@@ -1,0 +1,418 @@
+Imports System.ComponentModel
+Imports System.Drawing.Design
+
+''' <summary>Non-return valve: free flow from 1 to 2, blocked from 2 to 1.</summary>
+Public Class CheckValve
+    Inherits CircuitElement
+
+    Public Sub New()
+        AddPort("1", 0, 20, -1, 0)
+        AddPort("2", 60, 20, 1, 0)
+    End Sub
+
+    Public Overrides ReadOnly Property TypeName As String = "CheckValve"
+    Public Overrides ReadOnly Property DisplayName As String = "Check valve"
+
+    Public Overrides ReadOnly Property LocalBounds As RectangleF
+        Get
+            Return New RectangleF(0, 8, 60, 24)
+        End Get
+    End Property
+
+    Public Overrides Sub DrawSymbol(g As Graphics, r As RenderContext)
+        g.DrawLine(r.PenFor(Ports(0)), 0, 20, 24, 20)
+        g.DrawLine(r.PenFor(Ports(1)), 36, 20, 60, 20)
+        ' Seat (V with its point upstream) and ball: flow from 1 lifts the ball off the seat.
+        g.DrawLine(r.Line, 30, 12, 24, 20) : g.DrawLine(r.Line, 24, 20, 30, 28)
+        g.FillEllipse(r.BodyBrush, 26, 14, 12, 12)
+        g.DrawEllipse(r.Line, 26, 14, 12, 12)
+    End Sub
+
+    Public Overrides Sub AddEdges(sim As Simulator)
+        sim.AddEdge(Ports(0), Ports(1), 1, 0)
+    End Sub
+End Class
+
+''' <summary>Quick exhaust valve: feeds 1 to 2; when 1 is vented, 2 exhausts straight through 3.</summary>
+Public Class QuickExhaustValve
+    Inherits CircuitElement
+
+    Private _feeding As Boolean
+
+    Public Sub New()
+        AddPort("1", 0, 30, -1, 0)
+        AddPort("2", 40, 0, 0, -1)
+        AddPort("3", 40, 60, 0, 1, vents:=True)
+    End Sub
+
+    Public Overrides ReadOnly Property TypeName As String = "QuickExhaustValve"
+    Public Overrides ReadOnly Property DisplayName As String = "Quick exhaust valve"
+
+    Public Overrides ReadOnly Property LocalBounds As RectangleF
+        Get
+            Return New RectangleF(0, 0, 70, 60)
+        End Get
+    End Property
+
+    Public Overrides ReadOnly Property LabelAnchor As PointF
+        Get
+            Return New PointF(56, 22)
+        End Get
+    End Property
+
+    Public Overrides Sub DrawSymbol(g As Graphics, r As RenderContext)
+        g.DrawLine(r.PenFor(Ports(0)), 0, 30, 20, 30)
+        g.DrawLine(r.PenFor(Ports(1)), 40, 0, 40, 18)
+        g.DrawLine(r.PenFor(Ports(2)), 40, 42, 40, 60)
+        g.FillRectangle(r.BodyBrush, 20, 18, 34, 24)
+        g.DrawRectangle(r.Line, 20, 18, 34, 24)
+        ' Disc: against the exhaust seat while feeding, against the inlet seat while exhausting.
+        Using b As New SolidBrush(Color.FromArgb(70, 70, 70))
+            If _feeding Then g.FillRectangle(b, 34, 36, 12, 4) Else g.FillRectangle(b, 22, 24, 4, 12)
+        End Using
+        If Ports(2).ConnectionCount = 0 Then Symbols.Exhaust(g, r.Line, New PointF(40, 60), New PointF(0, 1))
+    End Sub
+
+    Public Overrides Sub ResetSim()
+        MyBase.ResetSim()
+        _feeding = False
+    End Sub
+
+    Public Overrides Sub AddEdges(sim As Simulator)
+        If _feeding Then sim.AddEdge(Ports(0), Ports(1), 1, 0) Else sim.AddEdge(Ports(1), Ports(2), 1, 0)
+    End Sub
+
+    Public Overrides Function UpdateLogic(sim As Simulator) As Boolean
+        Dim feeding = Ports(0).State = PortState.Pressurized
+        If feeding = _feeding Then Return False
+        _feeding = feeding
+        Return True
+    End Function
+End Class
+
+Public Enum RegulatorStyle
+    <Description("Pressure regulator")> Regulator
+    <Description("Service unit (filter, regulator, gauge)")> ServiceUnit
+End Enum
+
+''' <summary>Pressure regulator or service unit: output pressure limited to the setting.</summary>
+Public Class PressureRegulator
+    Inherits CircuitElement
+
+    Private _setting As Double = 4
+
+    Public Sub New()
+        AddPort("1", 0, 30, -1, 0)
+        AddPort("2", 100, 30, 1, 0)
+    End Sub
+
+    Public Overrides ReadOnly Property TypeName As String = "PressureRegulator"
+
+    Public Overrides ReadOnly Property DisplayName As String
+        Get
+            Return If(Style = RegulatorStyle.ServiceUnit, "Service unit", "Pressure regulator")
+        End Get
+    End Property
+
+    <Category("Regulator"), DisplayName("Output pressure (bar)"), Description("Pressure delivered at port 2.")>
+    Public Property Setting As Double
+        Get
+            Return _setting
+        End Get
+        Set(value As Double)
+            _setting = Math.Max(0.2, Math.Min(16, value))
+        End Set
+    End Property
+
+    <Category("Regulator"), DisplayName("Symbol"), Description("Plain regulator, or a service unit with filter and gauge.")>
+    Public Property Style As RegulatorStyle = RegulatorStyle.Regulator
+
+    Public Overrides ReadOnly Property LocalBounds As RectangleF
+        Get
+            Return New RectangleF(0, 0, 100, 56)
+        End Get
+    End Property
+
+    Public Overrides Sub DrawSymbol(g As Graphics, r As RenderContext)
+        Dim pin = r.PenFor(Ports(0)), pout = r.PenFor(Ports(1))
+        If Style = RegulatorStyle.ServiceUnit Then
+            g.DrawLine(pin, 0, 30, 14, 30)
+            g.DrawLine(pout, 86, 30, 100, 30)
+            Using dash As New Pen(Color.Black, 1) With {.DashStyle = Drawing2D.DashStyle.Dash}
+                g.DrawRectangle(dash, 14, 6, 72, 44)
+            End Using
+            ' Filter: diamond with a dashed element.
+            Dim fx = 30.0F
+            g.DrawPolygon(r.Line, {New PointF(fx, 18), New PointF(fx + 12, 30), New PointF(fx, 42), New PointF(fx - 12, 30)})
+            Using dash As New Pen(Color.Black, 1) With {.DashStyle = Drawing2D.DashStyle.Dash}
+                g.DrawLine(dash, fx, 19, fx, 41)
+            End Using
+            g.DrawLine(pin, 14, 30, fx - 12, 30)
+            g.DrawLine(pin, fx + 12, 30, 52, 30)
+            DrawRegulatorBox(g, r, 52, 22, 16)
+            g.DrawLine(pout, 68, 30, 86, 30)
+            ' Gauge.
+            g.DrawLine(r.Thin, 78, 30, 78, 22)
+            g.FillEllipse(r.BodyBrush, 72, 10, 12, 12)
+            g.DrawEllipse(r.Thin, 72, 10, 12, 12)
+            g.DrawLine(r.Thin, 78, 16, 81, 12)
+        Else
+            g.DrawLine(pin, 0, 30, 34, 30)
+            g.DrawLine(pout, 66, 30, 100, 30)
+            DrawRegulatorBox(g, r, 34, 14, 32)
+        End If
+        Dim txt = If(r.Simulating, $"{Ports(1).Pressure:0.0} bar", $"{_setting:0.#} bar")
+        g.DrawString(txt, r.SmallFont, r.TextBrush, 36, 44)
+    End Sub
+
+    Private Sub DrawRegulatorBox(g As Graphics, r As RenderContext, x As Single, y As Single, size As Single)
+        g.FillRectangle(r.BodyBrush, x, y, size, size)
+        g.DrawRectangle(r.Line, x, y, size, size)
+        Dim cy = y + size / 2
+        Symbols.Arrow(g, If(r.Simulating AndAlso Ports(1).IsPressurized, r.Pressure, r.Line),
+                      New PointF(x + 3, cy + 3), New PointF(x + size - 3, cy + 3), 4)
+        ' Adjustable spring on top.
+        Symbols.Spring(g, r.Thin, x + size / 2 - 1, x + size / 2 + 1, y - 4, 3)
+        g.DrawLine(r.Thin, x + 2, y - 2, x + size - 2, y - 10)
+    End Sub
+
+    Public Overrides Sub AddEdges(sim As Simulator)
+        sim.AddEdge(Ports(0), Ports(1), 1, 1, _setting)
+    End Sub
+End Class
+
+''' <summary>Silencer: lets air escape quietly; acts as an open exhaust.</summary>
+Public Class Silencer
+    Inherits CircuitElement
+
+    Public Sub New()
+        AddPort("1", 20, 0, 0, -1)
+    End Sub
+
+    Public Overrides ReadOnly Property TypeName As String = "Silencer"
+    Public Overrides ReadOnly Property DisplayName As String = "Silencer"
+
+    Public Overrides ReadOnly Property LocalBounds As RectangleF
+        Get
+            Return New RectangleF(8, 0, 24, 30)
+        End Get
+    End Property
+
+    Public Overrides Sub DrawSymbol(g As Graphics, r As RenderContext)
+        g.DrawLine(r.Line, 20, 0, 20, 8)
+        g.DrawPolygon(r.Line, {New PointF(20, 8), New PointF(10, 22), New PointF(30, 22)})
+        g.DrawRectangle(r.Line, 10, 22, 20, 6)
+        For hx = 13 To 27 Step 4
+            g.DrawLine(r.Thin, hx, 22, hx, 28)
+        Next
+    End Sub
+
+    Public Overrides Sub AddTerminals(sim As Simulator)
+        sim.AddExhaust(Ports(0))
+    End Sub
+End Class
+
+''' <summary>Double-acting semi-rotary actuator (swivel drive), 0 to 180 degrees.</summary>
+Public Class SemiRotaryActuator
+    Inherits DoubleActingCylinder
+
+    Public Overrides ReadOnly Property TypeName As String = "SemiRotaryActuator"
+    Public Overrides ReadOnly Property DisplayName As String = "Semi-rotary actuator"
+
+    Public Overrides ReadOnly Property LocalBounds As RectangleF
+        Get
+            Return New RectangleF(0, -6, 120, 46)
+        End Get
+    End Property
+
+    Public Overrides Sub DrawSymbol(g As Graphics, r As RenderContext)
+        g.FillRectangle(r.BodyBrush, 30, -4, 60, 34)
+        g.DrawRectangle(r.Line, 30, -4, 60, 34)
+        g.DrawLine(r.PenFor(Ports(0)), 10, 40, 10, 13)
+        g.DrawLine(r.PenFor(Ports(0)), 10, 13, 30, 13)
+        g.DrawLine(r.PenFor(Ports(1)), 110, 40, 110, 13)
+        g.DrawLine(r.PenFor(Ports(1)), 110, 13, 90, 13)
+        ' Shaft with a pointer turning through 180 degrees.
+        g.DrawArc(r.Thin, 46, -1, 28, 28, 180, 180)
+        Dim a = Math.PI * (1 - Position)
+        Dim tip As New PointF(CSng(60 + 13 * Math.Cos(a)), CSng(13 - 13 * Math.Sin(a)))
+        Using p As New Pen(Color.FromArgb(70, 70, 70), 3)
+            g.DrawLine(p, 60, 13, tip.X, tip.Y)
+        End Using
+        g.FillEllipse(Brushes.Black, 57, 10, 6, 6)
+        g.DrawString($"{Position * 180:0}°", r.SmallFont, r.TextBrush, 50, 16)
+        If Not String.IsNullOrWhiteSpace(RetractedMark) Then g.DrawString(RetractedMark, r.SmallFont, r.MarkBrush, 31, -16)
+        If Not String.IsNullOrWhiteSpace(ExtendedMark) Then g.DrawString(ExtendedMark, r.SmallFont, r.MarkBrush, 70, -16)
+    End Sub
+End Class
+
+''' <summary>Air motor: turns while its port is pressurized; speed follows the available flow.</summary>
+Public Class AirMotor
+    Inherits CircuitElement
+
+    Private _angle As Double
+    Private _rpm As Double
+
+    Public Sub New()
+        AddPort("1", 20, 50, 0, 1)
+    End Sub
+
+    Public Overrides ReadOnly Property TypeName As String = "AirMotor"
+    Public Overrides ReadOnly Property DisplayName As String = "Air motor"
+
+    <Category("Motor"), DisplayName("Speed (rpm)"), Description("Speed at full flow. Shown slowed down in the animation.")>
+    Public Property NominalSpeed As Double = 60
+
+    Public Overrides ReadOnly Property LocalBounds As RectangleF
+        Get
+            Return New RectangleF(2, 2, 36, 48)
+        End Get
+    End Property
+
+    Public Overrides ReadOnly Property LabelAnchor As PointF
+        Get
+            Return New PointF(40, 14)
+        End Get
+    End Property
+
+    Public Overrides Sub DrawSymbol(g As Graphics, r As RenderContext)
+        Dim p = Ports(0)
+        g.DrawLine(r.PenFor(p), 20, 38, 20, 50)
+        g.FillEllipse(r.BodyBrush, 2, 2, 36, 36)
+        g.DrawEllipse(r.Line, 2, 2, 36, 36)
+        Using b As New SolidBrush(If(r.Simulating AndAlso p.IsPressurized, RenderContext.PressureColor, Color.Black))
+            g.FillPolygon(b, {New PointF(20, 36), New PointF(14, 27), New PointF(26, 27)})
+        End Using
+        Dim a = _angle * Math.PI / 180
+        g.DrawLine(r.Thin, 20, 20, CSng(20 + 12 * Math.Cos(a)), CSng(20 + 12 * Math.Sin(a)))
+        g.DrawArc(r.Thin, -4, -4, 48, 48, 200, 40)
+        If r.Simulating Then g.DrawString($"{_rpm:0} rpm", r.SmallFont, r.TextBrush, 40, 26)
+    End Sub
+
+    Public Overrides Sub ResetSim()
+        MyBase.ResetSim()
+        _angle = 0
+        _rpm = 0
+    End Sub
+
+    Public Overrides Sub UpdateDynamics(sim As Simulator, dt As Double)
+        Dim p = Ports(0)
+        _rpm = If(p.State = PortState.Pressurized, NominalSpeed * p.Factor * Math.Min(1, p.Pressure / 6), 0)
+        _angle = (_angle + _rpm * 6 * dt) Mod 360
+    End Sub
+End Class
+
+''' <summary>Branch point for tubes or wires.</summary>
+Public Class Junction
+    Inherits CircuitElement
+
+    Private _electric As Boolean
+
+    Public Sub New()
+        AddPort("1", 0, 0, 0, 0)
+    End Sub
+
+    Public Overrides ReadOnly Property TypeName As String = "Junction"
+
+    Public Overrides ReadOnly Property DisplayName As String
+        Get
+            Return If(_electric, "Wire junction / bend point", "Tube junction / bend point")
+        End Get
+    End Property
+
+    <Category("Junction"), DisplayName("Electrical"), Description("True for joining wires, False for joining tubes.")>
+    Public Property IsElectric As Boolean
+        Get
+            Return _electric
+        End Get
+        Set(value As Boolean)
+            _electric = value
+            Ports(0).Kind = If(value, PortKind.Electric, PortKind.Pneumatic)
+        End Set
+    End Property
+
+    Public Overrides ReadOnly Property LocalBounds As RectangleF
+        Get
+            Return New RectangleF(-5, -5, 10, 10)
+        End Get
+    End Property
+
+    Public Overrides ReadOnly Property LabelAnchor As PointF
+        Get
+            Return New PointF(6, 0)
+        End Get
+    End Property
+
+    Public Overrides Sub DrawSymbol(g As Graphics, r As RenderContext)
+        Dim p = Ports(0)
+        Dim c = If(r.Simulating AndAlso p.IsPressurized,
+                   If(_electric, RenderContext.EnergizedColor, RenderContext.PressureColor), Color.Black)
+        If p.ConnectionCount >= 3 Then
+            Using b As New SolidBrush(c)
+                g.FillEllipse(b, -3.5F, -3.5F, 7, 7)
+            End Using
+        ElseIf r.Interactive AndAlso Not r.Simulating Then
+            ' A bend point: only visible while editing.
+            Using pen As New Pen(Color.FromArgb(150, 150, 150))
+                g.DrawEllipse(pen, -2.5F, -2.5F, 5, 5)
+            End Using
+        End If
+    End Sub
+End Class
+
+''' <summary>Free text placed on the drawing (titles, notes, explanations).</summary>
+Public Class TextNote
+    Inherits CircuitElement
+
+    Private Shared ReadOnly Measure As Graphics = Graphics.FromImage(New Bitmap(1, 1))
+    Private _text As String = "Text"
+    Private _size As Single = 10
+
+    Public Overrides ReadOnly Property TypeName As String = "TextNote"
+    Public Overrides ReadOnly Property DisplayName As String = "Text"
+
+    <Category("Text"), DisplayName("Text"), Description("The text to show. Use Shift+Enter or the ... button for several lines."),
+     Editor("System.ComponentModel.Design.MultilineStringEditor, System.Design", GetType(UITypeEditor))>
+    Public Property Text As String
+        Get
+            Return _text
+        End Get
+        Set(value As String)
+            _text = If(value, "")
+        End Set
+    End Property
+
+    <Category("Text"), DisplayName("Font size")>
+    Public Property FontSize As Single
+        Get
+            Return _size
+        End Get
+        Set(value As Single)
+            _size = Math.Max(6, Math.Min(48, value))
+        End Set
+    End Property
+
+    <Category("Text"), DisplayName("Bold")>
+    Public Property Bold As Boolean
+
+    Private Function MakeFont() As Font
+        Return New Font("Segoe UI", _size, If(Bold, FontStyle.Bold, FontStyle.Regular))
+    End Function
+
+    Public Overrides ReadOnly Property LocalBounds As RectangleF
+        Get
+            Using f = MakeFont()
+                SyncLock Measure
+                    Dim sz = Measure.MeasureString(If(_text.Length = 0, " ", _text), f)
+                    Return New RectangleF(0, 0, Math.Max(10, sz.Width), Math.Max(10, sz.Height))
+                End SyncLock
+            End Using
+        End Get
+    End Property
+
+    Public Overrides Sub DrawSymbol(g As Graphics, r As RenderContext)
+        Using f = MakeFont()
+            g.DrawString(_text, f, Brushes.Black, 0, 0)
+        End Using
+    End Sub
+End Class

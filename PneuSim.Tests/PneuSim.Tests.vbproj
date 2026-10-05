@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Simulation tests: build and run PneuSim.Tests.exe. Exit code = number of failures. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net472</TargetFramework>
+    <OptionStrict>On</OptionStrict>
+    <MyType>Empty</MyType>
+    <StartupObject>Tests.TestMain</StartupObject>
+    <RootNamespace>Tests</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\PneuSim\PneuSim.vbproj" />
+    <Reference Include="System.Windows.Forms" />
+    <Reference Include="System.Drawing" />
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+  </ItemGroup>
+  <ItemGroup><Import Include="System" /><Import Include="System.Linq" /><Import Include="System.Collections.Generic" /><Import Include="PneuSim" /></ItemGroup>
+</Project>

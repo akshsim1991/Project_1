@@ -185,21 +185,3 @@ Public Class FlowControlValve
         End If
     End Sub
 End Class
-
-''' <summary>Creates elements from their file type name.</summary>
-Public Module ElementFactory
-    Public Function Create(typeName As String) As CircuitElement
-        Select Case typeName
-            Case "AirSupply" : Return New AirSupply()
-            Case "PressureGauge" : Return New PressureGauge()
-            Case "SingleActingCylinder" : Return New SingleActingCylinder()
-            Case "DoubleActingCylinder" : Return New DoubleActingCylinder()
-            Case "Valve32" : Return New Valve32()
-            Case "Valve52" : Return New Valve52()
-            Case "ShuttleValve" : Return New ShuttleValve()
-            Case "TwoPressureValve" : Return New TwoPressureValve()
-            Case "FlowControlValve" : Return New FlowControlValve()
-            Case Else : Return Nothing
-        End Select
-    End Function
-End Module
