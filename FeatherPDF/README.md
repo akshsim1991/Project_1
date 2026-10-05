@@ -1,12 +1,14 @@
 # Feather PDF
 
-A small, fast, native PDF **viewer and page editor** for Windows 10 and 11.
+A small, fast, native PDF **viewer and editor** for Windows 10 and 11.
 It opens PDFs in tabs and lets you scroll, jump to pages, zoom, search,
 follow links, browse bookmarks and thumbnails, read in two-page, rotated or
-night mode, select and copy text or images, and print. You can also delete,
-reorder, rotate, insert, merge, split and extract pages, and highlight,
-underline or strike through text, with undo/redo and crash-safe saving. It
-has no accounts, cloud features, telemetry or background services.
+night mode, select and copy text or images, and print. With **Edit PDF** you
+can change the text of a PDF in place, find and replace text, add and edit
+**comments**, highlight, underline or strike through text, and delete,
+reorder, rotate, insert, merge, split and extract pages, with undo/redo and
+crash-safe saving. It has no accounts, cloud features, telemetry or
+background services.
 
 © 2026 Akshaya Simha. Developed for faster experience.
 
@@ -98,7 +100,7 @@ MainWindow ─► Tab × N ─► PdfView ── layout, visible pages, zoom, na
 | `src/PdfView.*` | Page layout (single / continuous / two-page), rotation, zoom, navigation, tile requests, painting, text selection, links, image copy |
 | `src/PageCache.*` | Bounded LRU cache of rendered tiles (memory policy) |
 | `src/RenderWorker.*` | Background thread that owns PDFium (all tabs); job priorities |
-| `src/PdfEngine.*` | PDFium wrapper: open, page sizes, tile rendering (rotation, night/dim colours), text and link layer, bookmarks, metadata, text copy, search, printing, page edits, text markup, writing files |
+| `src/PdfEngine.*` | PDFium wrapper: open, page sizes, tile rendering (rotation, night/dim colours), text, link and comment layer, bookmarks, metadata, text copy, search, printing, page edits, text markup, text editing (runs, fonts), find and replace, comments, writing files |
 | `src/DocEditor.*` | One open document on the worker: edit history, undo/redo by replay, safe saving |
 | `src/Search.*` | UI-side search state (sorted matches, current match, status) |
 | `src/Toolbar.*` | Flat themed toolbar with icon-font buttons and hosted edits |
@@ -299,7 +301,7 @@ program.
 
 **Pages:** open the thumbnails panel (Ctrl+Shift+B) and select pages with a
 click, Ctrl+click, Shift+click or Ctrl+A. Right-click a page, or use
-⋯ › Edit pages, for these commands:
+Edit PDF › Edit pages, for these commands:
 
 * **Delete pages** (or press Del in the thumbnails).
 * **Reorder pages:** drag the selected thumbnails to a new position. A blue
@@ -318,8 +320,50 @@ click, Ctrl+click, Shift+click or Ctrl+A. Right-click a page, or use
 
 Without the thumbnails panel, page commands apply to the current page.
 
+**Edit PDF menu:** the **Edit PDF** button on the toolbar (also ⋯ › Edit
+PDF) holds everything that changes a document: Edit text, Find and replace
+text, the comment commands, Mark up text and Edit pages.
+
+**Edit text (Ctrl+E):** every line of text on the page gets a dotted
+outline, and a banner at the top says what to do. Click a line, change it
+in the box that opens over it, and press Enter (or click elsewhere); Esc
+cancels the change, and Esc again (or Ctrl+E) leaves edit mode.
+
+* The changed text is written into the PDF itself, at the same place, size
+  and colour. Other programs see the new text, and search and copy find it.
+* It keeps its original font when that font has every letter needed. PDF
+  files often contain only the letters a document uses, so a new letter
+  (for example a "9" where the document had none) means a similar font is
+  used instead: Helvetica, Times or Courier for Western text, or an
+  installed Windows font (Arial, Nirmala UI for Indian scripts, Segoe UI and
+  others) for other letters. Feather PDF says so the first time it happens.
+* Lines that a PDF stores word by word (or letter by letter) are joined, so
+  you always edit a whole line.
+* Deleting all the text of a line removes it.
+* Scanned pages are pictures and have no text to edit.
+
+**Find and replace text (Ctrl+Shift+H):** changes every occurrence in the
+whole document, with an optional "Match case", and says how many places
+were changed. The same font rules apply.
+
+**Comments:**
+
+* **Comment** on the toolbar (Ctrl+M): click where the comment should go,
+  type it and press OK. A yellow note icon appears on the page.
+* **Comment on selected text (Ctrl+Shift+M):** select text first; it is
+  highlighted and the comment is attached to the highlight.
+* Right-click anywhere › **Add comment here**.
+* Hover a note or a commented highlight to read it, with its author and
+  date. Click a note (or right-click a comment › Edit comment) to change or
+  delete it. Right-click a highlight without a comment to add one or to
+  remove the highlight.
+* **Edit PDF › All comments** lists every comment in the document (page,
+  type, author, text): go to one, edit it or delete it.
+* New comments are signed with your Windows user name. They are standard
+  PDF annotations, so Acrobat, Edge, Chrome and other viewers show them.
+
 **Text markup:** select text, then right-click › Highlight (Ctrl+H),
-Underline (Ctrl+U) or Strikethrough (Ctrl+K), or use ⋯ › Mark up text.
+Underline (Ctrl+U) or Strikethrough (Ctrl+K), or use Edit PDF › Mark up text.
 Choose the highlight colour (yellow, green, blue or pink) in the same menu.
 These are standard PDF annotations, so Acrobat, Edge, Chrome and other
 viewers show them too.
@@ -352,6 +396,10 @@ and version info, and `.pdf` association.
 | Ctrl+Z | Undo |
 | Ctrl+Y / Ctrl+Shift+Z | Redo |
 | Ctrl+H / Ctrl+U / Ctrl+K | Highlight / underline / strike through the selected text |
+| Ctrl+E | Edit text on/off (click a line to change it; Enter keeps, Esc cancels) |
+| Ctrl+Shift+H | Find and replace text |
+| Ctrl+M | Add a comment (then click on the page) |
+| Ctrl+Shift+M | Comment on the selected text |
 | Del (in thumbnails) | Delete the selected pages |
 | Ctrl+A (in thumbnails) | Select all pages |
 | Ctrl+P | Print |
@@ -452,7 +500,7 @@ script:
 ```powershell
 cmake --install build --config Release --prefix dist        # 1. portable folder
 & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" installer\FeatherPDF.iss   # 2. compile
-# -> installer\Output\FeatherPDF-Setup-1.3.0.exe
+# -> installer\Output\FeatherPDF-Setup-1.4.0.exe
 ```
 
 The installer:

@@ -31,6 +31,8 @@ constexpr UINT_PTR kAutoScrollTimer = 2;  // scrolls while drag-selecting past a
 constexpr size_t kMaxTextLayers = 32;     // pages whose character boxes are kept
 constexpr float kTextSlackPt = 12.0f;     // how far from a glyph still counts as "on text"
 constexpr COLORREF kSelectionColor = RGB(150, 200, 255);
+constexpr UINT kInlineEndMsg = WM_USER + 50;  // the inline text box lost the focus
+constexpr size_t kMaxRunPages = 24;           // pages whose editable text is kept
 
 bool IsWordChar(uint32_t cp) {
     return cp == '_' || (cp < 0x10000 && iswalnum((wint_t)cp)) || cp >= 0x10000;
@@ -75,8 +77,8 @@ bool PdfView::Create(HWND parent, RenderWorker* worker) {
     }
     m_worker = worker;
     m_hwnd = CreateWindowExW(0, kClassName, L"",
-                             WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_HSCROLL | WS_TABSTOP, 0, 0, 0,
-                             0, parent, nullptr, GetModuleHandleW(nullptr), this);
+                             WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_HSCROLL | WS_TABSTOP | WS_CLIPCHILDREN,
+                             0, 0, 0, 0, parent, nullptr, GetModuleHandleW(nullptr), this);
     if (!m_hwnd) return false;
     m_dpi = GetWindowDpi(m_hwnd);
     m_messageFont = CreateMessageFont(m_dpi, 110);
@@ -173,7 +175,9 @@ LRESULT PdfView::Handle(UINT msg, WPARAM wp, LPARAM lp) {
                     ScrollOrFlip(shift ? -(ClientH() - LineStep()) : (ClientH() - LineStep()));
                     return 0;
                 case VK_ESCAPE:
-                    if (m_areaMode) {
+                    if (m_tool != ViewTool::Select) {
+                        SetTool(ViewTool::Select);
+                    } else if (m_areaMode) {
                         m_areaMode = false;
                         if (m_areaDragging) ReleaseCapture();
                     } else if (HasSelection())
@@ -188,6 +192,32 @@ LRESULT PdfView::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             SetFocus(m_hwnd);
             if (!HasDocument()) return 0;
             const POINT pt = {GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+            if (m_inlineEdit) EndInlineEdit(true);  // a click elsewhere keeps the change
+            if (m_tool == ViewTool::AddComment) {
+                int page;
+                float x, y;
+                if (PagePoint(pt, page, x, y)) {
+                    SetTool(ViewTool::Select);
+                    if (onNewComment) onNewComment(page, x, y);
+                }
+                return 0;
+            }
+            if (m_tool == ViewTool::EditText) {
+                int page, run;
+                if (HitRun(pt, page, run)) {
+                    BeginInlineEdit(page, run);
+                    return 0;
+                }
+            }
+            if (m_tool == ViewTool::Select) {
+                int page;
+                if (const CommentInfo* c = HitComment(pt, &page); c && c->subtype == kAnnotNote) {
+                    const CommentInfo copy = *c;
+                    ShowTip(L"");
+                    if (onOpenComment) onOpenComment(page, copy);
+                    return 0;
+                }
+            }
             if (m_areaMode) {  // "copy area as image": start the rectangle
                 m_areaDragging = true;
                 m_areaStart = m_areaEnd = pt;
@@ -202,7 +232,7 @@ LRESULT PdfView::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             }
             TextPos pos;
             const bool extend = (wp & MK_SHIFT) && m_hasSel;
-            if (HitText(pt, !extend, &pos)) {
+            if (m_tool == ViewTool::Select && HitText(pt, !extend, &pos)) {
                 // On text: start (or with Shift, extend) a selection.
                 if (!extend) m_selAnchor = pos;
                 m_selFocus = pos;
@@ -224,14 +254,24 @@ LRESULT PdfView::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         case WM_LBUTTONDBLCLK:
-            SelectWordAt({GET_X_LPARAM(lp), GET_Y_LPARAM(lp)});
+            if (m_tool == ViewTool::Select) SelectWordAt({GET_X_LPARAM(lp), GET_Y_LPARAM(lp)});
             return 0;
         case WM_MOUSEMOVE:
             if (m_areaDragging) {
                 m_areaEnd = {GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
                 InvalidateRect(m_hwnd, nullptr, FALSE);
             } else if (!m_dragging && !m_selecting && !m_linkPressed && HasDocument()) {
-                UpdateLinkTip(HitLink({GET_X_LPARAM(lp), GET_Y_LPARAM(lp)}));
+                const POINT pt = {GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+                UpdateHoverTip(pt);
+                if (m_tool == ViewTool::EditText) {
+                    int page = -1, run = -1;
+                    HitRun(pt, page, run);
+                    if (page != m_hoverPage || run != m_hoverRun) {
+                        m_hoverPage = page;
+                        m_hoverRun = run;
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                    }
+                }
             }
             if (m_dragging) {
                 ScrollTo(m_dragScrollX - (GET_X_LPARAM(lp) - m_dragStart.x),
@@ -284,7 +324,10 @@ LRESULT PdfView::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             KillTimer(m_hwnd, kAutoScrollTimer);
             return 0;
         case WM_MOUSELEAVE:
-            UpdateLinkTip(nullptr);
+            ShowTip(L"");
+            return 0;
+        case kInlineEndMsg:
+            if (m_inlineEdit && GetFocus() != m_inlineEdit) EndInlineEdit(true);
             return 0;
         case WM_CONTEXTMENU:
             ShowContextMenu(lp);
@@ -295,8 +338,16 @@ LRESULT PdfView::Handle(UINT msg, WPARAM wp, LPARAM lp) {
                 POINT cpt;
                 GetCursorPos(&cpt);
                 ScreenToClient(m_hwnd, &cpt);
-                if (m_areaMode) {
+                int page, run;
+                if (m_areaMode || m_tool == ViewTool::AddComment) {
                     cursor = IDC_CROSS;
+                } else if (m_tool == ViewTool::EditText && !m_dragging) {
+                    cursor = HitRun(cpt, page, run) ? IDC_IBEAM : IDC_ARROW;
+                } else if (!m_dragging && !m_selecting && HasDocument() && [&] {
+                               const CommentInfo* c = HitComment(cpt);
+                               return c && c->subtype == kAnnotNote;
+                           }()) {
+                    cursor = IDC_HAND;
                 } else if (m_linkPressed || (!m_dragging && !m_selecting && HasDocument() &&
                                              HitLink(cpt))) {
                     cursor = IDC_HAND;
@@ -327,6 +378,9 @@ LRESULT PdfView::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             }
             return 0;
         case WM_DESTROY:
+            if (m_inlineEdit) EndInlineEdit(false);
+            if (m_bannerFont) DeleteObject(m_bannerFont);
+            m_bannerFont = nullptr;
             if (m_linkTip) DestroyWindow(m_linkTip);
             m_linkTip = nullptr;
             m_cache.Clear();
@@ -345,6 +399,8 @@ LRESULT PdfView::Handle(UINT msg, WPARAM wp, LPARAM lp) {
 // Document
 // ===========================================================================
 void PdfView::SetDocument(uint32_t docId, std::vector<SizeF>&& sizes, int startPage) {
+    if (m_inlineEdit) EndInlineEdit(false);
+    ClearRuns();
     m_docId = docId;
     m_editPending = false;
     m_sizes = std::move(sizes);
@@ -370,6 +426,8 @@ void PdfView::SetDocument(uint32_t docId, std::vector<SizeF>&& sizes, int startP
 }
 
 void PdfView::BeginEdit(uint32_t newDocId) {
+    if (m_inlineEdit) EndInlineEdit(false);
+    ClearRuns();
     m_docId = newDocId;
     m_editPending = true;
     m_cache.MarkAllStale();
@@ -393,11 +451,15 @@ void PdfView::EndEdit(std::vector<SizeF>&& sizes, int focusPage) {
     };
     if (same()) {
         // Same layout: the placeholders stay until the new tiles arrive.
-        if (focusPage >= 0 && focusPage < PageCount()) {
-            int first, last;
+        int first, last;
+        VisibleRange(m_scrollY, m_scrollY + ClientH(), first, last);
+        if (focusPage >= 0 && focusPage < PageCount() && (focusPage < first || focusPage > last)) {
+            GoToPage(focusPage);
             VisibleRange(m_scrollY, m_scrollY + ClientH(), first, last);
-            if (focusPage < first || focusPage > last) GoToPage(focusPage);
         }
+        // Comments and text on screen are fetched again at once, so a click
+        // or right-click right after the edit finds them.
+        for (int p = first; p <= last && p - first < 4; ++p) GetTextLayer(p, true);
         InvalidateRect(m_hwnd, nullptr, FALSE);
         Notify();
         return;
@@ -408,6 +470,9 @@ void PdfView::EndEdit(std::vector<SizeF>&& sizes, int focusPage) {
 }
 
 void PdfView::CloseDocument() {
+    if (m_inlineEdit) EndInlineEdit(false);
+    ClearRuns();
+    m_tool = ViewTool::Select;
     m_docId = 0;
     m_editPending = false;
     m_sizes.clear();
@@ -1010,6 +1075,9 @@ void PdfView::ZoomOut() {
 
 void PdfView::OnDpiChanged() {
     m_dpi = GetWindowDpi(m_hwnd);
+    if (m_bannerFont) DeleteObject(m_bannerFont);
+    m_bannerFont = nullptr;
+    if (m_inlineEdit) EndInlineEdit(true);
     if (m_messageFont) DeleteObject(m_messageFont);
     m_messageFont = CreateMessageFont(m_dpi, 110);
     const int page = CurrentPage();
@@ -1028,6 +1096,7 @@ void PdfView::OnThemeChanged() {
 }
 
 void PdfView::TrimMemory() {
+    ClearRuns();
     m_cache.Clear();
     m_text.clear();
     m_textOrder.clear();
@@ -1192,7 +1261,9 @@ void PdfView::Paint(HDC hdc) {
         FrameRect(dc, &band, (HBRUSH)GetStockObject(BLACK_BRUSH));
     }
 
+    DrawBanner(dc);
     BitBlt(hdc, 0, 0, w, h, dc, 0, 0, SRCCOPY);
+    if (m_inlineEdit) PositionInlineEdit();
 }
 
 void PdfView::PaintPage(HDC dc, int page, std::vector<std::pair<int64_t, TileRequest>>& missing,
@@ -1290,6 +1361,9 @@ void PdfView::PaintPage(HDC dc, int page, std::vector<std::pair<int64_t, TileReq
     // 4. Text selection (same "multiply" technique, in blue).
     if (HasSelection()) DrawSelection(dc, page, left, top, vis);
 
+    // 5. Editable text outlines while editing text.
+    if (m_tool == ViewTool::EditText) DrawRuns(dc, page, vis);
+
     SelectClipRgn(dc, nullptr);
     DeleteObject(clip);
 }
@@ -1327,6 +1401,7 @@ void PdfView::OnTextLayer(TextLayerResult* result) {
     TextLayer& layer = m_text[res->page];
     layer.chars = std::move(res->chars);
     layer.links = std::move(res->links);
+    layer.comments = std::move(res->comments);
     m_textOrder.erase(std::remove(m_textOrder.begin(), m_textOrder.end(), res->page),
                       m_textOrder.end());
     m_textOrder.insert(m_textOrder.begin(), res->page);
@@ -1511,6 +1586,16 @@ void PdfView::ShowContextMenu(LPARAM lp) {
     if (!HasDocument()) return;
     POINT pt = {GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
     if (pt.x == -1 && pt.y == -1) GetCursorPos(&pt);  // keyboard (Shift+F10)
+    if (m_inlineEdit) EndInlineEdit(true);
+    POINT client = pt;
+    ScreenToClient(m_hwnd, &client);
+    int page = -1, commentPage = -1;
+    float x = 0, y = 0;
+    const bool onPage = PagePoint(client, page, x, y);
+    // A copy: the text layer may be replaced while the menu is open.
+    std::unique_ptr<CommentInfo> comment;
+    if (const CommentInfo* c = HitComment(client, &commentPage)) comment = std::make_unique<CommentInfo>(*c);
+
     HMENU m = CreatePopupMenu();
     const UINT selFlag = HasSelection() ? 0 : MF_GRAYED;
     AppendMenuW(m, MF_STRING | selFlag, ID_COPY, L"&Copy\tCtrl+C");
@@ -1520,6 +1605,22 @@ void PdfView::ShowContextMenu(LPARAM lp) {
     AppendMenuW(m, MF_STRING | selFlag, ID_UNDERLINE, L"&Underline\tCtrl+U");
     AppendMenuW(m, MF_STRING | selFlag, ID_STRIKEOUT, L"&Strikethrough\tCtrl+K");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    if (comment) {
+        const bool note = comment->subtype == kAnnotNote;
+        if (note || !comment->text.empty()) {
+            AppendMenuW(m, MF_STRING, ID_COMMENT_EDIT, L"&Edit comment\x2026");
+            AppendMenuW(m, MF_STRING, ID_COMMENT_DELETE, note ? L"&Delete comment" : L"&Delete comment and marking");
+        } else {
+            AppendMenuW(m, MF_STRING, ID_COMMENT_EDIT, L"Add a comment to this &marking\x2026");
+            AppendMenuW(m, MF_STRING, ID_COMMENT_DELETE, L"&Remove this marking");
+        }
+        AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    }
+    AppendMenuW(m, MF_STRING | (onPage ? 0 : MF_GRAYED), ID_ADD_COMMENT_HERE, L"Add co&mment here\x2026");
+    AppendMenuW(m, MF_STRING | selFlag, ID_COMMENT_SELECTION, L"Comment on selected te&xt\x2026\tCtrl+Shift+M");
+    AppendMenuW(m, MF_STRING | (m_tool == ViewTool::EditText ? MF_CHECKED : 0), ID_EDIT_TEXT,
+                L"&Edit text\tCtrl+E");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(m, MF_STRING, ID_COPY_PAGE_IMAGE, L"Copy &page as image");
     AppendMenuW(m, MF_STRING, ID_COPY_AREA_IMAGE, L"Copy a&rea as image");
     const int cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, m_hwnd, nullptr);
@@ -1528,8 +1629,18 @@ void PdfView::ShowContextMenu(LPARAM lp) {
     if (cmd == ID_SELECT_ALL) SelectAll();
     if (cmd == ID_COPY_PAGE_IMAGE) CopyPageImage();
     if (cmd == ID_COPY_AREA_IMAGE) StartAreaCopy();
-    // Annotations change the document: the main window records the edit.
-    if (cmd == ID_HIGHLIGHT || cmd == ID_UNDERLINE || cmd == ID_STRIKEOUT)
+    if (cmd == ID_ADD_COMMENT_HERE && onPage && onNewComment) onNewComment(page, x, y);
+    if (cmd == ID_COMMENT_EDIT && comment && onOpenComment) onOpenComment(commentPage, *comment);
+    if (cmd == ID_COMMENT_DELETE && comment && onEdit) {
+        EditOp op;
+        op.kind = EditOp::DeleteAnnot;
+        op.page = commentPage;
+        op.index = comment->annot;
+        onEdit(std::move(op));
+    }
+    // These change the document or the tool: the main window handles them.
+    if (cmd == ID_HIGHLIGHT || cmd == ID_UNDERLINE || cmd == ID_STRIKEOUT ||
+        cmd == ID_COMMENT_SELECTION || cmd == ID_EDIT_TEXT)
         SendMessageW(GetParent(m_hwnd), WM_COMMAND, (WPARAM)cmd, 0);
 }
 
@@ -1558,7 +1669,10 @@ const LinkInfo* PdfView::HitLink(POINT pt) {
 // Shows the web address of an external link before it is clicked, so a
 // PDF can not hide where a link really goes.
 void PdfView::UpdateLinkTip(const LinkInfo* link) {
-    const std::wstring text = link && !link->target.uri.empty() ? link->target.uri : L"";
+    ShowTip(link && !link->target.uri.empty() ? link->target.uri : L"");
+}
+
+void PdfView::ShowTip(const std::wstring& text) {
     if (text == m_linkTipText) {
         if (!text.empty()) {
             POINT pt;
@@ -1600,7 +1714,7 @@ void PdfView::UpdateLinkTip(const LinkInfo* link) {
 }
 
 void PdfView::FollowLink(const LinkTarget& target) {
-    UpdateLinkTip(nullptr);
+    ShowTip(L"");
     if (target.page >= 0) {
         GoToTarget(target);
         return;
@@ -1648,4 +1762,304 @@ void PdfView::RequestImage(int page, RECT r) {
     req.rotate = m_rotation;
     req.colorMode = kColorsNormal;
     m_worker->RenderImage(m_docId, req);
+}
+
+// ===========================================================================
+// Editing text and comments
+//
+// In "edit text" mode the page's editable lines (TextRun, fetched from the
+// worker for the pages on screen) are outlined. Clicking one opens a text
+// box over it; Enter or clicking elsewhere records the change as an edit
+// (the worker rewrites the text objects), Esc cancels.
+// ===========================================================================
+void PdfView::SetTool(ViewTool tool) {
+    if (tool == m_tool) return;
+    if (m_inlineEdit) EndInlineEdit(true);
+    m_tool = tool;
+    m_hoverPage = m_hoverRun = -1;
+    if (tool != ViewTool::Select) ClearSelection();
+    if (tool != ViewTool::EditText) ClearRuns();
+    ShowTip(L"");
+    SetFocus(m_hwnd);
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+    Notify();
+}
+
+void PdfView::ClearRuns() {
+    m_runs.clear();
+    m_runsPending.clear();
+    m_hoverPage = m_hoverRun = -1;
+}
+
+const std::vector<TextRun>* PdfView::GetRuns(int page, bool request) {
+    auto it = m_runs.find(page);
+    if (it != m_runs.end()) return &it->second;
+    if (request && m_worker && !m_runsPending.count(page)) {
+        m_runsPending.insert(page);
+        m_worker->RequestTextRuns(m_docId, page);
+    }
+    return nullptr;
+}
+
+void PdfView::OnTextRuns(TextRunsResult* result) {
+    std::unique_ptr<TextRunsResult> res(result);
+    if (res->docId != m_docId || !HasDocument() || res->page >= PageCount()) return;
+    m_runsPending.erase(res->page);
+    if (m_tool != ViewTool::EditText) return;
+    m_runs[res->page] = std::move(res->runs);
+    // Keep only the pages near the one shown.
+    if (m_runs.size() > kMaxRunPages) {
+        const int current = CurrentPage();
+        for (auto it = m_runs.begin(); it != m_runs.end();)
+            it = std::abs(it->first - current) > (int)kMaxRunPages / 2 ? m_runs.erase(it) : std::next(it);
+    }
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+bool PdfView::PagePoint(POINT pt, int& page, float& x, float& y) {
+    if (!HasDocument() || m_last < m_first) return false;
+    const int64_t docX = m_scrollX + pt.x, docY = m_scrollY + pt.y;
+    page = PageAt(docX, docY);
+    const PageLayout& L = m_layout[(size_t)page];
+    if (docX < L.left || docX >= L.left + L.w || docY < L.top || docY >= L.top + L.h) return false;
+    x = (float)((docX - L.left) / m_scale);
+    y = (float)((docY - L.top) / m_scale);
+    FromView(x, y, page);
+    return true;
+}
+
+const CommentInfo* PdfView::HitComment(POINT pt, int* pageOut) {
+    int page;
+    float x, y;
+    if (!PagePoint(pt, page, x, y)) return nullptr;
+    const TextLayer* layer = GetTextLayer(page, true);  // comments arrive with the text layer
+    if (!layer) return nullptr;
+    // The last one is drawn on top. Notes are preferred over markup.
+    const CommentInfo* found = nullptr;
+    for (auto it = layer->comments.rbegin(); it != layer->comments.rend(); ++it) {
+        if (!it->rect.Contains(x, y)) continue;
+        if (it->subtype == kAnnotNote) {
+            found = &*it;
+            break;
+        }
+        if (!found) found = &*it;
+    }
+    if (found && pageOut) *pageOut = page;
+    return found;
+}
+
+void PdfView::UpdateHoverTip(POINT pt) {
+    if (const LinkInfo* link = HitLink(pt)) {
+        UpdateLinkTip(link);
+        return;
+    }
+    std::wstring tip;
+    if (m_tool == ViewTool::Select) {
+        if (const CommentInfo* c = HitComment(pt); c && (!c->text.empty() || c->subtype == kAnnotNote)) {
+            std::wstring head = c->author;
+            const std::wstring when = FormatPdfDate(c->date);
+            if (!when.empty()) head += (head.empty() ? L"" : L", ") + when;
+            std::wstring body = c->text.empty() ? L"(empty comment)" : c->text;
+            if (body.size() > 600) body = body.substr(0, 600) + L"\x2026";
+            tip = head.empty() ? body : head + L"\r\n" + body;
+            if (c->subtype == kAnnotNote) tip += L"\r\n(click to edit)";
+        }
+    }
+    ShowTip(tip);
+}
+
+bool PdfView::HitRun(POINT pt, int& page, int& run) {
+    page = run = -1;
+    float x, y;
+    if (!PagePoint(pt, page, x, y)) return false;
+    const std::vector<TextRun>* runs = GetRuns(page, true);
+    if (!runs) return false;
+    float bestArea = 0;
+    for (size_t i = 0; i < runs->size(); ++i) {
+        const RectF& r = (*runs)[i].rect;
+        if (x < r.left - 2 || x > r.right + 2 || y < r.top - 2 || y > r.bottom + 2) continue;
+        const float area = (r.right - r.left) * (r.bottom - r.top);
+        if (run < 0 || area < bestArea) {
+            run = (int)i;
+            bestArea = area;
+        }
+    }
+    return run >= 0;
+}
+
+RECT PdfView::ClientRectOf(int page, const RectF& raw) const {
+    const RectF r = ToView(raw, page);
+    const int64_t left = PageLeft(page) - m_scrollX, top = m_layout[(size_t)page].top - m_scrollY;
+    auto clampInt = [](int64_t v) { return (LONG)std::max<int64_t>(INT_MIN / 2, std::min<int64_t>(INT_MAX / 2, v)); };
+    return {clampInt(left + (int64_t)std::floor(r.left * m_scale)), clampInt(top + (int64_t)std::floor(r.top * m_scale)),
+            clampInt(left + (int64_t)std::ceil(r.right * m_scale)), clampInt(top + (int64_t)std::ceil(r.bottom * m_scale))};
+}
+
+void PdfView::DrawRuns(HDC dc, int page, const RECT& vis) {
+    const std::vector<TextRun>* runs = GetRuns(page, true);
+    if (!runs) return;
+    const int pad = std::max(1, Dpi(2, m_dpi));
+    HPEN dotted = CreatePen(PS_DOT, 1, RGB(70, 140, 230));
+    HPEN solid = CreatePen(PS_SOLID, std::max(1, Dpi(2, m_dpi)), RGB(0, 103, 192));
+    HBRUSH tint = CreateSolidBrush(RGB(215, 232, 255));
+    HGDIOBJ oldPen = SelectObject(dc, dotted);
+    HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
+    SetBkMode(dc, TRANSPARENT);
+    for (size_t i = 0; i < runs->size(); ++i) {
+        if (m_inlineEdit && page == m_inlinePage && (*runs)[i].first == m_inlineRun.first) continue;
+        RECT r = ClientRectOf(page, (*runs)[i].rect);
+        InflateRect(&r, pad, pad);
+        if (r.right <= vis.left || r.left >= vis.right || r.bottom <= vis.top || r.top >= vis.bottom) continue;
+        const bool hot = page == m_hoverPage && (int)i == m_hoverRun;
+        if (hot) {
+            HGDIOBJ b = SelectObject(dc, tint);
+            BitBlt(dc, r.left, r.top, r.right - r.left, r.bottom - r.top, nullptr, 0, 0, kRopDestAndPattern);
+            SelectObject(dc, b);
+            SelectObject(dc, solid);
+        } else {
+            SelectObject(dc, dotted);
+        }
+        Rectangle(dc, r.left, r.top, r.right, r.bottom);
+    }
+    SelectObject(dc, oldPen);
+    SelectObject(dc, oldBrush);
+    DeleteObject(dotted);
+    DeleteObject(solid);
+    DeleteObject(tint);
+}
+
+// A hint at the top of the view while a tool is active.
+void PdfView::DrawBanner(HDC dc) {
+    if (m_tool == ViewTool::Select || !HasDocument()) return;
+    const wchar_t* text =
+        m_tool == ViewTool::EditText
+            ? L"Edit text: click any outlined text to change it, then press Enter.   Esc: done"
+            : L"Add comment: click where the comment should go.   Esc: cancel";
+    if (!m_bannerFont) m_bannerFont = CreateMessageFont(m_dpi, 100);
+    HGDIOBJ oldFont = SelectObject(dc, m_bannerFont);
+    RECT calc = {0, 0, 0, 0};
+    DrawTextW(dc, text, -1, &calc, DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX);
+    const int padX = Dpi(14, m_dpi), padY = Dpi(7, m_dpi);
+    const int bw = std::min<int>(calc.right + 2 * padX, ClientW() - Dpi(16, m_dpi));
+    const int bh = calc.bottom + 2 * padY;
+    RECT r = {(ClientW() - bw) / 2, Dpi(10, m_dpi), (ClientW() - bw) / 2 + bw, Dpi(10, m_dpi) + bh};
+    HBRUSH fill = CreateSolidBrush(RGB(0, 95, 184));
+    HPEN pen = CreatePen(PS_SOLID, 1, RGB(0, 70, 140));
+    HGDIOBJ oldBrush = SelectObject(dc, fill);
+    HGDIOBJ oldPen = SelectObject(dc, pen);
+    RoundRect(dc, r.left, r.top, r.right, r.bottom, Dpi(12, m_dpi), Dpi(12, m_dpi));
+    SelectObject(dc, oldBrush);
+    SelectObject(dc, oldPen);
+    DeleteObject(fill);
+    DeleteObject(pen);
+    SetTextColor(dc, RGB(255, 255, 255));
+    SetBkMode(dc, TRANSPARENT);
+    InflateRect(&r, -padX, 0);
+    DrawTextW(dc, text, -1, &r, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+    SelectObject(dc, oldFont);
+}
+
+void PdfView::BeginInlineEdit(int page, int run) {
+    const std::vector<TextRun>* runs = GetRuns(page, false);
+    if (!runs || run < 0 || run >= (int)runs->size()) return;
+    if (m_inlineEdit) EndInlineEdit(true);
+    m_inlinePage = page;
+    m_inlineRun = (*runs)[(size_t)run];
+    const TextRun& r = m_inlineRun;
+    const int px = std::max(Dpi(11, m_dpi), (int)std::lround(r.size * m_scale * 0.95));
+    const wchar_t* face = r.mono ? L"Consolas" : r.serif ? L"Times New Roman" : L"Arial";
+    m_inlineFont = CreateFontW(-px, 0, 0, 0, r.bold ? FW_BOLD : FW_NORMAL, r.italic, FALSE, FALSE,
+                               DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                               CLEARTYPE_QUALITY, DEFAULT_PITCH, face);
+    m_inlineEdit = CreateWindowExW(0, L"EDIT", r.text.c_str(),
+                                   WS_CHILD | WS_BORDER | ES_AUTOHSCROLL, 0, 0, 0, 0, m_hwnd,
+                                   nullptr, GetModuleHandleW(nullptr), nullptr);
+    if (!m_inlineEdit) {
+        DeleteObject(m_inlineFont);
+        m_inlineFont = nullptr;
+        return;
+    }
+    SendMessageW(m_inlineEdit, WM_SETFONT, (WPARAM)m_inlineFont, FALSE);
+    SendMessageW(m_inlineEdit, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELPARAM(2, 2));
+    SetWindowSubclass(m_inlineEdit, &PdfView::InlineEditProc, 1, (DWORD_PTR)this);
+    PositionInlineEdit();
+    ShowWindow(m_inlineEdit, SW_SHOW);
+    SetFocus(m_inlineEdit);
+    SendMessageW(m_inlineEdit, EM_SETSEL, 0, -1);
+    ShowTip(L"");
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void PdfView::PositionInlineEdit() {
+    if (!m_inlineEdit || m_inlinePage < 0 || m_inlinePage >= PageCount()) return;
+    const RECT r = ClientRectOf(m_inlinePage, m_inlineRun.rect);
+    HDC dc = GetDC(m_inlineEdit);
+    HGDIOBJ old = SelectObject(dc, m_inlineFont);
+    TEXTMETRICW tm{};
+    GetTextMetricsW(dc, &tm);
+    SelectObject(dc, old);
+    ReleaseDC(m_inlineEdit, dc);
+    const int h = tm.tmHeight + Dpi(8, m_dpi);
+    const int w = std::max<int>(r.right - r.left + Dpi(60, m_dpi), Dpi(180, m_dpi));
+    const int x = r.left - Dpi(4, m_dpi), y = (r.top + r.bottom) / 2 - h / 2;
+    RECT cur;
+    GetWindowRect(m_inlineEdit, &cur);
+    MapWindowPoints(nullptr, m_hwnd, (POINT*)&cur, 2);
+    if (cur.left != x || cur.top != y || cur.right - cur.left != w || cur.bottom - cur.top != h)
+        SetWindowPos(m_inlineEdit, HWND_TOP, x, y, w, h, SWP_NOACTIVATE);
+}
+
+void PdfView::EndInlineEdit(bool commit) {
+    if (!m_inlineEdit || m_inlineClosing) return;
+    m_inlineClosing = true;
+    std::wstring text((size_t)GetWindowTextLengthW(m_inlineEdit) + 1, L'\0');
+    text.resize((size_t)GetWindowTextW(m_inlineEdit, text.data(), (int)text.size()));
+    const bool hadFocus = GetFocus() == m_inlineEdit;
+    HWND edit = m_inlineEdit;
+    m_inlineEdit = nullptr;
+    DestroyWindow(edit);
+    if (m_inlineFont) DeleteObject(m_inlineFont);
+    m_inlineFont = nullptr;
+    const TextRun run = m_inlineRun;
+    const int page = m_inlinePage;
+    m_inlinePage = -1;
+    m_inlineClosing = false;
+    if (hadFocus) SetFocus(m_hwnd);
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+    if (commit && text != run.text && onEdit) {
+        EditOp op;
+        op.kind = EditOp::EditText;
+        op.page = page;
+        op.index = run.first;
+        op.count = run.count;
+        op.find = run.text;
+        op.text = text;
+        onEdit(std::move(op));
+    }
+}
+
+LRESULT CALLBACK PdfView::InlineEditProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR,
+                                         DWORD_PTR ref) {
+    auto* self = (PdfView*)ref;
+    switch (msg) {
+        case WM_GETDLGCODE:
+            return DLGC_WANTALLKEYS | DefSubclassProc(hwnd, msg, wp, lp);
+        case WM_KEYDOWN:
+            if (wp == VK_RETURN || wp == VK_ESCAPE) {
+                self->EndInlineEdit(wp == VK_RETURN);
+                return 0;
+            }
+            break;
+        case WM_CHAR:
+            if (wp == L'\r' || wp == 27) return 0;  // no beep
+            break;
+        case WM_KILLFOCUS:
+            // Ended after the focus change has finished.
+            PostMessageW(self->m_hwnd, kInlineEndMsg, 0, 0);
+            break;
+        case WM_NCDESTROY:
+            RemoveWindowSubclass(hwnd, &PdfView::InlineEditProc, 1);
+            break;
+    }
+    return DefSubclassProc(hwnd, msg, wp, lp);
 }

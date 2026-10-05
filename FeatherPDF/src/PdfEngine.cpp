@@ -2,7 +2,11 @@
 #include "PdfEngine.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
+#include <cwctype>
+#include <map>
+#include <set>
 #include <type_traits>
 
 #include "Util.h"
@@ -67,6 +71,45 @@ RectF ToDisplay(FPDF_PAGE page, int sx, int sy, double l, double t, double r, do
     rc.top = std::min(y1, y2) / 100.0f;
     rc.bottom = std::max(y1, y2) / 100.0f;
     return rc;
+}
+
+// A string entry of an annotation ("Contents", "T", "M").
+std::wstring AnnotString(FPDF_ANNOTATION annot, const char* key) {
+    const unsigned long bytes = FPDFAnnot_GetStringValue(annot, key, nullptr, 0);
+    if (bytes <= 2 || bytes > (1u << 20)) return {};
+    std::vector<FPDF_WCHAR> buf(bytes / 2);
+    FPDFAnnot_GetStringValue(annot, key, buf.data(), bytes);
+    return std::wstring(reinterpret_cast<const wchar_t*>(buf.data()), bytes / 2 - 1);
+}
+
+bool IsCommentType(int subtype) {
+    return subtype == FPDF_ANNOT_TEXT || subtype == FPDF_ANNOT_HIGHLIGHT ||
+           subtype == FPDF_ANNOT_UNDERLINE || subtype == FPDF_ANNOT_SQUIGGLY ||
+           subtype == FPDF_ANNOT_STRIKEOUT;
+}
+
+// Sticky notes and text markup of a page (markup may have no comment).
+void ReadComments(FPDF_PAGE page, int sx, int sy, std::vector<CommentInfo>& out) {
+    constexpr int kMaxComments = 4000;
+    const int n = std::min(FPDFPage_GetAnnotCount(page), kMaxComments);
+    for (int i = 0; i < n; ++i) {
+        FPDF_ANNOTATION annot = FPDFPage_GetAnnot(page, i);
+        if (!annot) continue;
+        const int subtype = FPDFAnnot_GetSubtype(annot);
+        FS_RECTF r;
+        if (IsCommentType(subtype) && FPDFAnnot_GetRect(annot, &r)) {
+            CommentInfo c;
+            c.rect = ToDisplay(page, sx, sy, r.left, r.top, r.right, r.bottom);
+            c.annot = i;
+            c.subtype = subtype;
+            c.text = AnnotString(annot, "Contents");
+            c.author = AnnotString(annot, "T");
+            c.date = AnnotString(annot, "M");
+            if (c.date.empty()) c.date = AnnotString(annot, "CreationDate");
+            out.push_back(std::move(c));
+        }
+        FPDFPage_CloseAnnot(annot);
+    }
 }
 }  // namespace
 
@@ -344,7 +387,7 @@ void PdfEngine::SearchPage(int pageIndex, const std::wstring& query, bool matchC
 
 
 void PdfEngine::ExtractPageInfo(int pageIndex, std::vector<TextChar>& chars,
-                                std::vector<LinkInfo>& links) {
+                                std::vector<LinkInfo>& links, std::vector<CommentInfo>& comments) {
     FPDF_PAGE page = GetPage(pageIndex);  // the page is on screen: cache it
     if (!page) return;
     Guarded([&] {
@@ -366,6 +409,8 @@ void PdfEngine::ExtractPageInfo(int pageIndex, std::vector<TextChar>& chars,
                 ReadAction(action, li.target);
             if (li.target.page >= 0 || !li.target.uri.empty()) links.push_back(std::move(li));
         }
+
+        ReadComments(page, sx, sy, comments);
 
         FPDF_TEXTPAGE text = FPDFText_LoadPage(page);
         if (!text) return;
@@ -636,6 +681,8 @@ bool PdfEngine::WritePagesTo(const std::vector<int>& pages, const std::wstring& 
 bool PdfEngine::ApplyEdit(const EditOp& op, std::wstring& error) {
     if (!m_doc) return false;
     ReleasePages();  // parsed pages may be deleted or change below
+    m_editCount = 0;
+    m_editFontChanged = false;
     bool ok = false;
     switch (op.kind) {
         case EditOp::DeletePages: {
@@ -726,6 +773,19 @@ bool PdfEngine::ApplyEdit(const EditOp& op, std::wstring& error) {
         case EditOp::Markup:
             ok = AddMarkup(op);
             break;
+        case EditOp::EditText:
+            ok = EditText(op, error);
+            break;
+        case EditOp::FindReplace:
+            ok = ReplaceEverywhere(op, error);
+            break;
+        case EditOp::AddNote:
+            ok = AddNote(op);
+            break;
+        case EditOp::EditComment:
+        case EditOp::DeleteAnnot:
+            ok = ChangeAnnot(op, error);
+            break;
     }
     int count = m_pageCount;
     Guarded([&] { count = FPDF_GetPageCount(m_doc); });
@@ -774,6 +834,12 @@ bool PdfEngine::AddMarkup(const EditOp& op) {
                     FPDFAnnot_SetFlags(annot, FPDF_ANNOT_FLAG_PRINT);
                     FPDFAnnot_SetStringValue(annot, "M",
                                              reinterpret_cast<FPDF_WIDESTRING>(now.c_str()));
+                    if (!op.text.empty() && !any) {  // the comment goes on the first part
+                        FPDFAnnot_SetStringValue(annot, "Contents",
+                                                 reinterpret_cast<FPDF_WIDESTRING>(op.text.c_str()));
+                        FPDFAnnot_SetStringValue(annot, "T",
+                                                 reinterpret_cast<FPDF_WIDESTRING>(op.author.c_str()));
+                    }
                     FPDFPage_CloseAnnot(annot);
                     any = true;
                 }
@@ -783,6 +849,551 @@ bool PdfEngine::AddMarkup(const EditOp& op) {
         });
     }
     return any;
+}
+
+
+// ===========================================================================
+// Editing text
+//
+// A PDF page has no paragraphs, only text objects: pieces of text drawn at
+// a position in a font. Producers split lines differently (a whole line, a
+// word, sometimes a single letter per object), so consecutive objects on
+// one baseline in the same font are joined into a "run" that the reader
+// edits as one line.
+//
+// The new text keeps the original font when that font is known to contain
+// every letter needed (embedded fonts are often subsets holding only the
+// letters the document uses). Otherwise a similar font is used: one of the
+// standard PDF fonts (Helvetica, Times, Courier) for Western text, or an
+// installed Windows font that has the letters, embedded in the file.
+// ===========================================================================
+namespace {
+
+std::wstring ObjectText(FPDF_PAGEOBJECT obj, FPDF_TEXTPAGE tp) {
+    const unsigned long bytes = FPDFTextObj_GetText(obj, tp, nullptr, 0);
+    if (bytes <= 2 || bytes > (1u << 22)) return {};
+    std::vector<FPDF_WCHAR> buf(bytes / 2);
+    FPDFTextObj_GetText(obj, tp, buf.data(), bytes);
+    std::wstring t(reinterpret_cast<const wchar_t*>(buf.data()), bytes / 2 - 1);
+    for (wchar_t& c : t)
+        if (c == L'\r' || c == L'\n' || c == L'\t' || c == 0) c = L' ';
+    return t;
+}
+
+// Text without white space, to compare texts joined in different ways.
+std::wstring Squash(const std::wstring& s) {
+    std::wstring out;
+    for (wchar_t c : s)
+        if (!iswspace(c)) out += c;
+    return out;
+}
+
+bool IsBlank(const std::wstring& s) {
+    for (wchar_t c : s)
+        if (!iswspace(c)) return false;
+    return true;
+}
+
+struct FontStyle {
+    bool bold = false, italic = false, serif = false, mono = false;
+};
+
+FontStyle StyleOf(FPDF_FONT font) {
+    FontStyle st;
+    if (!font) return st;
+    const int flags = FPDFFont_GetFlags(font);
+    if (flags > 0) {
+        st.mono = (flags & 1) != 0;
+        st.serif = (flags & 2) != 0;
+        st.italic = (flags & 64) != 0;
+    }
+    if (FPDFFont_GetWeight(font) >= 600) st.bold = true;
+    char name[256] = "";
+    if (FPDFFont_GetBaseFontName(font, name, sizeof(name)) > 0) {
+        std::string n = name;
+        for (char& c : n) c = (char)tolower((unsigned char)c);
+        auto has = [&](const char* w) { return n.find(w) != std::string::npos; };
+        if (has("bold") || has("black") || has("heavy") || has("semibold") || has("demi")) st.bold = true;
+        if (has("italic") || has("oblique")) st.italic = true;
+        if (has("courier") || has("mono") || has("consol") || has("typewriter")) st.mono = true;
+        if (has("sans") || has("arial") || has("helvetica") || has("calibri") || has("verdana") ||
+            has("segoe") || has("tahoma"))
+            st.serif = false;
+        else if (has("times") || has("serif") || has("roman") || has("georgia") || has("cambria") ||
+                 has("garamond") || has("palatino") || has("minion") || has("book"))
+            st.serif = true;
+    }
+    return st;
+}
+
+// Letters each font of the page is known to contain (it draws them).
+using Coverage = std::map<FPDF_FONT, std::set<wchar_t>>;
+
+Coverage FontCoverage(FPDF_PAGE page, FPDF_TEXTPAGE tp) {
+    Coverage cov;
+    const int n = FPDFPage_CountObjects(page);
+    for (int i = 0; i < n; ++i) {
+        FPDF_PAGEOBJECT obj = FPDFPage_GetObject(page, i);
+        if (!obj || FPDFPageObj_GetType(obj) != FPDF_PAGEOBJ_TEXT) continue;
+        FPDF_FONT font = FPDFTextObj_GetFont(obj);
+        if (!font) continue;
+        auto& set = cov[font];
+        for (wchar_t c : ObjectText(obj, tp)) set.insert(c);
+    }
+    return cov;
+}
+
+bool Covered(const Coverage& cov, FPDF_FONT font, const std::wstring& text) {
+    // A font that is not embedded is the reader's complete font: any letter
+    // it can encode is shown (checked by reading the text back).
+    if (FPDFFont_GetIsEmbedded(font) == 0) return true;
+    auto it = cov.find(font);
+    if (it == cov.end()) return false;
+    for (wchar_t c : text)
+        if (c != L' ' && !it->second.count(c)) return false;
+    return true;
+}
+
+// Can every character be written in a standard PDF font (WinAnsi)?
+bool IsWinAnsi(const std::wstring& text) {
+    if (text.empty()) return true;
+    BOOL usedDefault = FALSE;
+    const int n = WideCharToMultiByte(1252, WC_NO_BEST_FIT_CHARS, text.c_str(), (int)text.size(),
+                                      nullptr, 0, nullptr, &usedDefault);
+    return n > 0 && !usedDefault;
+}
+
+// The file data of an installed TrueType font that can show `text`.
+bool SystemFontData(const wchar_t* face, const FontStyle& st, const std::wstring& text,
+                    std::string& data) {
+    HDC dc = CreateCompatibleDC(nullptr);
+    if (!dc) return false;
+    HFONT font = CreateFontW(-64, 0, 0, 0, st.bold ? FW_BOLD : FW_NORMAL, st.italic, FALSE, FALSE,
+                             DEFAULT_CHARSET, OUT_TT_ONLY_PRECIS, CLIP_DEFAULT_PRECIS,
+                             DEFAULT_QUALITY, DEFAULT_PITCH, face);
+    HGDIOBJ old = SelectObject(dc, font);
+    bool ok = false;
+    wchar_t actual[LF_FACESIZE] = L"";
+    GetTextFaceW(dc, LF_FACESIZE, actual);
+    // Only a single-font file can be embedded (not a .ttc collection).
+    const DWORD kTtcf = 0x66637474;  // 'ttcf'
+    if (_wcsicmp(actual, face) == 0 && GetFontData(dc, kTtcf, 0, nullptr, 0) == GDI_ERROR) {
+        std::vector<WORD> glyphs(text.size() + 1);
+        ok = GetGlyphIndicesW(dc, text.c_str(), (int)text.size(), glyphs.data(),
+                              GGI_MARK_NONEXISTING_GLYPHS) != GDI_ERROR;
+        for (size_t i = 0; ok && i < text.size(); ++i)
+            if (glyphs[i] == 0xFFFF && !iswspace(text[i])) ok = false;
+        const DWORD size = ok ? GetFontData(dc, 0, 0, nullptr, 0) : GDI_ERROR;
+        ok = ok && size != GDI_ERROR && size > 0 && size < (64u << 20);
+        if (ok) {
+            data.resize(size);
+            ok = GetFontData(dc, 0, 0, data.data(), size) == size;
+        }
+    }
+    SelectObject(dc, old);
+    DeleteObject(font);
+    DeleteDC(dc);
+    return ok;
+}
+}  // namespace
+
+// Fonts loaded for one edit, closed afterwards (text objects keep their own
+// reference).
+struct PdfEngine::FontCache {
+    std::map<std::string, FPDF_FONT> fonts;
+    ~FontCache() {
+        for (auto& f : fonts)
+            if (f.second) FPDFFont_Close(f.second);
+    }
+    FPDF_FONT Get(FPDF_DOCUMENT doc, const FontStyle& st, const std::wstring& text, std::wstring& error) {
+        if (IsWinAnsi(text)) {
+            const char* family = st.mono ? "Courier" : st.serif ? "Times" : "Helvetica";
+            std::string name = family;
+            if (st.mono || !st.serif) {
+                name += st.bold && st.italic ? "-BoldOblique" : st.bold ? "-Bold" : st.italic ? "-Oblique" : "";
+            } else {
+                name += st.bold && st.italic ? "-BoldItalic" : st.bold ? "-Bold" : st.italic ? "-Italic" : "-Roman";
+            }
+            auto it = fonts.find(name);
+            if (it != fonts.end()) return it->second;
+            FPDF_FONT f = FPDFText_LoadStandardFont(doc, name.c_str());
+            fonts[name] = f;
+            if (f) return f;
+        }
+        // Letters beyond Western European: an installed font that has them.
+        const wchar_t* first = st.mono ? L"Courier New" : st.serif ? L"Times New Roman" : L"Arial";
+        const wchar_t* faces[] = {first, L"Arial", L"Segoe UI", L"Nirmala UI", L"Leelawadee UI",
+                                  L"Ebrima", L"Gadugi", L"Segoe UI Historic", L"Segoe UI Symbol",
+                                  L"Sylfaen", L"Arial Unicode MS"};
+        for (const wchar_t* face : faces) {
+            const std::string key = WideToUtf8(face) + (st.bold ? "|b" : "") + (st.italic ? "|i" : "");
+            auto it = fonts.find(key);
+            if (it != fonts.end()) {
+                if (it->second) return it->second;
+                continue;
+            }
+            std::string data;
+            FPDF_FONT f = nullptr;
+            if (SystemFontData(face, st, text, data))
+                f = FPDFText_LoadFont(doc, reinterpret_cast<const uint8_t*>(data.data()),
+                                      (uint32_t)data.size(), FPDF_FONT_TRUETYPE, TRUE);
+            if (f) {
+                fonts[key] = f;
+                return f;
+            }
+        }
+        error = L"No font installed on this PC has all the letters of the new text.";
+        return nullptr;
+    }
+};
+
+namespace {
+// Groups the page's text objects into runs (see the section comment).
+void CollectRuns(FPDF_PAGE page, FPDF_TEXTPAGE tp, int sx, int sy, std::vector<TextRun>& runs) {
+    struct Prev {
+        FPDF_FONT font = nullptr;
+        float tf = 0;
+        FS_MATRIX m{};
+        float right = 0;
+    } prev;
+    bool open = false;
+    TextRun cur;
+    auto flush = [&] {
+        if (open && !IsBlank(cur.text)) runs.push_back(cur);
+        open = false;
+    };
+    const int n = FPDFPage_CountObjects(page);
+    for (int i = 0; i < n && runs.size() < 20000; ++i) {
+        FPDF_PAGEOBJECT obj = FPDFPage_GetObject(page, i);
+        if (!obj || FPDFPageObj_GetType(obj) != FPDF_PAGEOBJ_TEXT) {
+            flush();
+            continue;
+        }
+        const std::wstring text = ObjectText(obj, tp);
+        float l, b, r, t;
+        FS_MATRIX m{1, 0, 0, 1, 0, 0};
+        float tf = 0;
+        if (text.empty() || !FPDFPageObj_GetBounds(obj, &l, &b, &r, &t)) {
+            flush();
+            continue;
+        }
+        FPDFPageObj_GetMatrix(obj, &m);
+        FPDFTextObj_GetFontSize(obj, &tf);
+        FPDF_FONT font = FPDFTextObj_GetFont(obj);
+        float size = tf * std::hypot(m.c, m.d);
+        if (size <= 0.5f || size > 2000) size = std::max(1.0f, t - b);
+        const bool horizontal = std::fabs(m.b) < 1e-4f && std::fabs(m.c) < 1e-4f;
+        const bool join = open && horizontal && font == prev.font && std::fabs(tf - prev.tf) < 0.01f &&
+                          std::fabs(m.a - prev.m.a) < 1e-3f && std::fabs(m.d - prev.m.d) < 1e-3f &&
+                          std::fabs(m.f - prev.m.f) < size * 0.2f && l >= prev.right - size * 0.6f &&
+                          l - prev.right <= size * 1.2f;
+        const RectF box = ToDisplay(page, sx, sy, l, t, r, b);
+        if (join) {
+            // A gap wider than a thin space is a word break.
+            if (l - prev.right > size * 0.15f && !cur.text.empty() && cur.text.back() != L' ' &&
+                text.front() != L' ')
+                cur.text += L' ';
+            cur.text += text;
+            ++cur.count;
+            cur.rect.left = std::min(cur.rect.left, box.left);
+            cur.rect.top = std::min(cur.rect.top, box.top);
+            cur.rect.right = std::max(cur.rect.right, box.right);
+            cur.rect.bottom = std::max(cur.rect.bottom, box.bottom);
+        } else {
+            flush();
+            cur = TextRun();
+            cur.first = i;
+            cur.count = 1;
+            cur.text = text;
+            cur.rect = box;
+            cur.size = size;
+            const FontStyle st = StyleOf(font);
+            cur.bold = st.bold;
+            cur.italic = st.italic;
+            cur.serif = st.serif;
+            cur.mono = st.mono;
+            open = horizontal;
+            if (!horizontal) {  // rotated text: one object per run
+                open = true;
+                flush();
+                continue;
+            }
+        }
+        prev = {font, tf, m, r};
+    }
+    flush();
+}
+
+// Replaces every occurrence of `find` in `text`; returns how many.
+int ReplaceAll(std::wstring& text, const std::wstring& find, const std::wstring& with, bool matchCase) {
+    if (find.empty()) return 0;
+    std::wstring hay = text, needle = find;
+    if (!matchCase) {
+        CharLowerBuffW(hay.data(), (DWORD)hay.size());
+        CharLowerBuffW(needle.data(), (DWORD)needle.size());
+    }
+    int count = 0;
+    std::wstring out;
+    size_t pos = 0;
+    for (;;) {
+        const size_t at = hay.find(needle, pos);
+        if (at == std::wstring::npos) break;
+        out += text.substr(pos, at - pos) + with;
+        pos = at + needle.size();
+        ++count;
+    }
+    if (count) text = out + text.substr(pos);
+    return count;
+}
+}  // namespace
+
+void PdfEngine::GetTextRuns(int pageIndex, std::vector<TextRun>& runs) {
+    FPDF_PAGE page = GetPage(pageIndex);
+    if (!page) return;
+    Guarded([&] {
+        const int sx = (int)std::lround(FPDF_GetPageWidthF(page) * 100);
+        const int sy = (int)std::lround(FPDF_GetPageHeightF(page) * 100);
+        FPDF_TEXTPAGE tp = FPDFText_LoadPage(page);
+        if (!tp) return;
+        CollectRuns(page, tp, sx, sy, runs);
+        FPDFText_ClosePage(tp);
+    });
+}
+
+// Puts `text` in place of the run made of `objs` (page objects from index
+// `firstIndex` on). See the section comment for the choice of font.
+bool PdfEngine::SetRunText(FPDF_PAGE page, int firstIndex, const std::vector<FPDF_PAGEOBJECT>& objs,
+                           const std::wstring& text, FontCache& fonts, std::wstring& error) {
+    if (objs.empty()) return false;
+    std::wstring clean = text;
+    for (wchar_t& c : clean)
+        if (c == L'\r' || c == L'\n' || c == L'\t') c = L' ';
+    auto removeFrom = [&](size_t from) {
+        for (size_t k = from; k < objs.size(); ++k)
+            if (FPDFPage_RemoveObject(page, objs[k])) FPDFPageObj_Destroy(objs[k]);
+    };
+    if (IsBlank(clean)) {  // the text was deleted
+        removeFrom(0);
+        return true;
+    }
+    FPDF_PAGEOBJECT first = objs.front();
+    FPDF_FONT font = FPDFTextObj_GetFont(first);
+
+    // 1. The original font, if it is known to have every letter and the text
+    //    reads back the same (the font can encode it).
+    Coverage cov;
+    if (FPDF_TEXTPAGE tp = FPDFText_LoadPage(page)) {
+        cov = FontCoverage(page, tp);
+        FPDFText_ClosePage(tp);
+    }
+    if (font && Covered(cov, font, clean) &&
+        FPDFText_SetText(first, reinterpret_cast<FPDF_WIDESTRING>(clean.c_str()))) {
+        std::wstring back;
+        if (FPDF_TEXTPAGE tp = FPDFText_LoadPage(page)) {
+            back = ObjectText(first, tp);
+            FPDFText_ClosePage(tp);
+        }
+        if (Squash(back) == Squash(clean)) {
+            removeFrom(1);
+            return true;
+        }
+    }
+
+    // 2. A similar font that has the letters, at the same place and size.
+    FPDF_FONT other = fonts.Get(m_doc, StyleOf(font), clean, error);
+    if (!other) return false;
+    float tf = 0;
+    FS_MATRIX m{1, 0, 0, 1, 0, 0};
+    FPDFTextObj_GetFontSize(first, &tf);
+    FPDFPageObj_GetMatrix(first, &m);
+    FPDF_PAGEOBJECT obj = FPDFPageObj_CreateTextObj(m_doc, other, tf > 0 ? tf : 12);
+    if (!obj) return false;
+    if (!FPDFText_SetText(obj, reinterpret_cast<FPDF_WIDESTRING>(clean.c_str()))) {
+        FPDFPageObj_Destroy(obj);
+        return false;
+    }
+    FPDFPageObj_SetMatrix(obj, &m);
+    unsigned int r, g, b, a;
+    if (FPDFPageObj_GetFillColor(first, &r, &g, &b, &a)) FPDFPageObj_SetFillColor(obj, r, g, b, a);
+    if (FPDFPageObj_GetStrokeColor(first, &r, &g, &b, &a)) FPDFPageObj_SetStrokeColor(obj, r, g, b, a);
+    const FPDF_TEXT_RENDERMODE mode = FPDFTextObj_GetTextRenderMode(first);
+    if (mode != FPDF_TEXTRENDERMODE_UNKNOWN) FPDFTextObj_SetTextRenderMode(obj, mode);
+    if (!FPDFPage_InsertObjectAtIndex(page, obj, (size_t)firstIndex)) {
+        FPDFPageObj_Destroy(obj);
+        return false;
+    }
+    removeFrom(0);
+    m_editFontChanged = true;
+    return true;
+}
+
+bool PdfEngine::EditText(const EditOp& op, std::wstring& error) {
+    if (op.page < 0 || op.page >= m_pageCount || op.index < 0 || op.count <= 0) return false;
+    bool ok = false;
+    Guarded([&] {
+        FPDF_PAGE page = FPDF_LoadPage(m_doc, op.page);
+        if (!page) return;
+        std::vector<FPDF_PAGEOBJECT> objs;
+        const int n = FPDFPage_CountObjects(page);
+        for (int i = op.index; i < op.index + op.count && i < n; ++i) {
+            FPDF_PAGEOBJECT obj = FPDFPage_GetObject(page, i);
+            if (obj && FPDFPageObj_GetType(obj) == FPDF_PAGEOBJ_TEXT) objs.push_back(obj);
+        }
+        // The objects must still hold the text that was edited.
+        std::wstring old;
+        if (FPDF_TEXTPAGE tp = FPDFText_LoadPage(page)) {
+            for (FPDF_PAGEOBJECT obj : objs) old += ObjectText(obj, tp);
+            FPDFText_ClosePage(tp);
+        }
+        if ((int)objs.size() != op.count || Squash(old) != Squash(op.find)) {
+            error = L"The text could not be found on the page any more.";
+        } else {
+            FontCache fonts;
+            ok = SetRunText(page, op.index, objs, op.text, fonts, error) && FPDFPage_GenerateContent(page);
+        }
+        FPDF_ClosePage(page);
+    });
+    return ok;
+}
+
+bool PdfEngine::ReplaceEverywhere(const EditOp& op, std::wstring& error) {
+    if (op.find.empty()) return false;
+    bool ok = true;
+    FontCache fonts;
+    for (int p = 0; p < m_pageCount && ok; ++p) {
+        ok = Guarded([&] {
+            FPDF_PAGE page = FPDF_LoadPage(m_doc, p);
+            if (!page) return;
+            const int sx = (int)std::lround(FPDF_GetPageWidthF(page) * 100);
+            const int sy = (int)std::lround(FPDF_GetPageHeightF(page) * 100);
+            std::vector<TextRun> runs;
+            if (FPDF_TEXTPAGE tp = FPDFText_LoadPage(page)) {
+                CollectRuns(page, tp, sx, sy, runs);
+                FPDFText_ClosePage(tp);
+            }
+            bool changed = false;
+            // Last run first, so the object indices of earlier runs stay valid.
+            for (auto it = runs.rbegin(); it != runs.rend(); ++it) {
+                std::wstring text = it->text;
+                const int count = ReplaceAll(text, op.find, op.text, op.matchCase);
+                if (!count) continue;
+                std::vector<FPDF_PAGEOBJECT> objs;
+                for (int i = it->first; i < it->first + it->count; ++i)
+                    objs.push_back(FPDFPage_GetObject(page, i));
+                std::wstring err;
+                if (SetRunText(page, it->first, objs, text, fonts, err)) {
+                    m_editCount += count;
+                    changed = true;
+                } else if (error.empty()) {
+                    error = err;
+                }
+            }
+            if (changed) FPDFPage_GenerateContent(page);
+            FPDF_ClosePage(page);
+        });
+    }
+    if (ok && m_editCount == 0) {
+        if (error.empty())
+            error = L"\x201C" + op.find + L"\x201D was not found in text that can be edited. "
+                    L"Scanned pages are pictures and have no editable text.";
+        return false;
+    }
+    error.clear();
+    return ok;
+}
+
+// ===========================================================================
+// Comments
+// ===========================================================================
+bool PdfEngine::AddNote(const EditOp& op) {
+    if (op.page < 0 || op.page >= m_pageCount) return false;
+    bool ok = false;
+    const std::wstring now = PdfDateNow();
+    Guarded([&] {
+        FPDF_PAGE page = FPDF_LoadPage(m_doc, op.page);
+        if (!page) return;
+        const int sx = (int)std::lround(FPDF_GetPageWidthF(page) * 100);
+        const int sy = (int)std::lround(FPDF_GetPageHeightF(page) * 100);
+        double px = 0, py = 0;
+        if (FPDF_DeviceToPage(page, 0, 0, sx, sy, 0, (int)std::lround(op.x * 100),
+                              (int)std::lround(op.y * 100), &px, &py)) {
+            if (FPDF_ANNOTATION annot = FPDFPage_CreateAnnot(page, FPDF_ANNOT_TEXT)) {
+                // A 20-point note icon whose top-left corner is where it was placed.
+                FS_RECTF r{(float)px, (float)py, (float)px + 20, (float)py - 20};
+                FPDFAnnot_SetRect(annot, &r);
+                FPDFAnnot_SetColor(annot, FPDFANNOT_COLORTYPE_Color, 255, 200, 40, 255);
+                FPDFAnnot_SetFlags(annot, FPDF_ANNOT_FLAG_PRINT | FPDF_ANNOT_FLAG_NOZOOM |
+                                              FPDF_ANNOT_FLAG_NOROTATE);
+                auto set = [&](const char* key, const std::wstring& v) {
+                    FPDFAnnot_SetStringValue(annot, key, reinterpret_cast<FPDF_WIDESTRING>(v.c_str()));
+                };
+                set("Contents", op.text);
+                set("T", op.author);
+                set("M", now);
+                set("CreationDate", now);
+                FPDFPage_CloseAnnot(annot);
+                ok = true;
+            }
+        }
+        FPDF_ClosePage(page);
+    });
+    return ok;
+}
+
+bool PdfEngine::ChangeAnnot(const EditOp& op, std::wstring& error) {
+    if (op.page < 0 || op.page >= m_pageCount) return false;
+    bool ok = false;
+    const std::wstring now = PdfDateNow();
+    Guarded([&] {
+        FPDF_PAGE page = FPDF_LoadPage(m_doc, op.page);
+        if (!page) return;
+        FPDF_ANNOTATION annot = op.index >= 0 && op.index < FPDFPage_GetAnnotCount(page)
+                                    ? FPDFPage_GetAnnot(page, op.index)
+                                    : nullptr;
+        if (!annot || !IsCommentType(FPDFAnnot_GetSubtype(annot))) {
+            error = L"The comment could not be found any more.";
+        } else if (op.kind == EditOp::EditComment) {
+            ok = FPDFAnnot_SetStringValue(annot, "Contents",
+                                          reinterpret_cast<FPDF_WIDESTRING>(op.text.c_str())) &&
+                 FPDFAnnot_SetStringValue(annot, "M", reinterpret_cast<FPDF_WIDESTRING>(now.c_str()));
+            if (ok && !op.author.empty() && AnnotString(annot, "T").empty())
+                FPDFAnnot_SetStringValue(annot, "T", reinterpret_cast<FPDF_WIDESTRING>(op.author.c_str()));
+        } else {
+            // Its pop-up window (if any) goes too; the higher index first.
+            int popup = -1;
+            if (FPDF_ANNOTATION p = FPDFAnnot_GetLinkedAnnot(annot, "Popup")) {
+                popup = FPDFPage_GetAnnotIndex(page, p);
+                FPDFPage_CloseAnnot(p);
+            }
+            FPDFPage_CloseAnnot(annot);
+            annot = nullptr;
+            if (popup > op.index) FPDFPage_RemoveAnnot(page, popup);
+            ok = FPDFPage_RemoveAnnot(page, op.index) != 0;
+            if (popup >= 0 && popup < op.index) FPDFPage_RemoveAnnot(page, popup);
+        }
+        if (annot) FPDFPage_CloseAnnot(annot);
+        FPDF_ClosePage(page);
+    });
+    return ok;
+}
+
+void PdfEngine::ListComments(std::vector<std::pair<int, CommentInfo>>& out) {
+    if (!m_doc) return;
+    for (int p = 0; p < m_pageCount && out.size() < 20000; ++p) {
+        Guarded([&] {
+            FPDF_PAGE page = FPDF_LoadPage(m_doc, p);
+            if (!page) return;
+            if (FPDFPage_GetAnnotCount(page) > 0) {
+                const int sx = (int)std::lround(FPDF_GetPageWidthF(page) * 100);
+                const int sy = (int)std::lround(FPDF_GetPageHeightF(page) * 100);
+                std::vector<CommentInfo> comments;
+                ReadComments(page, sx, sy, comments);
+                for (CommentInfo& c : comments)
+                    if (c.subtype == kAnnotNote || !c.text.empty()) out.push_back({p, std::move(c)});
+            }
+            FPDF_ClosePage(page);
+        });
+    }
 }
 
 // ---------------------------------------------------------------------------

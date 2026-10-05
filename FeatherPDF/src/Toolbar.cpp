@@ -122,12 +122,12 @@ void Toolbar::AddButton(int id, const wchar_t* glyph, const wchar_t* tip) {
     Add(std::move(it));
 }
 
-void Toolbar::AddTextButton(int id, const wchar_t* text, const wchar_t* tip) {
+void Toolbar::AddTextButton(int id, const wchar_t* text, const wchar_t* tip, int widthDip) {
     Item it{Kind::TextButton};
     it.id = id;
     it.text = text;
     it.tip = tip ? tip : L"";
-    it.widthDip = kButtonDip;
+    it.widthDip = widthDip > 0 ? widthDip : kButtonDip;
     Add(std::move(it));
 }
 

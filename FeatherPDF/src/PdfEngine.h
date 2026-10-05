@@ -13,6 +13,7 @@ typedef struct fpdf_document_t__* FPDF_DOCUMENT;
 typedef struct fpdf_page_t__* FPDF_PAGE;
 typedef struct fpdf_dest_t__* FPDF_DEST;
 typedef struct fpdf_action_t__* FPDF_ACTION;
+typedef struct fpdf_pageobject_t__* FPDF_PAGEOBJECT;
 
 class PdfEngine {
 public:
@@ -43,9 +44,15 @@ public:
     void SearchPage(int page, const std::wstring& query, bool matchCase,
                     std::vector<SearchHit>& hits);
 
-    // Text layer of one page (every character with its box, for selection)
-    // and its links (annotations plus URLs detected in the text).
-    void ExtractPageInfo(int page, std::vector<TextChar>& chars, std::vector<LinkInfo>& links);
+    // Text layer of one page (every character with its box, for selection),
+    // its links (annotations plus URLs detected in the text) and comments.
+    void ExtractPageInfo(int page, std::vector<TextChar>& chars, std::vector<LinkInfo>& links,
+                         std::vector<CommentInfo>& comments);
+
+    // The editable lines of text on one page (see TextRun).
+    void GetTextRuns(int page, std::vector<TextRun>& runs);
+    // Every comment in the document (sticky notes, and markup with a comment).
+    void ListComments(std::vector<std::pair<int, CommentInfo>>& out);
 
     // Bookmarks, flattened depth-first, and document metadata.
     void LoadOutline(std::vector<OutlineItem>& out);
@@ -67,6 +74,10 @@ public:
     // why; the caller then rebuilds the document from its history, because
     // a partly applied change can not be rolled back here.
     bool ApplyEdit(const EditOp& op, std::wstring& error);
+    // How many places the last edit changed (FindReplace), and whether it
+    // had to use a different font because the original lacks some letters.
+    int LastEditCount() const { return m_editCount; }
+    bool LastEditChangedFont() const { return m_editFontChanged; }
     // Current page sizes (in points, after /Rotate), e.g. after an edit.
     void GetPageSizes(std::vector<SizeF>& out);
     // Writes the whole document (all edits included) to a new file.
@@ -80,6 +91,13 @@ private:
                                   std::unique_ptr<FileSource>& file, FPDF_DOCUMENT& doc);
     static bool ReadPageSizes(FPDF_DOCUMENT doc, std::vector<SizeF>& sizes);
     bool AddMarkup(const EditOp& op);
+    bool EditText(const EditOp& op, std::wstring& error);
+    bool ReplaceEverywhere(const EditOp& op, std::wstring& error);
+    bool AddNote(const EditOp& op);
+    bool ChangeAnnot(const EditOp& op, std::wstring& error);
+    struct FontCache;
+    bool SetRunText(FPDF_PAGE page, int firstIndex, const std::vector<FPDF_PAGEOBJECT>& objs,
+                    const std::wstring& text, FontCache& fonts, std::wstring& error);
     FPDF_PAGE GetPage(int index);  // uses the small parsed-page LRU
     void ReadDest(FPDF_DEST dest, LinkTarget& target);
     void ReadAction(FPDF_ACTION action, LinkTarget& target);
@@ -93,4 +111,7 @@ private:
     // parsed pages are kept. Front = most recently used.
     static constexpr size_t kMaxParsedPages = 4;
     std::vector<std::pair<int, FPDF_PAGE>> m_pages;
+
+    int m_editCount = 0;
+    bool m_editFontChanged = false;
 };

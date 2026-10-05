@@ -33,6 +33,8 @@ class RenderWorker;
 
 enum class ZoomMode { Custom = 0, FitWidth = 1, FitPage = 2 };
 enum class ViewMode { Single = 0, Continuous = 1, TwoPage = 2 };
+// What a click on the page does.
+enum class ViewTool { Select = 0, EditText = 1, AddComment = 2 };
 
 // Zoom steps used by zoom in / zoom out (1.0 == 100 %).
 extern const double kZoomPresets[];
@@ -106,6 +108,18 @@ public:
     void SelectAll();
     void ClearSelection();
 
+    // --- editing text and comments ---------------------------------------
+    // EditText: the page's text is outlined and a click edits it in place.
+    // AddComment: a click places a comment. Esc goes back to Select.
+    ViewTool Tool() const { return m_tool; }
+    void SetTool(ViewTool tool);
+    void OnTextRuns(TextRunsResult* result);  // takes ownership
+    // Called to record an edit (text changed in place, comment deleted).
+    std::function<void(EditOp&&)> onEdit;
+    // A new comment at (x, y) on `page` (page points), or an existing one.
+    std::function<void(int page, float x, float y)> onNewComment;
+    std::function<void(int page, const CommentInfo&)> onOpenComment;
+
     // --- page images for the clipboard (arrive as WM_APP_IMAGE_READY) ---
     void CopyPageImage();
     void StartAreaCopy();  // the next drag selects the area to copy
@@ -177,9 +191,26 @@ private:
     struct TextLayer {
         std::vector<TextChar> chars;
         std::vector<LinkInfo> links;
+        std::vector<CommentInfo> comments;
     };
     const LinkInfo* HitLink(POINT pt);
     void UpdateLinkTip(const LinkInfo* link);
+    void ShowTip(const std::wstring& text);  // empty: hide
+
+    // editing text and comments
+    bool PagePoint(POINT pt, int& page, float& x, float& y);  // unrotated page points
+    const CommentInfo* HitComment(POINT pt, int* page = nullptr);
+    void UpdateHoverTip(POINT pt);
+    const std::vector<TextRun>* GetRuns(int page, bool request);
+    bool HitRun(POINT pt, int& page, int& run);
+    RECT ClientRectOf(int page, const RectF& r) const;  // unrotated points -> client pixels
+    void DrawRuns(HDC dc, int page, const RECT& vis);
+    void DrawBanner(HDC dc);
+    void BeginInlineEdit(int page, int run);
+    void EndInlineEdit(bool commit);
+    void PositionInlineEdit();
+    static LRESULT CALLBACK InlineEditProc(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
+    void ClearRuns();
     void FollowLink(const LinkTarget& target);
     void RequestImage(int page, RECT pagePixels);  // rect in page pixels at m_scale
     const TextLayer* GetTextLayer(int page, bool request);
@@ -248,6 +279,19 @@ private:
     LinkTarget m_pressedLink;
     HWND m_linkTip = nullptr;
     std::wstring m_linkTipText;
+
+    // editing tools
+    ViewTool m_tool = ViewTool::Select;
+    std::unordered_map<int, std::vector<TextRun>> m_runs;  // pages near the view
+    std::unordered_set<int> m_runsPending;
+    int m_hoverPage = -1, m_hoverRun = -1;
+    HWND m_inlineEdit = nullptr;
+    HFONT m_inlineFont = nullptr;
+    int m_inlinePage = -1;
+    TextRun m_inlineRun;
+    bool m_inlineClosing = false;
+    HFONT m_bannerFont = nullptr;
+    std::wstring m_tipText;
 
     // "copy area as image" mode
     bool m_areaMode = false, m_areaDragging = false;

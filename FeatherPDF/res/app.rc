@@ -1,5 +1,6 @@
 // app.rc - icon, manifest, version information and dialogs.
 #include <windows.h>
+#include <commctrl.h>
 #include "resource.h"
 
 IDI_APP ICON "app.ico"
@@ -29,9 +30,49 @@ BEGIN
     PUSHBUTTON      "Cancel", IDCANCEL, 200, 80, 50, 15
 END
 
+IDD_COMMENT DIALOGEX 0, 0, 280, 156
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Comment"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "", IDC_COMMENT_INFO, 10, 8, 260, 10, SS_ENDELLIPSIS | SS_NOPREFIX
+    EDITTEXT        IDC_COMMENT_EDIT, 10, 22, 260, 104, ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL | WS_TABSTOP
+    PUSHBUTTON      "Delete", IDC_COMMENT_DELETE, 10, 134, 56, 15, WS_TABSTOP
+    DEFPUSHBUTTON   "OK", IDOK, 160, 134, 52, 15
+    PUSHBUTTON      "Cancel", IDCANCEL, 218, 134, 52, 15
+END
+
+IDD_REPLACE DIALOGEX 0, 0, 280, 124
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Find and replace text"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "&Find:", -1, 10, 12, 56, 10
+    EDITTEXT        IDC_REPLACE_FIND, 70, 10, 200, 14, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "Replace &with:", -1, 10, 32, 56, 10
+    EDITTEXT        IDC_REPLACE_WITH, 70, 30, 200, 14, ES_AUTOHSCROLL | WS_TABSTOP
+    AUTOCHECKBOX    "Match &case", IDC_REPLACE_CASE, 70, 50, 120, 12, WS_TABSTOP
+    LTEXT           "Every place in the document is changed. Changed text keeps its font when that font has all the letters; otherwise a similar font is used. Undo (Ctrl+Z) takes it back.", -1, 10, 68, 260, 28
+    DEFPUSHBUTTON   "Replace all", IDOK, 160, 102, 52, 15
+    PUSHBUTTON      "Cancel", IDCANCEL, 218, 102, 52, 15
+END
+
+IDD_COMMENTS DIALOGEX 0, 0, 380, 220
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Comments"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "", IDC_COMMENTS_INFO, 10, 8, 360, 10
+    CONTROL         "", IDC_COMMENTS_LIST, "SysListView32", LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | WS_BORDER | WS_TABSTOP, 10, 22, 360, 168
+    PUSHBUTTON      "&Go to", IDC_COMMENTS_GOTO, 10, 198, 52, 15, WS_TABSTOP
+    PUSHBUTTON      "&Edit...", IDC_COMMENTS_EDIT, 66, 198, 52, 15, WS_TABSTOP
+    PUSHBUTTON      "&Delete", IDC_COMMENTS_DELETE, 122, 198, 52, 15, WS_TABSTOP
+    DEFPUSHBUTTON   "Close", IDCANCEL, 318, 198, 52, 15
+END
+
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 1,3,0,0
- PRODUCTVERSION 1,3,0,0
+ FILEVERSION 1,4,0,0
+ PRODUCTVERSION 1,4,0,0
  FILEFLAGSMASK 0x3fL
  FILEFLAGS 0x0L
  FILEOS VOS_NT_WINDOWS32
@@ -45,11 +86,11 @@ BEGIN
             VALUE "CompanyName", "Akshaya Simha"
             VALUE "FileDescription", "Feather PDF - lightweight PDF viewer and editor"
             VALUE "LegalCopyright", "\251 2026 Akshaya Simha"
-            VALUE "FileVersion", "1.3.0.0"
+            VALUE "FileVersion", "1.4.0.0"
             VALUE "InternalName", "FeatherPDF"
             VALUE "OriginalFilename", "FeatherPDF.exe"
             VALUE "ProductName", "Feather PDF"
-            VALUE "ProductVersion", "1.3.0.0"
+            VALUE "ProductVersion", "1.4.0.0"
         END
     END
     BLOCK "VarFileInfo"

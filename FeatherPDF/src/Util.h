@@ -43,3 +43,9 @@ void CleanOldTempFiles();
 bool ParsePageRanges(const std::wstring& text, int pageCount, std::vector<int>& pages);
 // The inverse, for 0-based ascending pages: {0,1,2,4} -> "1-3, 5".
 std::wstring FormatPageRanges(const std::vector<int>& pages);
+
+// "D:20261005142209Z" -> "05/10/2026 19:52" in the user's format and time
+// zone; empty if it is not a PDF date.
+std::wstring FormatPdfDate(const std::wstring& pdfDate);
+// The Windows user name (the author of new comments).
+std::wstring CurrentUserName();

@@ -1,6 +1,8 @@
 // Util.cpp - small helpers shared by all modules.
 #include "Util.h"
 
+#include <cwctype>
+
 #include <shellapi.h>
 
 std::string WideToUtf8(const std::wstring& s) {
@@ -188,4 +190,42 @@ std::wstring FormatPageRanges(const std::vector<int>& pages) {
         i = j + 1;
     }
     return out;
+}
+
+std::wstring FormatPdfDate(const std::wstring& date) {
+    // D:YYYYMMDDHHmmSS followed by Z, +HH'mm' or nothing.
+    std::wstring d = date;
+    if (d.rfind(L"D:", 0) == 0) d = d.substr(2);
+    if (d.size() < 8) return {};
+    for (size_t i = 0; i < 8; ++i)
+        if (!iswdigit(d[i])) return {};
+    auto num = [&](size_t at, size_t len) {
+        return at + len <= d.size() ? _wtoi(d.substr(at, len).c_str()) : 0;
+    };
+    SYSTEMTIME st{};
+    st.wYear = (WORD)num(0, 4);
+    st.wMonth = (WORD)num(4, 2);
+    st.wDay = (WORD)num(6, 2);
+    st.wHour = (WORD)num(8, 2);
+    st.wMinute = (WORD)num(10, 2);
+    if (st.wMonth < 1 || st.wMonth > 12 || st.wDay < 1 || st.wDay > 31) return {};
+    // Times written in UTC ("Z") are shown in local time.
+    if (d.size() > 14 && d[14] == L'Z') {
+        SYSTEMTIME local;
+        if (SystemTimeToTzSpecificLocalTime(nullptr, &st, &local)) st = local;
+    }
+    wchar_t dateText[64] = L"", timeText[32] = L"";
+    GetDateFormatEx(LOCALE_NAME_USER_DEFAULT, DATE_SHORTDATE, &st, nullptr, dateText, 64, nullptr);
+    if (d.size() >= 12) {
+        GetTimeFormatEx(LOCALE_NAME_USER_DEFAULT, TIME_NOSECONDS, &st, nullptr, timeText, 32);
+        return std::wstring(dateText) + L" " + timeText;
+    }
+    return dateText;
+}
+
+std::wstring CurrentUserName() {
+    wchar_t name[256] = L"";
+    DWORD len = 256;
+    if (!GetUserNameW(name, &len)) return L"";
+    return name;
 }

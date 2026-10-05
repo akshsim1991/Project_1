@@ -21,7 +21,8 @@ public:
 
     // Items are laid out left to right in the order they are added.
     void AddButton(int id, const wchar_t* glyph, const wchar_t* tip);
-    void AddTextButton(int id, const wchar_t* text, const wchar_t* tip);  // e.g. "Aa" toggle
+    // e.g. "Aa" toggle; `widthDip` 0: a square button
+    void AddTextButton(int id, const wchar_t* text, const wchar_t* tip, int widthDip = 0);
     void AddLabel(int id, int widthDip, bool clickable, const wchar_t* tip);
     void AddChild(HWND child, int widthDip);
     void AddSeparator();

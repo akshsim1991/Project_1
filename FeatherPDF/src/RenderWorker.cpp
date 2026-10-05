@@ -121,6 +121,21 @@ void RenderWorker::CancelPrint() {
     Push(std::move(c));
 }
 
+void RenderWorker::RequestTextRuns(uint32_t docId, int page) {
+    Command c;
+    c.type = Command::TextRuns;
+    c.docId = docId;
+    c.page = page;
+    Push(std::move(c));
+}
+
+void RenderWorker::ListComments(uint32_t docId) {
+    Command c;
+    c.type = Command::Comments;
+    c.docId = docId;
+    Push(std::move(c));
+}
+
 void RenderWorker::RequestTextLayer(uint32_t docId, int page) {
     Command c;
     c.type = Command::TextLayer;
@@ -326,8 +341,27 @@ void RenderWorker::Execute(Command& cmd) {
             auto* res = new TextLayerResult;
             res->docId = cmd.docId;
             res->page = cmd.page;
-            engine->ExtractPageInfo(cmd.page, res->chars, res->links);
+            engine->ExtractPageInfo(cmd.page, res->chars, res->links, res->comments);
             Post(WM_APP_TEXT_LAYER, res);
+            break;
+        }
+        case Command::TextRuns: {
+            PdfEngine* engine = Engine(cmd.docId);
+            if (!engine) break;
+            auto* res = new TextRunsResult;
+            res->docId = cmd.docId;
+            res->page = cmd.page;
+            engine->GetTextRuns(cmd.page, res->runs);
+            Post(WM_APP_TEXT_RUNS, res);
+            break;
+        }
+        case Command::Comments: {
+            PdfEngine* engine = Engine(cmd.docId);
+            if (!engine) break;
+            auto* res = new CommentListResult;
+            res->docId = cmd.docId;
+            engine->ListComments(res->comments);
+            Post(WM_APP_COMMENTS, res);
             break;
         }
         case Command::Copy: {
@@ -448,11 +482,19 @@ void RenderWorker::ExecuteEdit(Command& cmd) {
     res->docId = cmd.docId;
     res->flags = cmd.flags;
     switch (cmd.type) {
-        case Command::Edit:
+        case Command::Edit: {
             res->action = EditAction::Edit;
+            const EditOp::Kind kind = cmd.op.kind;
             res->ok = PrepareSources(cmd.op, doc, res->error) &&
                       doc.Apply(std::move(cmd.op), res->error, res->focusPage, res->select);
+            if (res->ok && doc.Engine()) {
+                const int n = doc.Engine()->LastEditCount();
+                if (kind == EditOp::FindReplace)
+                    res->note = n == 1 ? L"1 place was changed." : std::to_wstring(n) + L" places were changed.";
+                res->fontChanged = doc.Engine()->LastEditChangedFont();
+            }
             break;
+        }
         case Command::Undo:
             res->action = EditAction::Undo;
             res->ok = doc.Undo(res->error);

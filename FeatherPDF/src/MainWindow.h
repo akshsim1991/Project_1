@@ -105,7 +105,17 @@ private:
     void MergeFiles();
     void MergeTabs();
     void ExtractPages();
-    void AddMarkup(int type);
+    void AddMarkup(int type, const std::wstring& comment = {});
+    // Edit PDF menu: text and comments
+    HMENU CreateEditPdfMenu();
+    HMENU CreateMarkupMenu();
+    void ShowEditPdfMenu();
+    void SetTool(ViewTool tool);
+    void ReplaceTextInDocument();
+    void NewComment(int page, float x, float y);
+    void OpenComment(int page, const CommentInfo& comment);
+    void CommentOnSelection();
+    void OnCommentList(CommentListResult* res);
     void ShowPagesMenu(POINT screen);
     HMENU CreatePagesMenu();
     std::vector<std::wstring> PickPdfFiles(bool multiple, const wchar_t* title);
@@ -124,6 +134,9 @@ private:
     HINSTANCE m_inst = nullptr;
     HWND m_hwnd = nullptr;
     HACCEL m_accel = nullptr;
+    bool m_toldAboutFonts = false;  // "a similar font was used" is said once
+    std::wstring m_replaceFind, m_replaceWith;
+    bool m_replaceCase = false;
     TabBar m_tabBar;
     Sidebar m_sidebar;
     bool m_splitDrag = false;

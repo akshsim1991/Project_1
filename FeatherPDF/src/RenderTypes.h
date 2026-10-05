@@ -120,11 +120,44 @@ struct TextChar {
     bool hasBox = false; // false for characters PDFium generated (\r\n, spaces)
 };
 
+// A comment: a sticky note, or a text markup (highlight, underline,
+// strike-out) that may carry a comment.
+struct CommentInfo {
+    RectF rect;               // page points, top-left origin, unrotated
+    int annot = 0;            // index among the page's annotations
+    int subtype = 0;          // kAnnotNote or a MarkupType
+    std::wstring text;        // the comment (may be empty for markup)
+    std::wstring author;
+    std::wstring date;        // PDF date string ("D:2026...")
+};
+
 struct TextLayerResult {
     uint32_t docId = 0;
     int page = 0;
     std::vector<TextChar> chars;
     std::vector<LinkInfo> links;  // link annotations and URLs found in the text
+    std::vector<CommentInfo> comments;
+};
+
+// A line of editable text: consecutive text objects of the page's content
+// on one baseline, in the same font and size. Editing replaces them all.
+struct TextRun {
+    RectF rect;               // page points, top-left origin, unrotated
+    std::wstring text;
+    int first = 0, count = 0; // page object indices
+    float size = 0;           // font size as shown, in points
+    bool bold = false, italic = false, serif = false, mono = false;
+};
+
+struct TextRunsResult {
+    uint32_t docId = 0;
+    int page = 0;
+    std::vector<TextRun> runs;
+};
+
+struct CommentListResult {
+    uint32_t docId = 0;
+    std::vector<std::pair<int, CommentInfo>> comments;  // {page, comment}
 };
 
 // A caret position in the document: before character `index` of `page`.
@@ -158,6 +191,8 @@ struct PrintJob {
 
 // Text markup annotation types (values are PDFium's FPDF_ANNOT_* subtypes).
 enum MarkupType { kMarkupHighlight = 9, kMarkupUnderline = 10, kMarkupStrikeOut = 12 };
+// A sticky note (FPDF_ANNOT_TEXT); squiggly underlines are shown as markup.
+enum { kAnnotNote = 1, kMarkupSquiggly = 11 };
 
 // A PDF whose pages are inserted. The worker replaces `path` with a private
 // copy before applying the edit, so undo/redo can replay it later even if
@@ -171,7 +206,14 @@ struct ImportSource {
 // One undoable change to a document. Edits are recorded in order; undo
 // re-opens the last saved file and replays all but the last one.
 struct EditOp {
-    enum Kind { DeletePages, MovePages, RotatePages, InsertBlank, InsertFiles, Markup } kind = DeletePages;
+    enum Kind {
+        DeletePages, MovePages, RotatePages, InsertBlank, InsertFiles, Markup,
+        EditText,     // replace the text of a TextRun: page, index = first, count, text
+        FindReplace,  // every occurrence of `find` in the document by `text`
+        AddNote,      // a sticky note at (x, y) on `page` with `text`
+        EditComment,  // the comment of annotation `index` on `page` becomes `text`
+        DeleteAnnot,  // annotation `index` on `page` (and its pop-up)
+    } kind = DeletePages;
     std::vector<int> pages;  // Delete/Move/Rotate: ascending page indices
     int index = 0;           // Move: new index of the first moved page;
                              // InsertBlank/InsertFiles: insert before this page
@@ -181,6 +223,13 @@ struct EditOp {
     int markup = kMarkupHighlight;      // Markup: MarkupType
     COLORREF color = 0;
     TextPos from, to;        // Markup: text range (may span pages)
+    int page = 0;            // EditText / AddNote / EditComment / DeleteAnnot
+    int count = 0;           // EditText: number of page objects replaced
+    float x = 0, y = 0;      // AddNote: page points, top-left origin, unrotated
+    std::wstring text;       // new text / comment (Markup: optional comment)
+    std::wstring find;       // FindReplace: what to find; EditText: the old text
+    bool matchCase = false;  // FindReplace
+    std::wstring author;     // comments
 };
 
 enum class EditAction { Edit, Undo, Redo, Save };
@@ -201,6 +250,8 @@ struct EditResult {
     int focusPage = -1;       // page to show after the edit (-1: stay)
     std::vector<int> select;  // pages to select in the thumbnails
     uint32_t flags = 0;       // Save: echoed from the request (kAfterSave*)
+    std::wstring note;        // shown after a successful edit (e.g. how many replaced)
+    bool fontChanged = false; // edited text needed a font other than the original
 };
 
 enum : uint32_t { kAfterSaveCloseTab = 1, kAfterSaveQuit = 2 };

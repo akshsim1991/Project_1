@@ -22,7 +22,7 @@
 #include <vector>
 
 #define APP_NAME L"Feather PDF"
-#define APP_VERSION L"1.3.0"
+#define APP_VERSION L"1.4.0"
 #define APP_COPYRIGHT L"\x00A9 2026 Akshaya Simha"
 #define APP_WINDOW_CLASS L"FeatherPdfMain"
 #define APP_REG_KEY L"Software\\FeatherPDF"
@@ -44,6 +44,8 @@ enum : UINT {
     WM_APP_SIDEBAR,                  // from Sidebar: wParam = SidebarEvent, lParam = value
     WM_APP_DOC_EDITED,               // EditResult* (edit, undo, redo or save finished)
     WM_APP_EXTRACTED,                // ExtractResult*
+    WM_APP_TEXT_RUNS,                // TextRunsResult* (editable text of a page)
+    WM_APP_COMMENTS,                 // CommentListResult* (every comment in a document)
 };
 
 // WM_APP_SIDEBAR notifications: lParam = outline index / page index.
@@ -131,6 +133,15 @@ enum : int {
     ID_STRIKEOUT,
     ID_HL_COLOR_FIRST,  // + index into kHighlightColors
     ID_HL_COLOR_LAST = ID_HL_COLOR_FIRST + 3,
+    ID_EDIT_PDF_MENU,
+    ID_EDIT_TEXT,
+    ID_REPLACE_TEXT,
+    ID_ADD_COMMENT,
+    ID_COMMENT_SELECTION,
+    ID_SHOW_COMMENTS,
+    ID_ADD_COMMENT_HERE,
+    ID_COMMENT_EDIT,
+    ID_COMMENT_DELETE,
     ID_ZOOM_PRESET_FIRST = 300,  // + index into kZoomPresets
 };
 
@@ -142,4 +153,5 @@ struct SizeF {
 // Rectangle in page points, origin at the top-left of the displayed page.
 struct RectF {
     float left = 0, top = 0, right = 0, bottom = 0;
+    bool Contains(float x, float y) const { return x >= left && x <= right && y >= top && y <= bottom; }
 };

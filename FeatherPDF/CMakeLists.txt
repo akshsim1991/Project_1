@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(FeatherPDF VERSION 1.3.0 LANGUAGES CXX RC)
+project(FeatherPDF VERSION 1.4.0 LANGUAGES CXX RC)
 
 # ---------------------------------------------------------------------------
 # PDFium (prebuilt binaries from https://github.com/bblanchon/pdfium-binaries)

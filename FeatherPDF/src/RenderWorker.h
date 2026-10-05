@@ -42,6 +42,8 @@ public:
     void StartPrint(PrintJob&& job);                          // -> WM_APP_PRINT_PROGRESS
     void CancelPrint();
     void RequestTextLayer(uint32_t docId, int page);
+    void RequestTextRuns(uint32_t docId, int page);  // -> WM_APP_TEXT_RUNS
+    void ListComments(uint32_t docId);               // -> WM_APP_COMMENTS
     void CopyText(uint32_t docId, uint32_t requestId, TextPos from, TextPos to);
     void StartSearch(uint32_t docId, uint32_t searchId, const std::wstring& query,
                      bool matchCase, int startPage);
@@ -61,7 +63,7 @@ private:
     struct Command {
         enum Type {
             Open, Close, TextLayer, Copy, Search, CancelSearch, Trim, Image, Print, CancelPrint,
-            Edit, Undo, Redo, Save, Extract
+            Edit, Undo, Redo, Save, Extract, TextRuns, Comments
         } type = Open;
         uint32_t docId = 0;
         uint32_t newDocId = 0;   // Edit / Undo / Redo

@@ -45,7 +45,12 @@ void DocEditor::Describe(const EditOp& op, int before, int after, int& focus,
             for (int p = op.index; p < op.index + (after - before); ++p) select.push_back(p);
             break;
         case EditOp::Markup:
-            break;
+        case EditOp::EditText:
+        case EditOp::FindReplace:
+        case EditOp::AddNote:
+        case EditOp::EditComment:
+        case EditOp::DeleteAnnot:
+            break;  // the reader stays where they are
     }
 }
 

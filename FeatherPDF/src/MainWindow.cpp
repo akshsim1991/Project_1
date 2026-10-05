@@ -2,6 +2,7 @@
 #include "MainWindow.h"
 
 #include <cmath>
+#include <cwctype>
 
 #include <commctrl.h>
 #include <objbase.h>  // must precede commdlg.h for PrintDlgEx
@@ -196,6 +197,10 @@ void MainWindow::CreateChildren() {
     m_toolbar.AddButton(ID_UNDO, kGlyphUndo, L"Undo (Ctrl+Z)");
     m_toolbar.AddButton(ID_REDO, kGlyphRedo, L"Redo (Ctrl+Y)");
     m_toolbar.AddSeparator();
+    m_toolbar.AddTextButton(ID_EDIT_PDF_MENU, L"Edit PDF",
+                            L"Edit text, find and replace, comments, markup and pages", 72);
+    m_toolbar.AddTextButton(ID_ADD_COMMENT, L"Comment", L"Add a comment: click where it should go (Ctrl+M)", 78);
+    m_toolbar.AddSeparator();
     m_toolbar.AddButton(ID_PREV_PAGE, kGlyphPrev, L"Previous page (Page Up)");
     m_toolbar.AddButton(ID_NEXT_PAGE, kGlyphNext, L"Next page (Page Down)");
     m_pageEdit = CreateWindowExW(0, L"EDIT", L"", editStyle | ES_NUMBER | ES_CENTER, 0, 0, 0, 0,
@@ -268,6 +273,10 @@ void MainWindow::CreateAccelerators() {
         {FCONTROL | FVIRTKEY, 'Z', ID_UNDO},
         {FCONTROL | FSHIFT | FVIRTKEY, 'Z', ID_REDO},
         {FCONTROL | FVIRTKEY, 'Y', ID_REDO},
+        {FCONTROL | FVIRTKEY, 'E', ID_EDIT_TEXT},
+        {FCONTROL | FSHIFT | FVIRTKEY, 'H', ID_REPLACE_TEXT},
+        {FCONTROL | FVIRTKEY, 'M', ID_ADD_COMMENT},
+        {FCONTROL | FSHIFT | FVIRTKEY, 'M', ID_COMMENT_SELECTION},
     };
     m_accel = CreateAcceleratorTableW(acc, (int)(sizeof(acc) / sizeof(acc[0])));
 }
@@ -335,6 +344,15 @@ int MainWindow::NewTab() {
     tab->view->SetSearch(&raw->search);
     tab->view->onViewChanged = [this, raw] {
         if (m_active >= 0 && raw == &Active()) UpdateUi();
+    };
+    tab->view->onEdit = [this, raw](EditOp&& op) {
+        if (m_active >= 0 && raw == &Active()) SendEdit(std::move(op));
+    };
+    tab->view->onNewComment = [this, raw](int page, float x, float y) {
+        if (m_active >= 0 && raw == &Active()) NewComment(page, x, y);
+    };
+    tab->view->onOpenComment = [this, raw](int page, const CommentInfo& c) {
+        if (m_active >= 0 && raw == &Active()) OpenComment(page, c);
     };
     // New tabs inherit the view mode and zoom of the current tab.
     if (m_active >= 0) {
@@ -485,6 +503,18 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
                 delete res;
             return 0;
         }
+        case WM_APP_TEXT_RUNS: {
+            auto* res = (TextRunsResult*)lp;
+            int i = TabByDocId(res->docId);
+            if (i >= 0)
+                m_tabs[(size_t)i]->view->OnTextRuns(res);
+            else
+                delete res;
+            return 0;
+        }
+        case WM_APP_COMMENTS:
+            OnCommentList((CommentListResult*)lp);
+            return 0;
         case WM_APP_TEXT_COPIED: {
             std::unique_ptr<TextCopyResult> res((TextCopyResult*)lp);
             CopyToClipboard(res->text);
@@ -739,9 +769,13 @@ void MainWindow::OnCommand(int id, int code, HWND ctl) {
         case ID_UNDO:
         case ID_REDO:
             // In a text box Ctrl+Z undoes typing, not the document.
-            if (HWND focus = GetFocus(); focus == m_searchEdit || focus == m_pageEdit) {
-                if (id == ID_UNDO) SendMessageW(focus, EM_UNDO, 0, 0);
-                break;
+            if (HWND focus = GetFocus()) {
+                wchar_t cls[16] = L"";
+                GetClassNameW(focus, cls, 16);
+                if (_wcsicmp(cls, L"Edit") == 0) {
+                    if (id == ID_UNDO) SendMessageW(focus, EM_UNDO, 0, 0);
+                    break;
+                }
             }
             UndoRedo(id == ID_REDO);
             break;
@@ -753,6 +787,18 @@ void MainWindow::OnCommand(int id, int code, HWND ctl) {
         case ID_MERGE_FILES: MergeFiles(); break;
         case ID_MERGE_TABS: MergeTabs(); break;
         case ID_EXTRACT_PAGES: ExtractPages(); break;
+        case ID_EDIT_PDF_MENU: ShowEditPdfMenu(); break;
+        case ID_EDIT_TEXT:
+            SetTool(view.Tool() == ViewTool::EditText ? ViewTool::Select : ViewTool::EditText);
+            break;
+        case ID_ADD_COMMENT:
+            SetTool(view.Tool() == ViewTool::AddComment ? ViewTool::Select : ViewTool::AddComment);
+            break;
+        case ID_COMMENT_SELECTION: CommentOnSelection(); break;
+        case ID_REPLACE_TEXT: ReplaceTextInDocument(); break;
+        case ID_SHOW_COMMENTS:
+            if (CanEdit()) m_worker.ListComments(Active().docId);
+            break;
         case ID_HIGHLIGHT: AddMarkup(kMarkupHighlight); break;
         case ID_UNDERLINE: AddMarkup(kMarkupUnderline); break;
         case ID_STRIKEOUT: AddMarkup(kMarkupStrikeOut); break;
@@ -902,17 +948,6 @@ void MainWindow::ShowMoreMenu() {
                        MF_BYCOMMAND);
 
     const Tab& tab = Active();
-    const UINT selFlag = view.HasSelection() ? 0 : MF_GRAYED;
-    HMENU markup = CreatePopupMenu();
-    AppendMenuW(markup, MF_STRING | selFlag, ID_HIGHLIGHT, L"&Highlight\tCtrl+H");
-    AppendMenuW(markup, MF_STRING | selFlag, ID_UNDERLINE, L"&Underline\tCtrl+U");
-    AppendMenuW(markup, MF_STRING | selFlag, ID_STRIKEOUT, L"&Strikethrough\tCtrl+K");
-    AppendMenuW(markup, MF_SEPARATOR, 0, nullptr);
-    for (int i = 0; i <= ID_HL_COLOR_LAST - ID_HL_COLOR_FIRST; ++i)
-        AppendMenuW(markup, MF_STRING, ID_HL_COLOR_FIRST + i, kHighlightColorNames[i]);
-    CheckMenuRadioItem(markup, ID_HL_COLOR_FIRST, ID_HL_COLOR_LAST,
-                       ID_HL_COLOR_FIRST + m_settings.highlightColor, MF_BYCOMMAND);
-
     HMENU m = CreatePopupMenu();
     AppendMenuW(m, MF_STRING, ID_OPEN, L"&Open\x2026\tCtrl+O");
     AppendMenuW(m, MF_STRING | (doc && tab.dirty ? 0 : MF_GRAYED), ID_SAVE, L"&Save\tCtrl+S");
@@ -921,8 +956,7 @@ void MainWindow::ShowMoreMenu() {
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(m, MF_STRING | (doc && tab.canUndo ? 0 : MF_GRAYED), ID_UNDO, L"&Undo\tCtrl+Z");
     AppendMenuW(m, MF_STRING | (doc && tab.canRedo ? 0 : MF_GRAYED), ID_REDO, L"&Redo\tCtrl+Y");
-    AppendMenuW(m, MF_POPUP | docFlag, (UINT_PTR)CreatePagesMenu(), L"&Edit pages");
-    AppendMenuW(m, MF_POPUP | docFlag, (UINT_PTR)markup, L"Mar&k up text");
+    AppendMenuW(m, MF_POPUP | docFlag, (UINT_PTR)CreateEditPdfMenu(), L"E&dit PDF");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     if (m_printing)
         AppendMenuW(m, MF_STRING, ID_CANCEL_PRINT, L"Cancel &printing");
@@ -1010,6 +1044,10 @@ void MainWindow::UpdateUi() {
     m_toolbar.SetEnabled(ID_SEARCH, doc);
     const Tab& tab = Active();
     m_toolbar.SetEnabled(ID_SAVE, doc && tab.dirty);
+    m_toolbar.SetEnabled(ID_EDIT_PDF_MENU, doc);
+    m_toolbar.SetEnabled(ID_ADD_COMMENT, doc);
+    m_toolbar.SetChecked(ID_EDIT_PDF_MENU, doc && view.Tool() == ViewTool::EditText);
+    m_toolbar.SetChecked(ID_ADD_COMMENT, doc && view.Tool() == ViewTool::AddComment);
     m_toolbar.SetEnabled(ID_UNDO, doc && tab.canUndo);
     m_toolbar.SetEnabled(ID_REDO, doc && tab.canRedo);
     if (doc && m_sidebar.Mode() == SidebarMode::Thumbnails)
@@ -1523,8 +1561,8 @@ void MainWindow::OnPrintProgress(int done, int total) {
 // Document properties
 // ===========================================================================
 namespace {
-// "D:20240131154500+01'00'" -> "2024-01-31 15:45"
-std::wstring FormatPdfDate(const std::wstring& d) {
+// "D:20240131154500+01'00'" -> "2024-01-31 15:45" (as written in the file)
+std::wstring FormatInfoDate(const std::wstring& d) {
     std::wstring s = d.rfind(L"D:", 0) == 0 ? d.substr(2) : d;
     if (s.size() < 8) return d;
     for (size_t i = 0; i < 8; ++i)
@@ -1566,8 +1604,8 @@ void MainWindow::ShowProperties() {
     line(L"Author:", info.author);
     line(L"Subject:", info.subject);
     line(L"Keywords:", info.keywords);
-    line(L"Created:", FormatPdfDate(info.created));
-    line(L"Modified:", FormatPdfDate(info.modified));
+    line(L"Created:", FormatInfoDate(info.created));
+    line(L"Modified:", FormatInfoDate(info.modified));
     line(L"Creator:", info.creator);
     line(L"Producer:", info.producer);
     text += L"\n";
@@ -1814,6 +1852,18 @@ void MainWindow::OnDocEdited(EditResult* result) {
         MessageBoxW(m_hwnd, (what + res->error).c_str(), APP_NAME, MB_ICONWARNING);
         return;
     }
+    if (res->action == EditAction::Edit && current && index == m_active) {
+        if (!res->note.empty()) MessageBoxW(m_hwnd, res->note.c_str(), APP_NAME, MB_ICONINFORMATION);
+        if (res->fontChanged && !m_toldAboutFonts) {
+            m_toldAboutFonts = true;
+            MessageBoxW(m_hwnd,
+                        L"The font this text was written in does not contain all the letters "
+                        L"you typed (PDF files often hold only the letters they use), so a "
+                        L"similar font was used for the changed text.\n\nUndo (Ctrl+Z) takes the "
+                        L"change back.",
+                        APP_NAME, MB_ICONINFORMATION);
+        }
+    }
     if (res->action == EditAction::Save) {
         if (res->flags & kAfterSaveCloseTab) CloseTab(index, true);
         if ((res->flags & kAfterSaveQuit) && m_quitAfterSaves && m_quitSaves == 0)
@@ -2049,12 +2099,14 @@ void MainWindow::OnExtracted(ExtractResult* result) {
     }
 }
 
-void MainWindow::AddMarkup(int type) {
+void MainWindow::AddMarkup(int type, const std::wstring& comment) {
     if (!CanEdit()) return;
     EditOp op;
     op.kind = EditOp::Markup;
     if (!View().GetSelection(op.from, op.to)) return;
     op.markup = type;
+    op.text = comment;
+    if (!comment.empty()) op.author = CurrentUserName();
     op.color = type == kMarkupHighlight   ? kHighlightColors[m_settings.highlightColor]
                : type == kMarkupUnderline ? kUnderlineColor
                                           : kStrikeOutColor;
@@ -2083,4 +2135,362 @@ void MainWindow::ShowPagesMenu(POINT screen) {
     HMENU m = CreatePagesMenu();
     TrackPopupMenu(m, TPM_RIGHTBUTTON, screen.x, screen.y, 0, m_hwnd, nullptr);
     DestroyMenu(m);
+}
+
+// ===========================================================================
+// Edit PDF: text and comments
+// ===========================================================================
+namespace {
+struct CommentDialog {
+    std::wstring info, text;
+    bool canDelete = false;
+};
+
+// "\n" <-> "\r\n" for the multi-line text box.
+std::wstring ToEditLines(const std::wstring& s) {
+    std::wstring out;
+    for (size_t i = 0; i < s.size(); ++i) {
+        if (s[i] == L'\r') {
+            out += L"\r\n";
+            if (i + 1 < s.size() && s[i + 1] == L'\n') ++i;
+        } else if (s[i] == L'\n') {
+            out += L"\r\n";
+        } else {
+            out += s[i];
+        }
+    }
+    return out;
+}
+
+std::wstring FromEditLines(const std::wstring& s) {
+    std::wstring out;
+    for (wchar_t c : s)
+        if (c != L'\r') out += c;
+    return out;
+}
+
+std::wstring DialogText(HWND dlg, int id) {
+    HWND h = GetDlgItem(dlg, id);
+    std::wstring t((size_t)GetWindowTextLengthW(h) + 1, L'\0');
+    t.resize((size_t)GetWindowTextW(h, t.data(), (int)t.size()));
+    return t;
+}
+
+INT_PTR CALLBACK CommentDlgProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
+    auto* d = (CommentDialog*)GetWindowLongPtrW(dlg, DWLP_USER);
+    switch (msg) {
+        case WM_INITDIALOG: {
+            d = (CommentDialog*)lp;
+            SetWindowLongPtrW(dlg, DWLP_USER, (LONG_PTR)d);
+            SetDlgItemTextW(dlg, IDC_COMMENT_INFO, d->info.c_str());
+            SetDlgItemTextW(dlg, IDC_COMMENT_EDIT, ToEditLines(d->text).c_str());
+            if (!d->canDelete) ShowWindow(GetDlgItem(dlg, IDC_COMMENT_DELETE), SW_HIDE);
+            HWND edit = GetDlgItem(dlg, IDC_COMMENT_EDIT);
+            SetFocus(edit);
+            SendMessageW(edit, EM_SETSEL, (WPARAM)-1, -1);
+            return FALSE;  // the focus was set
+        }
+        case WM_COMMAND:
+            switch (LOWORD(wp)) {
+                case IDOK:
+                    d->text = FromEditLines(DialogText(dlg, IDC_COMMENT_EDIT));
+                    EndDialog(dlg, IDOK);
+                    return TRUE;
+                case IDC_COMMENT_DELETE: EndDialog(dlg, IDC_COMMENT_DELETE); return TRUE;
+                case IDCANCEL: EndDialog(dlg, IDCANCEL); return TRUE;
+            }
+            break;
+    }
+    return FALSE;
+}
+
+struct ReplaceDialog {
+    std::wstring find, with;
+    bool matchCase = false;
+};
+
+INT_PTR CALLBACK ReplaceDlgProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
+    auto* d = (ReplaceDialog*)GetWindowLongPtrW(dlg, DWLP_USER);
+    switch (msg) {
+        case WM_INITDIALOG:
+            d = (ReplaceDialog*)lp;
+            SetWindowLongPtrW(dlg, DWLP_USER, (LONG_PTR)d);
+            SetDlgItemTextW(dlg, IDC_REPLACE_FIND, d->find.c_str());
+            SetDlgItemTextW(dlg, IDC_REPLACE_WITH, d->with.c_str());
+            CheckDlgButton(dlg, IDC_REPLACE_CASE, d->matchCase ? BST_CHECKED : BST_UNCHECKED);
+            SetFocus(GetDlgItem(dlg, IDC_REPLACE_FIND));
+            SendDlgItemMessageW(dlg, IDC_REPLACE_FIND, EM_SETSEL, 0, -1);
+            return FALSE;
+        case WM_COMMAND:
+            if (LOWORD(wp) == IDOK) {
+                d->find = DialogText(dlg, IDC_REPLACE_FIND);
+                d->with = DialogText(dlg, IDC_REPLACE_WITH);
+                d->matchCase = IsDlgButtonChecked(dlg, IDC_REPLACE_CASE) == BST_CHECKED;
+                if (d->find.empty()) {
+                    SetFocus(GetDlgItem(dlg, IDC_REPLACE_FIND));
+                    return TRUE;
+                }
+                EndDialog(dlg, IDOK);
+                return TRUE;
+            }
+            if (LOWORD(wp) == IDCANCEL) {
+                EndDialog(dlg, IDCANCEL);
+                return TRUE;
+            }
+            break;
+    }
+    return FALSE;
+}
+
+std::wstring CommentKind(int subtype) {
+    switch (subtype) {
+        case kAnnotNote: return L"Note";
+        case kMarkupHighlight: return L"Highlight";
+        case kMarkupUnderline: return L"Underline";
+        case kMarkupStrikeOut: return L"Strikethrough";
+        default: return L"Marking";
+    }
+}
+
+struct CommentsDialog {
+    const std::vector<std::pair<int, CommentInfo>>* items = nullptr;
+    int chosen = -1;  // index into items
+};
+
+INT_PTR CALLBACK CommentsDlgProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
+    auto* d = (CommentsDialog*)GetWindowLongPtrW(dlg, DWLP_USER);
+    HWND list = GetDlgItem(dlg, IDC_COMMENTS_LIST);
+    auto selected = [&] { return (int)SendMessageW(list, LVM_GETNEXTITEM, (WPARAM)-1, LVNI_SELECTED); };
+    switch (msg) {
+        case WM_INITDIALOG: {
+            d = (CommentsDialog*)lp;
+            SetWindowLongPtrW(dlg, DWLP_USER, (LONG_PTR)d);
+            const size_t n = d->items->size();
+            SetDlgItemTextW(dlg, IDC_COMMENTS_INFO,
+                            (std::to_wstring(n) + (n == 1 ? L" comment" : L" comments") +
+                             L" in this document. Double-click one to go to it.")
+                                .c_str());
+            SendMessageW(list, LVM_SETEXTENDEDLISTVIEWSTYLE, 0, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
+            RECT rc;
+            GetClientRect(list, &rc);
+            const int w = rc.right - GetSystemMetrics(SM_CXVSCROLL);
+            const wchar_t* names[] = {L"Page", L"Type", L"Author", L"Comment"};
+            const int widths[] = {w * 10 / 100, w * 15 / 100, w * 20 / 100, w * 55 / 100};
+            for (int c = 0; c < 4; ++c) {
+                LVCOLUMNW col{};
+                col.mask = LVCF_TEXT | LVCF_WIDTH;
+                col.pszText = const_cast<wchar_t*>(names[c]);
+                col.cx = widths[c];
+                SendMessageW(list, LVM_INSERTCOLUMNW, c, (LPARAM)&col);
+            }
+            for (size_t i = 0; i < n; ++i) {
+                const auto& [page, c] = (*d->items)[i];
+                std::wstring cells[] = {std::to_wstring(page + 1), CommentKind(c.subtype), c.author, c.text};
+                for (wchar_t& ch : cells[3])
+                    if (ch == L'\r' || ch == L'\n') ch = L' ';
+                LVITEMW item{};
+                item.mask = LVIF_TEXT;
+                item.iItem = (int)i;
+                item.pszText = cells[0].data();
+                SendMessageW(list, LVM_INSERTITEMW, 0, (LPARAM)&item);
+                for (int c2 = 1; c2 < 4; ++c2) {
+                    item.iSubItem = c2;
+                    item.pszText = cells[c2].data();
+                    SendMessageW(list, LVM_SETITEMTEXTW, i, (LPARAM)&item);
+                }
+            }
+            LVITEMW sel{};
+            sel.stateMask = sel.state = LVIS_SELECTED | LVIS_FOCUSED;
+            SendMessageW(list, LVM_SETITEMSTATE, 0, (LPARAM)&sel);
+            SetFocus(list);
+            return FALSE;
+        }
+        case WM_NOTIFY: {
+            const auto* nm = (const NMHDR*)lp;
+            if (nm->idFrom == IDC_COMMENTS_LIST && nm->code == NM_DBLCLK && selected() >= 0) {
+                d->chosen = selected();
+                EndDialog(dlg, IDC_COMMENTS_GOTO);
+                return TRUE;
+            }
+            break;
+        }
+        case WM_COMMAND:
+            switch (LOWORD(wp)) {
+                case IDC_COMMENTS_GOTO:
+                case IDC_COMMENTS_EDIT:
+                case IDC_COMMENTS_DELETE:
+                    if (selected() < 0) return TRUE;
+                    d->chosen = selected();
+                    EndDialog(dlg, LOWORD(wp));
+                    return TRUE;
+                case IDOK:  // Enter in the list
+                    if (selected() >= 0) {
+                        d->chosen = selected();
+                        EndDialog(dlg, IDC_COMMENTS_GOTO);
+                    }
+                    return TRUE;
+                case IDCANCEL: EndDialog(dlg, IDCANCEL); return TRUE;
+            }
+            break;
+    }
+    return FALSE;
+}
+}  // namespace
+
+HMENU MainWindow::CreateMarkupMenu() {
+    const UINT selFlag = View().HasSelection() ? 0 : MF_GRAYED;
+    HMENU markup = CreatePopupMenu();
+    AppendMenuW(markup, MF_STRING | selFlag, ID_HIGHLIGHT, L"&Highlight\tCtrl+H");
+    AppendMenuW(markup, MF_STRING | selFlag, ID_UNDERLINE, L"&Underline\tCtrl+U");
+    AppendMenuW(markup, MF_STRING | selFlag, ID_STRIKEOUT, L"&Strikethrough\tCtrl+K");
+    AppendMenuW(markup, MF_SEPARATOR, 0, nullptr);
+    for (int i = 0; i <= ID_HL_COLOR_LAST - ID_HL_COLOR_FIRST; ++i)
+        AppendMenuW(markup, MF_STRING, ID_HL_COLOR_FIRST + i, kHighlightColorNames[i]);
+    CheckMenuRadioItem(markup, ID_HL_COLOR_FIRST, ID_HL_COLOR_LAST,
+                       ID_HL_COLOR_FIRST + m_settings.highlightColor, MF_BYCOMMAND);
+    return markup;
+}
+
+HMENU MainWindow::CreateEditPdfMenu() {
+    PdfView& view = View();
+    const bool doc = view.HasDocument();
+    const UINT docFlag = doc ? 0 : MF_GRAYED;
+    const UINT selFlag = view.HasSelection() ? 0 : MF_GRAYED;
+    HMENU m = CreatePopupMenu();
+    AppendMenuW(m, MF_STRING | docFlag | (view.Tool() == ViewTool::EditText ? MF_CHECKED : 0), ID_EDIT_TEXT,
+                L"Edit &text\tCtrl+E");
+    AppendMenuW(m, MF_STRING | docFlag, ID_REPLACE_TEXT, L"Find and &replace text\x2026\tCtrl+Shift+H");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_STRING | docFlag | (view.Tool() == ViewTool::AddComment ? MF_CHECKED : 0),
+                ID_ADD_COMMENT, L"Add &comment\tCtrl+M");
+    AppendMenuW(m, MF_STRING | selFlag, ID_COMMENT_SELECTION, L"Comment on &selected text\x2026\tCtrl+Shift+M");
+    AppendMenuW(m, MF_STRING | docFlag, ID_SHOW_COMMENTS, L"&All comments\x2026");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_POPUP | docFlag, (UINT_PTR)CreateMarkupMenu(), L"Mar&k up text");
+    AppendMenuW(m, MF_POPUP | docFlag, (UINT_PTR)CreatePagesMenu(), L"Edit &pages");
+    return m;
+}
+
+void MainWindow::ShowEditPdfMenu() {
+    HMENU m = CreateEditPdfMenu();
+    const RECT rc = m_toolbar.ItemScreenRect(ID_EDIT_PDF_MENU);
+    TrackPopupMenu(m, TPM_LEFTALIGN | TPM_TOPALIGN, rc.left, rc.bottom, 0, m_hwnd, nullptr);
+    DestroyMenu(m);
+}
+
+void MainWindow::SetTool(ViewTool tool) {
+    if (!CanEdit()) return;
+    if (m_fullscreen && tool != ViewTool::Select) ToggleFullscreen();
+    View().SetTool(tool);
+    UpdateUi();
+}
+
+void MainWindow::ReplaceTextInDocument() {
+    if (!CanEdit()) return;
+    ReplaceDialog d{m_replaceFind, m_replaceWith, m_replaceCase};
+    if (DialogBoxParamW(m_inst, MAKEINTRESOURCEW(IDD_REPLACE), m_hwnd, ReplaceDlgProc, (LPARAM)&d) != IDOK)
+        return;
+    m_replaceFind = d.find;
+    m_replaceWith = d.with;
+    m_replaceCase = d.matchCase;
+    EditOp op;
+    op.kind = EditOp::FindReplace;
+    op.find = d.find;
+    op.text = d.with;
+    op.matchCase = d.matchCase;
+    SendEdit(std::move(op));
+}
+
+void MainWindow::NewComment(int page, float x, float y) {
+    if (!CanEdit()) return;
+    CommentDialog d;
+    const std::wstring author = CurrentUserName();
+    d.info = L"New comment on page " + std::to_wstring(page + 1) + (author.empty() ? L"" : L" by " + author);
+    if (DialogBoxParamW(m_inst, MAKEINTRESOURCEW(IDD_COMMENT), m_hwnd, CommentDlgProc, (LPARAM)&d) != IDOK)
+        return;
+    bool blank = true;
+    for (wchar_t c : d.text)
+        if (!iswspace(c)) blank = false;
+    if (blank) return;
+    EditOp op;
+    op.kind = EditOp::AddNote;
+    op.page = page;
+    op.x = x;
+    op.y = y;
+    op.text = d.text;
+    op.author = author;
+    SendEdit(std::move(op));
+}
+
+void MainWindow::OpenComment(int page, const CommentInfo& c) {
+    if (!CanEdit()) return;
+    CommentDialog d;
+    d.text = c.text;
+    d.canDelete = true;
+    d.info = CommentKind(c.subtype) + L" on page " + std::to_wstring(page + 1);
+    if (!c.author.empty()) d.info += L" by " + c.author;
+    const std::wstring when = FormatPdfDate(c.date);
+    if (!when.empty()) d.info += L", " + when;
+    const INT_PTR r = DialogBoxParamW(m_inst, MAKEINTRESOURCEW(IDD_COMMENT), m_hwnd, CommentDlgProc, (LPARAM)&d);
+    EditOp op;
+    op.page = page;
+    op.index = c.annot;
+    if (r == IDC_COMMENT_DELETE) {
+        op.kind = EditOp::DeleteAnnot;
+    } else if (r == IDOK && d.text != c.text) {
+        op.kind = EditOp::EditComment;
+        op.text = d.text;
+        op.author = CurrentUserName();
+    } else {
+        return;
+    }
+    SendEdit(std::move(op));
+}
+
+void MainWindow::CommentOnSelection() {
+    if (!CanEdit()) return;
+    if (!View().HasSelection()) {
+        MessageBoxW(m_hwnd,
+                    L"Select the text to comment on first (drag over it), or use \x201C"
+                    L"Add comment\x201D to put a note anywhere on the page.",
+                    APP_NAME, MB_ICONINFORMATION);
+        return;
+    }
+    TextPos from, to;
+    View().GetSelection(from, to);
+    CommentDialog d;
+    d.info = L"Comment on the selected text (it is highlighted)";
+    if (DialogBoxParamW(m_inst, MAKEINTRESOURCEW(IDD_COMMENT), m_hwnd, CommentDlgProc, (LPARAM)&d) != IDOK)
+        return;
+    AddMarkup(kMarkupHighlight, d.text);
+}
+
+void MainWindow::OnCommentList(CommentListResult* result) {
+    std::unique_ptr<CommentListResult> res(result);
+    const int index = TabByDocId(res->docId);
+    if (index < 0 || index != m_active) return;
+    if (res->comments.empty()) {
+        MessageBoxW(m_hwnd,
+                    L"This document has no comments yet.\n\nTo add one, click \x201C" L"Comment\x201D "
+                    L"on the toolbar (Ctrl+M) and click on the page.",
+                    APP_NAME, MB_ICONINFORMATION);
+        return;
+    }
+    CommentsDialog d;
+    d.items = &res->comments;
+    const INT_PTR r = DialogBoxParamW(m_inst, MAKEINTRESOURCEW(IDD_COMMENTS), m_hwnd, CommentsDlgProc, (LPARAM)&d);
+    if (d.chosen < 0 || d.chosen >= (int)res->comments.size() || TabByDocId(res->docId) != m_active) return;
+    const auto& [page, comment] = res->comments[(size_t)d.chosen];
+    if (r == IDC_COMMENTS_GOTO) {
+        View().GoToPage(page);
+    } else if (r == IDC_COMMENTS_EDIT) {
+        View().GoToPage(page);
+        OpenComment(page, comment);
+    } else if (r == IDC_COMMENTS_DELETE) {
+        EditOp op;
+        op.kind = EditOp::DeleteAnnot;
+        op.page = page;
+        op.index = comment.annot;
+        SendEdit(std::move(op));
+    }
 }
