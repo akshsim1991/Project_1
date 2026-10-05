@@ -51,7 +51,7 @@ Public Class PowerTerminal
         End Get
     End Property
 
-    Public Overrides Sub DrawSymbol(g As Graphics, r As RenderContext)
+    Public Overrides Sub DrawSymbol(g As DrawSurface, r As RenderContext)
         Dim plus = _polarity = Polarity.Plus24V
         Dim cy = If(plus, 10.0F, 20.0F)
         g.DrawLine(r.PenFor(Ports(0)), 20, If(plus, cy + 5, 0), 20, If(plus, 30, cy - 5))
@@ -126,7 +126,7 @@ Public Class ElectricContact
         End Get
     End Property
 
-    Public Overrides Sub DrawSymbol(g As Graphics, r As RenderContext)
+    Public Overrides Sub DrawSymbol(g As DrawSurface, r As RenderContext)
         Dim closed = If(r.Simulating, _closed, NormallyClosed)
         Dim pTop = Ports(0), pBottom = Ports(1)
         Dim penTop = r.PenFor(pTop), penBottom = r.PenFor(pBottom)
@@ -170,6 +170,7 @@ Public Class ElectricContact
         ElseIf Not String.IsNullOrWhiteSpace(Reference) Then
             g.DrawString(Reference, r.SmallFont, r.MarkBrush, 26, 24)
         End If
+        If Not String.IsNullOrEmpty(CrossReference) Then g.DrawString("(" & CrossReference & ")", r.SmallFont, r.MarkBrush, 26, If(String.IsNullOrEmpty(Label), 21, 34))
     End Sub
 
     <Browsable(False)> Public Overrides ReadOnly Property IsManuallyOperated As Boolean
@@ -292,9 +293,13 @@ Public Class ElectricCoil
         End Get
     End Property
 
-    Public Overrides Sub DrawSymbol(g As Graphics, r As RenderContext)
+    Public Overrides Sub DrawSymbol(g As DrawSurface, r As RenderContext)
         g.DrawLine(r.PenFor(Ports(0)), 20, 0, 20, 18)
         g.DrawLine(r.PenFor(Ports(1)), 20, 42, 20, 60)
+        If Not String.IsNullOrEmpty(CrossReference) Then
+            ' Contact / valve cross-reference, as on a real ladder diagram.
+            g.DrawString(CrossReference.Replace("  ", vbLf), r.SmallFont, r.MarkBrush, 36, 44)
+        End If
         Dim on_ = r.Simulating AndAlso _active
         Dim outline = If(r.Simulating AndAlso _energized, r.Energized, r.Line)
         If _kind = CoilKind.Lamp Then

@@ -235,19 +235,42 @@ Public Class CircuitCanvas
         ' Paint everything (the buffer is double buffered anyway); some GDI+ implementations
         ' mis-scale the clip region once zoom and per-symbol transforms are combined.
         g.ResetClip()
+        g.Clear(Scheme.Background)
         g.TranslateTransform(AutoScrollPosition.X, AutoScrollPosition.Y)
         g.ScaleTransform(_zoom, _zoom)
-        If Not Simulating Then DrawGrid(g, ClientRectangle)
-        DrawContent(g, interactive:=True)
+        Using s As New GdiSurface(g, Scheme)
+            If Not Simulating Then DrawGrid(s, ClientRectangle)
+            DrawContent(s, interactive:=True)
+        End Using
     End Sub
 
-    ''' <summary>Draws the circuit (without grid, ports or selection) onto any graphics surface.</summary>
+    ''' <summary>Colours used on screen (light or dark mode).</summary>
+    Public Property Scheme As ColorScheme
+        Get
+            Return _scheme
+        End Get
+        Set(value As ColorScheme)
+            _scheme = value
+            BackColor = value.Background
+            Invalidate()
+        End Set
+    End Property
+    Private _scheme As ColorScheme = ColorScheme.Light
+
+    ''' <summary>Draws the circuit (without grid, ports or selection) onto a bitmap's graphics.</summary>
     Public Sub PaintTo(g As Graphics)
         g.SmoothingMode = SmoothingMode.AntiAlias
-        DrawContent(g, interactive:=False)
+        Using s As New GdiSurface(g)
+            DrawContent(s, interactive:=False)
+        End Using
     End Sub
 
-    Private Sub DrawContent(g As Graphics, interactive As Boolean)
+    ''' <summary>Draws the circuit onto any surface (used for vector export).</summary>
+    Public Sub PaintTo(s As DrawSurface)
+        DrawContent(s, interactive:=False)
+    End Sub
+
+    Private Sub DrawContent(g As DrawSurface, interactive As Boolean)
         Using ctx As New RenderContext() With {.Simulating = Simulating, .Interactive = interactive}
             DrawTubes(g, ctx)
             Using labelFont As New Font("Segoe UI", 8.5F, FontStyle.Bold)
@@ -283,11 +306,11 @@ Public Class CircuitCanvas
         End Using
     End Sub
 
-    Private Sub DrawGrid(g As Graphics, clip As Rectangle)
+    Private Sub DrawGrid(g As DrawSurface, clip As Rectangle)
         Dim tl = ToWorld(clip.Location)
         Dim br = ToWorld(New Point(clip.Right, clip.Bottom))
         Dim stepSize = GridSize * If(_zoom < 0.8F, 2, 1)
-        Using b As New SolidBrush(Color.FromArgb(205, 210, 220))
+        Using b As New SolidBrush(ColorScheme.Light.GridDot)
             Dim x0 = CSng(Math.Floor(tl.X / stepSize) * stepSize)
             Dim y0 = CSng(Math.Floor(tl.Y / stepSize) * stepSize)
             Dim y = y0
@@ -302,7 +325,7 @@ Public Class CircuitCanvas
         End Using
     End Sub
 
-    Private Sub DrawTubes(g As Graphics, ctx As RenderContext)
+    Private Sub DrawTubes(g As DrawSurface, ctx As RenderContext)
         Using idleAir As New Pen(If(Simulating, RenderContext.IdleTubeColor, Color.Black), 1.6F),
               idleWire As New Pen(If(Simulating, Color.FromArgb(90, 90, 90), Color.FromArgb(40, 40, 40)), 1.2F),
               highlight As New Pen(Color.FromArgb(120, 255, 170, 0), 7)
@@ -321,7 +344,7 @@ Public Class CircuitCanvas
         End Using
     End Sub
 
-    Private Sub DrawPorts(g As Graphics, interactive As Boolean)
+    Private Sub DrawPorts(g As DrawSurface, interactive As Boolean)
         For Each p In _circuit.AllPorts()
             If TypeOf p.Owner Is Junction Then Continue For
             Dim w = p.WorldPos()
@@ -350,7 +373,7 @@ Public Class CircuitCanvas
         End If
     End Sub
 
-    Private Sub DrawSelection(g As Graphics)
+    Private Sub DrawSelection(g As DrawSurface)
         If Simulating Then Return
         Using p As New Pen(Color.FromArgb(255, 140, 0), 1.2F) With {.DashStyle = DashStyle.Dash}
             For Each el In _selection

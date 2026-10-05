@@ -19,7 +19,7 @@ Public Class CheckValve
         End Get
     End Property
 
-    Public Overrides Sub DrawSymbol(g As Graphics, r As RenderContext)
+    Public Overrides Sub DrawSymbol(g As DrawSurface, r As RenderContext)
         g.DrawLine(r.PenFor(Ports(0)), 0, 20, 24, 20)
         g.DrawLine(r.PenFor(Ports(1)), 36, 20, 60, 20)
         ' Seat (V with its point upstream) and ball: flow from 1 lifts the ball off the seat.
@@ -60,7 +60,7 @@ Public Class QuickExhaustValve
         End Get
     End Property
 
-    Public Overrides Sub DrawSymbol(g As Graphics, r As RenderContext)
+    Public Overrides Sub DrawSymbol(g As DrawSurface, r As RenderContext)
         g.DrawLine(r.PenFor(Ports(0)), 0, 30, 20, 30)
         g.DrawLine(r.PenFor(Ports(1)), 40, 0, 40, 18)
         g.DrawLine(r.PenFor(Ports(2)), 40, 42, 40, 60)
@@ -133,7 +133,7 @@ Public Class PressureRegulator
         End Get
     End Property
 
-    Public Overrides Sub DrawSymbol(g As Graphics, r As RenderContext)
+    Public Overrides Sub DrawSymbol(g As DrawSurface, r As RenderContext)
         Dim pin = r.PenFor(Ports(0)), pout = r.PenFor(Ports(1))
         If Style = RegulatorStyle.ServiceUnit Then
             g.DrawLine(pin, 0, 30, 14, 30)
@@ -165,7 +165,7 @@ Public Class PressureRegulator
         g.DrawString(txt, r.SmallFont, r.TextBrush, 36, 44)
     End Sub
 
-    Private Sub DrawRegulatorBox(g As Graphics, r As RenderContext, x As Single, y As Single, size As Single)
+    Private Sub DrawRegulatorBox(g As DrawSurface, r As RenderContext, x As Single, y As Single, size As Single)
         g.FillRectangle(r.BodyBrush, x, y, size, size)
         g.DrawRectangle(r.Line, x, y, size, size)
         Dim cy = y + size / 2
@@ -198,7 +198,7 @@ Public Class Silencer
         End Get
     End Property
 
-    Public Overrides Sub DrawSymbol(g As Graphics, r As RenderContext)
+    Public Overrides Sub DrawSymbol(g As DrawSurface, r As RenderContext)
         g.DrawLine(r.Line, 20, 0, 20, 8)
         g.DrawPolygon(r.Line, {New PointF(20, 8), New PointF(10, 22), New PointF(30, 22)})
         g.DrawRectangle(r.Line, 10, 22, 20, 6)
@@ -225,7 +225,7 @@ Public Class SemiRotaryActuator
         End Get
     End Property
 
-    Public Overrides Sub DrawSymbol(g As Graphics, r As RenderContext)
+    Public Overrides Sub DrawSymbol(g As DrawSurface, r As RenderContext)
         g.FillRectangle(r.BodyBrush, 30, -4, 60, 34)
         g.DrawRectangle(r.Line, 30, -4, 60, 34)
         g.DrawLine(r.PenFor(Ports(0)), 10, 40, 10, 13)
@@ -275,7 +275,7 @@ Public Class AirMotor
         End Get
     End Property
 
-    Public Overrides Sub DrawSymbol(g As Graphics, r As RenderContext)
+    Public Overrides Sub DrawSymbol(g As DrawSurface, r As RenderContext)
         Dim p = Ports(0)
         g.DrawLine(r.PenFor(p), 20, 38, 20, 50)
         g.FillEllipse(r.BodyBrush, 2, 2, 36, 36)
@@ -316,18 +316,32 @@ Public Class Junction
 
     Public Overrides ReadOnly Property DisplayName As String
         Get
-            Return If(_electric, "Wire junction / bend point", "Tube junction / bend point")
+            Select Case Medium
+                Case PortKind.Electric : Return "Wire junction / bend point"
+                Case PortKind.Hydraulic : Return "Hydraulic junction / bend point"
+                Case Else : Return "Tube junction / bend point"
+            End Select
         End Get
     End Property
 
-    <Category("Junction"), DisplayName("Electrical"), Description("True for joining wires, False for joining tubes.")>
-    Public Property IsElectric As Boolean
+    ''' <summary>Kept for files from PneuSim 2.0; use <see cref="Medium"/>.</summary>
+    <Browsable(False)> Public Property IsElectric As Boolean
         Get
             Return _electric
         End Get
         Set(value As Boolean)
-            _electric = value
-            Ports(0).Kind = If(value, PortKind.Electric, PortKind.Pneumatic)
+            Medium = If(value, PortKind.Electric, PortKind.Pneumatic)
+        End Set
+    End Property
+
+    <Category("Junction"), DisplayName("Joins"), Description("Tubes (pneumatic), wires (electric) or hydraulic lines.")>
+    Public Property Medium As PortKind
+        Get
+            Return Ports(0).Kind
+        End Get
+        Set(value As PortKind)
+            _electric = value = PortKind.Electric
+            Ports(0).Kind = value
         End Set
     End Property
 
@@ -343,10 +357,9 @@ Public Class Junction
         End Get
     End Property
 
-    Public Overrides Sub DrawSymbol(g As Graphics, r As RenderContext)
+    Public Overrides Sub DrawSymbol(g As DrawSurface, r As RenderContext)
         Dim p = Ports(0)
-        Dim c = If(r.Simulating AndAlso p.IsPressurized,
-                   If(_electric, RenderContext.EnergizedColor, RenderContext.PressureColor), Color.Black)
+        Dim c = If(r.Simulating AndAlso p.IsPressurized, RenderContext.ActiveColor(p.Kind), Color.Black)
         If p.ConnectionCount >= 3 Then
             Using b As New SolidBrush(c)
                 g.FillEllipse(b, -3.5F, -3.5F, 7, 7)
@@ -410,7 +423,7 @@ Public Class TextNote
         End Get
     End Property
 
-    Public Overrides Sub DrawSymbol(g As Graphics, r As RenderContext)
+    Public Overrides Sub DrawSymbol(g As DrawSurface, r As RenderContext)
         Using f = MakeFont()
             g.DrawString(_text, f, Brushes.Black, 0, 0)
         End Using

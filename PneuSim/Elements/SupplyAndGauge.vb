@@ -35,7 +35,7 @@ Public Class AirSupply
         End Get
     End Property
 
-    Public Overrides Sub DrawSymbol(g As Graphics, r As RenderContext)
+    Public Overrides Sub DrawSymbol(g As DrawSurface, r As RenderContext)
         Dim pen = r.PenFor(Ports(0))
         g.DrawLine(pen, 20, 0, 20, 18)
         g.FillEllipse(r.BodyBrush, 8, 18, 24, 24)
@@ -62,6 +62,16 @@ Public Class PressureGauge
     Public Overrides ReadOnly Property TypeName As String = "PressureGauge"
     Public Overrides ReadOnly Property DisplayName As String = "Pressure gauge"
 
+    <Category("Gauge"), DisplayName("Hydraulic"), Description("True: hydraulic gauge (0–160 bar). False: pneumatic gauge (0–10 bar).")>
+    Public Property Hydraulic As Boolean
+        Get
+            Return Ports(0).Kind = PortKind.Hydraulic
+        End Get
+        Set(value As Boolean)
+            Ports(0).Kind = If(value, PortKind.Hydraulic, PortKind.Pneumatic)
+        End Set
+    End Property
+
     Public Overrides ReadOnly Property LocalBounds As RectangleF
         Get
             Return New RectangleF(2, 2, 36, 48)
@@ -74,17 +84,18 @@ Public Class PressureGauge
         End Get
     End Property
 
-    Public Overrides Sub DrawSymbol(g As Graphics, r As RenderContext)
+    Public Overrides Sub DrawSymbol(g As DrawSurface, r As RenderContext)
         Dim p = Ports(0)
         g.DrawLine(r.PenFor(p), 20, 38, 20, 50)
         g.FillEllipse(r.BodyBrush, 2, 2, 36, 36)
         g.DrawEllipse(r.Line, 2, 2, 36, 36)
         ' Needle: -135 deg at 0 bar to +135 deg at 10 bar.
-        Dim angle = (-135 + 270 * Math.Min(1, p.Pressure / 10)) * Math.PI / 180
+        Dim scaleMax = If(Hydraulic, 160.0, 10.0)
+        Dim angle = (-135 + 270 * Math.Min(1, p.Pressure / scaleMax)) * Math.PI / 180
         Dim tip As New PointF(CSng(20 + 14 * Math.Sin(angle)), CSng(20 - 14 * Math.Cos(angle)))
         Symbols.Arrow(g, If(r.Simulating AndAlso p.IsPressurized, r.Pressure, r.Line), New PointF(20, 20), tip, 5)
         If r.Simulating Then
-            g.DrawString($"{p.Pressure:0.0} bar", r.SmallFont, r.TextBrush, 40, 26)
+            g.DrawString(If(Hydraulic, $"{p.Pressure:0} bar", $"{p.Pressure:0.0} bar"), r.SmallFont, r.TextBrush, 40, 26)
         End If
     End Sub
 End Class

@@ -297,6 +297,175 @@ Module TestMain
         End Try
         Check("cascade rejects parallel steps with a message", cascadeParallelRejected)
 
+        ' ---------------- realistic physics
+        c = ex(1).Build() : s = New Simulator(c) With {.RealPhysics = True} : s.Reset()
+        Press(s, Find(c, "1S1"))
+        Dim tExt = -1.0
+        For i = 1 To 2000
+            s.Step(0.005)
+            If tExt < 0 AndAlso Pos(c) >= 0.999 Then tExt = s.Time
+        Next
+        Dim cylR = DirectCast(Find(c, "1A"), CylinderBase)
+        Check("real: meter-out cylinder extends", tExt > 0.05 AndAlso tExt < 8, $"t={tExt:0.00}s")
+        Check("real: cap pressure builds to supply", cylR.CapPressure > 5.5, $"{cylR.CapPressure:0.00} bar")
+        Check("real: air consumption recorded", s.AirConsumed > 0.05, $"{s.AirConsumed:0.000} NL")
+        c = ex(1).Build()
+        DirectCast(c.Elements.First(Function(e) e.Label = "1V3"), FlowControlValve).OpeningPercent = 100
+        s = New Simulator(c) With {.RealPhysics = True} : s.Reset()
+        Press(s, Find(c, "1S1"))
+        Dim tFast = -1.0
+        For i = 1 To 2000
+            s.Step(0.005)
+            If tFast < 0 AndAlso Pos(c) >= 0.999 Then tFast = s.Time
+        Next
+        Check("real: opening the throttle makes it faster", tFast > 0 AndAlso tFast < tExt, $"t={tFast:0.00}s vs {tExt:0.00}s")
+        c = ex(1).Build()
+        DirectCast(Find(c, "1A"), CylinderBase).LoadForceN = 600
+        s = New Simulator(c) With {.RealPhysics = True} : s.Reset()
+        Press(s, Find(c, "1S1")) : Run(s, 3)
+        Check("real: overload stalls the cylinder (600 N > 6 bar x 32 mm)", Pos(c) < 0.01, Pos(c).ToString("0.000"))
+
+        ' ---------------- hydraulics
+        c = ex(8).Build() : s = New Simulator(c) : s.Reset()
+        Dim hcyl = DirectCast(Find(c, "1A"), HydraulicCylinder)
+        Dim hg = DirectCast(Find(c, "0G1"), PressureGauge)
+        Check("hydraulic: tandem centre unloads the pump", hg.Ports(0).Pressure <= 3.01, $"{hg.Ports(0).Pressure:0.0} bar")
+        Press(s, Find(c, "S1")) : Run(s, 0.5)
+        Dim pMoving = hg.Ports(0).Pressure
+        Check("hydraulic: pressure set by the load while moving (~18 bar)", pMoving > 15 AndAlso pMoving < 21, $"{pMoving:0.0} bar")
+        Dim tH = -1.0
+        For i = 1 To 1000
+            s.Step(0.005)
+            If tH < 0 AndAlso hcyl.Position >= 0.999 Then tH = s.Time
+        Next
+        Check("hydraulic: speed = flow / area (200 mm in ~1.9 s)", tH > 1.7 AndAlso tH < 2.1, $"t={tH:0.00}s")
+        Check("hydraulic: relief pressure at end of stroke", Math.Abs(hg.Ports(0).Pressure - 60) < 0.1 AndAlso DirectCast(Find(c, "0V1"), ReliefValve).IsOpen, $"{hg.Ports(0).Pressure:0.0} bar")
+        Release(s, Find(c, "S1")) : Run(s, 0.5)
+        Check("hydraulic: cylinder holds in centre position", hcyl.Position >= 0.999)
+        Press(s, Find(c, "S2")) : Run(s, 2.5)
+        Check("hydraulic: retracts faster (smaller annulus area)", hcyl.Position <= 0.001)
+        Check("hydraulic: no warnings", s.Warnings.Count = 0, String.Join(";", s.Warnings))
+        c.Remove(Find(c, "0V1"))
+        s = New Simulator(c) : s.Reset()
+        Press(s, Find(c, "S1")) : Run(s, 3)
+        Check("hydraulic: missing relief valve is warned about", s.Warnings.Any(Function(w) w.Contains("relief")), String.Join(";", s.Warnings))
+        Render(ex(8).Build(), False, "hydraulic_edit")
+
+        ' Pressure sequence valve in realistic mode: drill starts only after clamping pressure reaches 4 bar.
+        c = ex(9).Build() : s = New Simulator(c) With {.RealPhysics = True} : s.Reset()
+        Click(s, Find(c, "1V1"))
+        Dim clampAtStart = -1.0, drillAtStart = -1.0
+        For i = 1 To 1200
+            s.Step(0.005)
+            If clampAtStart < 0 AndAlso Pos(c, "1A") >= 0.999 Then clampAtStart = s.Time
+            If drillAtStart < 0 AndAlso Pos(c, "2A") > 0.01 Then drillAtStart = s.Time
+        Next
+        Check("sequence valve: drill starts after clamping is complete", clampAtStart > 0 AndAlso drillAtStart > clampAtStart, $"clamp {clampAtStart:0.00}s, drill {drillAtStart:0.00}s")
+        Check("sequence valve: drill extends", Pos(c, "2A") >= 0.999)
+
+        ' Projects: multi-page save/load with page connectors and cross references.
+        Dim pr As New Project(ex(7).Build(), "Latch")
+        Dim pg2 = pr.AddPage("Lamp")
+        pr.UpdateCrossReferences()
+        Dim coilK1 = pr.AllElements().OfType(Of ElectricCoil)().First(Function(k) k.Label = "K1")
+        Check("cross-reference lists relay contacts", coilK1.CrossReference.Contains("NO"), coilK1.CrossReference)
+        Dim pr2 = Project.FromXml(pr.ToXml())
+        Check("project round trip keeps pages", pr2.Pages.Count = 2 AndAlso pr2.Pages(1).Name = "Lamp" AndAlso pr2.Info.Title = "Latch")
+        Dim legacy = Project.FromXml(ex(0).Build().ToXml())
+        Check("old single-page files still open", legacy.Pages.Count = 1 AndAlso legacy.Pages(0).Circuit.Elements.Count = ex(0).Build().Elements.Count)
+        ' A wire split across two pages with page connectors still works.
+        Dim split As New Project(New Circuit())
+        Dim pageA = split.Pages(0).Circuit, pageB = split.AddPage().Circuit
+        Dim plusT = pageA.Add(New PowerTerminal(), 0, 0)
+        Dim btnS1 = pageA.Add(Library.Contact(ContactOperator.PushButton, False, "S1"), 0, 60)
+        Dim conA = pageA.Add(New PageConnector() With {.Medium = PortKind.Electric, .Label = "W1"}, 40, 140)
+        pageA.Connect(plusT, "1", btnS1, "1") : pageA.Connect(btnS1, "2", conA, "1")
+        Dim conB = pageB.Add(New PageConnector() With {.Medium = PortKind.Electric, .Label = "W1"}, 0, 0)
+        Dim lampB = pageB.Add(New ElectricCoil() With {.Kind = CoilKind.Lamp, .Label = "H1"}, 60, 0)
+        Dim zeroB = pageB.Add(New PowerTerminal() With {.Polarity = Polarity.Zero0V}, 60, 80)
+        pageB.Connect(conB, "1", lampB, "A1") : pageB.Connect(lampB, "A2", zeroB, "1")
+        s = New Simulator(split.SimulationCircuit()) : s.Reset()
+        Press(s, btnS1) : Run(s, 0.05)
+        Check("page connectors join wires across pages", lampB.Active)
+
+        ' Vector export.
+        Dim exC = ex(7).Build()
+        VectorExport.SaveSvg(exC, IO.Path.Combine("out", "latch.svg"))
+        VectorExport.SaveDxf(exC, IO.Path.Combine("out", "latch.dxf"))
+        Dim doc As New PdfDocument()
+        Dim page = doc.AddPage(842, 595)
+        VectorExport.DrawShapes(page, VectorExport.Record(exC), New Drawing.RectangleF(30, 30, 782, 450))
+        VectorExport.DrawTitleBlock(page, New ProjectInfo With {.Title = "Self-holding circuit", .Author = "Test"}, "Page 1", 1, 1)
+        doc.Save(IO.Path.Combine("out", "latch.pdf"))
+        Dim svgText = IO.File.ReadAllText(IO.Path.Combine("out", "latch.svg"))
+        Check("SVG export has shapes and text", svgText.Contains("<polyline") AndAlso svgText.Contains(">K1<"))
+        Check("DXF export has lines", IO.File.ReadAllText(IO.Path.Combine("out", "latch.dxf")).Contains("LINE"))
+        Dim pdfBytes = IO.File.ReadAllBytes(IO.Path.Combine("out", "latch.pdf"))
+        Check("PDF export is a PDF", pdfBytes.Length > 1000 AndAlso System.Text.Encoding.ASCII.GetString(pdfBytes, 0, 5) = "%PDF-")
+
+        ' ---------------- checker and explainer
+        ' Classic A+ B+ B- A- wired directly with roller valves: has signal overlap.
+        Dim ov As New Circuit()
+        Dim cA = ov.Add(New DoubleActingCylinder() With {.RetractedMark = "1S1", .ExtendedMark = "1S2"}, 100, 40, "1A")
+        Dim cB = ov.Add(New DoubleActingCylinder() With {.RetractedMark = "2S1", .ExtendedMark = "2S2"}, 500, 40, "2A")
+        Dim vA = ov.Add(Library.V52(ValveActuator.Pilot, ValveReturn.Pilot), 10, 170, "1V1")
+        Dim vB = ov.Add(Library.V52(ValveActuator.Pilot, ValveReturn.Pilot), 410, 170, "2V1")
+        ov.Connect(vA, "4", cA, "1") : ov.Connect(vA, "2", cA, "2")
+        ov.Connect(vB, "4", cB, "1") : ov.Connect(vB, "2", cB, "2")
+        Dim supA = ov.Add(New AirSupply(), 100, 270) : ov.Connect(supA, "1", vA, "1")
+        Dim supB = ov.Add(New AirSupply(), 500, 270) : ov.Connect(supB, "1", vB, "1")
+        Dim rollers = {("1S1", "14", vA), ("1S2", "14", vB), ("2S2", "12", vB), ("2S1", "12", vA)}
+        Dim startV = ov.Add(Library.V32(ValveActuator.PushButton), 0, 520, "1S0")
+        Dim sup0 = ov.Add(New AirSupply(), 50, 620) : ov.Connect(sup0, "1", startV, "1")
+        For i = 0 To 3
+            Dim rv = ov.Add(Library.V32(ValveActuator.RollerLever), 150 + i * 150, 380, rollers(i).Item1)
+            rv.TriggerMark = rollers(i).Item1
+            ov.Connect(rv, "2", rollers(i).Item3, rollers(i).Item2)
+            If i = 0 Then
+                ov.Connect(startV, "2", rv, "1")
+            Else
+                Dim sp = ov.Add(New AirSupply(), 200 + i * 150, 480) : ov.Connect(sp, "1", rv, "1")
+            End If
+        Next
+        Dim issuesOv = CircuitAnalysis.StaticChecks(ov)
+        Dim overlapIssue = issuesOv.FirstOrDefault(Function(x) x.Message.Contains("Signal overlap"))
+        Check("checker finds signal overlap", overlapIssue IsNot Nothing, If(overlapIssue Is Nothing, String.Join(" | ", issuesOv), overlapIssue.Message))
+        Check("checker infers the intended sequence", overlapIssue IsNot Nothing AndAlso overlapIssue.Message.Contains("A+ B+ B- A-"))
+        Check("checker offers a one-click fix", overlapIssue IsNot Nothing AndAlso overlapIssue.Fix IsNot Nothing)
+        If overlapIssue IsNot Nothing AndAlso overlapIssue.Fix IsNot Nothing Then
+            Dim fixedC = overlapIssue.Fix.Invoke()
+            s = New Simulator(fixedC) : s.Reset()
+            Click(s, Find(fixedC, "1S0"))
+            Check("the cascade fix runs the sequence", RecordMoves(fixedC, s, MotionSequence.Parse("A+ B+ B- A-"), 8) = "A+ B+ B- A-")
+            Dim eFix = CircuitAnalysis.ElectroFix(overlapIssue).Invoke()
+            s = New Simulator(eFix) : s.Reset()
+            Click(s, Find(eFix, "S1"))
+            Check("the electro-pneumatic fix runs the sequence", RecordMoves(eFix, s, MotionSequence.Parse("A+ B+ B- A-"), 8) = "A+ B+ B- A-")
+        End If
+        Dim dyn = CircuitAnalysis.DynamicCheck(ov, False)
+        Check("test run confirms the overlap", dyn.Any(Function(x) x.Message.Contains("both signals")), String.Join(" | ", dyn))
+        ' Good circuits have no errors.
+        For i = 0 To ex.Length - 1
+            Dim errs = CircuitAnalysis.StaticChecks(ex(i).Build()).Where(Function(x) x.Severity = IssueSeverity.Error).ToList()
+            Check($"no errors in example {i + 1}", errs.Count = 0, String.Join(" | ", errs))
+        Next
+        Dim genCascade = SequenceGenerator.Generate(MotionSequence.Parse("A+ B+ C+ C- B- A-"), GeneratorMethod.PneumaticCascade, False).Circuit
+        Check("no errors or overlap in a generated cascade", Not CircuitAnalysis.StaticChecks(genCascade).Any(Function(x) x.Severity = IssueSeverity.Error))
+        ' Typical mistakes.
+        Dim badSol = ex(6).Build()
+        DirectCast(badSol.Elements.OfType(Of DirectionalValve)().First(), DirectionalValve).SolenoidLabel = "1M9"
+        Check("checker: solenoid label without coil", CircuitAnalysis.StaticChecks(badSol).Any(Function(x) x.Message.Contains("1M9")))
+        Dim badSupply = ex(0).Build()
+        badSupply.Remove(badSupply.Elements.OfType(Of AirSupply)().First())
+        Check("checker: missing air supply", CircuitAnalysis.StaticChecks(badSupply).Any(Function(x) x.Message.Contains("no compressed air supply")))
+        ' Explanation.
+        Dim expl = CircuitAnalysis.Explain(ex(4).Build(), Nothing, False)
+        Console.WriteLine(expl)
+        Check("explain describes control and sequence", expl.Contains("controlled by valve 1V1") AndAlso expl.Contains("MOTION SEQUENCE"))
+        Check("explain narrates the run", expl.Contains("starts to extend") AndAlso expl.Contains("fully extended"))
+        Dim expl2 = CircuitAnalysis.Explain(ex(7).Build(), Nothing, False)
+        Check("explain follows relays and solenoids", expl2.Contains("relay K1 picks up") AndAlso expl2.Contains("solenoid 1M1"), expl2)
+
         ' Library thumbnails render.
         For Each p In Library.Presets
             Using b = Library.RenderThumbnail(p.Factory.Invoke(), 72, 48) : End Using

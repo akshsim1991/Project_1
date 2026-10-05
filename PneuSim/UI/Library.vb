@@ -99,7 +99,9 @@ Public Module Library
             g.TranslateTransform(width / 2.0F, height / 2.0F)
             g.ScaleTransform(scale, scale)
             g.TranslateTransform(-(b.Left + b.Width / 2), -(b.Top + b.Height / 2))
-            e.DrawSymbol(g, ctx)
+            Using surface As New GdiSurface(g)
+                e.DrawSymbol(surface, ctx)
+            End Using
         End Using
         Return bmp
     End Function

@@ -7,6 +7,16 @@ Public Class RenderContext
     Public Shared ReadOnly PressureColor As Color = Color.FromArgb(0, 84, 200)
     Public Shared ReadOnly IdleTubeColor As Color = Color.FromArgb(120, 170, 230)
     Public Shared ReadOnly EnergizedColor As Color = Color.FromArgb(215, 30, 30)
+    Public Shared ReadOnly HydraulicColor As Color = Color.FromArgb(200, 90, 0)
+
+    ''' <summary>Colour of an active (pressurized / live) line of the given kind.</summary>
+    Public Shared Function ActiveColor(kind As PortKind) As Color
+        Select Case kind
+            Case PortKind.Electric : Return EnergizedColor
+            Case PortKind.Hydraulic : Return HydraulicColor
+            Case Else : Return PressureColor
+        End Select
+    End Function
 
     Public Property Simulating As Boolean
 
@@ -19,6 +29,7 @@ Public Class RenderContext
     Public ReadOnly Pressure As New Pen(PressureColor, 2.4F)
     Public ReadOnly PressureDashed As New Pen(PressureColor, 1.8F) With {.DashStyle = DashStyle.Dash}
     Public ReadOnly Energized As New Pen(EnergizedColor, 2.0F)
+    Public ReadOnly HydraulicPressure As New Pen(HydraulicColor, 2.4F)
     Public ReadOnly Font As New Font("Segoe UI", 8.0F)
     Public ReadOnly SmallFont As New Font("Segoe UI", 7.0F)
     Public ReadOnly TextBrush As New SolidBrush(Color.Black)
@@ -28,7 +39,11 @@ Public Class RenderContext
     ''' <summary>Pen for a line carrying the air of the given port.</summary>
     Public Function PenFor(p As Port) As Pen
         If Simulating AndAlso p IsNot Nothing AndAlso p.IsPressurized Then
-            Return If(p.Kind = PortKind.Electric, Energized, Pressure)
+            Select Case p.Kind
+                Case PortKind.Electric : Return Energized
+                Case PortKind.Hydraulic : Return HydraulicPressure
+                Case Else : Return Pressure
+            End Select
         End If
         Return Line
     End Function
@@ -40,7 +55,7 @@ Public Class RenderContext
 
     Public Sub Dispose() Implements IDisposable.Dispose
         Line.Dispose() : Thin.Dispose() : Dashed.Dispose()
-        Pressure.Dispose() : PressureDashed.Dispose() : Energized.Dispose()
+        Pressure.Dispose() : PressureDashed.Dispose() : Energized.Dispose() : HydraulicPressure.Dispose()
         Font.Dispose() : SmallFont.Dispose()
         TextBrush.Dispose() : MarkBrush.Dispose() : BodyBrush.Dispose()
     End Sub
@@ -49,7 +64,7 @@ End Class
 ''' <summary>Drawing helpers for standard fluid power (ISO 1219) symbol parts.</summary>
 Public Module Symbols
 
-    Public Sub Arrow(g As Graphics, pen As Pen, p1 As PointF, p2 As PointF, Optional head As Single = 6)
+    Public Sub Arrow(g As DrawSurface, pen As Pen, p1 As PointF, p2 As PointF, Optional head As Single = 6)
         g.DrawLine(pen, p1, p2)
         Dim dx = p2.X - p1.X, dy = p2.Y - p1.Y
         Dim len = CSng(Math.Sqrt(dx * dx + dy * dy))
@@ -63,14 +78,14 @@ Public Module Symbols
     End Sub
 
     ''' <summary>Closed port symbol: a short stem with a cross bar ("T").</summary>
-    Public Sub Blocked(g As Graphics, pen As Pen, edge As PointF, inward As PointF)
+    Public Sub Blocked(g As DrawSurface, pen As Pen, edge As PointF, inward As PointF)
         Dim tip As New PointF(edge.X + inward.X * 9, edge.Y + inward.Y * 9)
         g.DrawLine(pen, edge, tip)
         Dim px = -inward.Y * 5, py = inward.X * 5
         g.DrawLine(pen, tip.X - px, tip.Y - py, tip.X + px, tip.Y + py)
     End Sub
 
-    Public Sub Spring(g As Graphics, pen As Pen, x1 As Single, x2 As Single, cy As Single, amp As Single)
+    Public Sub Spring(g As DrawSurface, pen As Pen, x1 As Single, x2 As Single, cy As Single, amp As Single)
         Const n = 6
         Dim pts As New List(Of PointF) From {New PointF(x1, cy)}
         For i = 1 To n
@@ -82,7 +97,7 @@ Public Module Symbols
     End Sub
 
     ''' <summary>Hollow exhaust triangle pointing away from the port along <paramref name="dir"/>.</summary>
-    Public Sub Exhaust(g As Graphics, pen As Pen, pt As PointF, dir As PointF)
+    Public Sub Exhaust(g As DrawSurface, pen As Pen, pt As PointF, dir As PointF)
         Dim apex As New PointF(pt.X + dir.X * 9, pt.Y + dir.Y * 9)
         Dim px = -dir.Y * 5, py = dir.X * 5
         g.DrawPolygon(pen, {apex, New PointF(pt.X + px + dir.X, pt.Y + py + dir.Y), New PointF(pt.X - px + dir.X, pt.Y - py + dir.Y)})

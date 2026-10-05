@@ -34,7 +34,7 @@ Public MustInherit Class LogicValve
         sim.AddEdge(Ports(Side), Ports(2))
     End Sub
 
-    Protected Sub DrawFrame(g As Graphics, r As RenderContext)
+    Protected Sub DrawFrame(g As DrawSurface, r As RenderContext)
         g.DrawLine(r.PenFor(Ports(0)), 0, 20, 10, 20)
         g.DrawLine(r.PenFor(Ports(1)), 70, 20, 80, 20)
         g.DrawLine(r.PenFor(Ports(2)), 40, 0, 40, 10)
@@ -50,7 +50,7 @@ Public Class ShuttleValve
     Public Overrides ReadOnly Property TypeName As String = "ShuttleValve"
     Public Overrides ReadOnly Property DisplayName As String = "Shuttle valve (OR)"
 
-    Public Overrides Sub DrawSymbol(g As Graphics, r As RenderContext)
+    Public Overrides Sub DrawSymbol(g As DrawSurface, r As RenderContext)
         DrawFrame(g, r)
         ' Seats at both ends and the ball resting against the side with lower pressure.
         g.DrawLine(r.Line, 20, 13, 16, 20) : g.DrawLine(r.Line, 16, 20, 20, 27)
@@ -79,7 +79,7 @@ Public Class TwoPressureValve
     Public Overrides ReadOnly Property TypeName As String = "TwoPressureValve"
     Public Overrides ReadOnly Property DisplayName As String = "Two-pressure valve (AND)"
 
-    Public Overrides Sub DrawSymbol(g As Graphics, r As RenderContext)
+    Public Overrides Sub DrawSymbol(g As DrawSurface, r As RenderContext)
         DrawFrame(g, r)
         ' Spool with a seat at each end; the spool is pushed towards the lower pressure side.
         Dim offset = If(Side = 0, -5, 5)
@@ -153,7 +153,7 @@ Public Class FlowControlValve
         End Get
     End Property
 
-    Public Overrides Sub DrawSymbol(g As Graphics, r As RenderContext)
+    Public Overrides Sub DrawSymbol(g As DrawSurface, r As RenderContext)
         Dim pen = r.PenFor(Ports(0))
         Dim pen2 = r.PenFor(Ports(1))
         g.DrawLine(pen, 0, 30, 32, 30)

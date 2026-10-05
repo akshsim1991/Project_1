@@ -9,7 +9,7 @@
 ''' - Floating: neither; pneumatic ports keep the pressure trapped in them.
 ''' Edge capacities below 1 (flow control valves) slow down the cylinders fed or vented through them.
 ''' </summary>
-Public Class Simulator
+Partial Public Class Simulator
 
     Private Structure Edge
         Public A As Integer
@@ -47,6 +47,25 @@ Public Class Simulator
     End Property
 
     Public Property Time As Double
+
+    ''' <summary>
+    ''' Realistic mode: pressures build up, flows are calculated, cylinders move according to
+    ''' bore, load and friction. Ideal mode: pressures switch instantly, speeds follow stroke times.
+    ''' </summary>
+    Public Property RealPhysics As Boolean
+
+    ''' <summary>Free air drawn from the supplies since the start, normal litres.</summary>
+    Public Property AirConsumed As Double
+
+    Public Sub AddAirConsumption(normalLitres As Double)
+        If normalLitres > 0 Then AirConsumed += normalLitres
+    End Sub
+
+    ''' <summary>Completed machine cycles: the smallest stroke count over all cylinders.</summary>
+    Public Function CompletedCycles() As Integer
+        Dim cyls = _circuit.Elements.OfType(Of CylinderBase)().ToList()
+        Return If(cyls.Count = 0, 0, cyls.Min(Function(c) c.CompletedCycles))
+    End Function
 
     ''' <summary>Problems found during the last solve (open ports blowing air, short circuits, oscillation).</summary>
     Public ReadOnly Property Warnings As New List(Of String)
@@ -97,6 +116,7 @@ Public Class Simulator
 
     Public Sub Reset()
         Time = 0
+        AirConsumed = 0
         _nextSample = 0
         History.Clear()
         Warnings.Clear()
@@ -104,12 +124,20 @@ Public Class Simulator
             e.ResetSim()
         Next
         RunLogic()
+        If RealPhysics Then
+            ' Chambers start at the pressures of the circuit at rest (e.g. rod side pressurized).
+            For Each cyl In _circuit.Elements.OfType(Of CylinderBase)()
+                cyl.InitPhysics()
+            Next
+            RunLogic()
+        End If
         RecordHistory()
     End Sub
 
     ''' <summary>Advances the simulation by <paramref name="dt"/> seconds.</summary>
     Public Sub [Step](dt As Double)
         Time += dt
+        PrepareHydraulics(dt)
         For Each e In _circuit.Elements
             e.UpdateDynamics(Me, dt)
         Next
@@ -263,11 +291,16 @@ Public Class Simulator
         For i = 0 To n - 1
             Dim p = _ports(i)
             p.Factor = 0
+            p.SupplyPressure = Math.Max(0, fed(i))
             If fed(i) > 0 Then
                 p.State = PortState.Pressurized
                 p.Pressure = fed(i)
                 If isExhaust(i) Then
-                    If p.Kind = PortKind.Electric Then shortCircuit = True Else leaking.Add(p.Owner)
+                    If p.Kind = PortKind.Electric Then
+                        shortCircuit = True
+                    ElseIf p.Kind = PortKind.Pneumatic Then
+                        leaking.Add(p.Owner)
+                    End If
                 End If
             ElseIf vents(i) Then
                 p.State = PortState.Exhausted
@@ -283,6 +316,55 @@ Public Class Simulator
         Next
 
         ComputeFlowFactors(isExhaust)
+        If RealPhysics Then ApplyChamberPressures()
+        AfterSolve()
+    End Sub
+
+    ''' <summary>
+    ''' Realistic mode: a tube line ending at a cylinder chamber carries the chamber pressure
+    ''' (the pressure drop is across the valve), so gauges and pressure sequence valves on that
+    ''' line see the pressure build up.
+    ''' </summary>
+    Private Sub ApplyChamberPressures()
+        Dim n = _ports.Count
+        Dim parent(n - 1) As Integer
+        For i = 0 To n - 1
+            parent(i) = i
+        Next
+        Dim find As Func(Of Integer, Integer) =
+            Function(i)
+                While parent(i) <> i
+                    parent(i) = parent(parent(i))
+                    i = parent(i)
+                End While
+                Return i
+            End Function
+        For Each t In _circuit.Tubes
+            If t.A.Kind <> PortKind.Pneumatic Then Continue For
+            Dim ra = find(t.A.NodeIndex), rb = find(t.B.NodeIndex)
+            If ra <> rb Then parent(ra) = rb
+        Next
+        Dim netPressure As New Dictionary(Of Integer, Double)
+        Dim supplied As New HashSet(Of Integer)
+        For Each kv In _supplies
+            supplied.Add(find(kv.Key))
+        Next
+        For Each cyl In _circuit.Elements.OfType(Of CylinderBase)()
+            For Each p In cyl.Ports
+                If p.Kind <> PortKind.Pneumatic Then Continue For
+                Dim cp = cyl.ChamberPressureAt(p)
+                If cp < 0 Then Continue For
+                Dim root = find(p.NodeIndex)
+                If supplied.Contains(root) Then Continue For
+                Dim existing As Double
+                netPressure(root) = If(netPressure.TryGetValue(root, existing), Math.Max(existing, cp), cp)
+            Next
+        Next
+        If netPressure.Count = 0 Then Return
+        For i = 0 To n - 1
+            Dim v As Double
+            If netPressure.TryGetValue(find(i), v) AndAlso _ports(i).State <> PortState.Exhausted Then _ports(i).Pressure = v
+        Next
     End Sub
 
     ''' <summary>

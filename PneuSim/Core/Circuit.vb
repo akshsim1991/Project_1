@@ -269,6 +269,15 @@ Public Class Circuit
         Return added
     End Function
 
+    ''' <summary>The whole circuit as an XML element (one page of a project file).</summary>
+    Public Function ToXElement() As XElement
+        Return ToXDocument(Elements).Root
+    End Function
+
+    Public Shared Function FromXElement(root As XElement) As Circuit
+        Return FromXDocument(New XDocument(New XElement(root)))
+    End Function
+
     Private Function ToXDocument(subset As List(Of CircuitElement)) As XDocument
         Dim inv = CultureInfo.InvariantCulture
         Dim root As New XElement("PneuSimCircuit", New XAttribute("version", 2))

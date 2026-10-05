@@ -13,6 +13,7 @@ End Enum
 Public Enum PortKind
     Pneumatic
     Electric
+    Hydraulic
 End Enum
 
 ''' <summary>A pneumatic or electrical connection point on a circuit element.</summary>
@@ -46,6 +47,8 @@ Public Class Port
 
     ' --- simulation results ---
     Public Property Pressure As Double
+    ''' <summary>Pressure the supply can deliver here (before realistic-mode chamber pressures are applied).</summary>
+    Public Property SupplyPressure As Double
     Public Property State As PortState = PortState.Floating
     ''' <summary>
     ''' Relative flow capacity (0..1) of the path from the supply (pressurized ports)
@@ -70,6 +73,7 @@ Public Class Port
 
     Public Sub ResetSim()
         Pressure = 0
+        SupplyPressure = 0
         State = PortState.Floating
         Factor = 0
     End Sub
@@ -88,6 +92,12 @@ Public MustInherit Class CircuitElement
     Public Property Label As String = ""
 
     <Browsable(False)> Public ReadOnly Property Ports As New List(Of Port)
+
+    ''' <summary>Where related symbols are (page.column), filled in by the project; not saved.</summary>
+    <Browsable(False)> Public Property CrossReference As String = ""
+
+    ''' <summary>Index of the project page this element is on (set by the project).</summary>
+    <Browsable(False)> Public Property PageIndex As Integer
 
     ''' <summary>Name written to circuit files.</summary>
     <Browsable(False)> Public MustOverride ReadOnly Property TypeName As String
@@ -177,7 +187,7 @@ Public MustInherit Class CircuitElement
     ' ---------------------------------------------------------------- drawing
 
     ''' <summary>Draws the symbol. The graphics transform is already set to local coordinates.</summary>
-    Public MustOverride Sub DrawSymbol(g As Graphics, r As RenderContext)
+    Public MustOverride Sub DrawSymbol(g As DrawSurface, r As RenderContext)
 
     ' ---------------------------------------------------------------- simulation
 

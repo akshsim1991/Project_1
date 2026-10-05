@@ -113,6 +113,18 @@ Public MustInherit Class DirectionalValve
      Description("For roller lever valves: the cylinder position mark that operates the roller, e.g. 1S2.")>
     Public Property TriggerMark As String = ""
 
+    <Category("Actuation"), DisplayName("Switching pressure (bar)"),
+     Description("Pilot pressure at which the valve switches. Raise it to make a pressure sequence valve (most meaningful in realistic mode).")>
+    Public Property SwitchingPressure As Double
+        Get
+            Return _switchPressure
+        End Get
+        Set(value As Double)
+            _switchPressure = Math.Max(0.2, Math.Min(16, value))
+        End Set
+    End Property
+    Private _switchPressure As Double = Simulator.PilotThreshold
+
     <Category("Actuation"), DisplayName("Delay (s)"), Description("For time delay valves: how long the pilot signal must be present.")>
     Public Property DelaySeconds As Double
         Get
@@ -122,6 +134,41 @@ Public MustInherit Class DirectionalValve
             _delay = Math.Max(0, Math.Min(600, value))
         End Set
     End Property
+
+    ''' <summary>Passages (from, to) open in a position: 0 normal, 1 = a, 2 = b.</summary>
+    Public Function PassagesIn(position As Integer) As String()()
+        Return Flows(position)
+    End Function
+
+    <Browsable(False)> Public ReadOnly Property Positions As Integer
+        Get
+            Return PositionCount
+        End Get
+    End Property
+
+    ''' <summary>Name of the pilot port on the left (a) or right (b) side.</summary>
+    Public Function PilotPortName(leftSide As Boolean) As String
+        Return If(leftSide, LeftPilotName, RightPilotName)
+    End Function
+
+    ''' <summary>True for two-position valves that stay where they are when both signals go (impulse / memory valves).</summary>
+    <Browsable(False)> Public ReadOnly Property IsMemoryValve As Boolean
+        Get
+            Return PositionCount = 2 AndAlso _return <> ValveReturn.Spring
+        End Get
+    End Property
+
+    ''' <summary>Names of the working ports (not pilots).</summary>
+    Public Function WorkingPortNames() As String()
+        Return WorkingPorts().Select(Function(w) w.Name).ToArray()
+    End Function
+
+    ''' <summary>True if a solenoid coil with this label operates the valve.</summary>
+    Public Function UsesSolenoid(coilLabel As String) As Boolean
+        Dim same = Function(a As String) String.Equals(a?.Trim(), coilLabel?.Trim(), StringComparison.OrdinalIgnoreCase)
+        Return (_actuator = ValveActuator.Solenoid AndAlso same(SolenoidLabel)) OrElse
+               (_return = ValveReturn.Solenoid AndAlso same(ReturnSolenoidLabel))
+    End Function
 
     ''' <summary>0 = normal position, 1 = position a (left), 2 = position b (right, 3-position valves).</summary>
     <Browsable(False)> Public ReadOnly Property State As Integer
@@ -176,8 +223,16 @@ Public MustInherit Class DirectionalValve
         p.Local = New PointF(x, y)
         p.Direction = New PointF(dx, dy)
         p.VentsWhenOpen = vents
+        p.Kind = Medium
         Return p
     End Function
+
+    ''' <summary>Pneumatic, or hydraulic for hydraulic valves.</summary>
+    Protected Overridable ReadOnly Property Medium As PortKind
+        Get
+            Return PortKind.Pneumatic
+        End Get
+    End Property
 
     Private ReadOnly Property HasLeftPilot As Boolean
         Get
@@ -206,7 +261,7 @@ Public MustInherit Class DirectionalValve
 
     ' ---------------------------------------------------------------- drawing
 
-    Public Overrides Sub DrawSymbol(g As Graphics, r As RenderContext)
+    Public Overrides Sub DrawSymbol(g As DrawSurface, r As RenderContext)
         Dim s = Shift
         Dim wps = WorkingPorts()
 
@@ -286,7 +341,7 @@ Public MustInherit Class DirectionalValve
     ''' Draws an actuator symbol attached at x = <paramref name="edge"/>, extending outwards
     ''' (to the left when <paramref name="dir"/> is -1, to the right when +1).
     ''' </summary>
-    Private Sub DrawActuator(g As Graphics, r As RenderContext, kind As String, edge As Single, dir As Integer,
+    Private Sub DrawActuator(g As DrawSurface, r As RenderContext, kind As String, edge As Single, dir As Integer,
                              operated As Boolean, pilotName As String, solenoid As String)
         Dim cy = (BoxTop + BoxBottom) / 2
         Dim x = Function(t As Single) edge + dir * t
@@ -321,6 +376,11 @@ Public MustInherit Class DirectionalValve
                 End If
             Case "Pilot", "DelayedPilot"
                 Dim port = GetPort(pilotName)
+                If Math.Abs(_switchPressure - Simulator.PilotThreshold) > 0.01 Then
+                    ' Pressure sequence valve: adjustable spring and the set pressure.
+                    Symbols.Spring(g, r.Thin, x(18), x(6), cy - 9, 3)
+                    g.DrawString($"{_switchPressure:0.#} bar", r.SmallFont, r.TextBrush, Math.Min(x(22), x(0)), cy - 26)
+                End If
                 g.DrawLine(r.DashedFor(port), x(20), cy, x(6), cy)
                 Using b As New SolidBrush(If(r.Simulating AndAlso port IsNot Nothing AndAlso port.IsPressurized, RenderContext.PressureColor, Color.Black))
                     g.FillPolygon(b, {New PointF(edge, cy), New PointF(x(7), cy - 4), New PointF(x(7), cy + 4)})
@@ -385,7 +445,20 @@ Public MustInherit Class DirectionalValve
 
     Private Function PilotOn(name As String) As Boolean
         Dim p = GetPort(name)
-        Return p IsNot Nothing AndAlso p.Pressure >= Simulator.PilotThreshold
+        Return p IsNot Nothing AndAlso p.Pressure >= _switchPressure - 0.000001
+    End Function
+
+    ''' <summary>Current signals on the left (a) and right (b) side, ignoring manual buttons.</summary>
+    Public Function ActiveSignals(sim As Simulator) As Boolean()
+        Dim leftOn As Boolean
+        Select Case _actuator
+            Case ValveActuator.RollerLever : leftOn = sim.IsMarkActive(TriggerMark)
+            Case ValveActuator.Pilot, ValveActuator.DelayedPilot : leftOn = PilotOn(LeftPilotName)
+            Case ValveActuator.Solenoid : leftOn = sim.IsCoilActive(SolenoidLabel)
+        End Select
+        Dim rightOn = (_return = ValveReturn.Pilot AndAlso PilotOn(RightPilotName)) OrElse
+                      (_return = ValveReturn.Solenoid AndAlso sim.IsCoilActive(ReturnSolenoidLabel))
+        Return {leftOn, rightOn}
     End Function
 
     Public Overrides Function UpdateLogic(sim As Simulator) As Boolean

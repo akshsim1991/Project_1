@@ -9,7 +9,9 @@ Public Module Examples
         ("5. Automatic reciprocation with limit valves", AddressOf Reciprocation),
         ("6. Delayed return with a time delay valve", AddressOf DelayedReturn),
         ("7. Electro-pneumatic: direct control with a solenoid valve", AddressOf ElectroDirect),
-        ("8. Electro-pneumatic: self-holding circuit with start / stop and lamp", AddressOf ElectroLatch)
+        ("8. Electro-pneumatic: self-holding circuit with start / stop and lamp", AddressOf ElectroLatch),
+        ("9. Hydraulics: cylinder with 4/3 valve, relief valve and gauge", AddressOf HydraulicBasic),
+        ("10. Realistic mode: pressure sequence valve (clamp, then drill)", AddressOf SequenceValveDemo)
     }
 
     Private Function DirectSingleActing() As Circuit
@@ -184,6 +186,73 @@ Public Module Examples
         c.Connect(k1b, "2", lamp, "A1")
         c.Connect(lamp, "A2", z3, "1")
         c.Add(New TextNote() With {.Text = "Press S1 to start, S0 to stop." & vbCrLf & "K1 holds itself through its own contact."}, 450, 420)
+        Return c
+    End Function
+
+    Private Function HydraulicBasic() As Circuit
+        Dim c As New Circuit()
+        Dim cyl = c.Add(New HydraulicCylinder(), 200, 60, "1A")
+        Dim v = c.Add(New HydraulicValve43(), 126, 200, "1V1")
+        v.SolenoidLabel = "1M1" : v.ReturnSolenoidLabel = "1M2"
+        Dim pump = c.Add(New HydraulicPump(), 180, 380, "0P1")
+        Dim j = c.Add(New Junction() With {.Medium = PortKind.Hydraulic}, 210, 340)
+        Dim relief = c.Add(New ReliefValve(), 280, 340, "0V1")
+        Dim tank1 = c.Add(New HydraulicTank(), 280, 430)
+        Dim tank2 = c.Add(New HydraulicTank(), 250, 290)
+        Dim gauge = c.Add(New PressureGauge() With {.Hydraulic = True}, 360, 240, "0G1")
+        c.Connect(v, "A", cyl, "1")
+        c.Connect(v, "B", cyl, "2")
+        c.Connect(pump, "P", j, "1")
+        c.Connect(j, "1", v, "P")
+        c.Connect(j, "1", relief, "P")
+        c.Connect(relief, "T", tank1, "T")
+        c.Connect(v, "T", tank2, "T")
+        c.Connect(gauge, "1", relief, "P")
+        ' Electrical part: S1 extends (1M1), S2 retracts (1M2).
+        Dim xs = {470.0F, 560.0F}
+        Dim names = {("S1", "1M1"), ("S2", "1M2")}
+        For i = 0 To 1
+            Dim plus = c.Add(New PowerTerminal(), xs(i), 60)
+            Dim sw = c.Add(Contact(ContactOperator.PushButton, False, names(i).Item1), xs(i), 120)
+            Dim coil = c.Add(New ElectricCoil() With {.Kind = CoilKind.Solenoid, .Label = names(i).Item2}, xs(i), 220)
+            Dim zero = c.Add(New PowerTerminal() With {.Polarity = Polarity.Zero0V}, xs(i), 300)
+            c.Connect(plus, "1", sw, "1")
+            c.Connect(sw, "2", coil, "A1")
+            c.Connect(coil, "A2", zero, "1")
+        Next
+        c.Add(New TextNote() With {.Text = "Hold S1 to extend, S2 to retract. Watch the gauge: the pressure is set by the load" & vbCrLf &
+                                            "while the cylinder moves, and rises to the relief setting at the end of the stroke." & vbCrLf &
+                                            "In the tandem centre the pump flow returns to tank at low pressure."}, 40, 470)
+        Return c
+    End Function
+
+    ''' <summary>Clamp cylinder 1A; when the clamping pressure reaches 4 bar the sequence valve starts 2A.</summary>
+    Private Function SequenceValveDemo() As Circuit
+        Dim c As New Circuit()
+        Dim clamp = c.Add(New SingleActingCylinder() With {.LoadForceN = 100}, 200, 60, "1A")
+        Dim drill = c.Add(New DoubleActingCylinder(), 560, 60, "2A")
+        Dim v1 = c.Add(V32(ValveActuator.Selector), 140, 190, "1V1")
+        Dim seq = c.Add(V32(ValveActuator.Pilot), 400, 200, "1V2")
+        seq.SwitchingPressure = 4
+        Dim v2 = c.Add(V52(ValveActuator.Pilot, ValveReturn.Spring), 470, 190, "2V1")
+        Dim s1 = c.Add(New AirSupply(), 190, 290, "0Z")
+        Dim s2 = c.Add(New AirSupply(), 560, 290)
+        Dim s3 = c.Add(New AirSupply(), 450, 300)
+        Dim gauge = c.Add(New PressureGauge(), 290, 90, "")
+        Dim j = c.Add(New Junction(), 210, 150)
+        c.Connect(clamp, "1", j, "1")
+        c.Connect(j, "1", v1, "2")
+        c.Connect(j, "1", seq, "12")
+        c.Connect(j, "1", gauge, "1")
+        c.Connect(s1, "1", v1, "1")
+        c.Connect(v2, "4", drill, "1")
+        c.Connect(v2, "2", drill, "2")
+        c.Connect(s2, "1", v2, "1")
+        c.Connect(s3, "1", seq, "1")
+        c.Connect(seq, "2", v2, "14")
+        c.Add(New TextNote() With {.Text = "Switch on Simulation > Realistic physics, start, and switch on 1V1." & vbCrLf &
+                                            "1A clamps; the sequence valve 1V2 starts 2A only when the clamping" & vbCrLf &
+                                            "pressure has risen to 4 bar (watch the gauge)."}, 40, 380)
         Return c
     End Function
 End Module
