@@ -34,8 +34,6 @@ Public Class CircuitCanvas
     ''' <summary>Raised when a manual actuator was operated during simulation.</summary>
     Public Event ElementOperated As EventHandler
     Public Event StatusMessage As EventHandler(Of String)
-    ''' <summary>Raised for keyboard commands the main window handles ("Undo", "Redo").</summary>
-    Public Event CommandKey As EventHandler(Of String)
     ''' <summary>Raised when the mouse moves onto another element (or off all elements).</summary>
     Public Event HoverElementChanged As EventHandler(Of CircuitElement)
 
@@ -650,8 +648,6 @@ Public Class CircuitCanvas
         MyBase.OnKeyDown(e)
         If e.Control Then
             Select Case e.KeyCode
-                Case Keys.Z : RaiseEvent CommandKey(Me, If(e.Shift, "Redo", "Undo"))
-                Case Keys.Y : RaiseEvent CommandKey(Me, "Redo")
                 Case Keys.C : CopySelection()
                 Case Keys.X : CutSelection()
                 Case Keys.V : Paste()

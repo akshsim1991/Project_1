@@ -48,7 +48,7 @@ Partial Public Class MainForm
         _switchingPages = False
     End Sub
 
-    Private Sub ShowPage(index As Integer)
+    Private Sub ShowPage(index As Integer, Optional keepView As Boolean = False)
         If index < 0 OrElse index >= _project.Pages.Count Then Return
         _pageIndex = index
         If _pageTabs.SelectedIndex <> index Then
@@ -60,7 +60,7 @@ Partial Public Class MainForm
         _canvas.Circuit = CurrentCircuit
         _canvas.Simulator = _simulator
         _properties.SelectedObject = Nothing
-        _canvas.ScrollToCircuit()
+        If Not keepView Then _canvas.ScrollToCircuit()
         _canvas.Invalidate()
     End Sub
 
@@ -106,23 +106,28 @@ Partial Public Class MainForm
     End Sub
 
     Private Sub Undo()
-        If _running OrElse _historyIndex <= 0 Then Return
+        If _running Then _statusMessage.Text = "Stop the simulation (F11) to undo changes." : Return
+        If _historyIndex <= 0 Then Return
         _historyIndex -= 1
         RestoreSnapshot()
     End Sub
 
     Private Sub Redo()
-        If _running OrElse _historyIndex >= _history.Count - 1 Then Return
+        If _running Then _statusMessage.Text = "Stop the simulation (F11) to redo changes." : Return
+        If _historyIndex >= _history.Count - 1 Then Return
         _historyIndex += 1
         RestoreSnapshot()
     End Sub
 
     Private Sub RestoreSnapshot()
         Dim snap = _history(_historyIndex)
+        Dim samePage = snap.Page = _pageIndex
+        Dim scroll = _canvas.AutoScrollPosition
         _project = Project.FromXml(snap.Xml)
         _pageIndex = Math.Min(snap.Page, _project.Pages.Count - 1)
         RefreshPageTabs()
-        ShowPage(_pageIndex)
+        ShowPage(_pageIndex, keepView:=samePage)
+        If samePage Then _canvas.AutoScrollPosition = New Point(-scroll.X, -scroll.Y)
         MarkDirty()
         UpdateUndoButtons()
         ScheduleCheck()

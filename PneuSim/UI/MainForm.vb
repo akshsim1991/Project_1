@@ -44,9 +44,6 @@ Partial Public Class MainForm
         BuildLayout()
         AddHandler _canvas.SelectionChanged, Sub() _properties.SelectedObjects = _canvas.SelectedElements.Cast(Of Object)().ToArray()
         AddHandler _canvas.CircuitModified, Sub() OnCircuitModified()
-        AddHandler _canvas.CommandKey, Sub(s, cmd)
-                                           If cmd = "Undo" Then Undo() Else Redo()
-                                       End Sub
         AddHandler _canvas.ElementOperated, AddressOf OnElementOperated
         AddHandler _canvas.StatusMessage, Sub(s, msg) _statusMessage.Text = msg
         AddHandler _canvas.HoverElementChanged, AddressOf OnHoverElement
@@ -183,7 +180,8 @@ Partial Public Class MainForm
         file.DropDownItems.Add(New ToolStripSeparator())
         file.DropDownItems.Add(Item("E&xit", Sub() Close()))
 
-        ' Edit shortcuts are handled by the canvas so they do not steal keys from the property grid.
+        ' Edit shortcuts are handled in ProcessCmdKey so they work wherever the focus is,
+        ' but still leave Ctrl+Z / Ctrl+C etc. to a text box being edited.
         Dim edit = New ToolStripMenuItem("&Edit")
         _menuUndo = Item("&Undo", Sub() Undo()) : _menuUndo.ShortcutKeyDisplayString = "Ctrl+Z"
         _menuRedo = Item("&Redo", Sub() Redo()) : _menuRedo.ShortcutKeyDisplayString = "Ctrl+Y"
@@ -290,6 +288,42 @@ Partial Public Class MainForm
         bar.Items.Add(Button("Zoom out", Icons.ZoomOut, Sub() SetZoom(_canvas.Zoom / 1.2F)))
         bar.Items.Add(Button("Fit", Icons.ZoomIn, Sub() FitView()))
         Return bar
+    End Function
+
+    ''' <summary>Undo, redo and clipboard keys for the drawing, from any part of the window.</summary>
+    Protected Overrides Function ProcessCmdKey(ByRef msg As Message, keyData As Keys) As Boolean
+        If (keyData And Keys.Control) = Keys.Control AndAlso (keyData And Keys.Alt) <> Keys.Alt AndAlso Not IsEditingText() Then
+            Dim shift = (keyData And Keys.Shift) = Keys.Shift
+            Select Case keyData And Keys.KeyCode
+                Case Keys.Z : If shift Then Redo() Else Undo()
+                    Return True
+                Case Keys.Y : Redo() : Return True
+                Case Keys.X : _canvas.CutSelection() : Return True
+                Case Keys.C : _canvas.CopySelection() : Return True
+                Case Keys.V : _canvas.Paste() : Return True
+                Case Keys.D : _canvas.DuplicateSelection() : Return True
+                Case Keys.A : _canvas.SelectAll() : Return True
+            End Select
+        End If
+        Return MyBase.ProcessCmdKey(msg, keyData)
+    End Function
+
+    ''' <summary>True while the keyboard focus is in a text box (property value, explanation text, dialog field).</summary>
+    Private Function IsEditingText() As Boolean
+        Dim c As Control = Me
+        While TypeOf c Is ContainerControl AndAlso DirectCast(c, ContainerControl).ActiveControl IsNot Nothing
+            c = DirectCast(c, ContainerControl).ActiveControl
+        End While
+        ' The property grid is a container whose focused child may be its in-place text editor.
+        Dim focused = FocusedLeaf(c)
+        Return TypeOf focused Is TextBoxBase OrElse TypeOf focused Is ComboBox OrElse TypeOf focused Is NumericUpDown
+    End Function
+
+    Private Shared Function FocusedLeaf(c As Control) As Control
+        For Each child As Control In c.Controls
+            If child.ContainsFocus Then Return FocusedLeaf(child)
+        Next
+        Return c
     End Function
 
     Private Shared Function Item(text As String, handler As EventHandler, Optional keys As Keys = Keys.None) As ToolStripMenuItem

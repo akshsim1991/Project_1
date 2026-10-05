@@ -87,7 +87,7 @@ simulated to understand different types of circuits.
 | Connect | Drag from one port (circle) to another. Red circles are electrical terminals |
 | Select several | Drag a box on empty space; Ctrl+click adds or removes |
 | Edit | Properties panel on the right |
-| Undo / redo | Ctrl+Z / Ctrl+Y |
+| Undo / redo | Ctrl+Z / Ctrl+Y (or Ctrl+Shift+Z), wherever the focus is |
 | Copy / cut / paste / duplicate | Ctrl+C / Ctrl+X / Ctrl+V / Ctrl+D |
 | Rotate / delete / nudge | R / Del / arrow keys |
 | Move a tube | Drag its middle segment |
