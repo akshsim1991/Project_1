@@ -538,6 +538,272 @@ Module TestMain
             Check("GIF decodes with all frames", frames = 12, frames.ToString())
         End Using
 
+        ' ---------------- Hydraulic additions: meter-out throttle, reducing valve, single-acting ram
+        Dim hx = Examples.All(8).Build()
+        Dim hxCyl = hx.Elements.OfType(Of HydraulicCylinder)().First()
+        Dim hv = hx.Elements.OfType(Of HydraulicValve43)().First()
+        Dim rodTube = hx.Tubes.First(Function(tb) (tb.A.Owner Is hxCyl AndAlso tb.A.Name = "2") OrElse (tb.B.Owner Is hxCyl AndAlso tb.B.Name = "2"))
+        hx.RemoveTube(rodTube)
+        Dim hfc = hx.Add(New FlowControlValve() With {.Hydraulic = True, .OpeningPercent = 25}, 300, 150, "1V2")
+        Check("hydraulic flow control connects to oil lines", hx.Connect(hv, "B", hfc, "1") IsNot Nothing AndAlso hx.Connect(hfc, "2", hxCyl, "2") IsNot Nothing)
+        Dim hs As New Simulator(hx) : hs.Reset()
+        Press(hs, Find(hx, "S1"))
+        Dim ht = 0.0
+        While hxCyl.Position < 0.999 AndAlso ht < 30 : Run(hs, 0.05) : ht += 0.05 : End While
+        Check("hydraulic meter-out throttle slows extension (~4x of 1.9 s)", ht > 6 AndAlso ht < 10, ht.ToString("0.0") & " s")
+        Release(hs, Find(hx, "S1")) : Press(hs, Find(hx, "S2"))
+        Dim hr = 0.0
+        While hxCyl.Position > 0.001 AndAlso hr < 30 : Run(hs, 0.05) : hr += 0.05 : End While
+        Check("hydraulic one-way flow control: free return", hr < 2, hr.ToString("0.0") & " s")
+        Check("hydraulic flow control circuit has no errors", Not CircuitAnalysis.StaticChecks(hx).Any(Function(x) x.Severity = IssueSeverity.Error),
+              String.Join(" | ", CircuitAnalysis.StaticChecks(hx)))
+
+        Dim hrd = Examples.All(8).Build()
+        Dim hv2 = hrd.Elements.OfType(Of HydraulicValve43)().First()
+        Dim pTube = hrd.Tubes.First(Function(tb) (tb.A.Owner Is hv2 AndAlso tb.A.Name = "P") OrElse (tb.B.Owner Is hv2 AndAlso tb.B.Name = "P"))
+        Dim jn = If(pTube.A.Owner Is hv2, pTube.B, pTube.A)
+        hrd.RemoveTube(pTube)
+        Dim red = hrd.Add(New PressureRegulator() With {.Hydraulic = True, .Setting = 30}, 100, 300, "0V2")
+        hrd.Connect(jn, red.GetPort("1")) : hrd.Connect(red, "2", hv2, "P")
+        Dim hrs As New Simulator(hrd) : hrs.Reset()
+        Press(hrs, Find(hrd, "S1")) : Run(hrs, 5)
+        Dim capP = hrd.Elements.OfType(Of HydraulicCylinder)().First().Ports(0).Pressure
+        Dim pumpP = hrd.Elements.OfType(Of HydraulicPump)().First().Ports(0).Pressure
+        Check("pressure reducing valve limits the cylinder to 30 bar", Math.Abs(capP - 30) < 0.5 AndAlso pumpP > 55, $"cylinder {capP:0.0} bar, pump {pumpP:0.0} bar")
+
+        Dim ram = Examples.All(8).Build()
+        Dim oldCyl = ram.Elements.OfType(Of HydraulicCylinder)().First()
+        ram.Remove(oldCyl)
+        Dim ramCyl = ram.Add(New HydraulicSingleActingCylinder(), 200, 60, "1A")
+        Dim hv3 = ram.Elements.OfType(Of HydraulicValve43)().First()
+        ram.Connect(hv3, "A", ramCyl, "1")
+        Dim rs As New Simulator(ram) : rs.Reset()
+        Press(rs, Find(ram, "S1")) : Run(rs, 3)
+        Check("single-acting hydraulic cylinder extends with oil", ramCyl.Position > 0.99, ramCyl.Position.ToString("0.00"))
+        Release(rs, Find(ram, "S1")) : Run(rs, 1)
+        Check("single-acting hydraulic cylinder holds in the centre position", ramCyl.Position > 0.99)
+        Press(rs, Find(ram, "S2")) : Run(rs, 3)
+        Check("single-acting hydraulic cylinder returns by spring/load", ramCyl.Position < 0.01, ramCyl.Position.ToString("0.00"))
+        Dim ramRound = Circuit.FromXml(ram.ToXml())
+        Check("new hydraulic parts survive saving", ramRound.Elements.OfType(Of HydraulicSingleActingCylinder)().Count() = 1)
+        Dim rx = Circuit.FromXml(hrd.ToXml()).Elements.OfType(Of PressureRegulator)().First()
+        Check("reducing valve keeps its oil setting after loading", rx.Hydraulic AndAlso Math.Abs(rx.Setting - 30) < 0.01)
+
+        ' ---------------- Quiz fairness and exam clock
+        Dim counts(3) As Integer
+        Dim twins = 0
+        For seed = 1 To 60
+            For Each q In QuestionBank.Pick(20, seed)
+                If q.Options.Length = 4 Then counts(q.Correct) += 1
+                Dim opts = q.Options.ToList()
+                If (opts.Contains("Pressure gauge") AndAlso opts.Contains("Hydraulic pressure gauge")) OrElse
+                   (opts.Contains("Double-acting cylinder") AndAlso opts.Contains("Hydraulic cylinder")) Then twins += 1
+            Next
+        Next
+        Dim total = counts.Sum()
+        Check("quiz answers are spread over A-D", counts.All(Function(n) n > total * 0.15 AndAlso n < total * 0.35), String.Join("/", counts))
+        Check("quiz never asks to tell apart identical symbols", twins = 0, twins.ToString())
+        Dim exam As New QuizDialog(True)
+        exam.Show() : Windows.Forms.Application.DoEvents()
+        exam.Close() : Windows.Forms.Application.DoEvents()
+        Dim examTimer = DirectCast(GetType(QuizDialog).GetField("_timer", Reflection.BindingFlags.NonPublic Or Reflection.BindingFlags.Instance).GetValue(exam), Windows.Forms.Timer)
+        Check("closing an exam early stops its clock", Not examTimer.Enabled)
+
+        ' ---------------- Cutaway views for every component
+        Dim cutawayFailures As New List(Of String)
+        Dim sheet As New List(Of Drawing.Bitmap)
+        Dim views As New List(Of (El As CircuitElement, Sim As Boolean))
+        For Each lp In Library.Presets
+            views.Add((lp.Factory.Invoke(), False))
+        Next
+        ' Live states: a few components in running example circuits.
+        For Each exIndex In {4, 7, 8, 9}
+            Dim lc = Examples.All(exIndex).Build()
+            Dim ls As New Simulator(lc) : ls.Reset()
+            Dim firstButton = lc.Elements.FirstOrDefault(Function(e) e.IsManuallyOperated AndAlso TypeOf e IsNot HydraulicPump)
+            If firstButton IsNot Nothing Then Press(ls, firstButton)
+            Run(ls, 0.6)
+            For Each e In lc.Elements.Where(Function(x) Cutaways.Supports(x))
+                views.Add((e, True))
+            Next
+        Next
+        For Each v In views
+            Try
+                Using view As New CutawayView() With {.Size = New Drawing.Size(600, 300), .Element = v.El, .Simulating = v.Sim}
+                    Dim bmp As New Drawing.Bitmap(600, 300)
+                    Using g = Drawing.Graphics.FromImage(bmp)
+                        view.Render(g)
+                    End Using
+                    sheet.Add(bmp)
+                End Using
+            Catch cutErr As Exception
+                cutawayFailures.Add(v.El.DisplayName & ": " & cutErr.Message)
+            End Try
+        Next
+        Check("every component has a cutaway that draws without errors", cutawayFailures.Count = 0, String.Join(" | ", cutawayFailures))
+        ' Contact sheets for review (4 columns).
+        For pageNo = 0 To (sheet.Count - 1) \ 16
+            Using big As New Drawing.Bitmap(4 * 600, 4 * 300)
+                Using g = Drawing.Graphics.FromImage(big)
+                    g.Clear(Drawing.Color.Gray)
+                    For k = 0 To 15
+                        Dim idx = pageNo * 16 + k
+                        If idx >= sheet.Count Then Exit For
+                        g.DrawImage(sheet(idx), (k Mod 4) * 600, (k \ 4) * 300)
+                    Next
+                End Using
+                big.Save(IO.Path.Combine("out", $"cutaways_{pageNo + 1}.png"), Drawing.Imaging.ImageFormat.Png)
+            End Using
+        Next
+        For Each b In sheet : b.Dispose() : Next
+
+        ' ---------------- Fixes from the full review
+        ' Invalid inputs are clamped; a stroke of 0 can no longer crash realistic mode.
+        Dim vc = Examples.All(0).Build()
+        Dim vcyl = vc.Elements.OfType(Of CylinderBase)().First()
+        vcyl.StrokeLength = 0 : vcyl.BoreMm = -10 : vcyl.FrictionN = -5
+        Check("cylinder inputs are clamped", vcyl.StrokeLength >= 5 AndAlso vcyl.BoreMm >= 4 AndAlso vcyl.FrictionN >= 0)
+        Dim vs As New Simulator(vc) With {.RealPhysics = True} : vs.Reset()
+        Press(vs, Find(vc, "1S1"))
+        Dim crashed = False
+        Try
+            Run(vs, 1)
+        Catch
+            crashed = True
+        End Try
+        Check("tiny stroke runs in realistic mode without error", Not crashed AndAlso Not Double.IsNaN(vcyl.Position))
+        Dim pumpTest As New HydraulicPump() With {.FlowLpm = -8}
+        Check("pump flow cannot be negative", pumpTest.FlowLpm > 0)
+
+        ' New parts get their own names; pasted copies are renamed consistently.
+        Dim nc As New Circuit()
+        Dim placed As New List(Of CircuitElement)
+        For Each presetName In {"5/2 valve, single solenoid", "5/2 valve, single solenoid", "Push button, NO", "Push button, NO", "Relay coil", "Relay coil", "Double-acting cylinder", "Double-acting cylinder"}
+            Dim el = Library.Presets.First(Function(lp) lp.Name = presetName).Factory.Invoke()
+            nc.Add(el, 100 * placed.Count, 100)
+            Naming.NameNewElement(el, nc.Elements)
+            placed.Add(el)
+        Next
+        Check("second solenoid valve gets its own solenoid", DirectCast(placed(0), DirectionalValve).SolenoidLabel <> DirectCast(placed(1), DirectionalValve).SolenoidLabel,
+              DirectCast(placed(0), DirectionalValve).SolenoidLabel & "/" & DirectCast(placed(1), DirectionalValve).SolenoidLabel)
+        Check("push buttons, relays and cylinders are numbered", placed(2).Label <> placed(3).Label AndAlso placed(4).Label <> placed(5).Label AndAlso placed(6).Label <> placed(7).Label,
+              String.Join(",", placed.Select(Function(el) el.Label)))
+        Dim coilForValve = New ElectricCoil() With {.Kind = CoilKind.Solenoid}
+        nc.Add(coilForValve, 0, 300) : Naming.NameNewElement(coilForValve, nc.Elements)
+        Check("a new solenoid coil takes the name of a valve still waiting for one", coilForValve.Label = DirectCast(placed(0), DirectionalValve).SolenoidLabel, coilForValve.Label)
+        Dim pc = Examples.All(7).Build()
+        Dim copied = pc.Merge(pc.ExtractXml(pc.Elements), 40, 40)
+        Naming.RenamePasted(copied, pc.Elements)
+        Dim copiedValve = copied.OfType(Of DirectionalValve)().First()
+        Dim copiedCoils = copied.OfType(Of ElectricCoil)().Where(Function(k) k.Kind = CoilKind.Solenoid).Select(Function(k) k.Label).ToList()
+        Check("pasted valve and its pasted coil are renamed together", copiedValve.SolenoidLabel <> "1M1" AndAlso copiedCoils.Contains(copiedValve.SolenoidLabel), copiedValve.SolenoidLabel & " / " & String.Join(",", copiedCoils))
+        Dim copiedRelay = copied.OfType(Of ElectricCoil)().First(Function(k) k.Kind = CoilKind.Relay).Label
+        Check("pasted relay contacts follow the pasted relay", copied.OfType(Of ElectricContact)().Where(Function(k) k.Operator = ContactOperator.Relay).All(Function(k) k.Reference = copiedRelay), copiedRelay)
+        Dim ps As New Simulator(pc) : ps.Reset()
+        Press(ps, Find(pc, "S1")) : Run(ps, 1.5)
+        Check("the original circuit still works next to its copy", DirectCast(pc.Elements.First(Function(el) el.Label = "1A"), CylinderBase).Position > 0.99)
+        Check("the copy did not move along", DirectCast(copied.First(Function(el) TypeOf el Is CylinderBase), CylinderBase).Position < 0.01)
+        Dim twoValves = Examples.All(6).Build()
+        Dim extraValve = twoValves.Add(V52(ValveActuator.Solenoid, ValveReturn.Spring), 600, 400, "2V1")
+        Check("checker: two valves on one solenoid", CircuitAnalysis.StaticChecks(twoValves).Any(Function(i) i.Message.Contains("always switch together")))
+        Dim marksTwice = Examples.All(4).Build()
+        marksTwice.Add(New DoubleActingCylinder() With {.RetractedMark = "1S1"}, 600, 60, "2A")
+        Check("checker: position mark used twice", CircuitAnalysis.StaticChecks(marksTwice).Any(Function(i) i.Message.Contains("is used 2 times")))
+        Dim lone As New Circuit()
+        lone.Add(New PageConnector(), 0, 0)
+        Check("checker: page connector without partner", CircuitAnalysis.StaticChecks(lone).Any(Function(i) i.Message.Contains("no partner")))
+
+        ' Air motor uses air; lamps do not act as relays; 3-position valves keep two actuators.
+        Dim am As New Circuit()
+        Dim mot = am.Add(New AirMotor(), 100, 0)
+        Dim amv = am.Add(Library.V32(ValveActuator.Selector), 80, 100, "S1")
+        Dim ams = am.Add(New AirSupply(), 90, 220)
+        am.Connect(ams, "1", amv, "1") : am.Connect(amv, "2", mot, "1")
+        Dim asim As New Simulator(am) : asim.Reset()
+        Press(asim, amv) : Release(asim, amv) : Run(asim, 6)
+        Check("air motor air consumption is counted (~150 NL/min)", asim.AirConsumed > 12 AndAlso asim.AirConsumed < 18, asim.AirConsumed.ToString("0.0") & " NL in 6 s")
+        Dim lk As New Circuit()
+        Dim lp1 = lk.Add(New PowerTerminal(), 0, 0)
+        Dim lsw = lk.Add(New ElectricContact() With {.Operator = ContactOperator.Selector}, 0, 60, "S1")
+        Dim lamp = lk.Add(New ElectricCoil() With {.Kind = CoilKind.Lamp, .Label = "K1"}, 0, 160)
+        Dim lz = lk.Add(New PowerTerminal() With {.Polarity = Polarity.Zero0V}, 0, 260)
+        Dim relayContact = lk.Add(New ElectricContact() With {.Operator = ContactOperator.Relay, .Reference = "K1"}, 200, 60)
+        lk.Connect(lp1, "1", lsw, "1") : lk.Connect(lsw, "2", lamp, "A1") : lk.Connect(lamp, "A2", lz, "1")
+        Dim lsim As New Simulator(lk) : lsim.Reset()
+        Press(lsim, lsw) : Release(lsim, lsw)
+        Check("a lamp named K1 does not switch relay contacts K1", lamp.Active AndAlso Not relayContact.IsClosed)
+        Dim v53r As New Valve53() With {.Actuator = ValveActuator.Solenoid}
+        v53r.ReturnType = ValveReturn.Spring
+        Check("3-position valve keeps an actuator on both sides", v53r.ReturnType = ValveReturn.Solenoid)
+        ' Clicking the right half of a double-solenoid valve operates the right solenoid's override.
+        Dim dsc = Examples.All(6).Build()
+        Dim dsv = DirectCast(dsc.Elements.OfType(Of DirectionalValve)().First(), DirectionalValve)
+        dsv.ReturnType = ValveReturn.Solenoid
+        Dim dss As New Simulator(dsc) : dss.Reset()
+        dsv.OnSimMouseDown(New Drawing.PointF(5, 30)) : dss.RunLogic() : dsv.OnSimMouseUp() : dss.RunLogic()
+        Check("left half click: left override", dsv.State = 1)
+        dsv.OnSimMouseDown(New Drawing.PointF(dsv.LocalBounds.Right - 5, 30)) : dss.RunLogic() : dsv.OnSimMouseUp() : dss.RunLogic()
+        Check("right half click: right solenoid override", dsv.State = 0)
+
+        ' Cross-references use column numbers that are printed on the drawing.
+        Dim crossProject As New Project(Examples.All(7).Build())
+        crossProject.UpdateCrossReferences()
+        Dim k1Coil = crossProject.AllElements().OfType(Of ElectricCoil)().First(Function(k) k.Label = "K1")
+        Dim firstContact = crossProject.AllElements().OfType(Of ElectricContact)().First(Function(k) k.Operator = ContactOperator.Relay)
+        Dim fcb = firstContact.WorldBounds()
+        Check("cross-reference column = printed column of the contact", k1Coil.CrossReference.Contains("1." & Project.ColumnAt(fcb.X + fcb.Width / 2)), k1Coil.CrossReference)
+        Dim svgPath = IO.Path.Combine("out", "columns.svg")
+        VectorExport.SaveSvg(Examples.All(7).Build(), svgPath)
+        Check("exported drawings show the column numbers", IO.File.ReadAllText(svgPath).Contains(">5</text>"))
+
+        ' Elements cannot be lost off the sheet.
+        Dim off As New Circuit()
+        off.Add(New AirSupply(), -200, -100)
+        off.EnsureOnSheet()
+        Check("circuits off the sheet are moved back when loaded", off.Bounds().Left >= 0 AndAlso off.Bounds().Top >= 0, off.Bounds().ToString())
+
+        ' Parts list: hoses and tubing.
+        Dim hydParts = PartsList.Build(New Project(Examples.All(8).Build()))
+        Check("parts list counts hydraulic hoses", hydParts.Any(Function(l) l.Description.StartsWith("Hydraulic hose") AndAlso l.Quantity > 3))
+        Dim airParts = PartsList.Build(New Project(Examples.All(0).Build()))
+        Check("parts list estimates tubing", airParts.Any(Function(l) l.Description.StartsWith("Plastic tubing") AndAlso l.Quantity = 2))
+
+        ' Two-hand control is not reported as a problem.
+        Dim twoHand = CircuitAnalysis.DynamicCheck(Examples.All(3).Build(), False)
+        Check("two-hand control: no 'did not move' message", Not twoHand.Any(Function(i) i.Message.Contains("did not move")), String.Join(" | ", twoHand))
+
+        ' PDF: text the standard font cannot show is embedded as a picture instead of '?'.
+        Dim intl = Examples.All(0).Build()
+        intl.Add(New TextNote() With {.Text = "ಕನ್ನಡ हिंदी ≈ 6 bar"}, 40, 300)
+        Dim intlPath = IO.Path.Combine("out", "international.pdf")
+        Reports.SavePdfReport(New Project(intl, "Test ಕನ್ನಡ"), intlPath, False, "")
+        Dim intlBytes = IO.File.ReadAllBytes(intlPath)
+        Dim intlText = System.Text.Encoding.GetEncoding(28591).GetString(intlBytes)
+        Check("PDF embeds non-Latin text as images", intlText.Contains("/Subtype /Image") AndAlso Not intlText.Contains("(?????"))
+
+        ' Help texts.
+        Dim exhaustCentre = ComponentHelp.HelpFor(New Valve53() With {.Centre = CentrePosition.Exhausted})
+        Check("help: exhaust centre is described correctly", exhaustCentre.Contains("Exhaust centre") AndAlso Not exhaustCentre.Contains("holds its position"))
+        Check("help: hydraulic valve talks about oil", ComponentHelp.HelpFor(New HydraulicValve42()).Contains("oil"))
+        Check("help: roller without mark", Not ComponentHelp.HelpFor(Library.V32(ValveActuator.RollerLever)).Contains("mark ."))
+
+        ' Properties panel: irrelevant settings are hidden, names readable.
+        Dim pbValve = Library.V32(ValveActuator.PushButton)
+        Dim shown = ComponentModel.TypeDescriptor.GetProperties(pbValve).Cast(Of ComponentModel.PropertyDescriptor)().Select(Function(pd) pd.Name).ToList()
+        Check("push-button valve hides solenoid and delay settings", Not shown.Contains("SolenoidLabel") AndAlso Not shown.Contains("DelaySeconds") AndAlso shown.Contains("Actuator"))
+        Dim conv = ComponentModel.TypeDescriptor.GetConverter(GetType(Polarity))
+        Check("enum values are shown by their description", conv.ConvertToString(Polarity.Plus24V) = "+24 V" AndAlso CType(conv.ConvertFromString("0 V"), Polarity) = Polarity.Zero0V)
+
+        ' No property may share its name with its group (some property grids then hide the whole group).
+        Dim clashes As New List(Of String)
+        For Each lp In Library.Presets
+            Dim el = lp.Factory.Invoke()
+            For Each pd In ComponentModel.TypeDescriptor.GetProperties(el).Cast(Of ComponentModel.PropertyDescriptor)()
+                If pd.IsBrowsable AndAlso pd.DisplayName = pd.Category Then clashes.Add($"{lp.Name}: {pd.DisplayName}")
+            Next
+        Next
+        Check("no property is named like its group", clashes.Count = 0, String.Join(" | ", clashes.Distinct()))
+
         ' Library thumbnails render.
         For Each p In Library.Presets
             Using b = Library.RenderThumbnail(p.Factory.Invoke(), 72, 48) : End Using

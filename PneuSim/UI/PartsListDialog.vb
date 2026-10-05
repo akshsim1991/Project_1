@@ -22,6 +22,10 @@ Public Class PartsListDialog
         Size = New Size(820, 520)
         StartPosition = FormStartPosition.CenterParent
         ShowInTaskbar = False
+        KeyPreview = True
+        AddHandler KeyDown, Sub(s, e)
+                                If e.KeyCode = Keys.Escape Then Me.Close()
+                            End Sub
 
         _grid.Columns.Add("qty", "Qty")
         _grid.Columns.Add("desc", "Description")

@@ -1,4 +1,4 @@
-# PneuSim 3.0 – Pneumatic, Electro-pneumatic & Hydraulic Circuit Simulator
+# PneuSim 3.1 – Pneumatic, Electro-pneumatic & Hydraulic Circuit Simulator
 
 A free, FluidSIM-style desktop application for designing, simulating, checking and learning
 pneumatic, electro-pneumatic and hydraulic circuits. Written in VB.NET (Windows Forms,
@@ -9,6 +9,36 @@ Claude Pro. Software is used to study pneumatic and hydraulic systems, so that i
 simulated to understand different types of circuits.
 
 ![A circuit designed by the generator from "A+ B+ B- A-", running](docs/generator-electro.png)
+
+## What's new in 3.1
+
+A full review fixed 30 problems. The most important:
+
+- **Cutaway view of every component** (F7): cylinders, motors, pump, check, shuttle, AND and
+  quick exhaust valves, flow controls, regulators, relief and counterbalance valves,
+  accumulator, gauge, relays, solenoids and contacts – not only directional valves.
+- **Safer:** values are checked as you type them (no more crash with a 0 mm stroke), an error
+  never closes the program, and unsaved work is saved every minute and offered back after a
+  crash or power cut.
+- **Unique names:** new parts are numbered automatically (1A, 2A, 1V1, 1M1, S1, K1 ...); a
+  copied circuit gets its own solenoids, relays and position marks. The checker reports
+  valves sharing a solenoid, marks used twice and page connectors without a partner.
+- **More hydraulics:** check valve, one-way flow control, throttle, pressure reducing valve and
+  single-acting cylinder for oil lines.
+- **Correct symbols and drawings:** hollow triangles for air (filled only for oil), as in
+  ISO 1219; column numbers along the top of every page so cross-references such as "1.5" can
+  be found; solenoid labels no longer sit on tubes.
+- **Fairer quiz:** answers in random order, never two identical-looking symbols; the exam has a
+  Back button and its clock stops when closed. Lesson progress is remembered.
+- **Editor:** parts cannot be lost off the sheet, Ctrl + mouse wheel zooms at the pointer,
+  Escape closes every dialog, the Properties panel shows only settings that apply (with
+  readable names), dark mode reaches the dialogs and tabs, and the toolbar fits the screen.
+- **Results:** the air motor's air is counted, lamps no longer act as relays, the right
+  solenoid of a double-solenoid valve has its own manual override (click the right half),
+  parts lists include hoses and tubing, PDFs show any language, and the two-hand control is no
+  longer reported as a problem.
+
+![Cutaway views](docs/cutaways.png)
 
 ## What's new in 3.0
 
@@ -27,7 +57,7 @@ simulated to understand different types of circuits.
 - **Hydraulics:** pump, tank, pressure relief valve, 4/3 valves (closed, tandem, float, open
   centre), 4/2 valve, pressure-compensated flow control, counterbalance valve, hydraulic
   cylinder and motor, accumulator and pressure gauge (0–160 bar). Oil lines turn orange.
-- **Learn:** 10 lessons whose tasks are checked automatically, an animated valve cutaway
+- **Learn:** 10 lessons whose tasks are checked automatically, an animated cutaway view
   (F7), hover help for every component, a practice quiz and a timed exam.
 - **Measure and report:** a plotter (position, speed, chamber pressures, valve positions,
   air consumption) with cycle time, force and valve-size calculators, a parts list with
@@ -60,7 +90,7 @@ simulated to understand different types of circuits.
 | Directional control valves | 2/2, 3/2 (NC/NO), 4/2, 5/2 and 5/3 (closed, exhaust or pressure centre) valves, operated by push button, selector switch, roller lever, pneumatic pilot, time-delayed pilot or solenoid; spring, pilot or solenoid return |
 | Logic, non-return and flow | Shuttle valve (OR), two-pressure valve (AND), check valve, quick exhaust valve, one-way flow control valve, flow control valve |
 | Electrical (24 V DC) | +24 V / 0 V connection, push button NO/NC, selector switch, relay contact NO/NC, proximity sensor, limit switch, relay coil, on-delay and off-delay timer relays, valve solenoid, indicator lamp, wire junction |
-| Hydraulics | Pump, tank, pressure relief valve, 4/3 valve (closed, tandem, float, open centre), 4/2 valve, pressure-compensated flow control valve, counterbalance valve, hydraulic cylinder, hydraulic motor, accumulator, hydraulic gauge |
+| Hydraulics | Pump, tank, pressure relief valve, pressure reducing valve, 4/3 valve (closed, tandem, float, open centre), 4/2 valve, check valve, one-way flow control valve, throttle valve, pressure-compensated flow control valve, counterbalance valve, double- and single-acting hydraulic cylinder, hydraulic motor, accumulator, hydraulic gauge |
 | Pressure control | Pressure regulator, pressure sequence valve |
 | Drawing | Text notes, page connectors |
 
@@ -88,6 +118,7 @@ simulated to understand different types of circuits.
 | Select several | Drag a box on empty space; Ctrl+click adds or removes |
 | Edit | Properties panel on the right |
 | Undo / redo | Ctrl+Z / Ctrl+Y (or Ctrl+Shift+Z), wherever the focus is |
+| Manual override | During simulation click a solenoid valve: left half = left solenoid, right half = right solenoid |
 | Copy / cut / paste / duplicate | Ctrl+C / Ctrl+X / Ctrl+V / Ctrl+D |
 | Rotate / delete / nudge | R / Del / arrow keys |
 | Move a tube | Drag its middle segment |
@@ -99,7 +130,7 @@ simulated to understand different types of circuits.
 | Several pages | Page menu; join pages with page connectors of the same name |
 | Export | File → Export: PDF report, SVG, DXF, PNG, parts list (CSV) |
 | Record | Toolbar *Record GIF*, operate the circuit, click again to save |
-| Learn | Learn menu: lessons, quiz, timed exam, valve cutaway (F7) |
+| Learn | Learn menu: lessons, quiz, timed exam, cutaway view of the selected or hovered component (F7) |
 | Dark mode | View → Dark mode |
 
 Names link things together:

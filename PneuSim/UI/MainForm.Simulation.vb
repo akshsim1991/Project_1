@@ -85,6 +85,16 @@ Partial Public Class MainForm
     End Sub
 
     Private Sub OnTick(sender As Object, e As EventArgs)
+        Try
+            SimulationTick()
+        Catch ex As Exception
+            StopSimulation()
+            _statusMessage.Text = "The simulation stopped because of an error: " & ex.Message
+            _statusMessage.ForeColor = Color.DarkRed
+        End Try
+    End Sub
+
+    Private Sub SimulationTick()
         Dim speed = {0.1, 0.25, 0.5, 1.0, 2.0, 4.0}(Math.Max(0, _speedBox.SelectedIndex))
         Dim dt = TickMs / 1000.0 * speed / SubSteps
         For i = 1 To SubSteps
@@ -140,6 +150,7 @@ Partial Public Class MainForm
         Using bmp As New Bitmap(CInt(_gifBounds.Width), CInt(_gifBounds.Height))
             Using g = Graphics.FromImage(bmp)
                 g.Clear(Color.White)
+                g.TextRenderingHint = Drawing.Text.TextRenderingHint.AntiAliasGridFit
                 g.TranslateTransform(-_gifBounds.Left, -_gifBounds.Top)
                 _gifCanvas.Circuit = _gifPage
                 _gifCanvas.Simulating = True

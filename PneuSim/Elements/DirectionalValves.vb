@@ -1,6 +1,7 @@
 Imports System.ComponentModel
 
 ''' <summary>How the valve is switched into its left (a) position.</summary>
+<TypeConverter(GetType(EnumDescriptionConverter))>
 Public Enum ValveActuator
     <Description("Push button")> PushButton
     <Description("Selector switch (detented)")> Selector
@@ -14,13 +15,15 @@ End Enum
 ''' The right-hand actuator. Two-position valves: what returns the valve to normal.
 ''' Three-position valves: the actuator for the right (b) position; the valve is always spring centred.
 ''' </summary>
+<TypeConverter(GetType(EnumDescriptionConverter))>
 Public Enum ValveReturn
-    Spring
-    Pilot
-    Solenoid
+    <Description("Spring")> Spring
+    <Description("Pneumatic pilot")> Pilot
+    <Description("Solenoid")> Solenoid
 End Enum
 
 ''' <summary>Centre position of a 5/3-way valve.</summary>
+<TypeConverter(GetType(EnumDescriptionConverter))>
 Public Enum CentrePosition
     <Description("Closed centre")> Closed
     <Description("Exhaust centre")> Exhausted
@@ -56,6 +59,7 @@ Public MustInherit Class DirectionalValve
     Private _delay As Double = 2.0
     Private _state As Integer
     Private _manualPressed As Boolean
+    Private _manualRight As Boolean
     Private _detentOn As Boolean
     Private _timer As Double
 
@@ -80,7 +84,7 @@ Public MustInherit Class DirectionalValve
         End Get
     End Property
 
-    <Category("Actuation"), DisplayName("Actuation"), Description("How the valve is switched into position a (left box).")>
+    <Category("Actuation"), DisplayName("Operated by"), Description("How the valve is switched into position a (left box).")>
     Public Property Actuator As ValveActuator
         Get
             Return _actuator
@@ -98,6 +102,10 @@ Public MustInherit Class DirectionalValve
             Return _return
         End Get
         Set(value As ValveReturn)
+            ' A spring-centred 3-position valve needs an actuator on both sides to reach position b.
+            If PositionCount = 3 AndAlso value = ValveReturn.Spring Then
+                value = If(_actuator = ValveActuator.Solenoid, ValveReturn.Solenoid, ValveReturn.Pilot)
+            End If
             _return = value
             RebuildPorts()
         End Set
@@ -134,6 +142,17 @@ Public MustInherit Class DirectionalValve
             _delay = Math.Max(0, Math.Min(600, value))
         End Set
     End Property
+
+    Public Overrides Function ShowProperty(name As String) As Boolean
+        Select Case name
+            Case NameOf(SolenoidLabel) : Return _actuator = ValveActuator.Solenoid
+            Case NameOf(ReturnSolenoidLabel) : Return _return = ValveReturn.Solenoid
+            Case NameOf(TriggerMark) : Return _actuator = ValveActuator.RollerLever
+            Case NameOf(DelaySeconds) : Return _actuator = ValveActuator.DelayedPilot
+            Case NameOf(SwitchingPressure) : Return _actuator = ValveActuator.Pilot OrElse _actuator = ValveActuator.DelayedPilot OrElse _return = ValveReturn.Pilot
+        End Select
+        Return True
+    End Function
 
     ''' <summary>Passages (from, to) open in a position: 0 normal, 1 = a, 2 = b.</summary>
     Public Function PassagesIn(position As Integer) As String()()
@@ -393,9 +412,8 @@ Public MustInherit Class DirectionalValve
                     g.DrawString($"{_switchPressure:0.#} bar", r.SmallFont, r.TextBrush, Math.Min(x(22), x(0)), cy - 26)
                 End If
                 g.DrawLine(r.DashedFor(port), x(20), cy, x(6), cy)
-                Using b As New SolidBrush(If(r.Simulating AndAlso port IsNot Nothing AndAlso port.IsPressurized, RenderContext.PressureColor, Color.Black))
-                    g.FillPolygon(b, {New PointF(edge, cy), New PointF(x(7), cy - 4), New PointF(x(7), cy + 4)})
-                End Using
+                Symbols.EnergyTriangle(g, r, {New PointF(edge, cy), New PointF(x(7), cy - 4), New PointF(x(7), cy + 4)},
+                                       Medium = PortKind.Hydraulic, r.Simulating AndAlso port IsNot Nothing AndAlso port.IsPressurized)
                 If kind = "DelayedPilot" Then
                     Dim cx = x(11)
                     g.FillEllipse(r.BodyBrush, cx - 6, cy - 22, 12, 12)
@@ -415,7 +433,9 @@ Public MustInherit Class DirectionalValve
                 g.DrawLine(r.Line, edge, cy, x(4), cy)
                 If Not String.IsNullOrWhiteSpace(solenoid) Then
                     Dim sz = g.MeasureString(solenoid, r.SmallFont)
-                    g.DrawString(solenoid, r.SmallFont, r.TextBrush, (x1 + x2) / 2 - sz.Width / 2, cy - 11 - sz.Height)
+                    ' Below the solenoid and away from the valve body, so it never sits on a tube.
+                    Dim tx = If(dir < 0, edge - 2 - sz.Width, edge + 2)
+                    g.DrawString(solenoid, r.SmallFont, r.TextBrush, tx, cy + 11)
                 End If
         End Select
     End Sub
@@ -426,23 +446,34 @@ Public MustInherit Class DirectionalValve
         Get
             ' Solenoid valves have a manual override button.
             Return _actuator = ValveActuator.PushButton OrElse _actuator = ValveActuator.Selector OrElse
-                   _actuator = ValveActuator.Solenoid
+                   _actuator = ValveActuator.Solenoid OrElse _return = ValveReturn.Solenoid
         End Get
     End Property
 
+    ''' <summary>
+    ''' A click on the right half of a valve with a right-hand solenoid operates that solenoid's
+    ''' manual override; any other click operates the left actuator.
+    ''' </summary>
     Public Overrides Sub OnSimMouseDown(local As PointF)
+        Dim rightHalf = local.X > Shift + TotalWidth / 2
+        If rightHalf AndAlso _return = ValveReturn.Solenoid Then
+            _manualRight = True
+            Return
+        End If
         If _actuator = ValveActuator.PushButton OrElse _actuator = ValveActuator.Solenoid Then _manualPressed = True
         If _actuator = ValveActuator.Selector Then _detentOn = Not _detentOn
     End Sub
 
     Public Overrides Sub OnSimMouseUp()
         _manualPressed = False
+        _manualRight = False
     End Sub
 
     Public Overrides Sub ResetSim()
         SetState(0)
         MyBase.ResetSim()
         _manualPressed = False
+        _manualRight = False
         _detentOn = False
         _rightActive = False
         _timer = 0
@@ -465,10 +496,10 @@ Public MustInherit Class DirectionalValve
         Select Case _actuator
             Case ValveActuator.RollerLever : leftOn = sim.IsMarkActive(TriggerMark)
             Case ValveActuator.Pilot, ValveActuator.DelayedPilot : leftOn = PilotOn(LeftPilotName)
-            Case ValveActuator.Solenoid : leftOn = sim.IsCoilActive(SolenoidLabel)
+            Case ValveActuator.Solenoid : leftOn = sim.IsSolenoidActive(SolenoidLabel)
         End Select
         Dim rightOn = (_return = ValveReturn.Pilot AndAlso PilotOn(RightPilotName)) OrElse
-                      (_return = ValveReturn.Solenoid AndAlso sim.IsCoilActive(ReturnSolenoidLabel))
+                      (_return = ValveReturn.Solenoid AndAlso sim.IsSolenoidActive(ReturnSolenoidLabel))
         Return {leftOn, rightOn}
     End Function
 
@@ -480,13 +511,13 @@ Public MustInherit Class DirectionalValve
             Case ValveActuator.RollerLever : leftActive = sim.IsMarkActive(TriggerMark)
             Case ValveActuator.Pilot : leftActive = PilotOn(LeftPilotName)
             Case ValveActuator.DelayedPilot : leftActive = PilotOn(LeftPilotName) AndAlso _timer >= _delay - 0.000001
-            Case ValveActuator.Solenoid : leftActive = _manualPressed OrElse sim.IsCoilActive(SolenoidLabel)
+            Case ValveActuator.Solenoid : leftActive = _manualPressed OrElse sim.IsSolenoidActive(SolenoidLabel)
         End Select
 
         Dim rightActive As Boolean
         Select Case _return
             Case ValveReturn.Pilot : rightActive = PilotOn(RightPilotName)
-            Case ValveReturn.Solenoid : rightActive = sim.IsCoilActive(ReturnSolenoidLabel)
+            Case ValveReturn.Solenoid : rightActive = _manualRight OrElse sim.IsSolenoidActive(ReturnSolenoidLabel)
         End Select
         _rightActive = rightActive
 

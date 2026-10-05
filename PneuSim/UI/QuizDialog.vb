@@ -19,6 +19,7 @@ Public Class QuizDialog
     Private ReadOnly _options As New List(Of RadioButton)
     Private ReadOnly _feedback As New Label() With {.Dock = DockStyle.Fill, .Font = New Font("Segoe UI", 9.5F), .Padding = New Padding(12, 6, 12, 0)}
     Private ReadOnly _next As New Button() With {.Text = "Check", .Width = 110, .Height = 32}
+    Private ReadOnly _back As New Button() With {.Text = "Back", .Width = 90, .Height = 32}
     Private ReadOnly _timer As New Timer() With {.Interval = 1000}
 
     Public Sub New(exam As Boolean)
@@ -38,6 +39,7 @@ Public Class QuizDialog
         Next
         Dim bottom As New FlowLayoutPanel() With {.Dock = DockStyle.Bottom, .Height = 46, .FlowDirection = FlowDirection.RightToLeft, .Padding = New Padding(8)}
         bottom.Controls.Add(_next)
+        If exam Then bottom.Controls.Add(_back)
         Controls.Add(_feedback)
         Controls.Add(_optionsPanel)
         Controls.Add(_question)
@@ -46,6 +48,11 @@ Public Class QuizDialog
         Controls.Add(bottom)
         AcceptButton = _next
         AddHandler _next.Click, AddressOf OnNext
+        AddHandler _back.Click, AddressOf OnBack
+        KeyPreview = True
+        AddHandler KeyDown, Sub(s, e)
+                                If e.KeyCode = Keys.Escape Then Close()
+                            End Sub
         AddHandler _timer.Tick, AddressOf OnTimer
         If exam Then _timer.Start()
         ShowQuestion()
@@ -65,12 +72,28 @@ Public Class QuizDialog
         For i = 0 To 3
             _options(i).Visible = i < q.Options.Length
             If i < q.Options.Length Then _options(i).Text = q.Options(i)
-            _options(i).Checked = False
-            _options(i).ForeColor = SystemColors.ControlText
+            ' In the exam, coming back to a question shows the answer given before.
+            _options(i).Checked = _exam AndAlso _answers(_index) = i
+            _options(i).ForeColor = If(AppSettings.DarkMode, Theme.DarkFore, SystemColors.ControlText)
             _options(i).Enabled = True
         Next
         _feedback.Text = ""
         _next.Text = If(_exam, If(_index = _questions.Count - 1, "Finish", "Next"), "Check")
+        _back.Enabled = _index > 0
+    End Sub
+
+    Private Sub OnBack(sender As Object, e As EventArgs)
+        If _index = 0 Then Return
+        _answers(_index) = Chosen()
+        _index -= 1
+        ShowQuestion()
+    End Sub
+
+    Protected Overrides Sub OnFormClosed(e As FormClosedEventArgs)
+        ' Stop the exam clock when the window closes (also when it is closed early).
+        _timer.Stop()
+        _timer.Dispose()
+        MyBase.OnFormClosed(e)
     End Sub
 
     Private Function Chosen() As Integer

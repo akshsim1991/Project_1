@@ -7,6 +7,13 @@ Public MustInherit Class LogicValve
     ''' <summary>0: output joined to the left input, 1: joined to the right input.</summary>
     Protected Side As Integer
 
+    ''' <summary>Which input (0 = 1a, 1 = 1b) the output is joined to at the moment.</summary>
+    <ComponentModel.Browsable(False)> Public ReadOnly Property ConnectedInput As Integer
+        Get
+            Return Side
+        End Get
+    End Property
+
     Protected Sub New()
         AddPort("1a", 0, 20, -1, 0)
         AddPort("1b", 80, 20, 1, 0)
@@ -115,9 +122,23 @@ Public Class FlowControlValve
 
     Public Overrides ReadOnly Property DisplayName As String
         Get
-            Return If(_hasCheck, "One-way flow control valve", "Flow control valve")
+            Return If(Hydraulic, If(_hasCheck, "Hydraulic one-way flow control valve", "Hydraulic throttle valve"),
+                      If(_hasCheck, "One-way flow control valve", "Flow control valve"))
         End Get
     End Property
+
+    <Category("Medium"), DisplayName("Hydraulic"), Description("True: fitted in a hydraulic (oil) line. False: compressed air.")>
+    Public Property Hydraulic As Boolean
+        Get
+            Return Ports(0).Kind = PortKind.Hydraulic
+        End Get
+        Set(value As Boolean)
+            For Each p In Ports
+                p.Kind = If(value, PortKind.Hydraulic, PortKind.Pneumatic)
+            Next
+        End Set
+    End Property
+
 
     <Category("Flow control"), DisplayName("Opening (%)"),
      Description("Throttle opening. 100 % is unrestricted flow; smaller values slow down the cylinder.")>

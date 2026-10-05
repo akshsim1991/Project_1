@@ -221,13 +221,18 @@ Partial Public Class MainForm
     End Function
 
     Private Sub OnProjectInfo(sender As Object, e As EventArgs)
+        Dim before = _project.ToXml()
         Using f As New Form() With {.Text = "Project information", .Size = New Size(520, 480), .StartPosition = FormStartPosition.CenterParent,
-                                    .ShowInTaskbar = False, .Font = Font}
+                                    .ShowInTaskbar = False, .Font = Font, .KeyPreview = True}
             Dim grid As New PropertyGrid() With {.Dock = DockStyle.Fill, .SelectedObject = _project.Info, .ToolbarVisible = False}
             f.Controls.Add(grid)
+            AddHandler f.KeyDown, Sub(s2, k)
+                                      If k.KeyCode = Keys.Escape Then f.Close()
+                                  End Sub
+            Theme.Apply(f)
             f.ShowDialog(Me)
         End Using
-        OnCircuitModified()
+        If _project.ToXml() <> before Then OnCircuitModified()
     End Sub
 
     ' ----------------------------------------------------------------- export
@@ -290,11 +295,14 @@ Partial Public Class MainForm
     Public Shared Function RenderCircuitImage(c As Circuit, simulating As Boolean) As Bitmap
         Dim b = c.Bounds()
         b.Inflate(30, 30)
+        ' Room for the column numbers above the drawing.
+        b = RectangleF.FromLTRB(b.Left, b.Top - 30, b.Right, b.Bottom)
         Dim bmp As New Bitmap(Math.Max(1, CInt(b.Width)), Math.Max(1, CInt(b.Height)))
         Using g = Graphics.FromImage(bmp)
             g.Clear(Color.White)
+            g.TextRenderingHint = Drawing.Text.TextRenderingHint.AntiAliasGridFit
             g.TranslateTransform(-b.Left, -b.Top)
-            Using canvas As New CircuitCanvas() With {.Circuit = c, .Simulating = simulating}
+            Using canvas As New CircuitCanvas() With {.Circuit = c, .Simulating = simulating, .ShowColumns = True}
                 canvas.PaintTo(g)
             End Using
         End Using
@@ -316,7 +324,77 @@ Partial Public Class MainForm
 
     Protected Overrides Sub OnFormClosing(e As FormClosingEventArgs)
         If Not ConfirmDiscard() Then e.Cancel = True
+        If Not e.Cancel Then DeleteAutosave()
         MyBase.OnFormClosing(e)
+    End Sub
+
+    ' ----------------------------------------------------------------- autosave and recovery
+
+    Private ReadOnly _autosaveTimer As New Timer() With {.Interval = 60000}
+
+    Private Shared ReadOnly Property AutosavePath As String
+        Get
+            Return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "PneuSim", "autosave.pneu")
+        End Get
+    End Property
+
+    Private Sub StartAutosave()
+        AddHandler _autosaveTimer.Tick, Sub() Autosave()
+        _autosaveTimer.Start()
+    End Sub
+
+    ''' <summary>Writes unsaved work to the recovery file (and the name of the original file next to it).</summary>
+    Private Sub Autosave()
+        If Not _dirty Then Return
+        Try
+            Directory.CreateDirectory(Path.GetDirectoryName(AutosavePath))
+            _project.Save(AutosavePath)
+            File.WriteAllText(AutosavePath & ".source", If(_filePath, ""))
+        Catch ex As Exception
+            ' Autosave is a safety net only.
+        End Try
+    End Sub
+
+    Private Sub DeleteAutosave()
+        Try
+            If File.Exists(AutosavePath) Then File.Delete(AutosavePath)
+            If File.Exists(AutosavePath & ".source") Then File.Delete(AutosavePath & ".source")
+        Catch ex As Exception
+            ' Ignore.
+        End Try
+    End Sub
+
+    ''' <summary>After a crash or power cut: offers to restore the work saved in the recovery file.</summary>
+    Public Sub OfferRecovery()
+        If Not File.Exists(AutosavePath) Then Return
+        Dim answer = MessageBox.Show("PneuSim was not closed normally last time. Restore the unsaved work from " &
+                                     $"{File.GetLastWriteTime(AutosavePath):dd-MM-yyyy HH:mm}?", AppName,
+                                     MessageBoxButtons.YesNo, MessageBoxIcon.Question)
+        If answer = DialogResult.Yes Then
+            Try
+                Dim source = If(File.Exists(AutosavePath & ".source"), File.ReadAllText(AutosavePath & ".source").Trim(), "")
+                NewProject(Project.Load(AutosavePath), If(source = "", Nothing, source))
+                _dirty = True
+                UpdateTitle()
+                _statusMessage.Text = "Recovered unsaved work. Save it to keep it."
+                Return
+            Catch ex As Exception
+                MessageBox.Show("The recovery file could not be read: " & ex.Message, AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            End Try
+        End If
+        DeleteAutosave()
+    End Sub
+
+    ''' <summary>Called by the global error handler: stop the simulation and save the work.</summary>
+    Public Sub RecoverFromError()
+        Try
+            StopSimulation()
+        Catch ex As Exception
+            _running = False
+            _timer.Stop()
+        End Try
+        _dirty = True
+        Autosave()
     End Sub
 
     Private Sub OnPropertyValueChanged(s As Object, e As PropertyValueChangedEventArgs)

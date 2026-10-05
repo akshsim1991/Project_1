@@ -26,8 +26,17 @@ Public Class PdfDocument
                                write($"{objNo} 0 obj" & vbLf)
                            End Sub
             write("%PDF-1.4" & vbLf & "%" & ChrW(226) & ChrW(227) & ChrW(207) & ChrW(211) & vbLf)
-            ' 1 catalog, 2 pages, 3 Helvetica, 4 Helvetica-Bold, then (page, content) pairs.
+            ' 1 catalog, 2 pages, 3 Helvetica, 4 Helvetica-Bold, then (page, content) pairs, then images.
             Dim n = _pages.Count
+            Dim imageObj = 5 + n * 2
+            Dim imageNumbers As New List(Of List(Of Integer))
+            For Each pg In _pages
+                Dim nums As New List(Of Integer)
+                For Each im In pg.Images
+                    nums.Add(imageObj) : imageObj += 1
+                Next
+                imageNumbers.Add(nums)
+            Next
             beginObj(1) : write("<< /Type /Catalog /Pages 2 0 R >>" & vbLf & "endobj" & vbLf)
             Dim kids = String.Join(" ", Enumerable.Range(0, n).Select(Function(i) $"{5 + i * 2} 0 R"))
             beginObj(2) : write($"<< /Type /Pages /Kids [{kids}] /Count {n} >>" & vbLf & "endobj" & vbLf)
@@ -37,13 +46,25 @@ Public Class PdfDocument
                 Dim pg = _pages(i)
                 Dim pageNo = 5 + i * 2
                 beginObj(pageNo)
+                Dim xobjects = If(pg.Images.Count = 0, "",
+                                  " /XObject << " & String.Join(" ", imageNumbers(i).Select(Function(num, k) $"/Im{k} {num} 0 R")) & " >>")
                 write($"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {F(pg.Width)} {F(pg.Height)}] " &
-                      $"/Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents {pageNo + 1} 0 R >>" & vbLf & "endobj" & vbLf)
+                      $"/Resources << /Font << /F1 3 0 R /F2 4 0 R >>{xobjects} >> /Contents {pageNo + 1} 0 R >>" & vbLf & "endobj" & vbLf)
                 Dim content = latin1.GetBytes(pg.Content.ToString())
                 beginObj(pageNo + 1)
                 write($"<< /Length {content.Length} >>" & vbLf & "stream" & vbLf)
                 fs.Write(content, 0, content.Length)
                 write(vbLf & "endstream" & vbLf & "endobj" & vbLf)
+            Next
+            For i = 0 To n - 1
+                For k = 0 To _pages(i).Images.Count - 1
+                    Dim im = _pages(i).Images(k)
+                    beginObj(imageNumbers(i)(k))
+                    write($"<< /Type /XObject /Subtype /Image /Width {im.PixelWidth} /Height {im.PixelHeight} /ColorSpace /DeviceRGB " &
+                          $"/BitsPerComponent 8 /Filter /FlateDecode /Length {im.Data.Length} >>" & vbLf & "stream" & vbLf)
+                    fs.Write(im.Data, 0, im.Data.Length)
+                    write(vbLf & "endstream" & vbLf & "endobj" & vbLf)
+                Next
             Next
             Dim xref = fs.Position
             write($"xref" & vbLf & $"0 {offsets.Count + 1}" & vbLf & "0000000000 65535 f " & vbLf)
@@ -69,6 +90,43 @@ Public Class PdfPage
     Public ReadOnly Property Width As Single
     Public ReadOnly Property Height As Single
     Friend ReadOnly Property Content As New StringBuilder()
+    ''' <summary>Pictures placed on the page (zlib-compressed RGB).</summary>
+    Friend ReadOnly Property Images As New List(Of PdfImage)
+
+    ''' <summary>True if Helvetica (WinAnsi) can show every character of the text.</summary>
+    Public Shared Function FitsStandardFont(t As String) As Boolean
+        Return VectorExport.Plain(t).All(Function(ch) AscW(ch) < 128 OrElse (AscW(ch) >= 160 AndAlso AscW(ch) < 256))
+    End Function
+
+    ''' <summary>Draws text as a picture, for scripts and symbols the standard PDF fonts do not contain.</summary>
+    Private Sub TextAsImage(x As Single, baseline As Single, size As Single, txt As String, bold As Boolean, color As Color)
+        Const k = 4.0F ' pixels per point
+        Using f As New Font("Arial", size * k, If(bold, FontStyle.Bold, FontStyle.Regular), GraphicsUnit.Pixel),
+              probe As New Bitmap(1, 1), pg = Graphics.FromImage(probe)
+            Dim sz = pg.MeasureString(txt, f)
+            Dim wPx = Math.Max(1, CInt(Math.Ceiling(sz.Width))), hPx = Math.Max(1, CInt(Math.Ceiling(sz.Height)))
+            Dim ascentPx = f.Size * f.FontFamily.GetCellAscent(f.Style) / f.FontFamily.GetEmHeight(f.Style)
+            Using bmp As New Bitmap(wPx, hPx, Imaging.PixelFormat.Format24bppRgb)
+                Using g = Graphics.FromImage(bmp), b As New SolidBrush(color)
+                    g.Clear(Color.White)
+                    g.TextRenderingHint = Drawing.Text.TextRenderingHint.AntiAliasGridFit
+                    g.DrawString(txt, f, b, 0, 0)
+                End Using
+                Dim rgbBytes(wPx * hPx * 3 - 1) As Byte
+                For yy = 0 To hPx - 1
+                    For xx = 0 To wPx - 1
+                        Dim c = bmp.GetPixel(xx, yy)
+                        Dim i = (yy * wPx + xx) * 3
+                        rgbBytes(i) = c.R : rgbBytes(i + 1) = c.G : rgbBytes(i + 2) = c.B
+                    Next
+                Next
+                Images.Add(New PdfImage With {.PixelWidth = wPx, .PixelHeight = hPx, .Data = PdfImage.Zlib(rgbBytes)})
+            End Using
+            Dim wPt = wPx / k, hPt = hPx / k
+            Dim top = baseline - ascentPx / k
+            Content.AppendLine($"q {PdfDocument.F(wPt)} 0 0 {PdfDocument.F(hPt)} {PdfDocument.F(x)} {PdfDocument.F(Y(top + hPt))} cm /Im{Images.Count - 1} Do Q")
+        End Using
+    End Sub
 
     Private Function Y(v As Single) As Single
         Return Height - v
@@ -110,6 +168,10 @@ Public Class PdfPage
                     Optional color As Color = Nothing, Optional angleDeg As Single = 0)
         If String.IsNullOrEmpty(txt) Then Return
         If color.A = 0 Then color = Color.Black
+        If Not FitsStandardFont(txt) AndAlso Math.Abs(angleDeg) < 0.1 Then
+            TextAsImage(x, baseline, size, txt, bold, color)
+            Return
+        End If
         Dim a = -angleDeg * Math.PI / 180
         Dim c = CSng(Math.Cos(a)), s = CSng(Math.Sin(a))
         Content.AppendLine($"BT /{If(bold, "F2", "F1")} {PdfDocument.F(size)} Tf {Rgb(color)} rg " &
@@ -129,19 +191,46 @@ Public Class PdfPage
     End Function
 End Class
 
+''' <summary>An image in a PDF file.</summary>
+Public Class PdfImage
+    Public Property PixelWidth As Integer
+    Public Property PixelHeight As Integer
+    Public Property Data As Byte()
+
+    ''' <summary>zlib stream (header, deflate data, Adler-32) as PDF's FlateDecode expects.</summary>
+    Public Shared Function Zlib(raw As Byte()) As Byte()
+        Using ms As New MemoryStream()
+            ms.WriteByte(&H78) : ms.WriteByte(&H9C)
+            Using ds As New Compression.DeflateStream(ms, Compression.CompressionLevel.Optimal, leaveOpen:=True)
+                ds.Write(raw, 0, raw.Length)
+            End Using
+            Dim a As UInteger = 1, b As UInteger = 0
+            For Each by In raw
+                a = (a + by) Mod 65521UI
+                b = (b + a) Mod 65521UI
+            Next
+            Dim adler = (b << 16) Or a
+            ms.WriteByte(CByte(adler >> 24)) : ms.WriteByte(CByte((adler >> 16) And &HFF)) : ms.WriteByte(CByte((adler >> 8) And &HFF)) : ms.WriteByte(CByte(adler And &HFF))
+            Return ms.ToArray()
+        End Using
+    End Function
+End Class
+
 ''' <summary>Exports drawings to SVG, DXF and PDF.</summary>
 Public Module VectorExport
 
     ''' <summary>Replaces characters that the standard PDF and DXF fonts cannot show.</summary>
     Public Function Plain(t As String) As String
-        Return t.Replace("₹", "Rs ").Replace("→", "->").Replace("≥", ">=").Replace("≤", "<=").Replace("•", "-").
-                 Replace("—", "-").Replace("–", "-").Replace("³", "3").Replace(ChrW(&H2019), "'")
+        Return t.Replace("₹", "Rs ").Replace("→", "->").Replace("←", "<-").Replace("≥", ">=").Replace("≤", "<=").Replace("•", "-").
+                 Replace("—", "-").Replace("–", "-").Replace("≈", "~").Replace("…", "...").Replace("✔", "OK").Replace("✘", "X").
+                 Replace("₂", "2").Replace("−", "-").Replace("÷", "/").Replace(ChrW(&H2019), "'").Replace(ChrW(&H2018), "'").
+                 Replace(ChrW(&H201C), ChrW(34)).Replace(ChrW(&H201D), ChrW(34))
     End Function
 
     ''' <summary>Records a circuit's drawing as vector shapes.</summary>
     Public Function Record(c As Circuit, Optional simulating As Boolean = False) As VectorSurface
         Dim vs As New VectorSurface()
-        Using canvas As New CircuitCanvas() With {.Circuit = c, .Simulating = simulating}
+        Using canvas As New CircuitCanvas() With {.Circuit = c, .Simulating = simulating, .ShowColumns = True}
             canvas.PaintTo(vs)
         End Using
         Return vs
@@ -188,6 +277,7 @@ Public Module VectorExport
         Dim num = Function(v As Single) v.ToString("0.###", CultureInfo.InvariantCulture)
         pair(0, "SECTION") : pair(2, "HEADER")
         pair(9, "$ACADVER") : pair(1, "AC1009")
+        pair(9, "$DWGCODEPAGE") : pair(3, "ANSI_1252")
         pair(9, "$INSUNITS") : pair(70, "4")
         pair(0, "ENDSEC")
         pair(0, "SECTION") : pair(2, "ENTITIES")
@@ -209,7 +299,7 @@ Public Module VectorExport
             End If
         Next
         pair(0, "ENDSEC") : pair(0, "EOF")
-        File.WriteAllText(path, sb.ToString(), Encoding.ASCII)
+        File.WriteAllText(path, sb.ToString(), Encoding.GetEncoding(28591))
     End Sub
 
     ''' <summary>Draws recorded shapes onto a PDF page, scaled to fit the given area.</summary>

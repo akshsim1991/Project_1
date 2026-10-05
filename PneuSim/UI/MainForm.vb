@@ -7,7 +7,7 @@ Partial Public Class MainForm
     Inherits Form
 
     Private Const AppName = "PneuSim"
-    Private Const AppVersion = "3.0"
+    Private Const AppVersion = "3.1"
     Private Const FileFilter = "PneuSim projects (*.pneu)|*.pneu|All files (*.*)|*.*"
 
     Private ReadOnly _canvas As New CircuitCanvas() With {.Dock = DockStyle.Fill}
@@ -42,21 +42,26 @@ Partial Public Class MainForm
         Icon = Icons.AppIcon()
 
         BuildLayout()
+        Theme.OwnerDrawTabs(_bottomTabs)
+        Theme.OwnerDrawTabs(_pageTabs)
         AddHandler _canvas.SelectionChanged, Sub() _properties.SelectedObjects = _canvas.SelectedElements.Cast(Of Object)().ToArray()
         AddHandler _canvas.CircuitModified, Sub() OnCircuitModified()
         AddHandler _canvas.ElementOperated, AddressOf OnElementOperated
         AddHandler _canvas.StatusMessage, Sub(s, msg) _statusMessage.Text = msg
         AddHandler _canvas.HoverElementChanged, AddressOf OnHoverElement
+        AddHandler _canvas.ZoomChanged, Sub() _statusZoom.Text = $"Zoom {_canvas.Zoom * 100:0}%"
         AddHandler _properties.PropertyValueChanged, AddressOf OnPropertyValueChanged
         AddHandler _timer.Tick, AddressOf OnTick
         AddHandler _pageTabs.SelectedIndexChanged, Sub() If Not _switchingPages Then ShowPage(_pageTabs.SelectedIndex)
         AddHandler _lessons.LoadCircuit, Sub(s, c) LoadLessonCircuit(c)
         _lessons.CurrentCircuit = Function() _project.SimulationCircuit()
+        _canvas.NameScope = Function() _project.AllElements()
 
         NewProject(New Project(New Circuit()))
         _realPhysics = AppSettings.RealPhysics
         ApplyTheme(AppSettings.DarkMode)
         UpdateUiState()
+        StartAutosave()
     End Sub
 
     ' ================================================================= layout
@@ -214,7 +219,7 @@ Partial Public Class MainForm
         tools.CheckOnClick = True
         AddHandler tools.CheckedChanged, Sub() _diagramSplit.Panel2Collapsed = Not tools.Checked
         view.DropDownItems.Add(tools)
-        view.DropDownItems.Add(Item("Valve &cutaway (animated)", AddressOf OnCutaway, Keys.F7))
+        view.DropDownItems.Add(Item("&Cutaway view (animated)", AddressOf OnCutaway, Keys.F7))
         _menuDark = Item("&Dark mode", Sub() ApplyTheme(Not AppSettings.DarkMode))
         view.DropDownItems.Add(_menuDark)
 
@@ -238,7 +243,7 @@ Partial Public Class MainForm
         learn.DropDownItems.Add(Item("&Lessons", Sub() ShowBottomTab("Lessons")))
         learn.DropDownItems.Add(Item("Practice &quiz...", Sub() ShowQuiz(False)))
         learn.DropDownItems.Add(Item("Timed &exam...", Sub() ShowQuiz(True)))
-        learn.DropDownItems.Add(Item("Valve &cutaway", AddressOf OnCutaway))
+        learn.DropDownItems.Add(Item("&Cutaway view (inside the components)", AddressOf OnCutaway))
 
         Dim exMenu = New ToolStripMenuItem("E&xamples")
         For Each ex In Examples.All
@@ -257,12 +262,13 @@ Partial Public Class MainForm
 
     Private Function BuildToolbar() As ToolStrip
         Dim bar As New ToolStrip() With {.GripStyle = ToolStripGripStyle.Hidden, .ImageScalingSize = New Size(16, 16)}
-        bar.Items.Add(Button("New", Icons.NewFile, AddressOf OnNew))
-        bar.Items.Add(Button("Open", Icons.Open, AddressOf OnOpen))
-        bar.Items.Add(Button("Save", Icons.Save, AddressOf OnSave))
+        ' Common commands as icons (with tooltips) so the whole toolbar fits on a normal screen.
+        bar.Items.Add(Button("New (Ctrl+N)", Icons.NewFile, AddressOf OnNew, iconOnly:=True))
+        bar.Items.Add(Button("Open (Ctrl+O)", Icons.Open, AddressOf OnOpen, iconOnly:=True))
+        bar.Items.Add(Button("Save (Ctrl+S)", Icons.Save, AddressOf OnSave, iconOnly:=True))
         bar.Items.Add(New ToolStripSeparator())
-        _btnUndo = Button("Undo", Icons.UndoIcon(False), Sub() Undo())
-        _btnRedo = Button("Redo", Icons.UndoIcon(True), Sub() Redo())
+        _btnUndo = Button("Undo (Ctrl+Z)", Icons.UndoIcon(False), Sub() Undo(), iconOnly:=True)
+        _btnRedo = Button("Redo (Ctrl+Y)", Icons.UndoIcon(True), Sub() Redo(), iconOnly:=True)
         bar.Items.AddRange({_btnUndo, _btnRedo})
         bar.Items.Add(New ToolStripSeparator())
         bar.Items.Add(Button("Generator", Icons.Wand, AddressOf OnGenerator))
@@ -281,12 +287,13 @@ Partial Public Class MainForm
         _btnRecord = Button("Record GIF", Icons.RecordIcon, AddressOf OnToggleRecord)
         bar.Items.AddRange({_btnReal, _btnRecord})
         bar.Items.Add(New ToolStripSeparator())
-        bar.Items.Add(Button("Rotate", Icons.RotateIcon, Sub() _canvas.RotateSelection()))
-        bar.Items.Add(Button("Delete", Icons.DeleteIcon, Sub() _canvas.DeleteSelection()))
+        bar.Items.Add(Button("Rotate (R)", Icons.RotateIcon, Sub() _canvas.RotateSelection(), iconOnly:=True))
+        bar.Items.Add(Button("Delete (Del)", Icons.DeleteIcon, Sub() _canvas.DeleteSelection(), iconOnly:=True))
         bar.Items.Add(New ToolStripSeparator())
-        bar.Items.Add(Button("Zoom in", Icons.ZoomIn, Sub() SetZoom(_canvas.Zoom * 1.2F)))
-        bar.Items.Add(Button("Zoom out", Icons.ZoomOut, Sub() SetZoom(_canvas.Zoom / 1.2F)))
-        bar.Items.Add(Button("Fit", Icons.ZoomIn, Sub() FitView()))
+        bar.Items.Add(Button("Zoom in", Icons.ZoomIn, Sub() SetZoom(_canvas.Zoom * 1.2F), iconOnly:=True))
+        bar.Items.Add(Button("Zoom out", Icons.ZoomOut, Sub() SetZoom(_canvas.Zoom / 1.2F), iconOnly:=True))
+        bar.Items.Add(New ToolStripButton("Fit") With {.ToolTipText = "Zoom to fit (Ctrl+9)"})
+        AddHandler bar.Items(bar.Items.Count - 1).Click, Sub() FitView()
         Return bar
     End Function
 
@@ -338,8 +345,10 @@ Partial Public Class MainForm
         Return mi
     End Function
 
-    Private Shared Function Button(text As String, image As Image, handler As EventHandler) As ToolStripButton
-        Dim b As New ToolStripButton(text, image) With {.DisplayStyle = ToolStripItemDisplayStyle.ImageAndText}
+    Private Shared Function Button(text As String, image As Image, handler As EventHandler, Optional iconOnly As Boolean = False) As ToolStripButton
+        Dim b As New ToolStripButton(text, image) With {
+            .DisplayStyle = If(iconOnly, ToolStripItemDisplayStyle.Image, ToolStripItemDisplayStyle.ImageAndText),
+            .ToolTipText = text}
         AddHandler b.Click, handler
         Return b
     End Function

@@ -22,10 +22,26 @@ Public Class HydraulicPump
     Public Overrides ReadOnly Property DisplayName As String = "Hydraulic power unit (pump)"
 
     <Category("Pump"), DisplayName("Flow (l/min)"), Description("Delivery of the pump; sets the speed of cylinders and motors.")>
-    Public Property FlowLpm As Double = 8
+    Public Property FlowLpm As Double
+        Get
+            Return _flowLpm
+        End Get
+        Set(value As Double)
+            _flowLpm = Math.Max(0.1, Math.Min(2000, value))
+        End Set
+    End Property
+    Private _flowLpm As Double = 8
 
     <Category("Pump"), DisplayName("Maximum pressure (bar)"), Description("Pressure the pump can build up when there is no relief valve.")>
-    Public Property MaxPressureBar As Double = 250
+    Public Property MaxPressureBar As Double
+        Get
+            Return _maxPressure
+        End Get
+        Set(value As Double)
+            _maxPressure = Math.Max(1, Math.Min(700, value))
+        End Set
+    End Property
+    Private _maxPressure As Double = 250
 
     <Browsable(False)> Public ReadOnly Property Running As Boolean
         Get
@@ -243,6 +259,51 @@ Public Class HydraulicCylinder
     End Sub
 End Class
 
+''' <summary>Single-acting hydraulic cylinder (ram): oil extends it, a spring or the load returns it.</summary>
+Public Class HydraulicSingleActingCylinder
+    Inherits SingleActingCylinder
+    Implements IHydraulicConsumer
+
+    ''' <summary>Return speed with the outlet fully open, m/s (set by the spring or load pushing the oil out).</summary>
+    Private Const FreeReturnSpeed As Double = 0.15
+
+    Public Sub New()
+        Ports(0).Kind = PortKind.Hydraulic
+        Ports(0).VentsWhenOpen = False
+        BoreMm = 40
+        RodMm = 22
+        StrokeLength = 200
+        SpringPreloadN = 300
+    End Sub
+
+    Public Overrides ReadOnly Property TypeName As String = "HydraulicSingleActingCylinder"
+    Public Overrides ReadOnly Property DisplayName As String = "Hydraulic single-acting cylinder"
+
+    Public Function WantsFlow() As Boolean Implements IHydraulicConsumer.WantsFlow
+        Return Ports(0).State = PortState.Pressurized AndAlso Position < 1
+    End Function
+
+    Public ReadOnly Property LoadPressure As Double Implements IHydraulicConsumer.LoadPressure
+        Get
+            Dim force = LoadForceN + SpringPreloadN * 1.5 + FrictionN
+            Return Math.Max(2, force / CapArea() / 100000.0)
+        End Get
+    End Property
+
+    Public Overrides Sub UpdateDynamics(sim As Simulator, dt As Double)
+        Dim p = Ports(0)
+        Select Case p.State
+            Case PortState.Pressurized
+                If Position >= 1 OrElse p.Pressure + 0.01 < LoadPressure Then MoveAtSpeed(0, dt) : Return
+                MoveAtSpeed(sim.HydraulicFlowShare / 60000.0 / CapArea() * p.Factor, dt)
+            Case PortState.Exhausted
+                MoveAtSpeed(-FreeReturnSpeed * Math.Max(p.Factor, 0.02), dt)
+            Case Else
+                MoveAtSpeed(0, dt) ' oil trapped: the ram holds its position
+        End Select
+    End Sub
+End Class
+
 ''' <summary>Hydraulic motor (bidirectional): speed = flow / displacement.</summary>
 Public Class HydraulicMotor
     Inherits CircuitElement
@@ -259,9 +320,27 @@ Public Class HydraulicMotor
     Public Overrides ReadOnly Property TypeName As String = "HydraulicMotor"
     Public Overrides ReadOnly Property DisplayName As String = "Hydraulic motor"
 
-    <Category("Motor"), DisplayName("Displacement (cm³/rev)")> Public Property DisplacementCc As Double = 10
+    <Category("Motor"), DisplayName("Displacement (cm³/rev)")>
+    Public Property DisplacementCc As Double
+        Get
+            Return _displacement
+        End Get
+        Set(value As Double)
+            _displacement = Math.Max(0.1, Math.Min(10000, value))
+        End Set
+    End Property
+    Private _displacement As Double = 10
+
     <Category("Motor"), DisplayName("Load pressure (bar)"), Description("Pressure needed to turn the load (torque / displacement).")>
-    Public Property LoadPressureBar As Double = 20
+    Public Property LoadPressureBar As Double
+        Get
+            Return _loadPressure
+        End Get
+        Set(value As Double)
+            _loadPressure = Math.Max(0, Math.Min(700, value))
+        End Set
+    End Property
+    Private _loadPressure As Double = 20
 
     Public ReadOnly Property Rpm As Double
         Get
@@ -339,8 +418,27 @@ Public Class Accumulator
     Public Overrides ReadOnly Property TypeName As String = "Accumulator"
     Public Overrides ReadOnly Property DisplayName As String = "Accumulator"
 
-    <Category("Accumulator"), DisplayName("Gas volume (l)")> Public Property CapacityL As Double = 1
-    <Category("Accumulator"), DisplayName("Pre-charge pressure (bar)")> Public Property PrechargeBar As Double = 30
+    <Category("Accumulator"), DisplayName("Gas volume (l)")>
+    Public Property CapacityL As Double
+        Get
+            Return _capacity
+        End Get
+        Set(value As Double)
+            _capacity = Math.Max(0.05, Math.Min(500, value))
+        End Set
+    End Property
+    Private _capacity As Double = 1
+
+    <Category("Accumulator"), DisplayName("Pre-charge pressure (bar)")>
+    Public Property PrechargeBar As Double
+        Get
+            Return _precharge
+        End Get
+        Set(value As Double)
+            _precharge = Math.Max(1, Math.Min(400, value))
+        End Set
+    End Property
+    Private _precharge As Double = 30
 
     <Browsable(False)> Public ReadOnly Property StoredLitres As Double
         Get
@@ -407,6 +505,7 @@ Public Class Accumulator
     End Sub
 End Class
 
+<TypeConverter(GetType(EnumDescriptionConverter))>
 Public Enum HydraulicCentre
     <Description("Closed centre (all ports blocked)")> Closed
     <Description("Tandem centre (P to T, A and B blocked)")> Tandem
@@ -534,7 +633,15 @@ Public Class CompensatedFlowControl
     Public Overrides ReadOnly Property DisplayName As String = "Pressure-compensated flow control valve"
 
     <Category("Flow control"), DisplayName("Flow (l/min)"), Description("Flow passed from 1 to 2, independent of the load pressure.")>
-    Public Property FlowLpm As Double = 4
+    Public Property FlowLpm As Double
+        Get
+            Return _flow
+        End Get
+        Set(value As Double)
+            _flow = Math.Max(0.1, Math.Min(2000, value))
+        End Set
+    End Property
+    Private _flow As Double = 4
 
     Public Overrides ReadOnly Property LocalBounds As RectangleF
         Get
@@ -577,6 +684,13 @@ Public Class CounterbalanceValve
 
     Private _open As Boolean
 
+    ''' <summary>True while oil may flow back from 2 to 1 (load lowered).</summary>
+    <Browsable(False)> Public ReadOnly Property IsOpen As Boolean
+        Get
+            Return _open
+        End Get
+    End Property
+
     Public Sub New()
         AddPort("1", 0, 50, -1, 0, kind:=PortKind.Hydraulic)
         AddPort("2", 70, 50, 1, 0, kind:=PortKind.Hydraulic)
@@ -587,10 +701,26 @@ Public Class CounterbalanceValve
     Public Overrides ReadOnly Property DisplayName As String = "Counterbalance valve"
 
     <Category("Valve"), DisplayName("Opening pressure (bar)"), Description("Set about 1.3 times the load-induced pressure.")>
-    Public Property Setting As Double = 50
+    Public Property Setting As Double
+        Get
+            Return _setting
+        End Get
+        Set(value As Double)
+            _setting = Math.Max(1, Math.Min(400, value))
+        End Set
+    End Property
+    Private _setting As Double = 50
 
     <Category("Valve"), DisplayName("Pilot pressure to open (bar)")>
-    Public Property PilotPressure As Double = 10
+    Public Property PilotPressure As Double
+        Get
+            Return _pilot
+        End Get
+        Set(value As Double)
+            _pilot = Math.Max(1, Math.Min(400, value))
+        End Set
+    End Property
+    Private _pilot As Double = 10
 
     Public Overrides ReadOnly Property LocalBounds As RectangleF
         Get

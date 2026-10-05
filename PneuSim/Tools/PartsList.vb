@@ -22,6 +22,11 @@ Public Module PartsList
     Public Function DefaultPrice(description As String) As Double
         Dim d = description.ToLowerInvariant()
         If d.Contains("hydraulic power unit") Then Return 45000
+        If d.Contains("hydraulic single-acting") Then Return 9000
+        If d.Contains("hydraulic check") Then Return 1800
+        If d.Contains("hydraulic one-way") OrElse d.Contains("hydraulic throttle") Then Return 2500
+        If d.Contains("pressure reducing") Then Return 4500
+        If d.Contains("hydraulic hose") Then Return 900
         If d.Contains("hydraulic cylinder") Then Return 12000
         If d.Contains("hydraulic motor") Then Return 15000
         If d.Contains("4/3-way hydraulic") Then Return 9000
@@ -57,6 +62,7 @@ Public Module PartsList
         If d.Contains("push button") OrElse d.Contains("selector switch") Then Return 350
         If d.Contains("indicator lamp") Then Return 250
         If d.Contains("tube fittings") Then Return 25
+        If d.Contains("plastic tubing") Then Return 40
         Return 0
     End Function
 
@@ -74,7 +80,6 @@ Public Module PartsList
                       line.Quantity += 1
                       If Not String.IsNullOrWhiteSpace(label) Then line.Labels = If(line.Labels = "", label, line.Labels & ", " & label)
                   End Sub
-        Dim fittings = 0
         For Each e In project.AllElements()
             Select Case True
                 Case TypeOf e Is TextNote, TypeOf e Is PageConnector, TypeOf e Is AirSupply, TypeOf e Is PowerTerminal, TypeOf e Is HydraulicTank
@@ -89,15 +94,22 @@ Public Module PartsList
             End Select
             add(e.DisplayName, e.Label)
         Next
+        Dim airLines = 0, oilLines = 0
         For Each p In project.Pages
-            fittings += p.Circuit.Tubes.Where(Function(t) t.A.Kind = PortKind.Pneumatic).Count() * 2
+            airLines += p.Circuit.Tubes.Where(Function(t) t.A.Kind = PortKind.Pneumatic).Count()
+            oilLines += p.Circuit.Tubes.Where(Function(t) t.A.Kind = PortKind.Hydraulic).Count()
         Next
-        If fittings > 0 Then
-            Dim desc = "Tube fittings (push-in)"
-            Dim price As Double
-            If Not project.PartCosts.TryGetValue(desc, price) Then price = DefaultPrice(desc)
-            lines(desc) = New PartLine With {.Description = desc, .Labels = "", .Quantity = fittings, .UnitPrice = price}
-        End If
+        Dim addLine = Sub(desc As String, qty As Integer)
+                          If qty <= 0 Then Return
+                          Dim price As Double
+                          If Not project.PartCosts.TryGetValue(desc, price) Then price = DefaultPrice(desc)
+                          lines(desc) = New PartLine With {.Description = desc, .Labels = "", .Quantity = qty, .UnitPrice = price}
+                      End Sub
+        ' Two push-in fittings and about one metre of tubing per pneumatic connection.
+        addLine("Tube fittings (push-in)", airLines * 2)
+        addLine("Plastic tubing, metres (estimate: 1 m per connection)", airLines)
+        ' One hose with crimped fittings per hydraulic line.
+        addLine("Hydraulic hose with fittings", oilLines)
         Return lines.Values.OrderBy(Function(l) l.Description).ToList()
     End Function
 

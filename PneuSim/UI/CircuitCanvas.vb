@@ -46,14 +46,14 @@ Public Class CircuitCanvas
         End Get
     End Property
 
-    ''' <summary>The last directional valve the mouse was over (for the cutaway view).</summary>
-    Public Property LastHoveredValve As DirectionalValve
+    ''' <summary>The last component the mouse was over (for the cutaway view).</summary>
+    Public Property LastHoveredElement As CircuitElement
 
     Private Sub TrackHover(w As PointF)
         Dim el = _circuit.FindElementAt(w)
         If el IsNot _hoverElement Then
             _hoverElement = el
-            If TypeOf el Is DirectionalValve Then LastHoveredValve = DirectCast(el, DirectionalValve)
+            If el IsNot Nothing AndAlso Cutaways.Supports(el) Then LastHoveredElement = el
             RaiseEvent HoverElementChanged(Me, el)
         End If
     End Sub
@@ -82,6 +82,7 @@ Public Class CircuitCanvas
         Set(value As Circuit)
             _circuit = value
             ClearSelection()
+            UpdateScrollSize()
             Invalidate()
         End Set
     End Property
@@ -90,6 +91,13 @@ Public Class CircuitCanvas
     Public Property Simulator As Simulator
 
     Public Property Simulating As Boolean
+
+    ''' <summary>All components whose names must stay unique (every page of the project).</summary>
+    Public Property NameScope As Func(Of IEnumerable(Of CircuitElement))
+
+    Private Function ScopeElements() As IEnumerable(Of CircuitElement)
+        Return If(NameScope Is Nothing, _circuit.Elements, NameScope.Invoke())
+    End Function
 
     ''' <summary>Library entry waiting to be placed with the next click.</summary>
     Public Property PlacingPreset As LibraryPreset
@@ -102,8 +110,12 @@ Public Class CircuitCanvas
             _zoom = Math.Max(0.3F, Math.Min(3.0F, value))
             UpdateScrollSize()
             Invalidate()
+            RaiseEvent ZoomChanged(Me, EventArgs.Empty)
         End Set
     End Property
+
+    ''' <summary>Raised whenever the zoom changes (buttons, menu, Ctrl + mouse wheel).</summary>
+    Public Event ZoomChanged As EventHandler
 
     ''' <summary>The selected element when exactly one is selected.</summary>
     Public ReadOnly Property SelectedElement As CircuitElement
@@ -118,8 +130,14 @@ Public Class CircuitCanvas
         End Get
     End Property
 
+    ''' <summary>The scrollable sheet: at least the standard size, and always large enough for the whole circuit.</summary>
     Private Sub UpdateScrollSize()
-        AutoScrollMinSize = New Size(CInt(WorkArea.Width * _zoom), CInt(WorkArea.Height * _zoom))
+        Dim w = WorkArea.Width, h = WorkArea.Height
+        If _circuit IsNot Nothing Then
+            Dim b = _circuit.Bounds()
+            If Not b.IsEmpty Then w = Math.Max(w, b.Right + 400) : h = Math.Max(h, b.Bottom + 400)
+        End If
+        AutoScrollMinSize = New Size(CInt(w * _zoom), CInt(h * _zoom))
     End Sub
 
     ' ---------------------------------------------------------------- commands
@@ -205,6 +223,8 @@ Public Class CircuitCanvas
             Dim added = _circuit.Merge(xml, 40, 40)
             ' Paste again moves the clipboard further so copies do not stack exactly.
             _internalClipboard = _circuit.ExtractXml(added)
+            Naming.RenamePasted(added, ScopeElements())
+            UpdateScrollSize()
             SetSelection(added)
             RaiseEvent CircuitModified(Me, EventArgs.Empty)
         Catch ex As Exception
@@ -215,6 +235,7 @@ Public Class CircuitCanvas
     Public Sub DuplicateSelection()
         If Simulating OrElse _selection.Count = 0 Then Return
         Dim added = _circuit.Merge(_circuit.ExtractXml(_selection), 40, 40)
+        Naming.RenamePasted(added, ScopeElements())
         SetSelection(added)
         RaiseEvent CircuitModified(Me, EventArgs.Empty)
     End Sub
@@ -223,7 +244,9 @@ Public Class CircuitCanvas
         Dim e = preset.Factory.Invoke()
         Dim b = e.LocalBounds
         ' Put the symbol's centre under the cursor, snapped to the grid.
-        _circuit.Add(e, Snap(world.X - b.Width / 2 - b.Left), Snap(world.Y - b.Height / 2 - b.Top))
+        _circuit.Add(e, Snap(Math.Max(-b.Left, world.X - b.Width / 2 - b.Left)), Snap(Math.Max(-b.Top, world.Y - b.Height / 2 - b.Top)))
+        Naming.NameNewElement(e, ScopeElements())
+        UpdateScrollSize()
         SetSelection({e})
         RaiseEvent CircuitModified(Me, EventArgs.Empty)
     End Sub
@@ -268,6 +291,8 @@ Public Class CircuitCanvas
             If Not Simulating Then DrawGrid(s, ClientRectangle)
             DrawContent(s, interactive:=True)
         End Using
+        g.ResetTransform()
+        DrawColumnBand(g)
     End Sub
 
     ''' <summary>Colours used on screen (light or dark mode).</summary>
@@ -282,6 +307,49 @@ Public Class CircuitCanvas
         End Set
     End Property
     Private _scheme As ColorScheme = ColorScheme.Light
+
+    ''' <summary>Exports: print the column numbers (used by cross-references) above the drawing.</summary>
+    Public Property ShowColumns As Boolean
+
+    ''' <summary>Column numbers above the circuit, for exported drawings.</summary>
+    Private Sub DrawColumnRuler(g As DrawSurface)
+        Dim b = _circuit.Bounds()
+        If b.IsEmpty Then Return
+        Dim y = b.Top - 44
+        Dim first = Project.ColumnAt(b.Left) - 1, last = Project.ColumnAt(b.Right) - 1
+        Using pen As New Pen(Color.FromArgb(150, 150, 150), 0.8F), f As New Font("Segoe UI", 7.5F), br As New SolidBrush(Color.FromArgb(110, 110, 110))
+            g.DrawLine(pen, first * Project.ColumnWidth, y + 14, (last + 1) * Project.ColumnWidth, y + 14)
+            For k = first To last + 1
+                g.DrawLine(pen, k * Project.ColumnWidth, y + 8, k * Project.ColumnWidth, y + 14)
+            Next
+            For k = first To last
+                Dim txt = (k + 1).ToString()
+                Dim sz = g.MeasureString(txt, f)
+                g.DrawString(txt, f, br, k * Project.ColumnWidth + Project.ColumnWidth / 2 - sz.Width / 2, y)
+            Next
+        End Using
+    End Sub
+
+    ''' <summary>Column numbers along the top of the editing window (they stay visible while scrolling).</summary>
+    Private Sub DrawColumnBand(g As Graphics)
+        Dim band = 16
+        Dim dark = _scheme Is ColorScheme.Dark
+        Using back As New SolidBrush(If(dark, Color.FromArgb(44, 47, 56), Color.FromArgb(240, 242, 246))),
+              pen As New Pen(If(dark, Color.FromArgb(80, 85, 98), Color.FromArgb(200, 204, 212))),
+              text As New SolidBrush(If(dark, Color.FromArgb(170, 175, 185), Color.FromArgb(110, 115, 125))),
+              f As New Font("Segoe UI", 7.5F)
+            g.FillRectangle(back, 0, 0, ClientSize.Width, band)
+            g.DrawLine(pen, 0, band, ClientSize.Width, band)
+            Dim left = ToWorld(New Point(0, 0)).X, right = ToWorld(New Point(ClientSize.Width, 0)).X
+            For k = Math.Max(0, CInt(Math.Floor(left / Project.ColumnWidth))) To CInt(Math.Floor(right / Project.ColumnWidth))
+                Dim sx = k * Project.ColumnWidth * _zoom + AutoScrollPosition.X
+                g.DrawLine(pen, sx, 0, sx, band)
+                Dim txt = (k + 1).ToString()
+                Dim sz = g.MeasureString(txt, f)
+                g.DrawString(txt, f, text, sx + Project.ColumnWidth * _zoom / 2 - sz.Width / 2, 2)
+            Next
+        End Using
+    End Sub
 
     ''' <summary>Draws the circuit (without grid, ports or selection) onto a bitmap's graphics.</summary>
     Public Sub PaintTo(g As Graphics)
@@ -298,6 +366,7 @@ Public Class CircuitCanvas
 
     Private Sub DrawContent(g As DrawSurface, interactive As Boolean)
         Using ctx As New RenderContext() With {.Simulating = Simulating, .Interactive = interactive}
+            If Not interactive AndAlso ShowColumns Then DrawColumnRuler(g)
             DrawTubes(g, ctx)
             Using labelFont As New Font("Segoe UI", 8.5F, FontStyle.Bold)
                 For Each el In _circuit.Elements
@@ -505,6 +574,10 @@ Public Class CircuitCanvas
 
         If _dragging Then
             Dim dx = Snap(w.X - _dragStart.X), dy = Snap(w.Y - _dragStart.Y)
+            Dim minLeft = _dragOrigins.Keys.Min(Function(el) el.WorldBounds().Left - el.X + _dragOrigins(el).X)
+            Dim minTop = _dragOrigins.Keys.Min(Function(el) el.WorldBounds().Top - el.Y + _dragOrigins(el).Y)
+            If minLeft + dx < 0 Then dx = Snap(-minLeft + GridSize / 2)
+            If minTop + dy < 0 Then dy = Snap(-minTop + GridSize / 2)
             For Each kv In _dragOrigins
                 Dim nx = kv.Value.X + dx, ny = kv.Value.Y + dy
                 If nx <> kv.Key.X OrElse ny <> kv.Key.Y Then
@@ -587,7 +660,7 @@ Public Class CircuitCanvas
 
         If _dragging Then
             _dragging = False
-            If _dragMoved Then RaiseEvent CircuitModified(Me, EventArgs.Empty)
+            If _dragMoved Then UpdateScrollSize() : RaiseEvent CircuitModified(Me, EventArgs.Empty)
         End If
 
         If _draggingTube IsNot Nothing Then
@@ -622,7 +695,11 @@ Public Class CircuitCanvas
 
     Protected Overrides Sub OnMouseWheel(e As MouseEventArgs)
         If (ModifierKeys And Keys.Control) <> 0 Then
+            ' Zoom around the mouse pointer: the point under it stays under it.
+            Dim anchor = ToWorld(e.Location)
             Zoom *= If(e.Delta > 0, 1.1F, 1 / 1.1F)
+            AutoScrollPosition = New Point(CInt(Math.Max(0, anchor.X * _zoom - e.X)), CInt(Math.Max(0, anchor.Y * _zoom - e.Y)))
+            Invalidate()
             Return
         End If
         MyBase.OnMouseWheel(e)
@@ -675,6 +752,8 @@ Public Class CircuitCanvas
         If Simulating OrElse _selection.Count = 0 Then Return
         Dim dx = If(key = Keys.Left, -GridSize, If(key = Keys.Right, GridSize, 0))
         Dim dy = If(key = Keys.Up, -GridSize, If(key = Keys.Down, GridSize, 0))
+        ' Stop at the edge of the sheet.
+        If _selection.Min(Function(el) el.WorldBounds().Left) + dx < 0 OrElse _selection.Min(Function(el) el.WorldBounds().Top) + dy < 0 Then Return
         For Each el In _selection
             el.X += dx
             el.Y += dy

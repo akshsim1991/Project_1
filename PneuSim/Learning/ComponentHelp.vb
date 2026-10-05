@@ -10,18 +10,23 @@ Public Module ComponentHelp
         Select Case True
             Case TypeOf e Is AirSupply
                 Return "Delivers compressed air at the set pressure (usually 6 bar) from the compressor and air preparation."
+            Case TypeOf e Is PressureRegulator AndAlso DirectCast(e, PressureRegulator).Hydraulic
+                Return "Pressure reducing valve: keeps the oil pressure after the valve at its setting (e.g. a lower clamping pressure), whatever the pump pressure."
             Case TypeOf e Is PressureRegulator
                 Return If(DirectCast(e, PressureRegulator).Style = RegulatorStyle.ServiceUnit,
                           "Service unit: filters the air, removes water and sets a constant working pressure (with a gauge).",
                           "Keeps the outlet pressure constant at the set value, whatever the inlet pressure.")
             Case TypeOf e Is PressureGauge
-                Return "Shows the pressure at its connection."
+                Return If(DirectCast(e, PressureGauge).Hydraulic, "Hydraulic pressure gauge (0–160 bar): shows the oil pressure at its connection.",
+                          "Pressure gauge (0–10 bar): shows the air pressure at its connection.")
             Case TypeOf e Is Silencer
                 Return "Reduces the noise of exhausting air."
             Case TypeOf e Is Junction
                 Return "A T-connection or bend point for tubes or wires. Select it and drag to move it."
             Case TypeOf e Is HydraulicCylinder
                 Return "Hydraulic cylinder: speed = pump flow ÷ piston area; pressure = load force ÷ area."
+            Case TypeOf e Is HydraulicSingleActingCylinder
+                Return "Single-acting hydraulic cylinder (ram): oil pushes it out; the spring or the load pushes it back when the valve opens the line to tank."
             Case TypeOf e Is SingleActingCylinder
                 Return "Air pushes the piston out; a spring returns it. Uses air in one direction only."
             Case TypeOf e Is SemiRotaryActuator
@@ -31,8 +36,13 @@ Public Module ComponentHelp
             Case TypeOf e Is AirMotor
                 Return "Turns continuously while air flows through it."
             Case TypeOf e Is Valve53
-                Return "5/3-way valve: two working positions and a spring-centred middle position (" &
-                       DirectCast(e, Valve53).Centre.ToString().ToLowerInvariant() & " centre). Closed centre holds the cylinder where it is."
+                Dim centreText As String
+                Select Case DirectCast(e, Valve53).Centre
+                    Case CentrePosition.Exhausted : centreText = "Exhaust centre: both cylinder lines are vented, so the cylinder can be moved by hand and stops pushing."
+                    Case CentrePosition.Pressurized : centreText = "Pressure centre: both cylinder lines get air; a double-acting cylinder creeps out (larger piston area)."
+                    Case Else : centreText = "Closed centre: all ports are blocked, so the cylinder stops and holds its position."
+                End Select
+                Return "5/3-way valve: two working positions and a spring-centred middle position. " & centreText
             Case TypeOf e Is HydraulicValve43
                 Return "4/3-way hydraulic valve: P (pump), T (tank), A and B (actuator). The centre position decides what happens when no solenoid is on."
             Case TypeOf e Is DirectionalValve
@@ -41,7 +51,9 @@ Public Module ComponentHelp
                 Select Case v.Actuator
                     Case ValveActuator.PushButton : how = "Operated while you hold the push button."
                     Case ValveActuator.Selector : how = "A selector switch stays where you put it (detent)."
-                    Case ValveActuator.RollerLever : how = $"Operated when a cylinder reaches position mark {v.TriggerMark}."
+                    Case ValveActuator.RollerLever : how = If(String.IsNullOrWhiteSpace(v.TriggerMark),
+                                                              "Roller lever valve: enter the cylinder position mark that should operate it under 'Roller mark'.",
+                                                              $"Operated when a cylinder reaches position mark {v.TriggerMark}.")
                     Case ValveActuator.Pilot : how = If(v.SwitchingPressure > Simulator.PilotThreshold + 0.01,
                                                         $"Pressure sequence valve: switches when the pilot pressure reaches {v.SwitchingPressure:0.#} bar.",
                                                         "Switched by air pressure on its pilot port.")
@@ -50,19 +62,22 @@ Public Module ComponentHelp
                 End Select
                 Dim ret = If(v.IsMemoryValve, " It is a memory (impulse) valve: it stays in its last position until the opposite signal arrives.",
                              If(v.ReturnType = ValveReturn.Spring, " A spring returns it when the signal goes.", ""))
-                Return "Directs the air: the boxes show the flow paths in each position; the active box sits over the ports. " & how & ret
+                Dim medium = If(v.Ports.Any(Function(p) p.Kind = PortKind.Hydraulic), "oil", "air")
+                Return $"Directs the {medium}: the boxes show the flow paths in each position; the active box sits over the ports. " & how & ret
             Case TypeOf e Is ShuttleValve
                 Return "OR function: the output gets air if input 1a OR input 1b has air."
             Case TypeOf e Is TwoPressureValve
                 Return "AND function: the output gets air only if input 1a AND input 1b have air (two-hand safety controls)."
             Case TypeOf e Is CheckValve
-                Return "Non-return valve: air flows freely from 1 to 2 and is blocked from 2 to 1."
+                Return $"Non-return valve: {If(DirectCast(e, CheckValve).Hydraulic, "oil", "air")} flows freely from 1 to 2 and is blocked from 2 to 1."
             Case TypeOf e Is QuickExhaustValve
                 Return "Lets a cylinder exhaust straight to atmosphere next to the cylinder, so it returns much faster."
             Case TypeOf e Is FlowControlValve
-                Return If(DirectCast(e, FlowControlValve).HasCheckValve,
-                          "One-way flow control: throttles flow from 2 to 1, free flow from 1 to 2. Fit it so it throttles the air leaving the cylinder (meter-out).",
-                          "Throttles the flow in both directions.")
+                Dim fc = DirectCast(e, FlowControlValve)
+                Dim fluid = If(fc.Hydraulic, "oil", "air")
+                Return If(fc.HasCheckValve,
+                          $"One-way flow control: throttles flow from 2 to 1, free flow from 1 to 2. Fit it so it throttles the {fluid} leaving the cylinder (meter-out).",
+                          $"Throttles the {fluid} flow in both directions; slows the actuator either way.")
             Case TypeOf e Is PowerTerminal
                 Return "Connection to the 24 V DC control voltage."
             Case TypeOf e Is ElectricContact
@@ -98,6 +113,8 @@ Public Module ComponentHelp
                 Return "Holds a hanging load: oil can leave the cylinder only when the pressure reaches the setting or the pilot opens it."
             Case TypeOf e Is PageConnector
                 Return "Continues the line on another page: connectors with the same name are connected."
+            Case TypeOf e Is TextNote
+                Return "Text on the drawing (title, notes). Edit it in the Properties panel."
             Case Else
                 Return ""
         End Select

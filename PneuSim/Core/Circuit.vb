@@ -216,6 +216,21 @@ Public Class Circuit
         Return Tubes.FirstOrDefault(Function(t) t.DistanceTo(p) <= tolerance)
     End Function
 
+    ''' <summary>Shifts the whole circuit right or down if any part lies left of or above the sheet.</summary>
+    Public Sub EnsureOnSheet(Optional margin As Single = 20)
+        Dim b = Bounds()
+        If b.IsEmpty Then Return
+        Dim dx = If(b.Left < 0, CSng(Math.Ceiling((margin - b.Left) / 10) * 10), 0F)
+        Dim dy = If(b.Top < 0, CSng(Math.Ceiling((margin - b.Top) / 10) * 10), 0F)
+        If dx = 0 AndAlso dy = 0 Then Return
+        For Each e In Elements
+            e.X += dx : e.Y += dy
+        Next
+        For Each t In Tubes.Where(Function(tb) tb.Mid.HasValue)
+            t.Mid = t.Mid.Value + If(t.MidAxis() = "X", dx, dy)
+        Next
+    End Sub
+
     Public Function Bounds() As RectangleF
         If Elements.Count = 0 Then Return RectangleF.Empty
         Dim r = Elements(0).WorldBounds()

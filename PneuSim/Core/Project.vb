@@ -90,10 +90,18 @@ Public Class Project
         Return Pages.SelectMany(Function(p) p.Circuit.Elements)
     End Function
 
-    ''' <summary>Location text "page.column" used for cross-references.</summary>
+    ''' <summary>Width of a drawing column; the columns are numbered along the top of every page.</summary>
+    Public Const ColumnWidth As Single = 100
+
+    ''' <summary>Column number (1, 2, 3 ...) of an x position on the page.</summary>
+    Public Shared Function ColumnAt(x As Single) As Integer
+        Return Math.Max(1, CInt(Math.Floor(x / ColumnWidth)) + 1)
+    End Function
+
+    ''' <summary>Location text "page.column" used for cross-references (column of the symbol's centre).</summary>
     Public Shared Function LocationOf(e As CircuitElement) As String
-        Dim column = CInt(Math.Floor((e.X + 20) / 100)) + 1
-        Return $"{e.PageIndex + 1}.{Math.Max(1, column)}"
+        Dim b = e.WorldBounds()
+        Return $"{e.PageIndex + 1}.{ColumnAt(b.X + b.Width / 2)}"
     End Function
 
     ''' <summary>
@@ -170,7 +178,9 @@ Public Class Project
         If doc.Root Is Nothing Then Throw New InvalidOperationException("Empty file.")
         If doc.Root.Name.LocalName = "PneuSimCircuit" Then
             ' Single-page files from PneuSim 1.x and 2.x.
-            Return New Project(Circuit.FromXElement(doc.Root))
+            Dim single_ = Circuit.FromXElement(doc.Root)
+            single_.EnsureOnSheet()
+            Return New Project(single_)
         End If
         If doc.Root.Name.LocalName <> "PneuSimProject" Then Throw New InvalidOperationException("This is not a PneuSim file.")
         Dim pr As New Project With {.Info = ProjectInfo.FromXElement(doc.Root.Element("Info"))}
@@ -187,6 +197,9 @@ Public Class Project
                                                .Circuit = If(xc Is Nothing, New Circuit(), Circuit.FromXElement(xc))})
         Next
         If pr.Pages.Count = 0 Then pr.AddPage()
+        For Each pg In pr.Pages
+            pg.Circuit.EnsureOnSheet()
+        Next
         Return pr
     End Function
 End Class

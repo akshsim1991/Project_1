@@ -64,6 +64,24 @@ End Class
 ''' <summary>Drawing helpers for standard fluid power (ISO 1219) symbol parts.</summary>
 Public Module Symbols
 
+    ''' <summary>
+    ''' ISO 1219 energy triangle: hollow for air (pneumatic), filled for oil (hydraulic).
+    ''' <paramref name="active"/> colours it while the line carries pressure.
+    ''' </summary>
+    Public Sub EnergyTriangle(g As DrawSurface, r As RenderContext, pts As PointF(), hydraulic As Boolean, active As Boolean)
+        Dim col = If(active, If(hydraulic, RenderContext.HydraulicColor, RenderContext.PressureColor), Color.Black)
+        If hydraulic Then
+            Using b As New SolidBrush(col)
+                g.FillPolygon(b, pts)
+            End Using
+        Else
+            g.FillPolygon(r.BodyBrush, pts)
+            Using p As New Pen(col, 1.4F)
+                g.DrawPolygon(p, pts)
+            End Using
+        End If
+    End Sub
+
     Public Sub Arrow(g As DrawSurface, pen As Pen, p1 As PointF, p2 As PointF, Optional head As Single = 6)
         g.DrawLine(pen, p1, p2)
         Dim dx = p2.X - p1.X, dy = p2.Y - p1.Y

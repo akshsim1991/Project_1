@@ -55,6 +55,8 @@ Partial Public Class Simulator
             End Function
         Dim live = Function(i As Integer) _ports(i).Kind = PortKind.Hydraulic AndAlso _ports(i).State = PortState.Pressurized
         For Each ed In _edges
+            ' A pressure reducing valve separates two pressure levels.
+            If Not Double.IsPositiveInfinity(ed.LimitAB) Then Continue For
             If (ed.AB > 0 OrElse ed.BA > 0) AndAlso live(ed.A) AndAlso live(ed.B) Then
                 Dim ra = find(ed.A), rb = find(ed.B)
                 If ra <> rb Then parent(ra) = rb
@@ -106,6 +108,14 @@ Partial Public Class Simulator
             groupPressure(root) = p
             If pumpRoots.ContainsKey(root) AndAlso Not reliefs.ContainsKey(root) AndAlso Not unloaded.Contains(root) AndAlso Not loads.ContainsKey(root) Then
                 Warnings.Add($"No pressure relief valve: with nothing moving the pump pressure rises to {p:0} bar. Add a relief valve after the pump.")
+            End If
+        Next
+        ' The reduced side never exceeds its setting or the pressure in front of the valve.
+        For Each ed In _edges
+            If Double.IsPositiveInfinity(ed.LimitAB) OrElse Not live(ed.A) OrElse Not live(ed.B) Then Continue For
+            Dim up = find(ed.A), down = find(ed.B)
+            If up <> down AndAlso groupPressure.ContainsKey(up) AndAlso groupPressure.ContainsKey(down) Then
+                groupPressure(down) = Math.Min(groupPressure(down), Math.Min(ed.LimitAB, groupPressure(up)))
             End If
         Next
         For i = 0 To n - 1

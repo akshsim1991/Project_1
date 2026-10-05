@@ -417,6 +417,41 @@ Public Module CircuitAnalysis
         For Each grp In coils.Where(Function(k) Not String.IsNullOrWhiteSpace(k.Label)).GroupBy(Function(k) k.Label.Trim().ToUpperInvariant())
             If grp.Count() > 1 Then add(IssueSeverity.Error, $"{grp.Count()} coils share the label {grp.First().Label}; each coil needs its own name.", grp.First())
         Next
+        ' Two valves on one solenoid switch together, which is almost always a copy-and-paste slip.
+        Dim solenoidUse As New Dictionary(Of String, List(Of DirectionalValve))(StringComparer.OrdinalIgnoreCase)
+        For Each v In els.OfType(Of DirectionalValve)()
+            For Each sol In {If(v.Actuator = ValveActuator.Solenoid, v.SolenoidLabel, Nothing), If(v.ReturnType = ValveReturn.Solenoid, v.ReturnSolenoidLabel, Nothing)}
+                If String.IsNullOrWhiteSpace(sol) Then Continue For
+                Dim users As List(Of DirectionalValve) = Nothing
+                If Not solenoidUse.TryGetValue(sol.Trim(), users) Then users = New List(Of DirectionalValve) : solenoidUse(sol.Trim()) = users
+                users.Add(v)
+            Next
+        Next
+        For Each kv In solenoidUse
+            If kv.Value.Count > 1 AndAlso kv.Value.Distinct().Count() > 1 Then
+                add(IssueSeverity.Error, $"Valves {String.Join(" and ", kv.Value.Distinct().Select(Function(v) Name(v)))} all use solenoid {kv.Key}, so they always switch together. Give each valve its own solenoid label.", kv.Value(1))
+            ElseIf kv.Value.Count > 1 Then
+                add(IssueSeverity.Error, $"Valve {Name(kv.Value(0))} uses solenoid {kv.Key} on both sides; the right solenoid needs its own label.", kv.Value(0))
+            End If
+        Next
+        ' Position marks must be unique, otherwise a sensor reacts to the wrong cylinder.
+        Dim marks = els.OfType(Of CylinderBase)().SelectMany(Function(cy) {(Mark:=cy.RetractedMark, Cyl:=cy), (Mark:=cy.ExtendedMark, Cyl:=cy)}).
+            Where(Function(t) Not String.IsNullOrWhiteSpace(t.Mark)).GroupBy(Function(t) t.Mark.Trim().ToUpperInvariant())
+        For Each grp In marks.Where(Function(g) g.Count() > 1)
+            add(IssueSeverity.Error, $"The position mark {grp.First().Mark} is used {grp.Count()} times ({String.Join(", ", grp.Select(Function(t) Name(t.Cyl)).Distinct())}); each end position needs its own mark.", grp.First().Cyl)
+        Next
+        ' Duplicate names of cylinders, valves and push buttons.
+        Dim named = els.Where(Function(e) (TypeOf e Is CylinderBase OrElse TypeOf e Is DirectionalValve OrElse
+                                           (TypeOf e Is ElectricContact AndAlso DirectCast(e, ElectricContact).IsManuallyOperated)) AndAlso
+                                          Not String.IsNullOrWhiteSpace(e.Label))
+        For Each grp In named.GroupBy(Function(e) e.Label.Trim().ToUpperInvariant()).Where(Function(g) g.Count() > 1)
+            add(IssueSeverity.Warning, $"{grp.Count()} components are called {grp.First().Label}; give each its own name so the circuit can be read and explained.", grp.ElementAt(1))
+        Next
+        ' Page connectors work in pairs.
+        For Each grp In els.OfType(Of PageConnector)().Where(Function(pc) Not String.IsNullOrWhiteSpace(pc.Label)).
+                GroupBy(Function(pc) pc.Label.Trim().ToUpperInvariant() & "|" & pc.Medium.ToString())
+            If grp.Count() = 1 Then add(IssueSeverity.Warning, $"Page connector {grp.First().Label} has no partner with the same name, so the line ends there.", grp.First())
+        Next
 
         ' Can each cylinder ever move? Consider every valve position.
         AddReachabilityIssues(c, issues)
@@ -603,12 +638,35 @@ Public Module CircuitAnalysis
             issues.Add(New CheckIssue With {.Severity = IssueSeverity.Warning, .Message = "Test run: " & w})
         Next
         If starts.Count > 0 Then
-            For Each cyl In copy.Elements.OfType(Of CylinderBase)().Where(Function(k) Not moved.Contains(k))
+            Dim still = copy.Elements.OfType(Of CylinderBase)().Where(Function(k) Not moved.Contains(k)).ToList()
+            ' Some circuits need several buttons at once (two-hand control): try them all together before reporting.
+            Dim together = If(still.Count > 0 AndAlso starts.Count > 1, MovedWithAllOperated(c, realPhysics), New HashSet(Of String))
+            For Each cyl In still.Where(Function(k) Not together.Contains(Name(k)))
                 issues.Add(New CheckIssue With {.Severity = IssueSeverity.Info,
-                    .Message = $"Test run: after operating {Name(starts(0))}, cylinder {Name(cyl)} did not move within 15 s."})
+                    .Message = $"Test run: cylinder {Name(cyl)} did not move within 15 s, neither after operating {Name(starts(0))} " &
+                               If(starts.Count > 1, "nor with all hand-operated elements operated together.", "alone.")})
             Next
         End If
         Return issues
+    End Function
+
+    ''' <summary>Names of the cylinders that move when every hand-operated element is held at the same time.</summary>
+    Private Function MovedWithAllOperated(c As Circuit, realPhysics As Boolean) As HashSet(Of String)
+        Dim copy = Circuit.FromXml(c.ToXml())
+        Dim sim As New Simulator(copy) With {.RealPhysics = realPhysics}
+        sim.Reset()
+        For Each e In ManualElements(copy)
+            e.OnSimMouseDown(PointF.Empty)
+        Next
+        sim.RunLogic()
+        Dim result As New HashSet(Of String)
+        For i = 1 To 3000
+            sim.Step(0.005)
+            For Each cyl In copy.Elements.OfType(Of CylinderBase)()
+                If cyl.Position > 0.02 Then result.Add(Name(cyl))
+            Next
+        Next
+        Return result
     End Function
 
     ' ================================================================= explanation
@@ -623,9 +681,9 @@ Public Module CircuitAnalysis
         Dim describe = Sub(n As Integer, singular As String, plural As String)
                            If n > 0 Then parts.Add($"{n} {If(n = 1, singular, plural)}")
                        End Sub
-        describe(els.OfType(Of SingleActingCylinder)().Count(), "single-acting cylinder", "single-acting cylinders")
+        describe(els.OfType(Of SingleActingCylinder)().Count(Function(k) TypeOf k IsNot HydraulicSingleActingCylinder), "single-acting cylinder", "single-acting cylinders")
         describe(els.OfType(Of DoubleActingCylinder)().Count(Function(k) TypeOf k IsNot HydraulicCylinder AndAlso TypeOf k IsNot SemiRotaryActuator), "double-acting cylinder", "double-acting cylinders")
-        describe(els.OfType(Of HydraulicCylinder)().Count(), "hydraulic cylinder", "hydraulic cylinders")
+        describe(els.OfType(Of HydraulicCylinder)().Count() + els.OfType(Of HydraulicSingleActingCylinder)().Count(), "hydraulic cylinder", "hydraulic cylinders")
         describe(els.OfType(Of DirectionalValve)().Count(), "directional control valve", "directional control valves")
         describe(els.OfType(Of FlowControlValve)().Count(), "flow control valve", "flow control valves")
         describe(els.OfType(Of LogicValve)().Count(), "logic valve", "logic valves")
@@ -677,6 +735,18 @@ Public Module CircuitAnalysis
     End Function
 
     ''' <summary>Simulates a copy of the circuit and writes down what happens.</summary>
+    ''' <summary>Name of a valve's current position as on its symbol.</summary>
+    Private Function PositionName(v As DirectionalValve) As String
+        Select Case v.State
+            Case 1 : Return "position a"
+            Case 2 : Return "position b"
+        End Select
+        If v.Positions = 3 Then Return "its centre position"
+        ' A memory valve has no spring "normal position": it is switched over to b.
+        If v.IsMemoryValve Then Return "position b"
+        Return "its normal position (spring return)"
+    End Function
+
     Public Function Narrate(c As Circuit, operate As CircuitElement, realPhysics As Boolean) As String
         Dim sb As New StringBuilder()
         Dim copy = Circuit.FromXml(c.ToXml())
@@ -695,6 +765,22 @@ Public Module CircuitAnalysis
 
         Dim collect = Function(withMotion As Boolean) As List(Of String)
                           Dim ev As New List(Of String)
+                          Dim arrivals As New List(Of String), motions As New List(Of String)
+                          For Each k In If(withMotion, cylDir.Keys.ToList(), New List(Of CylinderBase)())
+                              Dim d = Math.Sign(k.Position - cylPos(k))
+                              If Math.Abs(k.Position - cylPos(k)) < 0.00001 Then d = 0
+                              ' End positions are reported when reached, even if the cylinder reverses at once.
+                              If cylPos(k) < 0.995 AndAlso k.Position >= 0.995 Then arrivals.Add($"cylinder {Name(k)} is fully extended{If(String.IsNullOrEmpty(k.ExtendedMark), "", $" (operates {k.ExtendedMark})")}")
+                              If cylPos(k) > 0.005 AndAlso k.Position <= 0.005 Then arrivals.Add($"cylinder {Name(k)} is fully retracted{If(String.IsNullOrEmpty(k.RetractedMark), "", $" (operates {k.RetractedMark})")}")
+                              If d <> cylDir(k) Then
+                                  If d > 0 Then motions.Add($"cylinder {Name(k)} starts to extend")
+                                  If d < 0 Then motions.Add($"cylinder {Name(k)} starts to retract")
+                                  If d = 0 AndAlso k.Position > 0.005 AndAlso k.Position < 0.995 Then motions.Add($"cylinder {Name(k)} stops at {k.Position * 100:0} % of its stroke")
+                                  cylDir(k) = d
+                              End If
+                              cylPos(k) = k.Position
+                          Next
+                          ev.AddRange(arrivals)
                           For Each k In coilState.Keys.ToList()
                               If k.Active <> coilState(k) Then
                                   coilState(k) = k.Active
@@ -706,28 +792,16 @@ Public Module CircuitAnalysis
                                   End Select
                               End If
                           Next
-                          For Each v In valveState.Keys.ToList()
+                          ' Valves operated by hand first: they cause the others to switch.
+                          For Each v In valveState.Keys.OrderBy(Function(x) If(x.IsManuallyOperated, 0, 1)).ToList()
                               If v.State <> valveState(v) Then
                                   valveState(v) = v.State
                                   ' Roller valves just follow the cylinders; their switching is implied.
                                   If v.Actuator = ValveActuator.RollerLever Then Continue For
-                                  ev.Add($"valve {Name(v)} switches to {If(v.State = 0, "its normal position", If(v.State = 1, "position a", "position b"))}")
+                                  ev.Add($"valve {Name(v)} switches to {PositionName(v)}")
                               End If
                           Next
-                          For Each k In If(withMotion, cylDir.Keys.ToList(), New List(Of CylinderBase)())
-                              Dim d = Math.Sign(k.Position - cylPos(k))
-                              If Math.Abs(k.Position - cylPos(k)) < 0.00001 Then d = 0
-                              ' End positions are reported when reached, even if the cylinder reverses at once.
-                              If cylPos(k) < 0.995 AndAlso k.Position >= 0.995 Then ev.Add($"cylinder {Name(k)} is fully extended{If(String.IsNullOrEmpty(k.ExtendedMark), "", $" (operates {k.ExtendedMark})")}")
-                              If cylPos(k) > 0.005 AndAlso k.Position <= 0.005 Then ev.Add($"cylinder {Name(k)} is fully retracted{If(String.IsNullOrEmpty(k.RetractedMark), "", $" (operates {k.RetractedMark})")}")
-                              If d <> cylDir(k) Then
-                                  If d > 0 Then ev.Add($"cylinder {Name(k)} starts to extend")
-                                  If d < 0 Then ev.Add($"cylinder {Name(k)} starts to retract")
-                                  If d = 0 AndAlso k.Position > 0.005 AndAlso k.Position < 0.995 Then ev.Add($"cylinder {Name(k)} stops at {k.Position * 100:0} % of its stroke")
-                                  cylDir(k) = d
-                              End If
-                              cylPos(k) = k.Position
-                          Next
+                          ev.AddRange(motions)
                           Return ev
                       End Function
         Dim record = Sub(prefix As String, ev As List(Of String))

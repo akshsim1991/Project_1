@@ -27,6 +27,7 @@ Public Module ElementFactory
             Case "HydraulicTank" : Return New HydraulicTank()
             Case "ReliefValve" : Return New ReliefValve()
             Case "HydraulicCylinder" : Return New HydraulicCylinder()
+            Case "HydraulicSingleActingCylinder" : Return New HydraulicSingleActingCylinder()
             Case "HydraulicMotor" : Return New HydraulicMotor()
             Case "Accumulator" : Return New Accumulator()
             Case "HydraulicValve43" : Return New HydraulicValve43()

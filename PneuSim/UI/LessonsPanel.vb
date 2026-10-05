@@ -2,14 +2,18 @@
 Public Class LessonsPanel
     Inherits UserControl
 
-    Private ReadOnly _list As New ListBox() With {.Dock = DockStyle.Left, .Width = 220, .IntegralHeight = False}
+    Private ReadOnly _list As New ListBox() With {.Dock = DockStyle.Fill, .IntegralHeight = False}
     Private ReadOnly _text As New TextBox() With {.Dock = DockStyle.Fill, .Multiline = True, .ReadOnly = True, .ScrollBars = ScrollBars.Vertical,
-                                                  .Font = New Font("Segoe UI", 9.5F), .BackColor = Color.White}
-    Private ReadOnly _result As New Label() With {.Dock = DockStyle.Bottom, .Height = 48, .Padding = New Padding(6, 4, 6, 0), .Font = New Font("Segoe UI", 9.5F, FontStyle.Bold)}
-    Private ReadOnly _done As New HashSet(Of String)
+                                                  .WordWrap = True, .Font = New Font("Segoe UI", 9.5F), .BackColor = Color.White,
+                                                  .BorderStyle = BorderStyle.None}
+    ''' <summary>Result of the last check; wraps and scrolls, so long feedback is never cut off.</summary>
+    Private ReadOnly _result As New TextBox() With {.Dock = DockStyle.Bottom, .Height = 58, .Multiline = True, .ReadOnly = True, .WordWrap = True,
+                                                    .ScrollBars = ScrollBars.Vertical, .Font = New Font("Segoe UI", 9.5F, FontStyle.Bold),
+                                                    .BorderStyle = BorderStyle.None, .BackColor = Color.White}
 
     ''' <summary>Asks the main window to load a starting circuit.</summary>
     Public Event LoadCircuit As EventHandler(Of Circuit)
+
     ''' <summary>Supplies the circuit to check (all pages combined).</summary>
     Public Property CurrentCircuit As Func(Of Circuit)
 
@@ -17,17 +21,26 @@ Public Class LessonsPanel
         For Each l In Lessons.All
             _list.Items.Add(l)
         Next
-        Dim buttons As New FlowLayoutPanel() With {.Dock = DockStyle.Top, .Height = 34, .WrapContents = False}
-        Dim load As New Button() With {.Text = "Load starting parts", .AutoSize = True}
-        Dim check As New Button() With {.Text = "Check my solution", .AutoSize = True}
-        Dim hint As New Button() With {.Text = "Hint", .AutoSize = True}
-        buttons.Controls.AddRange({load, check, hint})
-        Dim right As New Panel() With {.Dock = DockStyle.Fill}
+        ' Left: the lessons and the buttons; right: the task text with the result underneath.
+        Dim buttons As New TableLayoutPanel() With {.Dock = DockStyle.Bottom, .Height = 96, .ColumnCount = 1, .RowCount = 3}
+        Dim load As New Button() With {.Text = "Load starting parts", .Dock = DockStyle.Fill}
+        Dim check As New Button() With {.Text = "Check my solution", .Dock = DockStyle.Fill}
+        Dim hint As New Button() With {.Text = "Hint", .Dock = DockStyle.Fill}
+        For i = 0 To 2
+            buttons.RowStyles.Add(New RowStyle(SizeType.Percent, 33.3F))
+        Next
+        buttons.Controls.Add(load, 0, 0)
+        buttons.Controls.Add(check, 0, 1)
+        buttons.Controls.Add(hint, 0, 2)
+        Dim left As New Panel() With {.Dock = DockStyle.Left, .Width = 220}
+        left.Controls.Add(_list)
+        left.Controls.Add(buttons)
+        Dim right As New Panel() With {.Dock = DockStyle.Fill, .Padding = New Padding(8, 4, 4, 4)}
         right.Controls.Add(_text)
         right.Controls.Add(_result)
-        right.Controls.Add(buttons)
         Controls.Add(right)
-        Controls.Add(_list)
+        Controls.Add(left)
+
         AddHandler _list.SelectedIndexChanged, Sub() ShowLesson()
         AddHandler load.Click, Sub()
                                    Dim l = Current()
@@ -37,7 +50,7 @@ Public Class LessonsPanel
         AddHandler check.Click, Sub() CheckLesson()
         AddHandler hint.Click, Sub()
                                    Dim l = Current()
-                                   If l IsNot Nothing Then _result.ForeColor = Color.DarkBlue : _result.Text = "Hint: " & l.Hint
+                                   If l IsNot Nothing Then ShowResult("Hint: " & l.Hint, Color.DarkBlue)
                                End Sub
         AddHandler _list.DrawItem, AddressOf DrawItem
         _list.DrawMode = DrawMode.OwnerDrawFixed
@@ -49,10 +62,16 @@ Public Class LessonsPanel
         Return TryCast(_list.SelectedItem, Lesson)
     End Function
 
+    Private Sub ShowResult(text As String, color As Color)
+        _result.ForeColor = If(AppSettings.DarkMode, ControlPaint.LightLight(color), color)
+        _result.Text = text
+    End Sub
+
     Private Sub ShowLesson()
         Dim l = Current()
         If l Is Nothing Then Return
-        _text.Text = l.Title & vbCrLf & vbCrLf & "TASK" & vbCrLf & l.Goal & vbCrLf & vbCrLf &
+        _text.Text = l.Title & If(AppSettings.CompletedLessons.Contains(l.Title), "   (passed)", "") & vbCrLf & vbCrLf &
+                     "TASK" & vbCrLf & l.Goal & vbCrLf & vbCrLf &
                      If(l.Start Is Nothing, "Start with an empty page (File > New) or press 'Load starting parts' for an empty page.",
                         "Press 'Load starting parts' to get the components, then connect them.") & vbCrLf &
                      "When you think it works, press 'Check my solution'. PneuSim tests your circuit by simulating it."
@@ -64,12 +83,13 @@ Public Class LessonsPanel
         If l Is Nothing OrElse CurrentCircuit Is Nothing Then Return
         Try
             Dim r = l.Check.Invoke(CurrentCircuit.Invoke())
-            _result.ForeColor = If(r.Passed, Color.DarkGreen, Color.Firebrick)
-            _result.Text = If(r.Passed, "✔ ", "✘ ") & r.Feedback
-            If r.Passed Then _done.Add(l.Title) : _list.Invalidate()
+            ShowResult(If(r.Passed, "✔ ", "✘ ") & r.Feedback, If(r.Passed, Color.DarkGreen, Color.Firebrick))
+            If r.Passed AndAlso AppSettings.CompletedLessons.Add(l.Title) Then
+                AppSettings.Save()
+                _list.Invalidate()
+            End If
         Catch ex As Exception
-            _result.ForeColor = Color.Firebrick
-            _result.Text = "Could not test the circuit: " & ex.Message
+            ShowResult("Could not test the circuit: " & ex.Message, Color.Firebrick)
         End Try
     End Sub
 
@@ -77,8 +97,9 @@ Public Class LessonsPanel
         If e.Index < 0 Then Return
         e.DrawBackground()
         Dim l = DirectCast(_list.Items(e.Index), Lesson)
-        Dim mark = If(_done.Contains(l.Title), "✔ ", "   ")
-        Using b As New SolidBrush(If((e.State And DrawItemState.Selected) <> 0, SystemColors.HighlightText, If(_done.Contains(l.Title), Color.DarkGreen, SystemColors.ControlText)))
+        Dim done = AppSettings.CompletedLessons.Contains(l.Title)
+        Dim mark = If(done, "✔ ", "   ")
+        Using b As New SolidBrush(If((e.State And DrawItemState.Selected) <> 0, SystemColors.HighlightText, If(done, Color.SeaGreen, e.ForeColor)))
             e.Graphics.DrawString(mark & l.Title, e.Font, b, e.Bounds.X + 2, e.Bounds.Y + 3)
         End Using
     End Sub

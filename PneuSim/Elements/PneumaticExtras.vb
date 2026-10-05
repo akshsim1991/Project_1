@@ -11,7 +11,24 @@ Public Class CheckValve
     End Sub
 
     Public Overrides ReadOnly Property TypeName As String = "CheckValve"
-    Public Overrides ReadOnly Property DisplayName As String = "Check valve"
+
+    Public Overrides ReadOnly Property DisplayName As String
+        Get
+            Return If(Hydraulic, "Hydraulic check valve", "Check valve")
+        End Get
+    End Property
+
+    <Category("Medium"), DisplayName("Hydraulic"), Description("True: fitted in a hydraulic (oil) line. False: compressed air.")>
+    Public Property Hydraulic As Boolean
+        Get
+            Return Ports(0).Kind = PortKind.Hydraulic
+        End Get
+        Set(value As Boolean)
+            For Each p In Ports
+                p.Kind = If(value, PortKind.Hydraulic, PortKind.Pneumatic)
+            Next
+        End Set
+    End Property
 
     Public Overrides ReadOnly Property LocalBounds As RectangleF
         Get
@@ -38,6 +55,13 @@ Public Class QuickExhaustValve
     Inherits CircuitElement
 
     Private _feeding As Boolean
+
+    ''' <summary>True while air flows 1 to 2 (the disc closes the exhaust).</summary>
+    <Browsable(False)> Public ReadOnly Property Feeding As Boolean
+        Get
+            Return _feeding
+        End Get
+    End Property
 
     Public Sub New()
         AddPort("1", 0, 30, -1, 0)
@@ -90,6 +114,7 @@ Public Class QuickExhaustValve
     End Function
 End Class
 
+<TypeConverter(GetType(EnumDescriptionConverter))>
 Public Enum RegulatorStyle
     <Description("Pressure regulator")> Regulator
     <Description("Service unit (filter, regulator, gauge)")> ServiceUnit
@@ -108,8 +133,14 @@ Public Class PressureRegulator
 
     Public Overrides ReadOnly Property TypeName As String = "PressureRegulator"
 
+    Public Overrides Function ShowProperty(name As String) As Boolean
+        If name = NameOf(Style) Then Return Not Hydraulic
+        Return True
+    End Function
+
     Public Overrides ReadOnly Property DisplayName As String
         Get
+            If Hydraulic Then Return "Pressure reducing valve"
             Return If(Style = RegulatorStyle.ServiceUnit, "Service unit", "Pressure regulator")
         End Get
     End Property
@@ -120,9 +151,22 @@ Public Class PressureRegulator
             Return _setting
         End Get
         Set(value As Double)
-            _setting = Math.Max(0.2, Math.Min(16, value))
+            _setting = Math.Max(0.2, Math.Min(400, value))
         End Set
     End Property
+
+    <Category("Medium"), DisplayName("Hydraulic"), Description("True: fitted in a hydraulic (oil) line. False: compressed air (pressure regulator).")>
+    Public Property Hydraulic As Boolean
+        Get
+            Return Ports(0).Kind = PortKind.Hydraulic
+        End Get
+        Set(value As Boolean)
+            For Each p In Ports
+                p.Kind = If(value, PortKind.Hydraulic, PortKind.Pneumatic)
+            Next
+        End Set
+    End Property
+
 
     <Category("Regulator"), DisplayName("Symbol"), Description("Plain regulator, or a service unit with filter and gauge.")>
     Public Property Style As RegulatorStyle = RegulatorStyle.Regulator
@@ -135,7 +179,7 @@ Public Class PressureRegulator
 
     Public Overrides Sub DrawSymbol(g As DrawSurface, r As RenderContext)
         Dim pin = r.PenFor(Ports(0)), pout = r.PenFor(Ports(1))
-        If Style = RegulatorStyle.ServiceUnit Then
+        If Style = RegulatorStyle.ServiceUnit AndAlso Not Hydraulic Then
             g.DrawLine(pin, 0, 30, 14, 30)
             g.DrawLine(pout, 86, 30, 100, 30)
             Using dash As New Pen(Color.Black, 1) With {.DashStyle = Drawing2D.DashStyle.Dash}
@@ -257,11 +301,36 @@ Public Class AirMotor
         AddPort("1", 20, 50, 0, 1)
     End Sub
 
+    <Browsable(False)> Public ReadOnly Property Rpm As Double
+        Get
+            Return _rpm
+        End Get
+    End Property
+
     Public Overrides ReadOnly Property TypeName As String = "AirMotor"
     Public Overrides ReadOnly Property DisplayName As String = "Air motor"
 
     <Category("Motor"), DisplayName("Speed (rpm)"), Description("Speed at full flow. Shown slowed down in the animation.")>
-    Public Property NominalSpeed As Double = 60
+    Public Property NominalSpeed As Double
+        Get
+            Return _nominalSpeed
+        End Get
+        Set(value As Double)
+            _nominalSpeed = Math.Max(0, Math.Min(30000, value))
+        End Set
+    End Property
+    Private _nominalSpeed As Double = 60
+
+    <Category("Motor"), DisplayName("Air consumption (NL/min)"), Description("Free air used at full speed and 6 bar; counted in the air consumption and running cost.")>
+    Public Property AirConsumptionNlMin As Double
+        Get
+            Return _consumption
+        End Get
+        Set(value As Double)
+            _consumption = Math.Max(0, Math.Min(100000, value))
+        End Set
+    End Property
+    Private _consumption As Double = 150
 
     Public Overrides ReadOnly Property LocalBounds As RectangleF
         Get
@@ -280,9 +349,7 @@ Public Class AirMotor
         g.DrawLine(r.PenFor(p), 20, 38, 20, 50)
         g.FillEllipse(r.BodyBrush, 2, 2, 36, 36)
         g.DrawEllipse(r.Line, 2, 2, 36, 36)
-        Using b As New SolidBrush(If(r.Simulating AndAlso p.IsPressurized, RenderContext.PressureColor, Color.Black))
-            g.FillPolygon(b, {New PointF(20, 36), New PointF(14, 27), New PointF(26, 27)})
-        End Using
+        Symbols.EnergyTriangle(g, r, {New PointF(20, 36), New PointF(14, 27), New PointF(26, 27)}, False, r.Simulating AndAlso p.IsPressurized)
         Dim a = _angle * Math.PI / 180
         g.DrawLine(r.Thin, 20, 20, CSng(20 + 12 * Math.Cos(a)), CSng(20 + 12 * Math.Sin(a)))
         g.DrawArc(r.Thin, -4, -4, 48, 48, 200, 40)
@@ -299,6 +366,10 @@ Public Class AirMotor
         Dim p = Ports(0)
         _rpm = If(p.State = PortState.Pressurized, NominalSpeed * p.Factor * Math.Min(1, p.Pressure / 6), 0)
         _angle = (_angle + _rpm * 6 * dt) Mod 360
+        If p.State = PortState.Pressurized AndAlso p.Pressure > 0.2 Then
+            ' Air flows through the motor to its exhaust; consumption rises with pressure.
+            sim.AddAirConsumption(_consumption * p.Factor * (p.Pressure + CylinderBase.Atm) / (6 + CylinderBase.Atm) * dt / 60)
+        End If
     End Sub
 End Class
 
@@ -384,7 +455,7 @@ Public Class TextNote
     Public Overrides ReadOnly Property TypeName As String = "TextNote"
     Public Overrides ReadOnly Property DisplayName As String = "Text"
 
-    <Category("Text"), DisplayName("Text"), Description("The text to show. Use Shift+Enter or the ... button for several lines."),
+    <Category("Text"), DisplayName("Content"), Description("The text to show. Use Shift+Enter or the ... button for several lines."),
      Editor("System.ComponentModel.Design.MultilineStringEditor, System.Design", GetType(UITypeEditor))>
     Public Property Text As String
         Get

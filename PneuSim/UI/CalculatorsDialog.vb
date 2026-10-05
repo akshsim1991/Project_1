@@ -11,6 +11,11 @@ Public Class CalculatorsDialog
         StartPosition = FormStartPosition.CenterParent
         ShowInTaskbar = False
         Controls.Add(_tabs)
+        KeyPreview = True
+        AddHandler KeyDown, Sub(s, e)
+                                If e.KeyCode = Keys.Escape Then Close()
+                            End Sub
+
 
         AddCalculator("Cylinder force",
             {("Bore (mm)", 32.0), ("Rod diameter (mm)", 12.0), ("Pressure (bar)", 6.0), ("Efficiency (%)", 90.0)},

@@ -103,11 +103,25 @@ Partial Public Class Simulator
         Return False
     End Function
 
-    ''' <summary>True if a relay, timer relay or solenoid coil with this label is active.</summary>
+    ''' <summary>True if any coil (relay, timer, solenoid or lamp) with this label is active.</summary>
     Public Function IsCoilActive(label As String) As Boolean
+        Return IsActive(label, Function(k) True)
+    End Function
+
+    ''' <summary>True if a relay or timer relay with this label has switched its contacts (lamps and solenoids do not count).</summary>
+    Public Function IsRelayActive(label As String) As Boolean
+        Return IsActive(label, Function(k) k = CoilKind.Relay OrElse k = CoilKind.OnDelayTimer OrElse k = CoilKind.OffDelayTimer)
+    End Function
+
+    ''' <summary>True if a valve solenoid coil with this label is energized.</summary>
+    Public Function IsSolenoidActive(label As String) As Boolean
+        Return IsActive(label, Function(k) k = CoilKind.Solenoid)
+    End Function
+
+    Private Function IsActive(label As String, kindOk As Func(Of CoilKind, Boolean)) As Boolean
         If String.IsNullOrWhiteSpace(label) Then Return False
         For Each coil In _circuit.Elements.OfType(Of ElectricCoil)()
-            If coil.Active AndAlso String.Equals(coil.Label, label.Trim(), StringComparison.OrdinalIgnoreCase) Then Return True
+            If coil.Active AndAlso kindOk(coil.Kind) AndAlso String.Equals(coil.Label?.Trim(), label.Trim(), StringComparison.OrdinalIgnoreCase) Then Return True
         Next
         Return False
     End Function

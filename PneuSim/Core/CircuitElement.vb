@@ -10,10 +10,11 @@ Public Enum PortState
 End Enum
 
 ''' <summary>What a port carries; only ports of the same kind can be connected.</summary>
+<TypeConverter(GetType(EnumDescriptionConverter))>
 Public Enum PortKind
-    Pneumatic
-    Electric
-    Hydraulic
+    <Description("Compressed air")> Pneumatic
+    <Description("Electric (24 V)")> Electric
+    <Description("Hydraulic oil")> Hydraulic
 End Enum
 
 ''' <summary>A pneumatic or electrical connection point on a circuit element.</summary>
@@ -80,7 +81,13 @@ Public Class Port
 End Class
 
 ''' <summary>Base class for every symbol that can be placed in a circuit.</summary>
+<TypeDescriptionProvider(GetType(ElementDescriptionProvider))>
 Public MustInherit Class CircuitElement
+
+    ''' <summary>False for settings that do not apply to the component as it is set up (hidden in the Properties panel).</summary>
+    Public Overridable Function ShowProperty(name As String) As Boolean
+        Return True
+    End Function
 
     <Browsable(False)> Public Property Id As Integer
     <Browsable(False)> Public Property X As Single

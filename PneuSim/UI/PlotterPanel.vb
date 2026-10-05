@@ -143,6 +143,15 @@ Public Class PlotterPanel
             Invalidate()
         End Sub
 
+        Private Shared Function NiceCeiling(v As Double) As Double
+            If v <= 0 Then Return 1
+            Dim mag = Math.Pow(10, Math.Floor(Math.Log10(v)))
+            For Each m In {1.0, 1.2, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0}
+                If v <= m * mag + 0.000001 Then Return m * mag
+            Next
+            Return 10 * mag
+        End Function
+
         Protected Overrides Sub OnPaint(e As PaintEventArgs)
             e.Graphics.SmoothingMode = SmoothingMode.AntiAlias
             e.Graphics.Clear(_owner.Scheme.Background)
@@ -184,9 +193,13 @@ Public Class PlotterPanel
                         lo = Math.Min(0, visible.Min(Function(p) p.Y))
                         hi = Math.Max(visible.Max(Function(p) p.Y), lo + 0.001)
                         If hi - lo < 1 AndAlso hi <= 1.01 AndAlso lo >= 0 Then hi = 1
+                        ' Round the scale to a tidy number (99.6 mm is shown on a 0-100 scale).
+                        hi = NiceCeiling(hi)
+                        If lo < 0 Then lo = -NiceCeiling(-lo)
                     End If
                     Using b As New SolidBrush(col)
-                        g.DrawString(name, fb, b, New RectangleF(4, top, LabelW - 8, laneH - 4))
+                        ' The name keeps clear of the scale numbers on the right of the label column.
+                        g.DrawString(name, fb, b, New RectangleF(4, top, LabelW - 52, laneH - 4))
                     End Using
                     g.DrawString($"{hi:0.##}", f, Brushes.Gray, LabelW - 40, top - 2)
                     g.DrawString($"{lo:0.##}", f, Brushes.Gray, LabelW - 40, bottom - 12)

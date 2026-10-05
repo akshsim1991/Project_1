@@ -39,24 +39,72 @@ Public MustInherit Class CylinderBase
         End Set
     End Property
 
-    <Category("Cylinder"), DisplayName("Stroke (mm)"), Description("Stroke length.")>
-    Public Property StrokeLength As Integer = 100
+    <Category("Cylinder"), DisplayName("Stroke (mm)"), Description("Stroke length (5 to 5000 mm).")>
+    Public Property StrokeLength As Integer
+        Get
+            Return _strokeLength
+        End Get
+        Set(value As Integer)
+            _strokeLength = Math.Max(5, Math.Min(5000, value))
+        End Set
+    End Property
+    Private _strokeLength As Integer = 100
 
-    <Category("Physical data (realistic mode)"), DisplayName("Bore (mm)")>
-    Public Property BoreMm As Double = 32
+    <Category("Physical data (realistic mode)"), DisplayName("Bore (mm)"), Description("Piston diameter (4 to 500 mm).")>
+    Public Property BoreMm As Double
+        Get
+            Return _boreMm
+        End Get
+        Set(value As Double)
+            _boreMm = Math.Max(4, Math.Min(500, value))
+        End Set
+    End Property
+    Private _boreMm As Double = 32
 
-    <Category("Physical data (realistic mode)"), DisplayName("Rod diameter (mm)")>
-    Public Property RodMm As Double = 12
+    <Category("Physical data (realistic mode)"), DisplayName("Rod diameter (mm)"), Description("Piston rod diameter; at most 90 % of the bore is used.")>
+    Public Property RodMm As Double
+        Get
+            Return _rodMm
+        End Get
+        Set(value As Double)
+            _rodMm = Math.Max(1, Math.Min(400, value))
+        End Set
+    End Property
+    Private _rodMm As Double = 12
 
     <Category("Physical data (realistic mode)"), DisplayName("Moving load (kg)"), Description("Mass moved by the piston rod.")>
-    Public Property LoadMassKg As Double = 2
+    Public Property LoadMassKg As Double
+        Get
+            Return _loadMassKg
+        End Get
+        Set(value As Double)
+            _loadMassKg = Math.Max(0, Math.Min(100000, value))
+        End Set
+    End Property
+    Private _loadMassKg As Double = 2
 
     <Category("Physical data (realistic mode)"), DisplayName("Load force (N)"),
      Description("External force against extension (e.g. a pressing force or a weight on a vertical cylinder). Negative values help extension.")>
-    Public Property LoadForceN As Double = 0
+    Public Property LoadForceN As Double
+        Get
+            Return _loadForceN
+        End Get
+        Set(value As Double)
+            _loadForceN = Math.Max(-1000000, Math.Min(1000000, value))
+        End Set
+    End Property
+    Private _loadForceN As Double
 
     <Category("Physical data (realistic mode)"), DisplayName("Friction (N)")>
-    Public Property FrictionN As Double = 25
+    Public Property FrictionN As Double
+        Get
+            Return _frictionN
+        End Get
+        Set(value As Double)
+            _frictionN = Math.Max(0, Math.Min(100000, value))
+        End Set
+    End Property
+    Private _frictionN As Double = 25
 
     <Category("Physical data (realistic mode)"), DisplayName("End-position cushioning"),
      Description("Slows the piston down over the last few millimetres of the stroke.")>
@@ -108,6 +156,22 @@ Public MustInherit Class CylinderBase
             Return 0
         End Get
     End Property
+
+    Public Overrides Function ShowProperty(name As String) As Boolean
+        Dim hydraulic = Ports(0).Kind = PortKind.Hydraulic
+        If hydraulic Then
+            ' Hydraulic speed comes from the pump flow; mass and cushioning are not modelled.
+            If name = NameOf(StrokeTime) OrElse name = NameOf(LoadMassKg) OrElse name = NameOf(Cushioning) Then Return False
+        End If
+        If TypeOf Me Is SemiRotaryActuator Then
+            ' A swivel drive has an angle, not a stroke and a bore.
+            Select Case name
+                Case NameOf(StrokeLength), NameOf(BoreMm), NameOf(RodMm), NameOf(LoadMassKg), NameOf(LoadForceN), NameOf(FrictionN), NameOf(Cushioning)
+                    Return False
+            End Select
+        End If
+        Return True
+    End Function
 
     Public Function IsAtMark(mark As String) As Boolean
         If String.Equals(mark, RetractedMark, StringComparison.OrdinalIgnoreCase) AndAlso _position <= 0.005 Then Return True
@@ -236,7 +300,7 @@ Public MustInherit Class CylinderBase
 
     Protected Sub PhysicsStep(sim As Simulator, dt As Double)
         If Not _physicsReady Then InitPhysics()
-        Dim length = StrokeLength / 1000.0
+        Dim length = Math.Max(0.005, StrokeLength / 1000.0)
         Dim cushion = If(Cushioning, Math.Min(0.015, length * 0.2), 0)
         Dim mass = 0.3 + Math.Max(0, LoadMassKg)
         Dim steps = Math.Max(1, CInt(Math.Ceiling(dt / PhysicsDt)))
@@ -268,6 +332,12 @@ Public MustInherit Class CylinderBase
             If nx <= 0 Then nx = 0 : If _velocity < 0 Then _velocity = 0
             If nx >= length Then nx = length : If _velocity > 0 Then _velocity = 0
             _position = nx / length
+            If Double.IsNaN(_position) OrElse Double.IsNaN(_velocity) Then
+                ' Should never happen with validated inputs; keep the model usable instead of failing.
+                _position = 0 : _velocity = 0
+                InitPhysics()
+                Exit For
+            End If
         Next
         TrackCycles()
     End Sub
@@ -332,7 +402,15 @@ Public Class SingleActingCylinder
     Public Overrides ReadOnly Property DisplayName As String = "Single-acting cylinder"
 
     <Category("Physical data (realistic mode)"), DisplayName("Spring force (N)"), Description("Return spring force when retracted; it rises by 50 % at full stroke.")>
-    Public Property SpringPreloadN As Double = 40
+    Public Property SpringPreloadN As Double
+        Get
+            Return _springPreloadN
+        End Get
+        Set(value As Double)
+            _springPreloadN = Math.Max(0, Math.Min(100000, value))
+        End Set
+    End Property
+    Private _springPreloadN As Double = 40
 
     Protected Overrides ReadOnly Property HasRodPort As Boolean = False
 

@@ -5,7 +5,7 @@ Partial Public Class MainForm
     Private ReadOnly _checkTimer As New Timer() With {.Interval = 700}
     Private ReadOnly _fixCascade As New Button() With {.Text = "Fix: redesign (cascade)", .AutoSize = True, .Enabled = False}
     Private ReadOnly _fixElectro As New Button() With {.Text = "Fix: redesign (electro-pneumatic)", .AutoSize = True, .Enabled = False}
-    Private ReadOnly _explainText As New TextBox() With {.Multiline = True, .ReadOnly = True, .ScrollBars = ScrollBars.Both, .WordWrap = False,
+    Private ReadOnly _explainText As New TextBox() With {.Multiline = True, .ReadOnly = True, .ScrollBars = ScrollBars.Vertical, .WordWrap = True,
                                                          .Dock = DockStyle.Fill, .Font = New Font("Consolas", 9)}
     Private ReadOnly _explainOperate As New ComboBox() With {.DropDownStyle = ComboBoxStyle.DropDownList, .Width = 220}
     Private _issues As New List(Of CheckIssue)
@@ -170,6 +170,7 @@ Partial Public Class MainForm
     Private Sub OnGenerator(sender As Object, e As EventArgs)
         If _running Then Return
         Using dlg As New GeneratorDialog()
+            Theme.Apply(dlg)
             If dlg.ShowDialog(Me) <> DialogResult.OK OrElse dlg.Result Is Nothing Then Return
             If Not ConfirmDiscard() Then Return
             NewProject(New Project(dlg.Result.Circuit, "Generated circuit"))
@@ -184,12 +185,14 @@ Partial Public Class MainForm
 
     Private Sub OnCalculators(sender As Object, e As EventArgs)
         Using dlg As New CalculatorsDialog()
+            Theme.Apply(dlg)
             dlg.ShowDialog(Me)
         End Using
     End Sub
 
     Private Sub OnPartsList(sender As Object, e As EventArgs)
         Using dlg As New PartsListDialog(_project)
+            Theme.Apply(dlg)
             dlg.ShowDialog(Me)
             If dlg.PricesChanged Then OnCircuitModified()
         End Using
@@ -197,6 +200,7 @@ Partial Public Class MainForm
 
     Private Sub ShowQuiz(exam As Boolean)
         Using dlg As New QuizDialog(exam)
+            Theme.Apply(dlg)
             dlg.ShowDialog(Me)
         End Using
     End Sub
@@ -205,8 +209,9 @@ Partial Public Class MainForm
         If _cutaway Is Nothing OrElse _cutaway.IsDisposed Then
             _cutaway = New CutawayWindow() With {
                 .Owner = Me,
-                .Location = New Point(Right - 600, Top + 120),
-                .ValveSource = Function() If(TryCast(_canvas.SelectedElement, DirectionalValve), _canvas.LastHoveredValve)}
+                .Location = New Point(Right - 640, Top + 120),
+                .ElementSource = Function() If(_canvas.SelectedElement, _canvas.LastHoveredElement),
+                .SimulatingSource = Function() _running}
         End If
         _cutaway.Show()
         _cutaway.BringToFront()
@@ -234,7 +239,7 @@ TOOLS
 • Check my circuit (F6) finds mistakes and signal overlap; Explain (F8) describes the circuit step by step.
 • Circuit Generator (Ctrl+G) designs a circuit from a sequence such as A+ B+ B- A-.
 • Calculators, parts list with costs, PDF report with title block, SVG and DXF export.
-• Learn menu: lessons with automatic checking, practice quiz, timed exam, valve cutaway (F7).",
+• Learn menu: lessons with automatic checking, practice quiz, timed exam, cutaway view of any component (F7).",
             "PneuSim Quick Guide", MessageBoxButtons.OK, MessageBoxIcon.Information)
     End Sub
 

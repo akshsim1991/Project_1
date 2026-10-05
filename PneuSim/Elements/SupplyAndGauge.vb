@@ -40,9 +40,7 @@ Public Class AirSupply
         g.DrawLine(pen, 20, 0, 20, 18)
         g.FillEllipse(r.BodyBrush, 8, 18, 24, 24)
         g.DrawEllipse(r.Line, 8, 18, 24, 24)
-        Using b As New SolidBrush(If(r.Simulating, RenderContext.PressureColor, Color.Black))
-            g.FillPolygon(b, {New PointF(20, 22), New PointF(14, 32), New PointF(26, 32)})
-        End Using
+        Symbols.EnergyTriangle(g, r, {New PointF(20, 22), New PointF(14, 32), New PointF(26, 32)}, False, r.Simulating)
         g.DrawString($"{Pressure:0.#} bar", r.SmallFont, r.TextBrush, 34, 30)
     End Sub
 

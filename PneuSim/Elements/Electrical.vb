@@ -1,5 +1,6 @@
 Imports System.ComponentModel
 
+<TypeConverter(GetType(EnumDescriptionConverter))>
 Public Enum Polarity
     <Description("+24 V")> Plus24V
     <Description("0 V")> Zero0V
@@ -67,6 +68,7 @@ Public Class PowerTerminal
 End Class
 
 ''' <summary>What operates an electrical contact.</summary>
+<TypeConverter(GetType(EnumDescriptionConverter))>
 Public Enum ContactOperator
     <Description("Push button")> PushButton
     <Description("Selector switch (detented)")> Selector
@@ -83,12 +85,24 @@ Public Class ElectricContact
     Private _manualPressed As Boolean
     Private _detentOn As Boolean
 
+    ''' <summary>True while the contact conducts.</summary>
+    <Browsable(False)> Public ReadOnly Property IsClosed As Boolean
+        Get
+            Return _closed
+        End Get
+    End Property
+
     Public Sub New()
         AddPort("1", 20, 0, 0, -1, kind:=PortKind.Electric)
         AddPort("2", 20, 60, 0, 1, kind:=PortKind.Electric)
     End Sub
 
     Public Overrides ReadOnly Property TypeName As String = "ElectricContact"
+
+    Public Overrides Function ShowProperty(name As String) As Boolean
+        If name = NameOf(Reference) Then Return [Operator] = ContactOperator.Relay OrElse [Operator] = ContactOperator.ProximitySensor OrElse [Operator] = ContactOperator.LimitSwitch
+        Return True
+    End Function
 
     Public Overrides ReadOnly Property DisplayName As String
         Get
@@ -200,7 +214,7 @@ Public Class ElectricContact
         Select Case [Operator]
             Case ContactOperator.PushButton : actuated = _manualPressed
             Case ContactOperator.Selector : actuated = _detentOn
-            Case ContactOperator.Relay : actuated = sim.IsCoilActive(Reference)
+            Case ContactOperator.Relay : actuated = sim.IsRelayActive(Reference)
             Case Else : actuated = sim.IsMarkActive(Reference)
         End Select
         Dim closed = actuated Xor NormallyClosed
@@ -214,6 +228,7 @@ Public Class ElectricContact
     End Sub
 End Class
 
+<TypeConverter(GetType(EnumDescriptionConverter))>
 Public Enum CoilKind
     <Description("Relay")> Relay
     <Description("Timer relay, on-delay")> OnDelayTimer
@@ -240,6 +255,11 @@ Public Class ElectricCoil
     End Sub
 
     Public Overrides ReadOnly Property TypeName As String = "ElectricCoil"
+
+    Public Overrides Function ShowProperty(name As String) As Boolean
+        If name = NameOf(DelaySeconds) Then Return _kind = CoilKind.OnDelayTimer OrElse _kind = CoilKind.OffDelayTimer
+        Return True
+    End Function
 
     Public Overrides ReadOnly Property DisplayName As String
         Get

@@ -83,13 +83,35 @@ Public Module QuestionBank
           "It starts the next action only after the pressure (e.g. clamping force) has been reached.")
     }
 
+    Private _signatures As Dictionary(Of LibraryPreset, String)
+
+    ''' <summary>A fingerprint of each symbol's drawing, so the quiz never asks to tell apart two identical symbols.</summary>
+    Private Function Signature(p As LibraryPreset) As String
+        If _signatures Is Nothing Then
+            _signatures = New Dictionary(Of LibraryPreset, String)
+            For Each lp In Library.Presets
+                Using bmp = Library.RenderThumbnail(lp.Factory.Invoke(), 120, 50), ms As New IO.MemoryStream()
+                    bmp.Save(ms, Imaging.ImageFormat.Png)
+                    Using md5 = Security.Cryptography.MD5.Create()
+                        _signatures(lp) = Convert.ToBase64String(md5.ComputeHash(ms.ToArray()))
+                    End Using
+                End Using
+            Next
+        End If
+        Return _signatures(p)
+    End Function
+
     ''' <summary>Symbol identification questions built from the component library.</summary>
     Private Function SymbolQuestions(rnd As Random) As List(Of QuizQuestion)
         Dim list As New List(Of QuizQuestion)
         Dim presets = Library.Presets.Where(Function(p) p.Category <> Library.CatDrawing AndAlso Not p.Name.Contains("junction") AndAlso
                                                        Not p.Name.Contains("connector")).ToList()
         For Each preset In presets
-            Dim wrong = presets.Where(Function(p) p IsNot preset).OrderBy(Function(x) rnd.Next()).Take(3).Select(Function(p) p.Name).ToList()
+            Dim sig = Signature(preset)
+            ' Only symbols that look different from the right answer (and from each other) are offered.
+            Dim wrong = presets.Where(Function(p) p IsNot preset AndAlso Signature(p) <> sig).
+                GroupBy(Function(p) Signature(p)).Select(Function(g) g.First()).
+                OrderBy(Function(x) rnd.Next()).Take(3).Select(Function(p) p.Name).ToList()
             Dim options = wrong.Concat({preset.Name}).OrderBy(Function(x) rnd.Next()).ToArray()
             list.Add(New QuizQuestion With {
                 .Topic = "Symbols", .Text = "What does this symbol show?", .Options = options,
@@ -104,7 +126,15 @@ Public Module QuestionBank
         Dim rnd = If(seed.HasValue, New Random(seed.Value), New Random())
         Dim symbols = SymbolQuestions(rnd).OrderBy(Function(x) rnd.Next()).Take(Math.Max(1, count \ 4)).ToList()
         Dim textQuestions = Written.OrderBy(Function(x) rnd.Next()).Take(count - symbols.Count).ToList()
-        Return textQuestions.Concat(symbols).OrderBy(Function(x) rnd.Next()).ToList()
+        Return textQuestions.Concat(symbols).OrderBy(Function(x) rnd.Next()).Select(Function(q) Shuffled(q, rnd)).ToList()
+    End Function
+
+    ''' <summary>A copy of the question with its answers in random order.</summary>
+    Private Function Shuffled(q As QuizQuestion, rnd As Random) As QuizQuestion
+        Dim order = Enumerable.Range(0, q.Options.Length).OrderBy(Function(x) rnd.Next()).ToArray()
+        Return New QuizQuestion With {.Topic = q.Topic, .Text = q.Text, .Explanation = q.Explanation, .SymbolPreset = q.SymbolPreset,
+                                      .Options = order.Select(Function(i) q.Options(i)).ToArray(),
+                                      .Correct = Array.IndexOf(order, q.Correct)}
     End Function
 
     Public ReadOnly Property WrittenCount As Integer
