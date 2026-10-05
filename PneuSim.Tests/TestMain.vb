@@ -458,6 +458,17 @@ Module TestMain
         Dim badSupply = ex(0).Build()
         badSupply.Remove(badSupply.Elements.OfType(Of AirSupply)().First())
         Check("checker: missing air supply", CircuitAnalysis.StaticChecks(badSupply).Any(Function(x) x.Message.Contains("no compressed air supply")))
+        ' A contact labelled like a cylinder mark but left as a relay contact (common beginner mistake).
+        Dim relayMix = ex(6).Build()
+        Dim cylMix = relayMix.Elements.OfType(Of CylinderBase)().First()
+        cylMix.RetractedMark = "1S1"
+        Dim wrongContact = relayMix.Elements.OfType(Of ElectricContact)().First()
+        wrongContact.Operator = ContactOperator.Relay : wrongContact.Reference = "" : wrongContact.Label = "1S1"
+        Dim mixIssues = CircuitAnalysis.StaticChecks(relayMix)
+        Check("checker: relay contact named after a cylinder mark", mixIssues.Any(Function(x) x.Message.Contains("set 'Operated by' to Limit switch") AndAlso x.Message.Contains("'Reference' to 1S1")),
+              String.Join(" | ", mixIssues))
+        wrongContact.Label = "X9"
+        Check("checker: relay contact without reference", CircuitAnalysis.StaticChecks(relayMix).Any(Function(x) x.Message.Contains("has no Reference")))
         ' Explanation.
         Dim expl = CircuitAnalysis.Explain(ex(4).Build(), Nothing, False)
         Console.WriteLine(expl)

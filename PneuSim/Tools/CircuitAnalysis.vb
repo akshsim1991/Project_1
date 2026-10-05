@@ -395,11 +395,23 @@ Public Module CircuitAnalysis
             End If
         Next
         For Each k In els.OfType(Of ElectricContact)()
+            Dim labelIsMark = Not String.IsNullOrWhiteSpace(k.Label) AndAlso MarkExists(els, k.Label.Trim())
             If k.Operator = ContactOperator.Relay AndAlso Not coils.Any(Function(x) x.Kind <> CoilKind.Solenoid AndAlso x.Kind <> CoilKind.Lamp AndAlso same(x.Label, k.Reference)) Then
-                add(IssueSeverity.Error, $"Relay contact refers to {k.Reference}, but there is no relay coil labelled {k.Reference}.", k)
+                If labelIsMark Then
+                    add(IssueSeverity.Error, $"Contact {Name(k)} is a relay contact, so it only closes when a relay coil switches it. To make the cylinder operate it, " &
+                        $"set 'Operated by' to Limit switch (or Proximity sensor) and 'Reference' to {k.Label.Trim()}.", k)
+                ElseIf String.IsNullOrWhiteSpace(k.Reference) Then
+                    add(IssueSeverity.Error, $"Relay contact {Name(k)} has no Reference, so it never switches. Enter the label of its relay coil (e.g. K1) in 'Reference'.", k)
+                Else
+                    add(IssueSeverity.Error, $"Relay contact {Name(k)} refers to {k.Reference}, but there is no relay coil labelled {k.Reference}.", k)
+                End If
             End If
             If (k.Operator = ContactOperator.ProximitySensor OrElse k.Operator = ContactOperator.LimitSwitch) AndAlso Not MarkExists(els, k.Reference) Then
-                add(IssueSeverity.Error, $"Sensor {Name(k)}: no cylinder has a position mark named '{k.Reference}'.", k)
+                If String.IsNullOrWhiteSpace(k.Reference) AndAlso labelIsMark Then
+                    add(IssueSeverity.Error, $"Sensor {Name(k)} has no Reference. Enter the cylinder position mark {k.Label.Trim()} in 'Reference' (the label alone does not link it).", k)
+                Else
+                    add(IssueSeverity.Error, $"Sensor {Name(k)}: no cylinder has a position mark named '{k.Reference}'.", k)
+                End If
             End If
         Next
         For Each grp In coils.Where(Function(k) Not String.IsNullOrWhiteSpace(k.Label)).GroupBy(Function(k) k.Label.Trim().ToUpperInvariant())
