@@ -36,6 +36,34 @@ Public Class CircuitCanvas
     Public Event StatusMessage As EventHandler(Of String)
     ''' <summary>Raised for keyboard commands the main window handles ("Undo", "Redo").</summary>
     Public Event CommandKey As EventHandler(Of String)
+    ''' <summary>Raised when the mouse moves onto another element (or off all elements).</summary>
+    Public Event HoverElementChanged As EventHandler(Of CircuitElement)
+
+    Private _hoverElement As CircuitElement
+
+    ''' <summary>The element under the mouse, if any.</summary>
+    Public ReadOnly Property HoverElement As CircuitElement
+        Get
+            Return _hoverElement
+        End Get
+    End Property
+
+    ''' <summary>The last directional valve the mouse was over (for the cutaway view).</summary>
+    Public Property LastHoveredValve As DirectionalValve
+
+    Private Sub TrackHover(w As PointF)
+        Dim el = _circuit.FindElementAt(w)
+        If el IsNot _hoverElement Then
+            _hoverElement = el
+            If TypeOf el Is DirectionalValve Then LastHoveredValve = DirectCast(el, DirectionalValve)
+            RaiseEvent HoverElementChanged(Me, el)
+        End If
+    End Sub
+
+    ''' <summary>Selects the given elements (e.g. from the checker).</summary>
+    Public Sub SelectElements(items As IEnumerable(Of CircuitElement))
+        SetSelection(items.Where(Function(e) _circuit.Elements.Contains(e)))
+    End Sub
 
     Public Sub New()
         SetStyle(ControlStyles.AllPaintingInWmPaint Or ControlStyles.UserPaint Or
@@ -336,6 +364,8 @@ Public Class CircuitCanvas
                 Dim pen As Pen
                 If t.IsElectric Then
                     pen = If(Simulating AndAlso t.IsPressurized, ctx.Energized, idleWire)
+                ElseIf t.A.Kind = PortKind.Hydraulic Then
+                    pen = If(Simulating AndAlso t.IsPressurized, ctx.HydraulicPressure, If(Simulating, idleWire, ctx.Line))
                 Else
                     pen = If(Simulating AndAlso t.IsPressurized, ctx.Pressure, idleAir)
                 End If
@@ -467,6 +497,7 @@ Public Class CircuitCanvas
         MyBase.OnMouseMove(e)
         Dim w = ToWorld(e.Location)
         _mouseWorld = w
+        TrackHover(w)
 
         If Simulating Then
             Dim el = _circuit.FindElementAt(w)
@@ -582,6 +613,14 @@ Public Class CircuitCanvas
         Dim owner = If(String.IsNullOrEmpty(p.Owner.Label), p.Owner.DisplayName, p.Owner.Label)
         Return $"{owner} port {p.Name}"
     End Function
+
+    Protected Overrides Sub OnMouseLeave(e As EventArgs)
+        MyBase.OnMouseLeave(e)
+        If _hoverElement IsNot Nothing Then
+            _hoverElement = Nothing
+            RaiseEvent HoverElementChanged(Me, Nothing)
+        End If
+    End Sub
 
     Protected Overrides Sub OnMouseWheel(e As MouseEventArgs)
         If (ModifierKeys And Keys.Control) <> 0 Then

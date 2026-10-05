@@ -17,9 +17,18 @@ Public Class DiagramPanel
         BackColor = Color.White
     End Sub
 
+    ''' <summary>Colours (light or dark mode).</summary>
+    Public Property Scheme As ColorScheme = ColorScheme.Light
+
     Protected Overrides Sub OnPaint(e As PaintEventArgs)
-        Dim g = e.Graphics
-        g.SmoothingMode = SmoothingMode.AntiAlias
+        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias
+        e.Graphics.Clear(Scheme.Background)
+        Using g As New GdiSurface(e.Graphics, Scheme)
+            PaintDiagram(g)
+        End Using
+    End Sub
+
+    Private Sub PaintDiagram(g As DrawSurface)
         Using titleFont As New Font("Segoe UI", 9, FontStyle.Bold), f As New Font("Segoe UI", 8)
             g.DrawString("Displacement-step diagram", titleFont, Brushes.Black, 6, 4)
 

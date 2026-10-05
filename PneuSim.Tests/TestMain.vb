@@ -466,6 +466,67 @@ Module TestMain
         Dim expl2 = CircuitAnalysis.Explain(ex(7).Build(), Nothing, False)
         Check("explain follows relays and solenoids", expl2.Contains("relay K1 picks up") AndAlso expl2.Contains("solenoid 1M1"), expl2)
 
+
+        ' ---------------- Phase 3: lessons, quiz, parts list, PDF, GIF
+        Dim relabel = Function(circ As Circuit) As Circuit
+                          For Each el In circ.Elements
+                              If el.Label = "1S1" Then el.Label = "S1"
+                              If el.Label = "1S2" AndAlso el.IsManuallyOperated Then el.Label = "S2"
+                          Next
+                          Return circ
+                      End Function
+        Dim solutions = New(Lesson As Integer, Build As Func(Of Circuit))() {
+            (0, Function() relabel(ex(0).Build())),
+            (3, Function() relabel(ex(2).Build())),
+            (4, Function() relabel(ex(3).Build())),
+            (7, Function() ex(7).Build()),
+            (8, Function() ex(8).Build()),
+            (9, Function() relabel(SequenceGenerator.Generate(MotionSequence.Parse("A+ B+ B- A-"), GeneratorMethod.PneumaticCascade, False).Circuit))}
+        For Each sol In solutions
+            Dim lesson = Lessons.All(sol.Lesson)
+            Dim res = lesson.Check(sol.Build())
+            Check($"lesson '{lesson.Title}' accepts a correct circuit", res.Passed, res.Feedback)
+        Next
+        For Each lesson In Lessons.All.Where(Function(l) l.Start IsNot Nothing)
+            Dim res = lesson.Check(lesson.Start.Invoke())
+            Check($"lesson '{lesson.Title}' rejects the unconnected parts", Not res.Passed, res.Feedback)
+        Next
+        Dim quiz = QuestionBank.Pick(20, 1)
+        Check("quiz picks 20 valid questions", quiz.Count = 20 AndAlso quiz.All(Function(q) q.Correct >= 0 AndAlso q.Correct < q.Options.Length AndAlso q.Options.Distinct().Count() = q.Options.Length))
+        Check("question bank has written questions", QuestionBank.WrittenCount >= 25, QuestionBank.WrittenCount.ToString())
+        Check("hover help for every component", Library.Presets.All(Function(lp) ComponentHelp.HelpFor(lp.Factory.Invoke()) <> ""))
+
+        Dim proj As New Project(ex(4).Build())
+        Dim parts = PartsList.Build(proj)
+        Check("parts list counts cylinders", parts.Any(Function(l) l.Description.Contains("cylinder") AndAlso l.Quantity = 1), String.Join(" | ", parts.Select(Function(l) $"{l.Quantity}x {l.Description}")))
+        Check("parts list has prices", parts.Sum(Function(l) l.Total) > 0)
+        Check("parts list CSV", PartsList.ToCsv(parts).Split(ChrW(10)).Length > parts.Count)
+        Dim pdfPath = IO.Path.Combine("out", "report.pdf")
+        Reports.SavePdfReport(proj, pdfPath, True, CircuitAnalysis.Explain(proj.Pages(0).Circuit, Nothing, False))
+        Dim pdfText = IO.File.ReadAllText(pdfPath)
+        Check("PDF report written", pdfText.StartsWith("%PDF") AndAlso pdfText.TrimEnd().EndsWith("%%EOF"), New IO.FileInfo(pdfPath).Length.ToString())
+
+        Dim gc = ex(4).Build() : Dim gs As New Simulator(gc) : gs.Reset()
+        Dim gb = gc.Bounds() : gb.Inflate(20, 20)
+        Dim rec As New GifRecorder(CInt(gb.Width), CInt(gb.Height), 6)
+        Dim gcan As New CircuitCanvas() With {.Circuit = gc, .Simulating = True, .Simulator = gs}
+        Press(gs, Find(gc, "1S1"))
+        For f = 1 To 12
+            Run(gs, 0.1)
+            Using bmp As New Drawing.Bitmap(CInt(gb.Width), CInt(gb.Height))
+                Using g = Drawing.Graphics.FromImage(bmp)
+                    g.Clear(Drawing.Color.White) : g.TranslateTransform(-gb.Left, -gb.Top) : gcan.PaintTo(g)
+                End Using
+                rec.AddFrame(bmp)
+            End Using
+        Next
+        Dim gifPath = IO.Path.Combine("out", "recording.gif")
+        rec.Save(gifPath)
+        Using img = Drawing.Image.FromFile(gifPath)
+            Dim frames = img.GetFrameCount(Drawing.Imaging.FrameDimension.Time)
+            Check("GIF decodes with all frames", frames = 12, frames.ToString())
+        End Using
+
         ' Library thumbnails render.
         For Each p In Library.Presets
             Using b = Library.RenderThumbnail(p.Factory.Invoke(), 72, 48) : End Using

@@ -1,0 +1,4 @@
+PneuSim.Tests/test-run/
+dist/
+bin/
+obj/

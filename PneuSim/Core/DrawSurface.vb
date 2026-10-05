@@ -37,6 +37,10 @@ Public MustInherit Class DrawSurface
         FillRectangle(brush, r.X, r.Y, r.Width, r.Height)
     End Sub
 
+    Public Sub DrawString(text As String, font As Font, brush As Brush, r As RectangleF)
+        DrawString(text, font, brush, r.X, r.Y)
+    End Sub
+
     Public Sub DrawRectangle(pen As Pen, r As RectangleF)
         DrawRectangle(pen, r.X, r.Y, r.Width, r.Height)
     End Sub

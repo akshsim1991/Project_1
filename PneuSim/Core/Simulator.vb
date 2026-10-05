@@ -117,6 +117,7 @@ Partial Public Class Simulator
     Public Sub Reset()
         Time = 0
         AirConsumed = 0
+        ResetChannels()
         _nextSample = 0
         History.Clear()
         Warnings.Clear()
@@ -132,6 +133,7 @@ Partial Public Class Simulator
             RunLogic()
         End If
         RecordHistory()
+        RecordChannels()
     End Sub
 
     ''' <summary>Advances the simulation by <paramref name="dt"/> seconds.</summary>
@@ -143,6 +145,7 @@ Partial Public Class Simulator
         Next
         RunLogic()
         RecordHistory()
+        RecordChannels()
     End Sub
 
     ''' <summary>Solves the networks and lets valves, relays and contacts switch until the circuit is stable.</summary>

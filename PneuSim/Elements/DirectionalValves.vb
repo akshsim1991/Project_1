@@ -158,6 +158,17 @@ Public MustInherit Class DirectionalValve
         End Get
     End Property
 
+    ''' <summary>Working port positions inside one box: name, offset from the box's left edge, top or bottom.</summary>
+    Public Function WorkingPortLayout() As (Name As String, Offset As Single, Top As Boolean, Vents As Boolean)()
+        Return WorkingPorts().Select(Function(w) (w.Name, w.Offset, w.Top, w.Vents)).ToArray()
+    End Function
+
+    <Browsable(False)> Public ReadOnly Property BoxSize As Single
+        Get
+            Return BoxWidth
+        End Get
+    End Property
+
     ''' <summary>Names of the working ports (not pilots).</summary>
     Public Function WorkingPortNames() As String()
         Return WorkingPorts().Select(Function(w) w.Name).ToArray()

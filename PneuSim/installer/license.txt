@@ -1,0 +1,10 @@
+PneuSim 3.0
+(c) 2026 Akshaya Simha. All rights reserved.
+
+Developed in VB.NET initially, and improved it with vibe coding using Claude Pro.
+Software is used to study pneumatic and hydraulic systems, so that it can be
+simulated to understand different types of circuits.
+
+This software is provided "as is", without warranty of any kind. Simulation
+results are an aid for learning and design and do not replace testing of the
+real machine.

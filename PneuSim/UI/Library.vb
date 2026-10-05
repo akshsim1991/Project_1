@@ -20,6 +20,7 @@ Public Module Library
     Public Const CatSolenoid = "Solenoid valves"
     Public Const CatFlow = "Logic, non-return and flow valves"
     Public Const CatElectric = "Electrical (24 V DC)"
+    Public Const CatHydraulic = "Hydraulics"
     Public Const CatDrawing = "Drawing"
 
     Public ReadOnly Presets As LibraryPreset() = {
@@ -40,6 +41,7 @@ Public Module Library
         New LibraryPreset(CatDirectional, "3/2 valve, roller lever, NC", Function() V32(ValveActuator.RollerLever)),
         New LibraryPreset(CatDirectional, "3/2 valve, pneumatic pilot, NC", Function() V32(ValveActuator.Pilot)),
         New LibraryPreset(CatDirectional, "Time delay valve, 3/2 NC", Function() V32(ValveActuator.DelayedPilot)),
+        New LibraryPreset(CatDirectional, "Pressure sequence valve, 3/2 NC", Function() New Valve32() With {.Actuator = ValveActuator.Pilot, .SwitchingPressure = 4}),
         New LibraryPreset(CatDirectional, "4/2 valve, push button", Function() New Valve42() With {.Actuator = ValveActuator.PushButton}),
         New LibraryPreset(CatDirectional, "5/2 valve, push button", Function() V52(ValveActuator.PushButton, ValveReturn.Spring)),
         New LibraryPreset(CatDirectional, "5/2 valve, selector switch", Function() V52(ValveActuator.Selector, ValveReturn.Spring)),
@@ -72,6 +74,20 @@ Public Module Library
         New LibraryPreset(CatElectric, "Valve solenoid", Function() New ElectricCoil() With {.Kind = CoilKind.Solenoid, .Label = "1M1"}),
         New LibraryPreset(CatElectric, "Indicator lamp", Function() New ElectricCoil() With {.Kind = CoilKind.Lamp, .Label = "H1"}),
         New LibraryPreset(CatElectric, "Wire junction", Function() New Junction() With {.IsElectric = True}),
+        New LibraryPreset(CatHydraulic, "Hydraulic power unit (pump)", Function() New HydraulicPump()),
+        New LibraryPreset(CatHydraulic, "Tank", Function() New HydraulicTank()),
+        New LibraryPreset(CatHydraulic, "Pressure relief valve", Function() New ReliefValve()),
+        New LibraryPreset(CatHydraulic, "Hydraulic cylinder", Function() New HydraulicCylinder()),
+        New LibraryPreset(CatHydraulic, "Hydraulic motor", Function() New HydraulicMotor()),
+        New LibraryPreset(CatHydraulic, "4/3 valve, tandem centre, solenoids", Function() New HydraulicValve43()),
+        New LibraryPreset(CatHydraulic, "4/3 valve, closed centre, solenoids", Function() New HydraulicValve43() With {.Centre = HydraulicCentre.Closed}),
+        New LibraryPreset(CatHydraulic, "4/2 valve, solenoid", Function() New HydraulicValve42()),
+        New LibraryPreset(CatHydraulic, "Pressure-compensated flow control", Function() New CompensatedFlowControl()),
+        New LibraryPreset(CatHydraulic, "Counterbalance valve", Function() New CounterbalanceValve()),
+        New LibraryPreset(CatHydraulic, "Accumulator", Function() New Accumulator()),
+        New LibraryPreset(CatHydraulic, "Hydraulic pressure gauge", Function() New PressureGauge() With {.Hydraulic = True}),
+        New LibraryPreset(CatHydraulic, "Hydraulic junction (T)", Function() New Junction() With {.Medium = PortKind.Hydraulic}),
+        New LibraryPreset(CatDrawing, "Page connector", Function() New PageConnector()),
         New LibraryPreset(CatDrawing, "Text", Function() New TextNote())
     }
 
@@ -88,18 +104,19 @@ Public Module Library
     End Function
 
     ''' <summary>Renders a preview of an element scaled to fit the given size.</summary>
-    Public Function RenderThumbnail(e As CircuitElement, width As Integer, height As Integer) As Bitmap
+    Public Function RenderThumbnail(e As CircuitElement, width As Integer, height As Integer, Optional scheme As ColorScheme = Nothing) As Bitmap
+        If scheme Is Nothing Then scheme = ColorScheme.Light
         Dim bmp As New Bitmap(width, height)
         Using g = Graphics.FromImage(bmp), ctx As New RenderContext()
             g.SmoothingMode = SmoothingMode.AntiAlias
-            g.Clear(Color.White)
+            g.Clear(scheme.Background)
             Dim b = e.LocalBounds
             Dim scale = Math.Min((width - 6) / b.Width, (height - 6) / b.Height)
             scale = Math.Min(scale, 1.0F)
             g.TranslateTransform(width / 2.0F, height / 2.0F)
             g.ScaleTransform(scale, scale)
             g.TranslateTransform(-(b.Left + b.Width / 2), -(b.Top + b.Height / 2))
-            Using surface As New GdiSurface(g)
+            Using surface As New GdiSurface(g, scheme)
                 e.DrawSymbol(surface, ctx)
             End Using
         End Using

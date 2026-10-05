@@ -12,8 +12,14 @@
     <OptionInfer>On</OptionInfer>
     <OptionCompare>Binary</OptionCompare>
     <LangVersion>latest</LangVersion>
-    <AssemblyTitle>PneuSim - Pneumatic Circuit Simulator</AssemblyTitle>
-    <Version>2.0.0</Version>
+    <AssemblyTitle>PneuSim - Pneumatic and Hydraulic Circuit Simulator</AssemblyTitle>
+    <Product>PneuSim</Product>
+    <Company>Akshaya Simha</Company>
+    <Authors>Akshaya Simha</Authors>
+    <Copyright>(c) 2026 Akshaya Simha</Copyright>
+    <Description>Design and simulate pneumatic, electro-pneumatic and hydraulic circuits.</Description>
+    <ApplicationIcon>Resources\PneuSim.ico</ApplicationIcon>
+    <Version>3.0.0</Version>
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
   </PropertyGroup>
 
