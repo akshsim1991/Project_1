@@ -250,23 +250,23 @@ public:
     // Recognises the words of `img`; false if the engine failed on it.
     bool Recognise(const OcrImage& img, std::vector<OcrWord>& words, const volatile bool& quit) {
         const PixelBuffer* px = &img.pixels;
-        PixelBuffer small;
+        PixelBuffer shrunk;
         double factor = 1;
         const int biggest = std::max(px->width, px->height);
         if (biggest > m_maxDim) {
             factor = (double)biggest / m_maxDim + 1e-6;
-            Shrink(*px, factor, small);
-            if (!small.bits) return false;
-            px = &small;
+            Shrink(*px, factor, shrunk);
+            if (!shrunk.bits) return false;
+            px = &shrunk;
         }
         Ref<ISoftwareBitmapAbi> bitmap;
         if (FAILED(m_bitmaps->CreateWithAlpha(kPixelBgra8, px->width, px->height, kAlphaPremultiplied,
                                               bitmap.Put())) ||
             !Fill(bitmap.Get(), *px)) {
-            small.Free();
+            shrunk.Free();
             return false;
         }
-        small.Free();
+        shrunk.Free();
 
         Ref<IAsyncOcrAbi> op;
         Ref<IAsyncInfoAbi> info;
