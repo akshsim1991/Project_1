@@ -223,6 +223,76 @@ struct PointF {
     float x = 0, y = 0;
 };
 
+// Where page numbers go (EditOp::PageNumbers).
+enum NumberPosition {
+    kNumBottomCenter = 0, kNumBottomRight, kNumBottomLeft, kNumTopCenter, kNumTopRight, kNumTopLeft,
+};
+
+// A word found by text recognition. `rect` is in page points (top-left
+// origin, as displayed); `lineEnd` marks the last word of a line.
+struct OcrWord {
+    RectF rect;
+    std::wstring text;
+    bool lineEnd = false;
+};
+
+struct OcrPage {
+    int page = 0;
+    std::vector<OcrWord> words;
+};
+
+// A page rendered for text recognition (WM_APP_OCR_IMAGE). `skipped`:
+// the page already has text and was not rendered.
+struct OcrImage {
+    uint32_t docId = 0;
+    uint32_t jobId = 0;
+    int page = 0;
+    bool skipped = false;
+    float scale = 1;     // pixels per point
+    PixelBuffer pixels;
+    ~OcrImage() { pixels.Free(); }
+};
+
+// The words recognised on one page (WM_APP_OCR_DONE).
+struct OcrResult {
+    uint32_t jobId = 0;
+    int page = 0;
+    bool ok = true;
+    bool fatal = false;  // recognition is not possible at all (error says why)
+    std::wstring error;
+    std::vector<OcrWord> words;
+};
+
+// A line of a page's text with its typography (Markdown export). Positions
+// are page points, top-left origin.
+struct TextLine {
+    std::wstring text;
+    float size = 0;      // most common font size, in points
+    bool bold = false;   // most letters are bold
+    float top = 0, bottom = 0, left = 0;
+};
+
+// Exporting pages as pictures, plain text or Markdown.
+enum class ExportFormat { Png, Jpeg, Text, Markdown };
+
+struct ExportJob {
+    uint32_t docId = 0;
+    ExportFormat format = ExportFormat::Png;
+    std::vector<int> pages;
+    std::wstring path;   // pictures: one file per page named after it ("name-3.png")
+    int dpi = 150;       // pictures
+};
+
+// Progress of an export (WM_APP_EXPORT_PROGRESS).
+struct ExportProgress {
+    int done = 0, total = 0;
+    bool finished = false;
+    bool ok = true;
+    std::wstring error;
+    std::vector<std::wstring> files;  // finished: the files written
+    bool noText = false;              // text export found no text at all
+};
+
 // A PDF whose pages are inserted. The worker replaces `path` with a private
 // copy before applying the edit, so undo/redo can replay it later even if
 // the original file changes or the source tab is closed.
@@ -248,6 +318,10 @@ struct EditOp {
         AddImage,     // a picture in `rect` (signature: as a removable stamp annotation)
         AddText,      // new text at (x, y): text, fontSize, color, bold/italic/serif/mono
         StyleText,    // text run (page, index, count): fontSize (0: keep), color (CLR_INVALID: keep)
+        Watermark,    // `text` across `pages`: fontSize (0: fit the page), color, opacity,
+                      // diagonal, behind
+        PageNumbers,  // on `pages`: text = pattern ({n}, {total}), position, fontSize, color, firstNumber
+        AddOcrText,   // recognised words of scanned pages as invisible, searchable text: ocr
     } kind = DeletePages;
     std::vector<int> pages;  // Delete/Move/Rotate: ascending page indices
     int index = 0;           // Move: new index of the first moved page;
@@ -278,6 +352,13 @@ struct EditOp {
     bool asAnnot = false;        // AddImage: a stamp annotation (signatures)
     float fontSize = 0;          // AddText / StyleText: font size in points
     bool bold = false, italic = false, serif = false, mono = false;  // AddText
+    // watermarks and page numbers
+    int opacity = 100;           // percent
+    bool diagonal = true;        // Watermark
+    bool behind = false;         // Watermark: under the page content
+    int position = 0;            // PageNumbers: NumberPosition
+    int firstNumber = 1;         // PageNumbers: the number shown on the first page of `pages`
+    std::vector<OcrPage> ocr;    // AddOcrText
 };
 
 enum class EditAction { Edit, Undo, Redo, Save };

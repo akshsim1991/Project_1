@@ -221,7 +221,7 @@ void MainWindow::CreateChildren() {
     m_toolbar.AddButton(ID_REDO, kGlyphRedo, L"Redo (Ctrl+Y)");
     m_toolbar.AddSeparator();
     m_toolbar.AddTextButton(ID_EDIT_PDF_MENU, L"Edit PDF",
-                            L"Edit text, find and replace, comments, markup and pages", 72);
+                            L"Edit text, comments, pages, text recognition (OCR), watermarks and page numbers", 72);
     m_toolbar.AddTextButton(ID_ANNOTATE_MENU, L"Annotate",
                             L"Highlight, draw, add text, stamps, signatures and pictures", 78);
     m_toolbar.AddTextButton(ID_ADD_COMMENT, L"Comment", L"Add a comment: click where it should go (Ctrl+M)", 78);
@@ -576,6 +576,15 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         case WM_APP_EXTRACTED:
             OnExtracted((ExtractResult*)lp);
             return 0;
+        case WM_APP_OCR_IMAGE:
+            OnOcrImage((OcrImage*)lp);
+            return 0;
+        case WM_APP_OCR_DONE:
+            OnOcrDone((OcrResult*)lp);
+            return 0;
+        case WM_APP_EXPORT_PROGRESS:
+            OnExportProgress((ExportProgress*)lp);
+            return 0;
 
         // Splitter between sidebar and page: drag to resize the sidebar.
         case WM_SETCURSOR:
@@ -713,6 +722,7 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
 
         case WM_DESTROY:
             KillTimer(m_hwnd, kSearchTimer);
+            m_ocr.Stop();
             m_worker.Stop();
             if (m_devMode) GlobalFree(m_devMode);
             if (m_devNames) GlobalFree(m_devNames);
@@ -855,6 +865,14 @@ void MainWindow::OnCommand(int id, int code, HWND ctl) {
         case ID_MERGE_FILES: MergeFiles(); break;
         case ID_MERGE_TABS: MergeTabs(); break;
         case ID_EXTRACT_PAGES: ExtractPages(); break;
+        case ID_OCR: RecogniseText(); break;
+        case ID_CANCEL_OCR: StopOcr({}); break;
+        case ID_WATERMARK: AddWatermark(); break;
+        case ID_PAGE_NUMBERS: AddPageNumbers(); break;
+        case ID_EXPORT: ExportPages(); break;
+        case ID_CANCEL_EXPORT:
+            if (m_exporting) m_worker.CancelExport();
+            break;
         case ID_EDIT_PDF_MENU: ShowEditPdfMenu(); break;
         case ID_ANNOTATE_MENU: ShowAnnotateMenu(); break;
         case ID_TOOL_ADD_TEXT: StartTool(view.Tool() == ViewTool::AddText ? ViewTool::Select : ViewTool::AddText); break;
@@ -1064,6 +1082,10 @@ void MainWindow::ShowMoreMenu() {
                 L"Open rece&nt");
     AppendMenuW(m, MF_STRING | (doc && tab.dirty ? 0 : MF_GRAYED), ID_SAVE, L"&Save\tCtrl+S");
     AppendMenuW(m, MF_STRING | docFlag, ID_SAVE_AS, L"Sa&ve as\x2026\tCtrl+Shift+S");
+    if (m_exporting)
+        AppendMenuW(m, MF_STRING, ID_CANCEL_EXPORT, L"Cancel &export");
+    else
+        AppendMenuW(m, MF_STRING | docFlag, ID_EXPORT, L"&Export as pictures or text\x2026");
     AppendMenuW(m, MF_STRING, ID_CLOSE_TAB, L"&Close tab\tCtrl+W");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(m, MF_STRING | (doc && tab.canUndo ? 0 : MF_GRAYED), ID_UNDO, L"&Undo\tCtrl+Z");
@@ -1180,6 +1202,11 @@ void MainWindow::UpdateTitle() {
     if (m_printing)
         title += L"  (printing " + std::to_wstring(m_printDone) + L" of " +
                  std::to_wstring(m_printTotal) + L")";
+    if (m_ocrJob.active)
+        title += L"  (recognising text: " + std::to_wstring(m_ocrJob.done) + L" of " +
+                 std::to_wstring(m_ocrJob.pages.size()) + L" pages)";
+    if (m_exporting)
+        title += L"  (exporting " + std::to_wstring(m_exportDone) + L" of " + std::to_wstring(m_exportTotal) + L")";
     SetWindowTextW(m_hwnd, title.c_str());
 }
 
@@ -1806,10 +1833,12 @@ bool MainWindow::CanEdit() {
     return tab.docId && !tab.pendingDocId && tab.view->HasDocument();
 }
 
-void MainWindow::SendEdit(EditOp&& op) {
-    if (!CanEdit()) return;
-    Tab& tab = Active();
-    if (tab.search.running) CancelSearch();
+void MainWindow::SendEdit(EditOp&& op, int tabIndex) {
+    if (tabIndex < 0) tabIndex = m_active;
+    if (tabIndex < 0 || tabIndex >= (int)m_tabs.size()) return;
+    Tab& tab = *m_tabs[(size_t)tabIndex];
+    if (!tab.docId || tab.pendingDocId || !tab.view->HasDocument()) return;
+    if (tabIndex == m_active && tab.search.running) CancelSearch();
     const uint32_t oldId = tab.docId;
     tab.docId = m_nextDocId++;
     tab.view->BeginEdit(tab.docId);
@@ -2495,6 +2524,13 @@ HMENU MainWindow::CreateEditPdfMenu() {
     AppendMenuW(m, MF_STRING | selFlag, ID_COMMENT_SELECTION, L"Comment on &selected text\x2026\tCtrl+Shift+M");
     AppendMenuW(m, MF_STRING | docFlag, ID_SHOW_COMMENTS, L"&All comments\x2026");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    if (m_ocrJob.active)
+        AppendMenuW(m, MF_STRING, ID_CANCEL_OCR, L"Stop recognising te&xt");
+    else
+        AppendMenuW(m, MF_STRING | docFlag, ID_OCR, L"Recognise te&xt (OCR)\x2026");
+    AppendMenuW(m, MF_STRING | docFlag, ID_WATERMARK, L"&Watermark\x2026");
+    AppendMenuW(m, MF_STRING | docFlag, ID_PAGE_NUMBERS, L"Page n&umbers\x2026");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(m, MF_POPUP | docFlag, (UINT_PTR)CreateAnnotateMenu(), L"A&nnotate");
     AppendMenuW(m, MF_POPUP | docFlag, (UINT_PTR)CreatePagesMenu(), L"Edit &pages");
     return m;
@@ -2798,6 +2834,280 @@ void MainWindow::InsertImage() {
 }
 
 // ===========================================================================
+// Recognise text (OCR), watermarks, page numbers, export
+// ===========================================================================
+// The page choice of a dialog, starting from what was chosen last time.
+PageChoice MainWindow::NewPageChoice(const PageChoice& last) {
+    PageChoice p = last;
+    const PdfView& view = View();
+    p.pageCount = view.PageCount();
+    p.current = view.CurrentPage();
+    std::vector<int> check;
+    if (p.mode == PageChoice::Range && !ParsePageRanges(p.range, p.pageCount, check)) {
+        p.mode = PageChoice::All;  // typed for another document
+        p.range.clear();
+    }
+    // Pages selected in the thumbnails are what the user means.
+    const std::vector<int> sel = SelectedPages();
+    if (sel.size() > 1) {
+        p.mode = PageChoice::Range;
+        p.range = FormatPageRanges(sel);
+    }
+    return p;
+}
+
+void MainWindow::RecogniseText() {
+    if (!CanEdit() || m_ocrJob.active) return;
+    OcrOptions o = m_ocrOptions;
+    o.pages = NewPageChoice(o.pages);
+    if (!ShowOcrDialog(m_inst, m_hwnd, o)) return;
+    m_ocrOptions = o;
+    m_ocrJob = OcrJob();
+    m_ocrJob.active = true;
+    m_ocrJob.id = m_nextOcrId++;
+    m_ocrJob.docId = Active().docId;
+    m_ocrJob.pages = o.pages.pages;
+    m_ocrJob.skipText = o.skipText;
+    RequestOcrPages();
+    UpdateTitle();
+}
+
+// Keeps the next page or two rendered while one is being recognised.
+void MainWindow::RequestOcrPages() {
+    const int index = TabByDocId(m_ocrJob.docId);
+    if (index < 0) return;
+    const std::vector<SizeF>& sizes = m_tabs[(size_t)index]->view->PageSizes();
+    while (m_ocrJob.inFlight < 2 && m_ocrJob.next < m_ocrJob.pages.size()) {
+        const int page = m_ocrJob.pages[m_ocrJob.next++];
+        // 300 dpi suits the engine; posters and drawings are rendered smaller.
+        float scale = 300 / 72.0f;
+        if (page < (int)sizes.size()) {
+            const float big = std::max(sizes[(size_t)page].w, sizes[(size_t)page].h);
+            if (big > 0) scale = std::min(scale, 7000 / big);
+        }
+        m_worker.RenderForOcr(m_ocrJob.docId, m_ocrJob.id, page, scale, m_ocrJob.skipText);
+        ++m_ocrJob.inFlight;
+    }
+}
+
+namespace {
+const wchar_t kOcrDocChanged[] =
+    L"Text recognition stopped because the document was changed or closed while it was running. "
+    L"Start it again when you are done.";
+}
+
+void MainWindow::OnOcrImage(OcrImage* image) {
+    std::unique_ptr<OcrImage> img(image);
+    if (!m_ocrJob.active || img->jobId != m_ocrJob.id) return;
+    if (TabByDocId(m_ocrJob.docId) < 0) {
+        StopOcr(kOcrDocChanged);
+        return;
+    }
+    if (img->skipped || !img->pixels.bits) {
+        ++(img->skipped ? m_ocrJob.skipped : m_ocrJob.failed);
+        OcrPageDone();
+        return;
+    }
+    m_ocr.Recognise(m_hwnd, img.release());
+}
+
+void MainWindow::OnOcrDone(OcrResult* result) {
+    std::unique_ptr<OcrResult> res(result);
+    if (!m_ocrJob.active || res->jobId != m_ocrJob.id) return;
+    if (res->fatal) {
+        StopOcr(res->error);
+        return;
+    }
+    if (TabByDocId(m_ocrJob.docId) < 0) {
+        StopOcr(kOcrDocChanged);
+        return;
+    }
+    if (!res->ok)
+        ++m_ocrJob.failed;
+    else if (!res->words.empty())
+        m_ocrJob.found.push_back({res->page, std::move(res->words)});
+    OcrPageDone();
+}
+
+// One page finished: ask for more, or add everything found as one edit.
+void MainWindow::OcrPageDone() {
+    --m_ocrJob.inFlight;
+    ++m_ocrJob.done;
+    if (m_ocrJob.done < (int)m_ocrJob.pages.size()) {
+        RequestOcrPages();
+        UpdateTitle();
+        return;
+    }
+    OcrJob job = std::move(m_ocrJob);
+    m_ocrJob = OcrJob();
+    UpdateTitle();
+    const int index = TabByDocId(job.docId);
+    if (index < 0) return;
+
+    auto plural = [](int n, const wchar_t* one, const wchar_t* many) {
+        return std::to_wstring(n) + L" " + (n == 1 ? one : many);
+    };
+    std::wstring notes;
+    if (job.skipped) notes += L" " + plural(job.skipped, L"page already had text and was", L"pages already had text and were") + L" skipped.";
+    if (job.failed) notes += L" " + plural(job.failed, L"page", L"pages") + L" could not be read.";
+    if (job.found.empty()) {
+        const std::wstring msg =
+            job.skipped == (int)job.pages.size()
+                ? L"The pages already have text, so there was nothing to recognise."
+                : L"No text was found." + notes +
+                      L"\n\nText recognition reads printed text in the languages of your Windows profile. "
+                      L"Handwriting, and very small or blurry text, may not be found.";
+        MessageBoxW(m_hwnd, msg.c_str(), APP_NAME, MB_ICONINFORMATION);
+        return;
+    }
+    std::sort(job.found.begin(), job.found.end(),
+              [](const OcrPage& a, const OcrPage& b) { return a.page < b.page; });
+    int words = 0;
+    for (const OcrPage& p : job.found) words += (int)p.words.size();
+    const int pages = (int)job.found.size();
+    EditOp op;
+    op.kind = EditOp::AddOcrText;
+    op.ocr = std::move(job.found);
+    SendEdit(std::move(op), index);
+    const std::wstring msg = L"Text was recognised on " + plural(pages, L"page", L"pages") + L" (" +
+                             plural(words, L"word", L"words") + L"). You can now search, select and copy it." +
+                             notes + L"\n\nSave the document to keep the text.";
+    MessageBoxW(m_hwnd, msg.c_str(), APP_NAME, MB_ICONINFORMATION);
+}
+
+void MainWindow::StopOcr(const std::wstring& why) {
+    if (!m_ocrJob.active) return;
+    m_ocr.Cancel(m_ocrJob.id);
+    m_ocrJob = OcrJob();
+    UpdateTitle();
+    if (!why.empty()) MessageBoxW(m_hwnd, why.c_str(), APP_NAME, MB_ICONWARNING);
+}
+
+void MainWindow::AddWatermark() {
+    if (!CanEdit()) return;
+    WatermarkOptions o = m_watermarkOptions;
+    o.pages = NewPageChoice(o.pages);
+    if (!ShowWatermarkDialog(m_inst, m_hwnd, o)) return;
+    m_watermarkOptions = o;
+    EditOp op;
+    op.kind = EditOp::Watermark;
+    op.pages = o.pages.pages;
+    op.text = o.text;
+    op.color = kWatermarkColors[std::clamp(o.color, 0, 4)];
+    op.opacity = kWatermarkOpacity[std::clamp(o.opacity, 0, 5)];
+    op.fontSize = kWatermarkSizes[std::clamp(o.size, 0, 5)];
+    op.diagonal = o.diagonal;
+    op.behind = o.behind;
+    SendEdit(std::move(op));
+}
+
+void MainWindow::AddPageNumbers() {
+    if (!CanEdit()) return;
+    PageNumberOptions o = m_numberOptions;
+    o.pages = NewPageChoice(o.pages);
+    if (!ShowPageNumberDialog(m_inst, m_hwnd, o)) return;
+    m_numberOptions = o;
+    EditOp op;
+    op.kind = EditOp::PageNumbers;
+    op.pages = o.pages.pages;
+    op.text = kNumberFormats[std::clamp(o.format, 0, 4)];
+    op.position = std::clamp(o.position, 0, 5);
+    op.firstNumber = o.start;
+    op.fontSize = kNumberSizes[std::clamp(o.size, 0, 5)];
+    op.color = RGB(0, 0, 0);
+    SendEdit(std::move(op));
+}
+
+void MainWindow::ExportPages() {
+    if (!CanEdit() || m_exporting) return;
+    ExportOptions o = m_exportOptions;
+    o.pages = NewPageChoice(o.pages);
+    if (!ShowExportDialog(m_inst, m_hwnd, o)) return;
+    m_exportOptions = o;
+    const Tab& tab = Active();
+    const bool pictures = o.format == ExportFormat::Png || o.format == ExportFormat::Jpeg;
+    const wchar_t* filter = o.format == ExportFormat::Png    ? L"PNG pictures (*.png)\0*.png\0"
+                            : o.format == ExportFormat::Jpeg ? L"JPEG pictures (*.jpg)\0*.jpg;*.jpeg\0"
+                            : o.format == ExportFormat::Text ? L"Text files (*.txt)\0*.txt\0"
+                                                             : L"Markdown files (*.md)\0*.md\0";
+    const wchar_t* ext = o.format == ExportFormat::Png    ? L"png"
+                         : o.format == ExportFormat::Jpeg ? L"jpg"
+                         : o.format == ExportFormat::Text ? L"txt"
+                                                          : L"md";
+    std::wstring stem = FileNameFromPath(tab.path);
+    if (stem.size() > 4 && _wcsicmp(stem.c_str() + stem.size() - 4, L".pdf") == 0) stem.resize(stem.size() - 4);
+    if (pictures && o.pages.pages.size() == 1) stem += L"-" + std::to_wstring(o.pages.pages[0] + 1);
+    std::wstring suggested = stem + L"." + ext;
+    for (wchar_t& c : suggested)
+        if (wcschr(L"\\/:*?\"<>|", c)) c = L'-';
+    std::vector<wchar_t> buf(32768, L'\0');
+    wcsncpy_s(buf.data(), buf.size(), suggested.c_str(), _TRUNCATE);
+    const std::wstring dir = DirectoryFromPath(tab.path);
+    const bool oneFile = !pictures || o.pages.pages.size() == 1;
+    OPENFILENAMEW ofn{sizeof(ofn)};
+    ofn.hwndOwner = m_hwnd;
+    ofn.lpstrTitle = oneFile ? L"Export as" : L"Export as (each page gets its number added)";
+    ofn.lpstrFilter = filter;
+    ofn.lpstrFile = buf.data();
+    ofn.nMaxFile = (DWORD)buf.size();
+    ofn.lpstrInitialDir = dir.empty() ? nullptr : dir.c_str();
+    ofn.lpstrDefExt = ext;
+    ofn.Flags = OFN_PATHMUSTEXIST | OFN_EXPLORER | OFN_HIDEREADONLY | (oneFile ? OFN_OVERWRITEPROMPT : 0);
+    if (!GetSaveFileNameW(&ofn)) return;
+
+    ExportJob job;
+    job.docId = tab.docId;
+    job.format = o.format;
+    job.pages = o.pages.pages;
+    job.path = FullPath(buf.data());
+    job.dpi = kExportDpi[std::clamp(o.dpi, 0, 2)];
+    m_exporting = true;
+    m_exportDone = 0;
+    m_exportTotal = (int)job.pages.size();
+    m_exportFormat = o.format;
+    m_worker.StartExport(std::move(job));
+    UpdateTitle();
+}
+
+void MainWindow::OnExportProgress(ExportProgress* progress) {
+    std::unique_ptr<ExportProgress> res(progress);
+    if (!m_exporting) return;
+    if (!res->finished) {
+        m_exportDone = res->done;
+        m_exportTotal = res->total;
+        UpdateTitle();
+        return;
+    }
+    m_exporting = false;
+    UpdateTitle();
+    if (!res->ok) {
+        if (!res->error.empty()) MessageBoxW(m_hwnd, res->error.c_str(), APP_NAME, MB_ICONWARNING);
+        return;
+    }
+    if (res->files.empty()) return;
+    const std::wstring& first = res->files[0];
+    if (m_exportFormat == ExportFormat::Png || m_exportFormat == ExportFormat::Jpeg) {
+        const std::wstring msg = (res->files.size() == 1
+                                      ? L"Saved \x201C" + FileNameFromPath(first) + L"\x201D."
+                                      : L"Saved " + std::to_wstring(res->files.size()) + L" pictures in\n" +
+                                            DirectoryFromPath(first) + L".") +
+                                 L"\n\nShow in the folder?";
+        if (MessageBoxW(m_hwnd, msg.c_str(), APP_NAME, MB_YESNO | MB_ICONINFORMATION) == IDYES) {
+            const std::wstring args = L"/select,\"" + first + L"\"";
+            ShellExecuteW(m_hwnd, nullptr, L"explorer.exe", args.c_str(), nullptr, SW_SHOWNORMAL);
+        }
+        return;
+    }
+    std::wstring msg = L"Saved \x201C" + FileNameFromPath(first) + L"\x201D.";
+    if (res->noText)
+        msg += L"\n\nNo text was found on these pages. If they are scanned, use Edit PDF > Recognise "
+               L"text (OCR) first, then export again.";
+    msg += L"\n\nOpen it?";
+    if (MessageBoxW(m_hwnd, msg.c_str(), APP_NAME, MB_YESNO | MB_ICONINFORMATION) == IDYES)
+        ShellExecuteW(m_hwnd, nullptr, first.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+}
+
+// ===========================================================================
 // Command palette (Ctrl+K)
 // ===========================================================================
 void MainWindow::ShowCommandPalette() {
@@ -2819,6 +3129,10 @@ void MainWindow::ShowCommandPalette() {
         {ID_ADD_COMMENT, L"Add a comment", L"Ctrl+M", L"note sticky review", doc},
         {ID_COMMENT_SELECTION, L"Comment on the selected text", L"Ctrl+Shift+M", L"note", doc && sel},
         {ID_SHOW_COMMENTS, L"List all comments", L"", L"notes review annotations", doc},
+        {ID_OCR, L"Recognise text (OCR)", L"", L"scan scanned searchable ocr read image text", doc && !m_ocrJob.active},
+        {ID_WATERMARK, L"Add a watermark", L"", L"confidential draft stamp background", doc},
+        {ID_PAGE_NUMBERS, L"Add page numbers", L"", L"numbering footer header", doc},
+        {ID_EXPORT, L"Export as pictures, text or Markdown", L"", L"png jpeg jpg image txt md convert save", doc && !m_exporting},
         {ID_HIGHLIGHT, L"Highlight the selected text", L"Ctrl+H", L"marker", doc && sel},
         {ID_UNDERLINE, L"Underline the selected text", L"Ctrl+U", L"", doc && sel},
         {ID_STRIKEOUT, L"Strike through the selected text", L"Ctrl+Shift+K", L"strikethrough cross out", doc && sel},
@@ -3050,8 +3364,10 @@ INT_PTR CALLBACK AboutDlgProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
                             L"Feather PDF is a fast, lightweight PDF reader and editor for Windows. It opens "
                             L"documents in tabs to read, search, print and present them, and lets you edit them: "
                             L"change and replace text, fill in forms, sign, and add comments, highlights, "
-                            L"drawings, stamps, pictures and text, as well as reorganise, merge, split and "
-                            L"extract pages, with undo and crash-safe saving. Everything happens on your PC, "
+                            L"drawings, stamps, pictures, text, watermarks and page numbers, as well as reorganise, "
+                            L"merge, split and extract pages, with undo and crash-safe saving. It makes scanned "
+                            L"pages searchable with text recognition and exports pages as pictures, text or "
+                            L"Markdown. Everything happens on your PC, "
                             L"with no account, cloud service or tracking.\r\n\r\n"
                             L"Created by: Akshaya Simha\r\n\r\n"
                             L"\x00A9 2026 Akshaya Simha. All rights reserved.\r\n"

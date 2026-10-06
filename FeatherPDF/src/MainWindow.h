@@ -11,6 +11,8 @@
 #include "Sidebar.h"
 #include "TabBar.h"
 #include "CommandPalette.h"
+#include "Ocr.h"
+#include "ToolDialogs.h"
 #include "Toolbar.h"
 
 // COPYDATASTRUCT::dwData used when a second instance forwards a file.
@@ -90,7 +92,7 @@ private:
 
     // editing (the work itself happens in the worker's DocEditor)
     bool CanEdit();
-    void SendEdit(EditOp&& op);
+    void SendEdit(EditOp&& op, int tabIndex = -1);  // -1: the active tab
     void UndoRedo(bool redo);
     void SaveDocument(int tabIndex, bool saveAs, uint32_t flags);
     bool ConfirmCloseTab(int index);  // true: close now
@@ -126,6 +128,18 @@ private:
     void StartSignature(bool newOne);
     void SignField(int page, const RectF& rect);
     void InsertImage();
+    // Recognise text (OCR), watermarks, page numbers, export
+    PageChoice NewPageChoice(const PageChoice& last);
+    void RecogniseText();
+    void RequestOcrPages();
+    void OnOcrImage(OcrImage* image);
+    void OnOcrDone(OcrResult* result);
+    void OcrPageDone();
+    void StopOcr(const std::wstring& why);
+    void AddWatermark();
+    void AddPageNumbers();
+    void ExportPages();
+    void OnExportProgress(ExportProgress* progress);
     // Command palette, history, recent files, presentation, About
     void ShowCommandPalette();
     void RunPaletteCommand(int id, const std::wstring& arg);
@@ -184,6 +198,29 @@ private:
     bool m_printCancelled = false;
     int m_printDone = 0, m_printTotal = 0;
     HGLOBAL m_devMode = nullptr, m_devNames = nullptr;
+
+    // text recognition: one job at a time, a page or two ahead
+    struct OcrJob {
+        bool active = false;
+        uint32_t id = 0;
+        uint32_t docId = 0;        // the document as it was when the job started
+        std::vector<int> pages;
+        size_t next = 0;           // next page to render
+        int inFlight = 0;          // rendered or being recognised
+        int done = 0, skipped = 0, failed = 0;
+        bool skipText = true;
+        std::vector<OcrPage> found;
+    } m_ocrJob;
+    OcrRunner m_ocr;
+    uint32_t m_nextOcrId = 1;
+    OcrOptions m_ocrOptions;
+    WatermarkOptions m_watermarkOptions;
+    PageNumberOptions m_numberOptions;
+    ExportOptions m_exportOptions;
+    // export (one at a time)
+    bool m_exporting = false;
+    int m_exportDone = 0, m_exportTotal = 0;
+    ExportFormat m_exportFormat = ExportFormat::Png;
 
     // exiting with unsaved changes: saves still running before closing
     int m_quitSaves = 0;

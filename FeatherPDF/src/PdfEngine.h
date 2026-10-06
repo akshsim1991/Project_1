@@ -66,6 +66,16 @@ public:
     // Plain text between two caret positions (pages joined by line breaks).
     std::wstring ExtractText(TextPos from, TextPos to);
 
+    // A whole page as displayed (upright, /Rotate applied) at `scale`
+    // pixels per point; with annotations and form fields when `annots`.
+    bool RenderPage(int page, float scale, bool annots, PixelBuffer& out);
+    // Visible letters (not spaces) in a page's text layer: 0 for a scan.
+    int CountLetters(int page);
+    // The text of one page ("\r\n" between lines).
+    std::wstring PageText(int page);
+    // The lines of one page with their size and weight (Markdown export).
+    void PageLines(int page, std::vector<TextLine>& lines);
+
     // Releases cached parsed pages (used when the window is minimised).
     void ReleasePages();
 
@@ -101,6 +111,9 @@ private:
     bool AddImage(const EditOp& op);
     bool AddText(const EditOp& op, std::wstring& error);
     bool StyleText(const EditOp& op, std::wstring& error);
+    bool AddWatermark(const EditOp& op, std::wstring& error);
+    bool AddPageNumbers(const EditOp& op, std::wstring& error);
+    bool AddOcrText(const EditOp& op);
     // Pages loaded for an edit, with the form-filling layer attached.
     FPDF_PAGE LoadEditPage(int index);
     void CloseEditPage(FPDF_PAGE page);

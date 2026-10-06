@@ -59,11 +59,20 @@ public:
     // after `path` ("name-3.pdf").
     void Extract(uint32_t docId, std::vector<int>&& pages, const std::wstring& path, bool separate);
 
+    // Text recognition: renders `page` at `scale` pixels per point for the
+    // recognition thread (-> WM_APP_OCR_IMAGE). With `skipText`, a page that
+    // already has text is reported as skipped instead.
+    void RenderForOcr(uint32_t docId, uint32_t jobId, int page, float scale, bool skipText);
+    // Exports pages as pictures or text, one page per step so the view
+    // stays responsive (-> WM_APP_EXPORT_PROGRESS).
+    void StartExport(ExportJob&& job);
+    void CancelExport();
+
 private:
     struct Command {
         enum Type {
             Open, Close, TextLayer, Copy, Search, CancelSearch, Trim, Image, Print, CancelPrint,
-            Edit, Undo, Redo, Save, Extract, TextRuns, Comments
+            Edit, Undo, Redo, Save, Extract, TextRuns, Comments, OcrPage, Export, CancelExport
         } type = Open;
         uint32_t docId = 0;
         uint32_t newDocId = 0;   // Edit / Undo / Redo
@@ -78,6 +87,8 @@ private:
         PrintJob job;
         EditOp op;
         std::vector<int> pages;  // Extract
+        float scale = 1;         // OcrPage
+        ExportJob exportJob;
     };
 
     static DWORD WINAPI ThreadProc(LPVOID self);
@@ -86,6 +97,8 @@ private:
     void SearchStep();
     void PrintStep();
     void EndPrint(bool abort);
+    void ExportStep();
+    void EndExport(bool ok, const std::wstring& error);
     void Push(Command&& cmd);
     PdfEngine* Engine(uint32_t docId);
     void ExecuteEdit(Command& cmd);
@@ -113,6 +126,7 @@ private:
     size_t m_thumbPos = 0;
     uint32_t m_thumbDocId = 0;
     bool m_printActive = false;
+    bool m_exportActive = false;
 
     // --- worker-thread-only state ------------------------------------------
     std::map<uint32_t, std::unique_ptr<DocEditor>> m_docs;
@@ -126,4 +140,11 @@ private:
     } m_search;
     PrintJob m_print;
     size_t m_printPos = 0;
+    struct {
+        ExportJob job;
+        size_t pos = 0;
+        std::wstring text;                         // plain text so far
+        std::vector<std::vector<TextLine>> lines;  // Markdown: lines of each page
+        std::vector<std::wstring> files;
+    } m_export;
 };

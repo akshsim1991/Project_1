@@ -1,4 +1,4 @@
-# Feather PDF 2.1
+# Feather PDF 2.2
 
 A small, fast, native PDF **viewer and editor** for Windows 10 and 11.
 It opens PDFs in tabs and lets you scroll, jump to pages, zoom, search,
@@ -7,7 +7,10 @@ night mode, select and copy text or images, print and present. With **Edit
 PDF** and **Annotate** you can change the text of a PDF in place, find and
 replace text, fill in forms, sign, add comments, highlights, drawings,
 stamps, pictures and new text, and delete, reorder, rotate, insert, merge,
-split and extract pages, with undo/redo and crash-safe saving. A command
+split and extract pages, with undo/redo and crash-safe saving. It makes
+scanned pages searchable with the text recognition built into Windows, adds
+watermarks and page numbers, and exports pages as pictures, plain text or
+Markdown. A command
 palette (Ctrl+K) finds any command by typing. It has no accounts, cloud features, telemetry or
 background services.
 
@@ -109,6 +112,9 @@ MainWindow ─► Tab × N ─► PdfView ── layout, visible pages, zoom, na
 | `src/Settings.*` | Persisted window placement, zoom mode, view mode, theme, open tabs and pages, recent files, drawing options |
 | `src/Picture.*` | Pictures (GDI+): loading image files, the saved signature, the signature dialog |
 | `src/CommandPalette.*` | The Ctrl+K command palette |
+| `src/Ocr.*` | Text recognition with Windows.Media.Ocr on its own thread (raw WinRT interfaces, no extra libraries) |
+| `src/Export.*` | Exporting pages: PNG/JPEG through GDI+, text files, and the Markdown builder |
+| `src/ToolDialogs.*` | The Recognise text, Watermark, Page numbers and Export dialogs |
 | `src/FileAssoc.*` | `.pdf` "Open with" / Default-apps registration (HKCU) |
 
 ### Threading
@@ -411,6 +417,45 @@ the form, so other programs see them.
 * Drawings, stamps and signatures are standard PDF annotations: right-click
   one to add a comment to it or delete it. They also appear in All comments.
 
+**Recognise text (OCR):** Edit PDF › Recognise text. Scanned pages are
+pictures, so they cannot be searched or copied. Text recognition finds the
+words on them and lays invisible text exactly over each word: the pages
+look the same, but search (Ctrl+F), selection, copying and other PDF
+programs now find the text. Choose all pages, the current page or a range;
+pages that already have text are skipped unless you untick that option.
+Pages are recognised in the background (the title bar shows the progress)
+and the result is one edit, so Undo takes it back. Recognition uses the
+engine built into Windows 10 and 11, in the languages of your Windows
+profile, so nothing is uploaded and nothing extra is installed. If Windows
+has no recognition language yet, Feather PDF says how to add one (Settings
+› Time & language › Language & region › Language options › Optical
+character recognition).
+
+**Watermark:** Edit PDF › Watermark adds text such as CONFIDENTIAL or DRAFT
+to every page or to chosen pages: diagonal or across, in red, grey, blue,
+green or black, with an opacity from 10% to 100% and a size that fits the
+page or a fixed size. It goes over the content by default, or behind it.
+
+**Page numbers:** Edit PDF › Page numbers: "1", "Page 1", "Page 1 of 9",
+"1 / 9" or "- 1 -", at the bottom or top (left, centre or right), in a
+chosen size, starting from any number, on all pages or a range (for example
+`2-` to leave the cover unnumbered). Watermarks and page numbers are real
+page content, upright on rotated pages too; Undo removes them until you
+save.
+
+**Export:** ⋯ › Export as pictures or text (or Ctrl+K › Export):
+
+* **PNG or JPEG pictures,** one per page, at 72, 150 or 300 dpi, named after
+  the file you choose with the page number added (`Report-1.png`).
+* **Plain text (.txt),** UTF-8, in reading order.
+* **Markdown (.md):** larger type becomes headings (`#`, `##`, `###`),
+  bullets become lists, wrapped lines are joined into paragraphs and bold
+  lines stay bold, ready for notes apps, wikis and AI tools.
+
+Exports include unsaved changes and run in the background with progress in
+the title bar (⋯ › Cancel export stops one). Scanned pages have text only
+after Recognise text.
+
 **Text size and colour:** in Edit text mode (Ctrl+E), right-click a line of
 text › Text size or Text colour (or Delete this text).
 
@@ -544,8 +589,10 @@ MSVC for releases.)
 
 `.github/workflows/featherpdf.yml` (at the repository root) builds the MSVC
 release, the portable folder and the installer on `windows-latest`, and
-uploads them as workflow artifacts. It also runs a MinGW cross-compile check
-on Linux.
+uploads them as workflow artifacts. It also runs `OcrSmoke`, a test that
+recognises a drawn sentence with the same text recognition code as the app
+(build it with `-DFEATHERPDF_TESTS=ON`), and a MinGW cross-compile check on
+Linux.
 
 ## Creating an installer
 
@@ -555,7 +602,7 @@ script:
 ```powershell
 cmake --install build --config Release --prefix dist        # 1. portable folder
 & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" installer\FeatherPDF.iss   # 2. compile
-# -> installer\Output\FeatherPDF-Setup-2.1.0.exe
+# -> installer\Output\FeatherPDF-Setup-2.2.0.exe
 ```
 
 The installer:

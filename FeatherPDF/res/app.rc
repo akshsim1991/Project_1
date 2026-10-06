@@ -30,6 +30,91 @@ BEGIN
     PUSHBUTTON      "Cancel", IDCANCEL, 200, 80, 50, 15
 END
 
+IDD_OCR DIALOGEX 0, 0, 280, 172
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Recognise text (OCR)"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "Finds the words on scanned pages and adds them as invisible text, so you can search, select and copy them. The pages look exactly the same.", -1, 10, 8, 260, 26
+    GROUPBOX        "Pages", -1, 10, 38, 260, 48
+    AUTORADIOBUTTON "&All pages", IDC_PAGES_ALL, 18, 50, 70, 12, WS_GROUP | WS_TABSTOP
+    AUTORADIOBUTTON "C&urrent page", IDC_PAGES_CURRENT, 94, 50, 80, 12
+    AUTORADIOBUTTON "Pa&ges:", IDC_PAGES_RANGE, 18, 66, 44, 12
+    EDITTEXT        IDC_PAGES_EDIT, 64, 65, 198, 14, ES_AUTOHSCROLL | WS_TABSTOP | WS_GROUP
+    AUTOCHECKBOX    "&Skip pages that already have text", IDC_OCR_SKIP, 10, 94, 260, 12, WS_TABSTOP
+    LTEXT           "Uses the text recognition built into Windows, in the languages of your Windows profile. Nothing leaves this PC. Undo (Ctrl+Z) takes it back.", -1, 10, 112, 260, 26
+    DEFPUSHBUTTON   "Recognise", IDOK, 162, 150, 52, 15
+    PUSHBUTTON      "Cancel", IDCANCEL, 218, 150, 52, 15
+END
+
+IDD_WATERMARK DIALOGEX 0, 0, 280, 190
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Watermark"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "&Text:", -1, 10, 12, 50, 10
+    EDITTEXT        IDC_WM_TEXT, 64, 10, 206, 14, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "&Colour:", -1, 10, 32, 50, 10
+    COMBOBOX        IDC_WM_COLOR, 64, 30, 70, 100, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "&Opacity:", -1, 146, 32, 50, 10
+    COMBOBOX        IDC_WM_OPACITY, 200, 30, 70, 100, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "Si&ze:", -1, 10, 52, 50, 10
+    COMBOBOX        IDC_WM_SIZE, 64, 50, 70, 100, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "&Direction:", -1, 146, 52, 50, 10
+    COMBOBOX        IDC_WM_LAYOUT, 200, 50, 70, 100, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    AUTOCHECKBOX    "Put it &behind the page content (hidden by pictures and scans)", IDC_WM_BEHIND, 10, 70, 260, 12, WS_TABSTOP
+    GROUPBOX        "Pages", -1, 10, 88, 260, 48
+    AUTORADIOBUTTON "&All pages", IDC_PAGES_ALL, 18, 100, 70, 12, WS_GROUP | WS_TABSTOP
+    AUTORADIOBUTTON "C&urrent page", IDC_PAGES_CURRENT, 94, 100, 80, 12
+    AUTORADIOBUTTON "Pa&ges:", IDC_PAGES_RANGE, 18, 116, 44, 12
+    EDITTEXT        IDC_PAGES_EDIT, 64, 115, 198, 14, ES_AUTOHSCROLL | WS_TABSTOP | WS_GROUP
+    LTEXT           "Undo (Ctrl+Z) removes the watermark again.", -1, 10, 144, 260, 12
+    DEFPUSHBUTTON   "Add", IDOK, 162, 168, 52, 15
+    PUSHBUTTON      "Cancel", IDCANCEL, 218, 168, 52, 15
+END
+
+IDD_PAGENUMBERS DIALOGEX 0, 0, 280, 156
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Page numbers"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "&Format:", -1, 10, 12, 50, 10
+    COMBOBOX        IDC_PN_FORMAT, 64, 10, 90, 100, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "&Position:", -1, 164, 12, 40, 10
+    COMBOBOX        IDC_PN_POSITION, 206, 10, 64, 100, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "&Start at:", -1, 10, 32, 50, 10
+    EDITTEXT        IDC_PN_START, 64, 30, 40, 14, ES_NUMBER | WS_TABSTOP
+    LTEXT           "Si&ze:", -1, 164, 32, 40, 10
+    COMBOBOX        IDC_PN_SIZE, 206, 30, 64, 100, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    GROUPBOX        "Pages", -1, 10, 52, 260, 48
+    AUTORADIOBUTTON "&All pages", IDC_PAGES_ALL, 18, 64, 70, 12, WS_GROUP | WS_TABSTOP
+    AUTORADIOBUTTON "C&urrent page", IDC_PAGES_CURRENT, 94, 64, 80, 12
+    AUTORADIOBUTTON "Pa&ges:", IDC_PAGES_RANGE, 18, 80, 44, 12
+    EDITTEXT        IDC_PAGES_EDIT, 64, 79, 198, 14, ES_AUTOHSCROLL | WS_TABSTOP | WS_GROUP
+    LTEXT           "The first page chosen gets the start number. Undo (Ctrl+Z) removes the numbers again.", -1, 10, 106, 260, 20
+    DEFPUSHBUTTON   "Add", IDOK, 162, 134, 52, 15
+    PUSHBUTTON      "Cancel", IDCANCEL, 218, 134, 52, 15
+END
+
+IDD_EXPORT DIALOGEX 0, 0, 280, 150
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Export"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "&Format:", -1, 10, 12, 50, 10
+    COMBOBOX        IDC_EXPORT_FORMAT, 64, 10, 206, 100, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "&Resolution:", IDC_EXPORT_DPI_LABEL, 10, 32, 50, 10
+    COMBOBOX        IDC_EXPORT_DPI, 64, 30, 206, 100, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    GROUPBOX        "Pages", -1, 10, 50, 260, 48
+    AUTORADIOBUTTON "&All pages", IDC_PAGES_ALL, 18, 62, 70, 12, WS_GROUP | WS_TABSTOP
+    AUTORADIOBUTTON "C&urrent page", IDC_PAGES_CURRENT, 94, 62, 80, 12
+    AUTORADIOBUTTON "Pa&ges:", IDC_PAGES_RANGE, 18, 78, 44, 12
+    EDITTEXT        IDC_PAGES_EDIT, 64, 77, 198, 14, ES_AUTOHSCROLL | WS_TABSTOP | WS_GROUP
+    LTEXT           "", IDC_EXPORT_NOTE, 10, 104, 260, 20
+    DEFPUSHBUTTON   "Export...", IDOK, 162, 128, 52, 15
+    PUSHBUTTON      "Cancel", IDCANCEL, 218, 128, 52, 15
+END
+
 IDD_COMMENT DIALOGEX 0, 0, 280, 156
 STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "Comment"
@@ -124,8 +209,8 @@ END
 IDR_NOTICES RCDATA "../THIRD_PARTY_NOTICES.md"
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 2,1,0,0
- PRODUCTVERSION 2,1,0,0
+ FILEVERSION 2,2,0,0
+ PRODUCTVERSION 2,2,0,0
  FILEFLAGSMASK 0x3fL
  FILEFLAGS 0x0L
  FILEOS VOS_NT_WINDOWS32
@@ -139,11 +224,11 @@ BEGIN
             VALUE "CompanyName", "Akshaya Simha"
             VALUE "FileDescription", "Feather PDF - lightweight PDF viewer and editor"
             VALUE "LegalCopyright", "\251 2026 Akshaya Simha"
-            VALUE "FileVersion", "2.1.0.0"
+            VALUE "FileVersion", "2.2.0.0"
             VALUE "InternalName", "FeatherPDF"
             VALUE "OriginalFilename", "FeatherPDF.exe"
             VALUE "ProductName", "Feather PDF"
-            VALUE "ProductVersion", "2.1.0.0"
+            VALUE "ProductVersion", "2.2.0.0"
         END
     END
     BLOCK "VarFileInfo"

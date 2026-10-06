@@ -21,10 +21,13 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Configure
-        run: cmake -S . -B build -A x64
+        run: cmake -S . -B build -A x64 -DFEATHERPDF_TESTS=ON
 
       - name: Build (Release)
         run: cmake --build build --config Release --parallel
+
+      - name: Text recognition smoke test
+        run: build\Release\OcrSmoke.exe
 
       - name: Package portable folder
         run: cmake --install build --config Release --prefix dist

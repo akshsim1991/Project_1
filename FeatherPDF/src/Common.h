@@ -22,7 +22,7 @@
 #include <vector>
 
 #define APP_NAME L"Feather PDF"
-#define APP_VERSION L"2.1.0"
+#define APP_VERSION L"2.2.0"
 #define APP_COPYRIGHT L"\x00A9 2026 Akshaya Simha"
 #define APP_WINDOW_CLASS L"FeatherPdfMain"
 #define APP_REG_KEY L"Software\\FeatherPDF"
@@ -46,6 +46,9 @@ enum : UINT {
     WM_APP_EXTRACTED,                // ExtractResult*
     WM_APP_TEXT_RUNS,                // TextRunsResult* (editable text of a page)
     WM_APP_COMMENTS,                 // CommentListResult* (every comment in a document)
+    WM_APP_OCR_IMAGE,                // OcrImage* (a page rendered for text recognition)
+    WM_APP_OCR_DONE,                 // OcrResult* (from the recognition thread)
+    WM_APP_EXPORT_PROGRESS,          // ExportProgress*
 };
 
 // WM_APP_SIDEBAR notifications: lParam = outline index / page index.
@@ -161,6 +164,12 @@ enum : int {
     ID_FORWARD,
     ID_RECENT_CLEAR,
     ID_PRESENT,
+    ID_OCR,
+    ID_CANCEL_OCR,
+    ID_WATERMARK,
+    ID_PAGE_NUMBERS,
+    ID_EXPORT,
+    ID_CANCEL_EXPORT,
     ID_ZOOM_PRESET_FIRST = 300,  // + index into kZoomPresets
     ID_STAMP_FIRST = 400,        // + index into kStamps
     ID_DRAWCOLOR_FIRST = 420,    // + index into kDrawColors

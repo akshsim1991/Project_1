@@ -904,6 +904,9 @@ bool PdfEngine::ApplyEdit(const EditOp& op, std::wstring& error) {
         case EditOp::AddImage: ok = AddImage(op); break;
         case EditOp::AddText: ok = AddText(op, error); break;
         case EditOp::StyleText: ok = StyleText(op, error); break;
+        case EditOp::Watermark: ok = AddWatermark(op, error); break;
+        case EditOp::PageNumbers: ok = AddPageNumbers(op, error); break;
+        case EditOp::AddOcrText: ok = AddOcrText(op); break;
     }
     int count = m_pageCount;
     Guarded([&] { count = FPDF_GetPageCount(m_doc); });
@@ -1183,7 +1186,9 @@ void CollectRuns(FPDF_PAGE page, FPDF_TEXTPAGE tp, int sx, int sy, std::vector<T
     const int n = FPDFPage_CountObjects(page);
     for (int i = 0; i < n && runs.size() < 20000; ++i) {
         FPDF_PAGEOBJECT obj = FPDFPage_GetObject(page, i);
-        if (!obj || FPDFPageObj_GetType(obj) != FPDF_PAGEOBJ_TEXT) {
+        // Invisible text (a recognised scan's text layer) is not editable.
+        if (!obj || FPDFPageObj_GetType(obj) != FPDF_PAGEOBJ_TEXT ||
+            FPDFTextObj_GetTextRenderMode(obj) == FPDF_TEXTRENDERMODE_INVISIBLE) {
             flush();
             continue;
         }
@@ -1863,6 +1868,364 @@ void PdfEngine::ListComments(std::vector<std::pair<int, CommentInfo>>& out) {
             FPDF_ClosePage(page);
         });
     }
+}
+
+// ---------------------------------------------------------------------------
+// Watermarks, page numbers and recognised text
+// ---------------------------------------------------------------------------
+namespace {
+// The width of a text object's text (its font size included), measured
+// with an identity matrix. The matrix is set by the caller afterwards.
+float TextWidth(FPDF_PAGEOBJECT obj) {
+    const FS_MATRIX id{1, 0, 0, 1, 0, 0};
+    FPDFPageObj_SetMatrix(obj, &id);
+    float l = 0, b = 0, r = 0, t = 0;
+    if (!FPDFPageObj_GetBounds(obj, &l, &b, &r, &t)) return 0;
+    return std::max(0.0f, r - l);
+}
+
+// A direction on the screen (display points, y down) as a unit vector in
+// page space, so text stays upright as seen on rotated pages too.
+FS_POINTF PageDir(FPDF_PAGE page, float x, float y, float dx, float dy) {
+    const FS_POINTF a = ToPage(page, x, y), b = ToPage(page, x + dx * 100, y + dy * 100);
+    FS_POINTF v{b.x - a.x, b.y - a.y};
+    const float len = std::hypot(v.x, v.y);
+    if (len > 0) v = {v.x / len, v.y / len};
+    return v;
+}
+
+// Places `obj` with its baseline starting at display point (x, y), along
+// the display directions `right` and `up` (page space unit vectors), its
+// width scaled by `sx`.
+void PlaceText(FPDF_PAGE page, FPDF_PAGEOBJECT obj, float x, float y, FS_POINTF right, FS_POINTF up,
+               float sx = 1) {
+    const FS_POINTF o = ToPage(page, x, y);
+    const FS_MATRIX m{right.x * sx, right.y * sx, up.x, up.y, o.x, o.y};
+    FPDFPageObj_SetMatrix(obj, &m);
+}
+
+std::wstring OneLine(std::wstring s) {
+    for (wchar_t& c : s)
+        if (c == L'\r' || c == L'\n' || c == L'\t') c = L' ';
+    return s;
+}
+}  // namespace
+
+bool PdfEngine::AddWatermark(const EditOp& op, std::wstring& error) {
+    const std::wstring text = OneLine(op.text);
+    if (IsBlank(text) || op.pages.empty()) return false;
+    for (int p : op.pages)
+        if (p < 0 || p >= m_pageCount) return false;
+    FontCache fonts;
+    FontStyle st;
+    st.bold = true;
+    const unsigned alpha = (unsigned)std::clamp(op.opacity, 1, 100) * 255 / 100;
+    for (int p : op.pages) {
+        bool ok = false;
+        Guarded([&] {
+            FPDF_PAGE page = FPDF_LoadPage(m_doc, p);
+            if (!page) return;
+            FPDF_FONT font = fonts.Get(m_doc, st, text, error);
+            FPDF_PAGEOBJECT obj = font ? FPDFPageObj_CreateTextObj(m_doc, font, 1.0f) : nullptr;
+            if (obj && FPDFText_SetText(obj, reinterpret_cast<FPDF_WIDESTRING>(text.c_str()))) {
+                const float w = FPDF_GetPageWidthF(page), h = FPDF_GetPageHeightF(page);
+                const float unit = std::max(0.01f, TextWidth(obj));  // width at size 1
+                // Diagonal: from the bottom-left towards the top-right corner.
+                const float angle = op.diagonal ? std::atan2(h, w) : 0.0f;
+                const float span = op.diagonal ? std::hypot(w, h) : w;
+                float size = op.fontSize > 0 ? op.fontSize
+                                             : std::min(span * 0.7f / unit, std::min(w, h) * 0.22f);
+                size = std::clamp(size, 4.0f, 1000.0f);
+                const float c = std::cos(angle), s = std::sin(angle);
+                const float cx = w / 2, cy = h / 2;
+                // Display directions (y down) of the text's "right" and "up".
+                const float rdx = c, rdy = -s, udx = -s, udy = -c;
+                const FS_POINTF right = PageDir(page, cx, cy, rdx, rdy), up = PageDir(page, cx, cy, udx, udy);
+                // Centred: half the width back along the baseline, half the
+                // height of capitals down.
+                const float len = unit * size, cap = 0.7f * size;
+                const float x = cx - rdx * len / 2 - udx * cap / 2;
+                const float y = cy - rdy * len / 2 - udy * cap / 2;
+                const FS_POINTF o = ToPage(page, x, y);
+                const FS_MATRIX m{right.x * size, right.y * size, up.x * size, up.y * size, o.x, o.y};
+                FPDFPageObj_SetMatrix(obj, &m);
+                FPDFPageObj_SetFillColor(obj, GetRValue(op.color), GetGValue(op.color), GetBValue(op.color),
+                                         alpha);
+                ok = op.behind ? FPDFPage_InsertObjectAtIndex(page, obj, 0) != 0
+                               : (FPDFPage_InsertObject(page, obj), true);
+                if (!ok) FPDFPageObj_Destroy(obj);
+                obj = nullptr;
+                ok = ok && FPDFPage_GenerateContent(page);
+            }
+            if (obj) FPDFPageObj_Destroy(obj);
+            FPDF_ClosePage(page);
+        });
+        if (!ok) return false;
+    }
+    return true;
+}
+
+bool PdfEngine::AddPageNumbers(const EditOp& op, std::wstring& error) {
+    if (op.pages.empty() || op.text.find(L"{n}") == std::wstring::npos) return false;
+    for (int p : op.pages)
+        if (p < 0 || p >= m_pageCount) return false;
+    FontCache fonts;
+    const float size = op.fontSize > 0 ? op.fontSize : 10;
+    const int last = op.firstNumber + (int)op.pages.size() - 1;
+    for (size_t k = 0; k < op.pages.size(); ++k) {
+        std::wstring text = OneLine(op.text);
+        const std::wstring n = std::to_wstring(op.firstNumber + (int)k), total = std::to_wstring(last);
+        for (size_t at; (at = text.find(L"{n}")) != std::wstring::npos;) text.replace(at, 3, n);
+        for (size_t at; (at = text.find(L"{total}")) != std::wstring::npos;) text.replace(at, 7, total);
+        bool ok = false;
+        Guarded([&] {
+            FPDF_PAGE page = FPDF_LoadPage(m_doc, op.pages[k]);
+            if (!page) return;
+            FPDF_FONT font = fonts.Get(m_doc, FontStyle(), text, error);
+            FPDF_PAGEOBJECT obj = font ? FPDFPageObj_CreateTextObj(m_doc, font, size) : nullptr;
+            if (obj && FPDFText_SetText(obj, reinterpret_cast<FPDF_WIDESTRING>(text.c_str()))) {
+                const float w = FPDF_GetPageWidthF(page), h = FPDF_GetPageHeightF(page);
+                const float tw = TextWidth(obj);
+                const float margin = std::min(36.0f, std::min(w, h) / 8);
+                const bool top = op.position >= kNumTopCenter;
+                const int col = op.position % 3;  // 0 centre, 1 right, 2 left
+                const float x = col == 0 ? (w - tw) / 2 : col == 1 ? w - margin - tw : margin;
+                const float y = top ? margin + size * 0.72f : h - margin;
+                FS_POINTF right, up;
+                ScreenAxes(page, x, y, right, up);
+                PlaceText(page, obj, x, y, right, up);
+                FPDFPageObj_SetFillColor(obj, GetRValue(op.color), GetGValue(op.color), GetBValue(op.color), 255);
+                FPDFPage_InsertObject(page, obj);
+                obj = nullptr;
+                ok = FPDFPage_GenerateContent(page) != 0;
+            }
+            if (obj) FPDFPageObj_Destroy(obj);
+            FPDF_ClosePage(page);
+        });
+        if (!ok) return false;
+    }
+    return true;
+}
+
+// Each recognised word becomes invisible text laid over the picture of it,
+// stretched to the word's width, so the page can be searched, selected
+// and copied while looking exactly as before. A space follows every word
+// but the last of a line, so copied text has its spaces and line breaks.
+bool PdfEngine::AddOcrText(const EditOp& op) {
+    if (op.ocr.empty()) return false;
+    FontCache fonts;
+    bool any = false;
+    for (const OcrPage& pg : op.ocr) {
+        if (pg.page < 0 || pg.page >= m_pageCount) return false;
+        if (pg.words.empty()) continue;
+        bool ok = false;
+        Guarded([&] {
+            FPDF_PAGE page = FPDF_LoadPage(m_doc, pg.page);
+            if (!page) return;
+            FS_POINTF right, up;
+            ScreenAxes(page, 0, 0, right, up);
+            const auto& words = pg.words;
+            size_t start = 0;
+            while (start < words.size()) {
+                size_t end = start;
+                while (end < words.size() && !words[end].lineEnd) ++end;
+                if (end >= words.size()) end = words.size() - 1;
+                // One size and baseline for the whole line.
+                float top = words[start].rect.top, bottom = words[start].rect.bottom;
+                bool descends = false;
+                for (size_t i = start; i <= end; ++i) {
+                    top = std::min(top, words[i].rect.top);
+                    bottom = std::max(bottom, words[i].rect.bottom);
+                    if (words[i].text.find_first_of(L"gjpqy,;()[]{}|/") != std::wstring::npos) descends = true;
+                }
+                const float lineH = std::max(1.0f, bottom - top);
+                const float size = std::clamp(descends ? lineH / 0.93f : lineH / 0.72f, 1.0f, 500.0f);
+                const float base = descends ? bottom - 0.21f * size : bottom;
+                for (size_t i = start; i <= end; ++i) {
+                    const OcrWord& wd = words[i];
+                    if (IsBlank(wd.text)) continue;
+                    const std::wstring spaced = wd.text + (i == end ? L"" : L" ");
+                    std::wstring err;
+                    FPDF_FONT font = fonts.Get(m_doc, FontStyle(), spaced, err);
+                    FPDF_PAGEOBJECT obj = font ? FPDFPageObj_CreateTextObj(m_doc, font, size) : nullptr;
+                    if (!obj) continue;
+                    // The word alone is fitted to its box; the space then
+                    // lies in the gap to the next word.
+                    float natural = 0;
+                    if (FPDFText_SetText(obj, reinterpret_cast<FPDF_WIDESTRING>(wd.text.c_str())))
+                        natural = TextWidth(obj);
+                    if (natural <= 0 || !FPDFText_SetText(obj, reinterpret_cast<FPDF_WIDESTRING>(spaced.c_str()))) {
+                        FPDFPageObj_Destroy(obj);
+                        continue;
+                    }
+                    const float sx = std::clamp((wd.rect.right - wd.rect.left) / natural, 0.05f, 20.0f);
+                    PlaceText(page, obj, wd.rect.left, base, right, up, sx);
+                    FPDFTextObj_SetTextRenderMode(obj, FPDF_TEXTRENDERMODE_INVISIBLE);
+                    FPDFPage_InsertObject(page, obj);
+                    any = true;
+                }
+                start = end + 1;
+            }
+            ok = FPDFPage_GenerateContent(page) != 0;
+            FPDF_ClosePage(page);
+        });
+        if (!ok) return false;
+    }
+    return any;
+}
+
+// ---------------------------------------------------------------------------
+// Whole pages: pictures and text (text recognition and export)
+// ---------------------------------------------------------------------------
+bool PdfEngine::RenderPage(int index, float scale, bool annots, PixelBuffer& out) {
+    if (!m_doc || index < 0 || index >= m_pageCount || scale <= 0) return false;
+    bool ok = false;
+    Guarded([&] {
+        FPDF_PAGE page = LoadEditPage(index);
+        if (!page) return;
+        const int w = std::max(1, (int)std::lround(FPDF_GetPageWidthF(page) * scale));
+        const int h = std::max(1, (int)std::lround(FPDF_GetPageHeightF(page) * scale));
+        FPDF_BITMAP bmp = nullptr;
+        if (w <= 20000 && h <= 20000 && (double)w * h <= 200e6 && out.Allocate(w, h))
+            bmp = FPDFBitmap_CreateEx(w, h, FPDFBitmap_BGRx, out.bits, w * 4);
+        if (bmp) {
+            FPDFBitmap_FillRect(bmp, 0, 0, w, h, 0xFFFFFFFF);
+            const int flags = (annots ? FPDF_ANNOT : 0) | FPDF_RENDER_LIMITEDIMAGECACHE;
+            FPDF_RenderPageBitmap(bmp, page, 0, 0, w, h, 0, flags);
+            if (annots && m_form) FPDF_FFLDraw(m_form->handle, bmp, page, 0, 0, w, h, 0, flags);
+            FPDFBitmap_Destroy(bmp);
+            ok = true;
+        }
+        CloseEditPage(page);
+    });
+    if (!ok) {
+        out.Free();
+        return false;
+    }
+    // BGRx leaves the fourth byte undefined; make it opaque for encoders
+    // that read it as alpha.
+    const size_t n = (size_t)out.width * out.height;
+    for (size_t i = 0; i < n; ++i) out.bits[i * 4 + 3] = 0xFF;
+    return true;
+}
+
+int PdfEngine::CountLetters(int index) {
+    int letters = 0;
+    if (!m_doc || index < 0 || index >= m_pageCount) return 0;
+    Guarded([&] {
+        FPDF_PAGE page = FPDF_LoadPage(m_doc, index);
+        if (!page) return;
+        if (FPDF_TEXTPAGE tp = FPDFText_LoadPage(page)) {
+            const int n = FPDFText_CountChars(tp);
+            for (int i = 0; i < n; ++i) {
+                const unsigned u = FPDFText_GetUnicode(tp, i);
+                if (u > 32 && !iswspace((wint_t)u)) ++letters;
+            }
+            FPDFText_ClosePage(tp);
+        }
+        FPDF_ClosePage(page);
+    });
+    return letters;
+}
+
+std::wstring PdfEngine::PageText(int index) {
+    std::wstring out;
+    if (!m_doc || index < 0 || index >= m_pageCount) return out;
+    Guarded([&] {
+        FPDF_PAGE page = FPDF_LoadPage(m_doc, index);
+        if (!page) return;
+        if (FPDF_TEXTPAGE tp = FPDFText_LoadPage(page)) {
+            const int n = FPDFText_CountChars(tp);
+            if (n > 0) {
+                std::vector<unsigned short> buf((size_t)n + 1);
+                const int written = FPDFText_GetText(tp, 0, n, buf.data());
+                if (written > 1) out.assign(reinterpret_cast<const wchar_t*>(buf.data()), (size_t)written - 1);
+            }
+            FPDFText_ClosePage(tp);
+        }
+        FPDF_ClosePage(page);
+    });
+    return out;
+}
+
+void PdfEngine::PageLines(int index, std::vector<TextLine>& lines) {
+    if (!m_doc || index < 0 || index >= m_pageCount) return;
+    Guarded([&] {
+        FPDF_PAGE page = FPDF_LoadPage(m_doc, index);
+        if (!page) return;
+        FPDF_TEXTPAGE tp = FPDFText_LoadPage(page);
+        if (!tp) {
+            FPDF_ClosePage(page);
+            return;
+        }
+        const int sx = (int)std::lround(FPDF_GetPageWidthF(page) * 100);
+        const int sy = (int)std::lround(FPDF_GetPageHeightF(page) * 100);
+        TextLine cur;
+        std::map<int, int> sizes;  // size in tenths of a point -> letters
+        int letters = 0, bold = 0;
+        bool hasBox = false;
+        auto flush = [&] {
+            while (!cur.text.empty() && iswspace(cur.text.back())) cur.text.pop_back();
+            if (!IsBlank(cur.text) && hasBox) {
+                int best = 0, most = -1;
+                for (const auto& s : sizes)
+                    if (s.second > most) best = s.first, most = s.second;
+                cur.size = best / 10.0f;
+                cur.bold = letters > 0 && bold * 10 >= letters * 6;
+                lines.push_back(cur);
+            }
+            cur = TextLine();
+            sizes.clear();
+            letters = bold = 0;
+            hasBox = false;
+        };
+        const int n = FPDFText_CountChars(tp);
+        for (int i = 0; i < n; ++i) {
+            const unsigned u = FPDFText_GetUnicode(tp, i);
+            if (u == L'\n') {
+                flush();
+                continue;
+            }
+            if (u == L'\r' || u == 0 || u == 0xFFFE || u == 0xFFFF) continue;
+            if (u >= 0x10000) {
+                cur.text += (wchar_t)(0xD800 + ((u - 0x10000) >> 10));
+                cur.text += (wchar_t)(0xDC00 + ((u - 0x10000) & 0x3FF));
+            } else {
+                cur.text += (wchar_t)u;
+            }
+            if (u <= 32 || iswspace((wint_t)u) || FPDFText_IsGenerated(tp, i) == 1) continue;
+            double l, r, b, t;
+            if (FPDFText_GetCharBox(tp, i, &l, &r, &b, &t)) {
+                const RectF box = ToDisplay(page, sx, sy, l, t, r, b);
+                if (!hasBox) {
+                    cur.top = box.top, cur.bottom = box.bottom, cur.left = box.left;
+                    hasBox = true;
+                } else {
+                    cur.top = std::min(cur.top, box.top);
+                    cur.bottom = std::max(cur.bottom, box.bottom);
+                    cur.left = std::min(cur.left, box.left);
+                }
+            }
+            ++letters;
+            ++sizes[(int)std::lround(FPDFText_GetFontSize(tp, i) * 10)];
+            int weight = FPDFText_GetFontWeight(tp, i);
+            if (weight < 600) {
+                char name[128] = "";
+                int flags = 0;
+                if (FPDFText_GetFontInfo(tp, i, name, sizeof(name), &flags) > 0) {
+                    std::string s = name;
+                    for (char& ch : s) ch = (char)tolower((unsigned char)ch);
+                    if (s.find("bold") != std::string::npos || s.find("black") != std::string::npos ||
+                        s.find("heavy") != std::string::npos || s.find("semibold") != std::string::npos)
+                        weight = 700;
+                }
+            }
+            if (weight >= 600) ++bold;
+        }
+        flush();
+        FPDFText_ClosePage(tp);
+        FPDF_ClosePage(page);
+    });
 }
 
 // ---------------------------------------------------------------------------

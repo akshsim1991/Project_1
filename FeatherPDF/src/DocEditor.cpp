@@ -56,6 +56,9 @@ void DocEditor::Describe(const EditOp& op, int before, int after, int& focus,
         case EditOp::AddImage:
         case EditOp::AddText:
         case EditOp::StyleText:
+        case EditOp::Watermark:
+        case EditOp::PageNumbers:
+        case EditOp::AddOcrText:
             break;  // the reader stays where they are
     }
 }

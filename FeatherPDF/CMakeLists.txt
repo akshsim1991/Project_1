@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(FeatherPDF VERSION 2.1.0 LANGUAGES CXX RC)
+project(FeatherPDF VERSION 2.2.0 LANGUAGES CXX RC)
 
 # ---------------------------------------------------------------------------
 # PDFium (prebuilt binaries from https://github.com/bblanchon/pdfium-binaries)
@@ -57,6 +57,9 @@ add_executable(FeatherPDF WIN32
   src/Util.cpp
   src/Picture.cpp
   src/CommandPalette.cpp
+  src/Ocr.cpp
+  src/Export.cpp
+  src/ToolDialogs.cpp
   res/app.rc
 )
 
@@ -82,6 +85,23 @@ else()
   target_link_options(FeatherPDF PRIVATE -municode -static -static-libgcc -static-libstdc++
     $<$<CONFIG:Release>:-s>)
   target_link_libraries(FeatherPDF PRIVATE "${PDFIUM_DIR}/bin/pdfium.dll")
+endif()
+
+# Text recognition smoke test (Windows 10/11 only): cmake -DFEATHERPDF_TESTS=ON
+option(FEATHERPDF_TESTS "Build the text recognition smoke test" OFF)
+if(FEATHERPDF_TESTS)
+  add_executable(OcrSmoke tests/OcrSmoke.cpp src/Ocr.cpp)
+  target_include_directories(OcrSmoke PRIVATE src)
+  target_compile_definitions(OcrSmoke PRIVATE
+    UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00 WINVER=0x0A00)
+  target_link_libraries(OcrSmoke PRIVATE user32 gdi32)
+  if(MSVC)
+    set_property(TARGET OcrSmoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    target_compile_options(OcrSmoke PRIVATE /W4 /utf-8 /EHsc)
+  else()
+    target_compile_options(OcrSmoke PRIVATE -municode)
+    target_link_options(OcrSmoke PRIVATE -municode -static)
+  endif()
 endif()
 
 # pdfium.dll must sit next to the executable.

@@ -1,6 +1,10 @@
 // RenderWorker.cpp - background rendering / text / search thread.
 #include "RenderWorker.h"
 
+#include <algorithm>
+#include <cwctype>
+
+#include "Export.h"
 #include "Util.h"
 
 namespace {
@@ -223,6 +227,31 @@ void RenderWorker::Extract(uint32_t docId, std::vector<int>&& pages, const std::
     Push(std::move(c));
 }
 
+void RenderWorker::RenderForOcr(uint32_t docId, uint32_t jobId, int page, float scale, bool skipText) {
+    Command c;
+    c.type = Command::OcrPage;
+    c.docId = docId;
+    c.requestId = jobId;
+    c.page = page;
+    c.scale = scale;
+    c.flags = skipText ? 1 : 0;
+    Push(std::move(c));
+}
+
+void RenderWorker::StartExport(ExportJob&& job) {
+    Command c;
+    c.type = Command::Export;
+    c.docId = job.docId;
+    c.exportJob = std::move(job);
+    Push(std::move(c));
+}
+
+void RenderWorker::CancelExport() {
+    Command c;
+    c.type = Command::CancelExport;
+    Push(std::move(c));
+}
+
 template <typename T>
 void RenderWorker::Post(UINT msg, T* obj) {
     if (!PostMessageW(m_notify, msg, 0, (LPARAM)obj)) delete obj;
@@ -248,12 +277,12 @@ void RenderWorker::Run() {
         Command cmd;
         TileRequest tile;
         uint32_t tileDoc = 0;
-        enum { None, DoCommand, DoTile, DoThumb, DoPrint, DoSearch } work = None;
+        enum { None, DoCommand, DoTile, DoThumb, DoPrint, DoExport, DoSearch } work = None;
         {
             LockGuard g(m_lock);
             // Sleep (zero CPU) until there is something to do.
             while (!m_quit && m_commands.empty() && m_wantedPos >= m_wanted.size() &&
-                   m_thumbPos >= m_thumbs.size() && !m_printActive && !m_searchActive) {
+                   m_thumbPos >= m_thumbs.size() && !m_printActive && !m_exportActive && !m_searchActive) {
                 SleepConditionVariableSRW(&m_cv, &m_lock, INFINITE, 0);
             }
             if (m_quit) break;
@@ -273,6 +302,8 @@ void RenderWorker::Run() {
                 work = DoThumb;
             } else if (m_printActive) {
                 work = DoPrint;
+            } else if (m_exportActive) {
+                work = DoExport;
             } else {
                 work = DoSearch;
             }
@@ -300,6 +331,8 @@ void RenderWorker::Run() {
             }
         } else if (work == DoPrint) {
             PrintStep();
+        } else if (work == DoExport) {
+            ExportStep();
         } else if (work == DoSearch) {
             SearchStep();
         }
@@ -433,6 +466,37 @@ void RenderWorker::Execute(Command& cmd) {
         case Command::Extract:
             ExecuteExtract(cmd);
             break;
+        case Command::OcrPage: {
+            auto* res = new OcrImage;
+            res->docId = cmd.docId;
+            res->jobId = cmd.requestId;
+            res->page = cmd.page;
+            res->scale = cmd.scale;
+            PdfEngine* engine = Engine(cmd.docId);
+            if (!engine || (cmd.flags && engine->CountLetters(cmd.page) >= 10))
+                res->skipped = true;
+            else
+                engine->RenderPage(cmd.page, cmd.scale, false, res->pixels);  // empty: failed
+            Post(WM_APP_OCR_IMAGE, res);
+            break;
+        }
+        case Command::Export:
+            if (m_exportActive) EndExport(false, {});  // one at a time
+            m_export.job = std::move(cmd.exportJob);
+            m_export.pos = 0;
+            m_export.text.clear();
+            m_export.lines.clear();
+            m_export.files.clear();
+            if (!Engine(m_export.job.docId) || m_export.job.pages.empty()) {
+                EndExport(false, L"There is nothing to export.");
+            } else {
+                LockGuard g(m_lock);
+                m_exportActive = true;
+            }
+            break;
+        case Command::CancelExport:
+            if (m_exportActive) EndExport(false, {});
+            break;
     }
 }
 
@@ -445,6 +509,7 @@ void RenderWorker::Rekey(uint32_t oldId, uint32_t newId) {
     m_docs[newId] = std::move(it->second);
     m_docs.erase(it);
     if (m_print.docId == oldId) m_print.docId = newId;
+    if (m_export.job.docId == oldId) m_export.job.docId = newId;
     LockGuard g(m_lock);
     if (m_search.docId == oldId) m_searchActive = false;  // the UI restarts it
 }
@@ -632,4 +697,109 @@ void RenderWorker::EndPrint(bool abort) {
     m_printPos = 0;
     LockGuard g(m_lock);
     m_printActive = false;
+}
+
+namespace {
+// "C:\a\Report.png" and page 3 -> "C:\a\Report-3.png" (or "Report-3 (2).png"
+// if that exists already).
+std::wstring NumberedPath(const std::wstring& path, int number) {
+    const size_t slash = path.find_last_of(L"\\/");
+    const size_t dot = path.find_last_of(L'.');
+    const bool hasExt = dot != std::wstring::npos && (slash == std::wstring::npos || dot > slash);
+    const std::wstring stem = hasExt ? path.substr(0, dot) : path, ext = hasExt ? path.substr(dot) : L"";
+    std::wstring target = stem + L"-" + std::to_wstring(number) + ext;
+    for (int n = 2; FileExists(target) && n < 1000; ++n)
+        target = stem + L"-" + std::to_wstring(number) + L" (" + std::to_wstring(n) + L")" + ext;
+    return target;
+}
+}  // namespace
+
+// Exports one page per call (see StartExport).
+void RenderWorker::ExportStep() {
+    ExportJob& job = m_export.job;
+    PdfEngine* engine = Engine(job.docId);
+    if (!engine) {
+        EndExport(false, {});  // the tab was closed
+        return;
+    }
+    const size_t total = job.pages.size();
+    if (m_export.pos < total) {
+        const int page = job.pages[m_export.pos];
+        switch (job.format) {
+            case ExportFormat::Png:
+            case ExportFormat::Jpeg: {
+                PixelBuffer px;
+                const std::wstring target = total == 1 ? job.path : NumberedPath(job.path, page + 1);
+                if (!engine->RenderPage(page, job.dpi / 72.0f, true, px)) {
+                    EndExport(false, L"Page " + std::to_wstring(page + 1) +
+                                         L" could not be made into a picture. Try a lower resolution.");
+                    return;
+                }
+                const bool saved = SavePicture(px, target, job.format == ExportFormat::Jpeg, job.dpi);
+                px.Free();
+                if (!saved) {
+                    EndExport(false, L"\x201C" + FileNameFromPath(target) +
+                                         L"\x201D could not be saved. The folder may be read-only, or the "
+                                         L"disk may be full.");
+                    return;
+                }
+                m_export.files.push_back(target);
+                break;
+            }
+            case ExportFormat::Text: {
+                const std::wstring text = TidyText(engine->PageText(page));
+                if (!m_export.text.empty() && !text.empty()) m_export.text += L"\n";
+                m_export.text += text;
+                break;
+            }
+            case ExportFormat::Markdown:
+                m_export.lines.emplace_back();
+                engine->PageLines(page, m_export.lines.back());
+                break;
+        }
+        ++m_export.pos;
+        const bool pictures = job.format == ExportFormat::Png || job.format == ExportFormat::Jpeg;
+        if (m_export.pos < total && (pictures || m_export.pos % 16 == 0)) {
+            auto* res = new ExportProgress;
+            res->done = (int)m_export.pos;
+            res->total = (int)total;
+            Post(WM_APP_EXPORT_PROGRESS, res);
+        }
+    }
+    if (m_export.pos < total) return;
+
+    bool noText = false;
+    if (job.format == ExportFormat::Text || job.format == ExportFormat::Markdown) {
+        const std::wstring text =
+            job.format == ExportFormat::Text ? m_export.text : LinesToMarkdown(m_export.lines);
+        noText = std::all_of(text.begin(), text.end(), [](wchar_t c) { return iswspace(c) != 0; });
+        if (!WriteTextFile(job.path, text, job.format == ExportFormat::Text)) {
+            EndExport(false, L"\x201C" + FileNameFromPath(job.path) +
+                                 L"\x201D could not be saved. The folder may be read-only, or the disk "
+                                 L"may be full.");
+            return;
+        }
+        m_export.files.push_back(job.path);
+    }
+    auto* res = new ExportProgress;
+    res->done = res->total = (int)total;
+    res->finished = true;
+    res->noText = noText;
+    res->files = std::move(m_export.files);
+    Post(WM_APP_EXPORT_PROGRESS, res);
+    m_export = {};
+    LockGuard g(m_lock);
+    m_exportActive = false;
+}
+
+void RenderWorker::EndExport(bool ok, const std::wstring& error) {
+    auto* res = new ExportProgress;
+    res->finished = true;
+    res->ok = ok;
+    res->error = error;  // empty: cancelled, nothing to say
+    res->files = std::move(m_export.files);
+    Post(WM_APP_EXPORT_PROGRESS, res);
+    m_export = {};
+    LockGuard g(m_lock);
+    m_exportActive = false;
 }
