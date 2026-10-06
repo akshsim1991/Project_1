@@ -9,6 +9,7 @@ Public Enum ValveActuator
     <Description("Pneumatic pilot")> Pilot
     <Description("Pneumatic pilot with time delay")> DelayedPilot
     <Description("Solenoid")> Solenoid
+    <Description("Idle-return roller (one direction only)")> IdleReturnRoller
 End Enum
 
 ''' <summary>
@@ -62,6 +63,11 @@ Public MustInherit Class DirectionalValve
     Private _manualRight As Boolean
     Private _detentOn As Boolean
     Private _timer As Double
+    Private _pulse As Double
+    Private _markBefore As Boolean = True
+
+    ''' <summary>How long an idle-return roller stays operated while the cam passes over it (s).</summary>
+    Public Const IdleRollerPulse As Double = 0.15
 
     Protected MustOverride ReadOnly Property BoxWidth As Single
     Protected MustOverride Function WorkingPorts() As WorkingPort()
@@ -147,12 +153,52 @@ Public MustInherit Class DirectionalValve
         Select Case name
             Case NameOf(SolenoidLabel) : Return _actuator = ValveActuator.Solenoid
             Case NameOf(ReturnSolenoidLabel) : Return _return = ValveReturn.Solenoid
-            Case NameOf(TriggerMark) : Return _actuator = ValveActuator.RollerLever
+            Case NameOf(TriggerMark) : Return IsRollerOperated
             Case NameOf(DelaySeconds) : Return _actuator = ValveActuator.DelayedPilot
             Case NameOf(SwitchingPressure) : Return _actuator = ValveActuator.Pilot OrElse _actuator = ValveActuator.DelayedPilot OrElse _return = ValveReturn.Pilot
         End Select
         Return True
     End Function
+
+    ''' <summary>True for roller lever valves, including idle-return rollers.</summary>
+    <Browsable(False)> Public ReadOnly Property IsRollerOperated As Boolean
+        Get
+            Return _actuator = ValveActuator.RollerLever OrElse _actuator = ValveActuator.IdleReturnRoller
+        End Get
+    End Property
+
+    ''' <summary>True if the valve has a solenoid on either side.</summary>
+    <Browsable(False)> Public ReadOnly Property HasSolenoid As Boolean
+        Get
+            Return _actuator = ValveActuator.Solenoid OrElse _return = ValveReturn.Solenoid
+        End Get
+    End Property
+
+    Public Overrides Function PossibleFaults() As FaultKind()
+        Dim list As New List(Of FaultKind) From {FaultKind.StuckNormal, FaultKind.StuckOperated}
+        If HasSolenoid Then list.Add(FaultKind.BurntCoil)
+        Return list.ToArray()
+    End Function
+
+    Public Overrides Function FaultDescription(kind As FaultKind) As String
+        Select Case kind
+            Case FaultKind.StuckNormal : Return "Spool stuck in the normal position (dirt or varnish)"
+            Case FaultKind.StuckOperated : Return If(PositionCount = 3, "Spool stuck in position a", "Spool stuck in the switched position")
+            Case FaultKind.BurntCoil : Return "Solenoid coil on the valve burnt out (the manual override still works)"
+        End Select
+        Return MyBase.FaultDescription(kind)
+    End Function
+
+    Public Overrides Function InspectValues() As List(Of (Name As String, Value As String))
+        Dim list = MyBase.InspectValues()
+        list.Add(("Switching position", If(_state = 0, If(PositionCount = 3, "centre (normal)", "normal (rest)"), If(_state = 1, "a (left box)", "b (right box)"))))
+        If _actuator = ValveActuator.DelayedPilot Then list.Add(("Delay timer", $"{Math.Min(_timer, _delay):0.00} of {_delay:0.0#} s"))
+        Return list
+    End Function
+
+    Public Overrides Sub AfterStateRestored()
+        RebuildPorts()
+    End Sub
 
     ''' <summary>Passages (from, to) open in a position: 0 normal, 1 = a, 2 = b.</summary>
     Public Function PassagesIn(position As Integer) As String()()
@@ -395,8 +441,21 @@ Public MustInherit Class DirectionalValve
                     g.DrawLine(r.Thin, x(t), cy + 6, x(t + 2), cy + 3)
                     g.DrawLine(r.Thin, x(t + 2), cy + 3, x(t + 4), cy + 6)
                 Next
-            Case "RollerLever"
+            Case "RollerLever", "IdleReturnRoller"
                 g.DrawLine(r.Line, edge, cy, x(10), cy)
+                If kind = "IdleReturnRoller" Then
+                    ' Hinged lever: it only operates the valve when the cam comes from one side.
+                    g.DrawLine(r.Line, x(10), cy, x(14), cy - 6)
+                    g.FillEllipse(Brushes.Black, x(10) - 1.5F, cy - 1.5F, 3, 3)
+                    Dim cxi = x(14)
+                    g.FillEllipse(r.BodyBrush, cxi - 4, cy - 14, 9, 9)
+                    g.DrawEllipse(pressedPen, cxi - 4, cy - 14, 9, 9)
+                    If Not String.IsNullOrWhiteSpace(TriggerMark) Then
+                        Dim szi = g.MeasureString(TriggerMark, r.SmallFont)
+                        g.DrawString(TriggerMark, r.SmallFont, r.MarkBrush, cxi - szi.Width / 2, cy - 16 - szi.Height)
+                    End If
+                    Exit Select
+                End If
                 Dim cx = x(14)
                 g.FillEllipse(r.BodyBrush, cx - 5, cy - 5, 10, 10)
                 g.DrawEllipse(pressedPen, cx - 5, cy - 5, 10, 10)
@@ -477,6 +536,9 @@ Public MustInherit Class DirectionalValve
         _detentOn = False
         _rightActive = False
         _timer = 0
+        _pulse = 0
+        ' A cylinder already standing at the mark when the simulation starts does not trip the roller.
+        _markBefore = True
     End Sub
 
     Public Overrides Sub AddEdges(sim As Simulator)
@@ -495,6 +557,7 @@ Public MustInherit Class DirectionalValve
         Dim leftOn As Boolean
         Select Case _actuator
             Case ValveActuator.RollerLever : leftOn = sim.IsMarkActive(TriggerMark)
+            Case ValveActuator.IdleReturnRoller : leftOn = _pulse > 0
             Case ValveActuator.Pilot, ValveActuator.DelayedPilot : leftOn = PilotOn(LeftPilotName)
             Case ValveActuator.Solenoid : leftOn = sim.IsSolenoidActive(SolenoidLabel)
         End Select
@@ -504,20 +567,23 @@ Public MustInherit Class DirectionalValve
     End Function
 
     Public Overrides Function UpdateLogic(sim As Simulator) As Boolean
+        ' A burnt-out solenoid no longer moves the spool; the manual override still does.
+        Dim coilOk = Fault <> FaultKind.BurntCoil
         Dim leftActive As Boolean
         Select Case _actuator
             Case ValveActuator.PushButton : leftActive = _manualPressed
             Case ValveActuator.Selector : leftActive = _detentOn
             Case ValveActuator.RollerLever : leftActive = sim.IsMarkActive(TriggerMark)
+            Case ValveActuator.IdleReturnRoller : leftActive = _pulse > 0
             Case ValveActuator.Pilot : leftActive = PilotOn(LeftPilotName)
             Case ValveActuator.DelayedPilot : leftActive = PilotOn(LeftPilotName) AndAlso _timer >= _delay - 0.000001
-            Case ValveActuator.Solenoid : leftActive = _manualPressed OrElse sim.IsSolenoidActive(SolenoidLabel)
+            Case ValveActuator.Solenoid : leftActive = _manualPressed OrElse (coilOk AndAlso sim.IsSolenoidActive(SolenoidLabel))
         End Select
 
         Dim rightActive As Boolean
         Select Case _return
             Case ValveReturn.Pilot : rightActive = PilotOn(RightPilotName)
-            Case ValveReturn.Solenoid : rightActive = _manualRight OrElse sim.IsSolenoidActive(ReturnSolenoidLabel)
+            Case ValveReturn.Solenoid : rightActive = _manualRight OrElse (coilOk AndAlso sim.IsSolenoidActive(ReturnSolenoidLabel))
         End Select
         _rightActive = rightActive
 
@@ -530,6 +596,8 @@ Public MustInherit Class DirectionalValve
             If leftActive AndAlso Not rightActive Then newState = 1
             If rightActive AndAlso Not leftActive Then newState = 0
         End If
+        If Fault = FaultKind.StuckNormal Then newState = 0
+        If Fault = FaultKind.StuckOperated Then newState = 1
         If newState = _state Then Return False
         SetState(newState)
         Return True
@@ -539,6 +607,17 @@ Public MustInherit Class DirectionalValve
         If _actuator = ValveActuator.DelayedPilot Then
             If PilotOn(LeftPilotName) Then _timer += dt Else _timer = 0
         End If
+        If _actuator = ValveActuator.IdleReturnRoller Then
+            ' The cam trips the hinged lever only when it arrives at the mark; the lever folds
+            ' away while the cylinder stays there and when it moves back.
+            Dim markNow = sim.IsMarkActive(TriggerMark)
+            If markNow AndAlso Not _markBefore Then
+                _pulse = IdleRollerPulse
+            Else
+                _pulse = Math.Max(0, _pulse - dt)
+            End If
+            _markBefore = markNow
+        End If
     End Sub
 
     Protected Function ActuationText() As String
@@ -547,6 +626,7 @@ Public MustInherit Class DirectionalValve
             Case ValveActuator.PushButton : a = "push button"
             Case ValveActuator.Selector : a = "selector switch"
             Case ValveActuator.RollerLever : a = "roller lever"
+            Case ValveActuator.IdleReturnRoller : a = "idle-return roller"
             Case ValveActuator.Pilot : a = "pneumatic pilot"
             Case ValveActuator.Solenoid : a = "solenoid"
             Case Else : a = "time delay"

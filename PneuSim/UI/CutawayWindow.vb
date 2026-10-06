@@ -220,6 +220,7 @@ Public Class CutawayView
                 Case ValveActuator.Solenoid : leftText = $"solenoid {v.SolenoidLabel}"
                 Case ValveActuator.Pilot, ValveActuator.DelayedPilot : leftText = $"pilot {v.PilotPortName(True)}"
                 Case ValveActuator.RollerLever : leftText = $"roller {v.TriggerMark}"
+                Case ValveActuator.IdleReturnRoller : leftText = $"idle-return roller {v.TriggerMark}"
                 Case ValveActuator.Selector : leftText = "selector"
                 Case Else : leftText = "push button"
             End Select

@@ -100,6 +100,16 @@ Public Module Cutaways
         Try
             Select Case True
                 Case TypeOf e Is SemiRotaryActuator : Return SemiRotary(g, DirectCast(e, SemiRotaryActuator), area, pal)
+                Case TypeOf e Is Gripper : Return GripperView(g, DirectCast(e, Gripper), area, pal)
+                Case TypeOf e Is PressureSwitch : Return PressureSwitchView(g, DirectCast(e, PressureSwitch), area, pal)
+                Case TypeOf e Is ShutOffValve : Return ShutOffView(g, DirectCast(e, ShutOffValve), area, pal)
+                Case TypeOf e Is VacuumGenerator : Return EjectorView(g, DirectCast(e, VacuumGenerator), area, pal)
+                Case TypeOf e Is SuctionCup : Return CupView(g, DirectCast(e, SuctionCup), area, pal)
+                Case TypeOf e Is Compressor : Return CompressorView(g, DirectCast(e, Compressor), area, pal, phase)
+                Case TypeOf e Is AirReceiver : Return ReceiverView(g, DirectCast(e, AirReceiver), area, pal)
+                Case TypeOf e Is FlowMeter : Return FlowMeterView(g, DirectCast(e, FlowMeter), area, pal)
+                Case TypeOf e Is ForceSensor : Return ForceSensorView(g, DirectCast(e, ForceSensor), area, pal)
+                Case TypeOf e Is ElectricCounter : Return CounterView(g, DirectCast(e, ElectricCounter), area, pal, simulating)
                 Case TypeOf e Is CylinderBase : Return Cylinder(g, DirectCast(e, CylinderBase), area, pal)
                 Case TypeOf e Is AirMotor : Return VaneMotor(g, e, DirectCast(e, AirMotor).Rpm, area, pal, phase)
                 Case TypeOf e Is HydraulicMotor : Return VaneMotor(g, e, DirectCast(e, HydraulicMotor).Rpm, area, pal, phase)
@@ -627,8 +637,227 @@ Public Module Cutaways
                 Txt(g, pal, $"magnet / target at mark {k.Reference}", 214, 18, faint:=True)
             Case ContactOperator.Relay
                 Txt(g, pal, $"moved by relay {k.Reference}", 194, 18, faint:=True)
+            Case ContactOperator.PressureSwitch
+                Txt(g, pal, $"moved by pressure switch {k.Reference}", 194, 18, faint:=True)
+            Case ContactOperator.EmergencyStop
+                Using b As New SolidBrush(Color.FromArgb(215, 30, 30))
+                    g.FillEllipse(b, 140, If(operated, 2.0F, -10.0F), 80, 40)
+                End Using
+                Txt(g, pal, If(operated, "pressed and latched: turn to release", "emergency stop"), 224, 16, faint:=True)
         End Select
         Txt(g, pal, If(k.NormallyClosed, "NC contact", "NO contact"), 64, 176, faint:=True)
         Return If(closed, "The bridge touches both fixed contacts: current can flow.", "The bridge is lifted off the fixed contacts: the circuit is open.")
+    End Function
+
+    ' ------------------------------------------------------------------ parts added in 3.2
+
+    Private ReadOnly VacuumTint As Color = Color.FromArgb(120, 200, 190)
+
+    Private Function GripperView(g As Graphics, c As Gripper, area As RectangleF, pal As CutawayPalette) As String
+        Fit(g, area, 420, 220)
+        Metal(g, pal, 20, 60, 220, 100)
+        Dim pos = CSng(c.Position)
+        ' Piston moves right to close; a wedge turns the motion into the jaw stroke.
+        Dim px = 50 + pos * 110
+        Fill(g, Fluid(c.Ports(0), pal), 30, 75, px - 30, 70)
+        Fill(g, Fluid(c.Ports(1), pal), px + 16, 75, 220 - px, 70)
+        Metal(g, pal, px, 75, 16, 70, dark:=True)
+        Metal(g, pal, px + 16, 104, 120 - pos * 110, 12)
+        Dim gap = 50 * (1 - pos)
+        Metal(g, pal, 250, 110 - gap - 40, 60, 30, dark:=True)
+        Metal(g, pal, 250, 110 + gap + 10, 60, 30, dark:=True)
+        Metal(g, pal, 240, 60, 10, 100)
+        Fill(g, Fluid(c.Ports(0), pal), 40, 160, 14, 40) : Txt(g, pal, "1 close", 30, 200, bold:=True)
+        Fill(g, Fluid(c.Ports(1), pal), 200, 160, 14, 40) : Txt(g, pal, "2 open", 190, 200, bold:=True)
+        Return If(pos >= 0.995, "Air at port 1 pushed the piston over: the jaws are closed and grip the part.",
+                  If(pos <= 0.005, "Air at port 2 holds the piston back: the jaws are open.", "The piston moves and the jaws follow it."))
+    End Function
+
+    Private Function PressureSwitchView(g As Graphics, v As PressureSwitch, area As RectangleF, pal As CutawayPalette) As String
+        Fit(g, area, 300, 240)
+        Metal(g, pal, 60, 20, 180, 170)
+        Fill(g, pal.Cavity, 80, 40, 140, 70)
+        ' Pressure under the diaphragm pushes a plunger against the adjustable spring.
+        Dim lift = If(v.IsOn, 14.0F, 0F)
+        Dim fluidCol = If(v.Ports(0).Pressure < -0.05, VacuumTint, Fluid(v.Ports(0), pal))
+        Fill(g, fluidCol, 80, 130 - lift, 140, 40 + lift)
+        Fill(g, fluidCol, 140, 170, 20, 60)
+        Using dp As New Pen(Color.FromArgb(40, 40, 40), 3)
+            g.DrawLine(dp, 80, 130 - lift, 220, 130 - lift)
+        End Using
+        Metal(g, pal, 145, 90 - lift, 10, 40, dark:=True)
+        Using sp As New Pen(pal.Spring, 1.5F)
+            ZigzagV(g, sp, 150, 40, 90 - lift, 10)
+        End Using
+        ' Micro switch contacts.
+        Using cp As New Pen(If(v.IsOn, Color.FromArgb(220, 40, 40), pal.Edge), 3)
+            g.DrawLine(cp, 90, 60, 135, If(v.IsOn, 60, 50))
+        End Using
+        Disc(g, pal.MetalDark, pal.Edge, 138, 60, 3)
+        Txt(g, pal, $"switches at {v.Setting:0.0#} bar", 70, 0, faint:=True)
+        Txt(g, pal, "1", 166, 210, bold:=True)
+        If v.Setting < 0 Then
+            Return If(v.IsOn, $"{v.Ports(0).Pressure:0.00} bar: the vacuum has pulled the diaphragm and the contact has switched.",
+                      $"{v.Ports(0).Pressure:0.00} bar is not enough vacuum: the contact is at rest.")
+        End If
+        Return If(v.IsOn, $"{v.Ports(0).Pressure:0.0} bar: the diaphragm has pushed the plunger up against the spring and the contact has switched.",
+                  $"{v.Ports(0).Pressure:0.0} bar is not enough to overcome the spring: the contact is at rest.")
+    End Function
+
+    Private Function ShutOffView(g As Graphics, v As ShutOffValve, area As RectangleF, pal As CutawayPalette) As String
+        Fit(g, area, 400, 200)
+        Metal(g, pal, 20, 60, 360, 80)
+        Dim open = v.IsOpen
+        Fill(g, Fluid(v.Ports(0), pal), 20, 85, 140, 30)
+        Fill(g, Fluid(v.Ports(1), pal), 240, 85, 140, 30)
+        Disc(g, pal.Metal, pal.Edge, 200, 100, 45)
+        ' The bore through the ball lines up with the pipe when open.
+        If open Then
+            Fill(g, Fluid(v.Ports(0), pal), 155, 85, 90, 30)
+            FlowArrow(g, 60, 100, 340, 100)
+        Else
+            Fill(g, pal.Cavity, 185, 55, 30, 90)
+        End If
+        Metal(g, pal, 195, 10, 10, 45, dark:=True)
+        Metal(g, pal, If(open, 200.0F, 195.0F), If(open, 6.0F, 0F), If(open, 120.0F, 10.0F), If(open, 10.0F, 10.0F), dark:=True)
+        Txt(g, pal, "1", 22, 40, bold:=True) : Txt(g, pal, "2", 364, 40, bold:=True)
+        Return If(open, "The hole through the ball lines up with the pipe: air flows through.", "The ball is turned a quarter turn: its solid side blocks the pipe.")
+    End Function
+
+    Private Function EjectorView(g As Graphics, v As VacuumGenerator, area As RectangleF, pal As CutawayPalette) As String
+        Fit(g, area, 440, 220)
+        Metal(g, pal, 20, 70, 400, 80)
+        Dim on_ = v.Working
+        Dim air = If(on_, pal.Air, pal.Vent)
+        ' Nozzle: the passage narrows, so the air comes out very fast.
+        Using b As New SolidBrush(air)
+            g.FillPolygon(b, {New PointF(20, 90), New PointF(150, 104), New PointF(150, 116), New PointF(20, 130)})
+            g.FillPolygon(b, {New PointF(200, 104), New PointF(420, 90), New PointF(420, 130), New PointF(200, 116)})
+        End Using
+        Using b As New SolidBrush(If(on_, VacuumTint, pal.Cavity))
+            g.FillRectangle(b, 150, 80, 50, 60)
+            g.FillRectangle(b, 160, 10, 30, 70)
+        End Using
+        If on_ Then
+            FlowArrow(g, 175, 20, 175, 75)
+            FlowArrow(g, 220, 110, 400, 110)
+        End If
+        Txt(g, pal, "1 (compressed air)", 20, 160, bold:=True)
+        Txt(g, pal, "V (vacuum)", 200, 10, bold:=True)
+        Txt(g, pal, "to silencer", 340, 160, faint:=True)
+        Return If(on_, $"The fast jet of air drags the air out of the suction chamber: {v.Ports(1).Pressure:0.00} bar at V.",
+                  "No compressed air at port 1: no jet, no vacuum.")
+    End Function
+
+    Private Function CupView(g As Graphics, v As SuctionCup, area As RectangleF, pal As CutawayPalette) As String
+        Fit(g, area, 300, 230)
+        Dim vac = v.Ports(0).Pressure < -0.05
+        Fill(g, If(vac, VacuumTint, pal.Vent), 140, 0, 20, 80)
+        Using b As New SolidBrush(Color.FromArgb(60, 60, 60)), cav As New SolidBrush(If(vac AndAlso v.Sealed, VacuumTint, pal.Cavity))
+            Dim cup = {New PointF(120, 80), New PointF(180, 80), New PointF(250, 150), New PointF(50, 150)}
+            g.FillPolygon(b, cup)
+            g.FillPolygon(cav, {New PointF(135, 92), New PointF(165, 92), New PointF(225, 148), New PointF(75, 148)})
+        End Using
+        If v.WorkpiecePresent Then
+            Dim y = If(v.Holding, 150.0F, 175.0F)
+            Using b As New SolidBrush(If(v.Holding, Color.FromArgb(120, 160, 90), Color.FromArgb(170, 170, 170)))
+                g.FillRectangle(b, 30, y, 240, 30)
+            End Using
+            If v.Fault = FaultKind.Leak Then Txt(g, pal, "torn lip: air leaks in", 60, 210, faint:=True)
+        End If
+        Return If(v.Holding, $"The outside air pressure presses the part against the cup: {v.HoldingForce():0} N holding force.",
+                  If(v.WorkpiecePresent, "Not enough vacuum in the cup: the part is not held.", "No workpiece: the cup is open to the air."))
+    End Function
+
+    Private Function CompressorView(g As Graphics, v As Compressor, area As RectangleF, pal As CutawayPalette, phase As Double) As String
+        Fit(g, area, 320, 300)
+        Metal(g, pal, 90, 30, 140, 150)
+        Dim a = If(v.Running, phase * 2 * Math.PI, 0)
+        Dim crankX = 160 + 30 * Math.Sin(a), crankY = 230 + 30 * Math.Cos(a)
+        Dim pistonY = CSng(crankY - 120)
+        Fill(g, If(v.Running, pal.Air, pal.Vent), 105, 45, 110, pistonY - 45)
+        Metal(g, pal, 105, pistonY, 110, 26, dark:=True)
+        Using rod As New Pen(pal.MetalDark, 8)
+            g.DrawLine(rod, 160, pistonY + 13, CSng(crankX), CSng(crankY))
+        End Using
+        Disc(g, pal.Metal, pal.Edge, 160, 230, 40)
+        Disc(g, pal.MetalDark, pal.Edge, CSng(crankX), CSng(crankY), 8)
+        Fill(g, Fluid(v.Ports(0), pal), 215, 50, 90, 16)
+        Txt(g, pal, "1 → receiver", 220, 30, bold:=True)
+        Return If(v.Running, $"The crank drives the piston up and down; air is drawn in, compressed and pushed out ({v.EffectiveDelivery:0} NL/min).",
+                  "The pressure switch has stopped the motor: the receiver is full (or the main switch is off).")
+    End Function
+
+    Private Function ReceiverView(g As Graphics, v As AirReceiver, area As RectangleF, pal As CutawayPalette) As String
+        Fit(g, area, 420, 200)
+        Using b As New SolidBrush(pal.Metal), pe As New Pen(pal.Edge, 2)
+            g.FillEllipse(b, 40, 30, 340, 140)
+            g.DrawEllipse(pe, 40, 30, 340, 140)
+        End Using
+        ' The deeper the blue, the more air is stored.
+        Dim k = CInt(Math.Min(1, v.Pressure / 10) * 200)
+        Using b As New SolidBrush(Color.FromArgb(40 + k \ 4, pal.Air))
+            g.FillEllipse(b, 50, 40, 320, 120)
+        End Using
+        Fill(g, Fluid(v.Ports(0), pal), 0, 92, 50, 16)
+        Fill(g, Fluid(v.Ports(1), pal), 370, 92, 50, 16)
+        Txt(g, pal, $"{v.Pressure:0.0} bar   {(v.Pressure + CylinderBase.Atm) / CylinderBase.Atm * v.VolumeLitres:0} NL stored", 120, 90, bold:=True)
+        Metal(g, pal, 205, 170, 10, 20, dark:=True) : Txt(g, pal, "drain", 220, 175, faint:=True)
+        Return "The receiver stores compressed air: it covers peaks of air use and lets the compressor run in longer, calmer cycles."
+    End Function
+
+    Private Function FlowMeterView(g As Graphics, v As FlowMeter, area As RectangleF, pal As CutawayPalette) As String
+        Fit(g, area, 260, 300)
+        ' Rotameter: a float rises in a tapered tube until the flow just carries it.
+        Using b As New SolidBrush(pal.Cavity), pe As New Pen(pal.Edge, 2)
+            g.FillPolygon(b, {New PointF(110, 30), New PointF(150, 30), New PointF(140, 250), New PointF(120, 250)})
+            g.DrawPolygon(pe, {New PointF(110, 30), New PointF(150, 30), New PointF(140, 250), New PointF(120, 250)})
+        End Using
+        Dim fullScale = If(v.Hydraulic, 40.0, 200.0)
+        Dim h = CSng(Math.Min(1, Math.Abs(v.Flow) / fullScale))
+        Dim y = 235 - h * 190
+        Using b As New SolidBrush(Color.FromArgb(200, 60, 40))
+            g.FillPolygon(b, {New PointF(118, y), New PointF(142, y), New PointF(130, y + 16)})
+        End Using
+        Using pe As New Pen(pal.SubText)
+            For i = 0 To 4
+                Dim ty = 235 - i * 47.5F
+                g.DrawLine(pe, 152, ty, 162, ty)
+                Txt(g, pal, $"{fullScale * i / 4:0}", 166, ty - 8, faint:=True)
+            Next
+        End Using
+        Fill(g, Fluid(v.Ports(0), pal), 40, 250, 180, 14)
+        Txt(g, pal, $"{Math.Abs(v.Flow):0.0} {v.Unit}", 60, 270, bold:=True)
+        Return "The flow lifts the float in the tapered tube; the higher it floats, the more flow."
+    End Function
+
+    Private Function ForceSensorView(g As Graphics, v As ForceSensor, area As RectangleF, pal As CutawayPalette) As String
+        Fit(g, area, 360, 200)
+        ' Bending beam with strain gauges: the force bends it a little.
+        Dim bend = CSng(Math.Max(-1, Math.Min(1, v.Force / 2000)) * 14)
+        Using b As New SolidBrush(pal.Metal), pe As New Pen(pal.Edge)
+            Dim beam = {New PointF(40, 80), New PointF(320, 80 + bend), New PointF(320, 110 + bend), New PointF(40, 110)}
+            g.FillPolygon(b, beam) : g.DrawPolygon(pe, beam)
+        End Using
+        Metal(g, pal, 20, 60, 20, 70, dark:=True)
+        Fill(g, Color.FromArgb(200, 160, 40), 120, 74 + bend * 0.3F, 50, 6)
+        Fill(g, Color.FromArgb(200, 160, 40), 120, 110 + bend * 0.3F, 50, 6)
+        Using pe As New Pen(Color.Firebrick, 3) With {.EndCap = LineCap.ArrowAnchor}
+            g.DrawLine(pe, 300, 30 + bend, 300, 76 + bend)
+        End Using
+        Txt(g, pal, $"{v.Force:0} N on {v.Cylinder}", 120, 150, bold:=True)
+        Return "The force bends the beam very slightly; the strain gauges glued on it change their resistance, which is measured."
+    End Function
+
+    Private Function CounterView(g As Graphics, v As ElectricCounter, area As RectangleF, pal As CutawayPalette, simulating As Boolean) As String
+        Fit(g, area, 300, 180)
+        Metal(g, pal, 20, 20, 260, 140)
+        Fill(g, Color.FromArgb(20, 30, 20), 50, 45, 200, 60)
+        Using f As New Font("Consolas", 26, FontStyle.Bold), b As New SolidBrush(Color.FromArgb(120, 255, 120))
+            g.DrawString($"{If(simulating, v.Count, 0),4}", f, b, 60, 50)
+        End Using
+        Txt(g, pal, $"preset {v.Preset}", 60, 115, bold:=True)
+        Fill(g, If(v.Active AndAlso simulating, Color.FromArgb(220, 40, 40), pal.Vent), 210, 115, 30, 18)
+        Return If(simulating AndAlso v.Active, "The preset has been reached: the output contacts have switched.", "Each pulse on A1/A2 adds one; at the preset the contacts switch.")
     End Function
 End Module

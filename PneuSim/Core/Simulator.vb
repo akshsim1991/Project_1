@@ -34,6 +34,7 @@ Partial Public Class Simulator
     Private ReadOnly _edges As New List(Of Edge)
     Private ReadOnly _supplies As New Dictionary(Of Integer, Double)
     Private ReadOnly _exhausts As New HashSet(Of Integer)
+    Private ReadOnly _exhaustCapacity As New Dictionary(Of Integer, Double)
     Private _nextSample As Double
 
     Public Sub New(circuit As Circuit)
@@ -89,16 +90,23 @@ Partial Public Class Simulator
         _supplies(p.NodeIndex) = Math.Max(existing, pressure)
     End Sub
 
-    ''' <summary>Registers a port that is always open to atmosphere (silencer) or 0 V.</summary>
-    Public Sub AddExhaust(p As Port)
+    ''' <summary>
+    ''' Registers a port that is always open to atmosphere (silencer) or 0 V. A capacity below 1
+    ''' makes the air escape slowly (a clogged silencer).
+    ''' </summary>
+    Public Sub AddExhaust(p As Port, Optional capacity As Double = 1)
         _exhausts.Add(p.NodeIndex)
+        If capacity < 1 Then _exhaustCapacity(p.NodeIndex) = Math.Max(0.001, capacity)
     End Sub
 
-    ''' <summary>True if a cylinder carrying the named position mark is at that end position.</summary>
+    ''' <summary>
+    ''' True if a signal with this name is on: a cylinder at the end position carrying the mark,
+    ''' a pressure switch that has switched, and so on.
+    ''' </summary>
     Public Function IsMarkActive(mark As String) As Boolean
         If String.IsNullOrWhiteSpace(mark) Then Return False
-        For Each cyl In _circuit.Elements.OfType(Of CylinderBase)()
-            If cyl.IsAtMark(mark) Then Return True
+        For Each src In _circuit.Elements.OfType(Of ISignalSource)()
+            If src.IsSignalOn(mark.Trim()) Then Return True
         Next
         Return False
     End Function
@@ -110,7 +118,10 @@ Partial Public Class Simulator
 
     ''' <summary>True if a relay or timer relay with this label has switched its contacts (lamps and solenoids do not count).</summary>
     Public Function IsRelayActive(label As String) As Boolean
-        Return IsActive(label, Function(k) k = CoilKind.Relay OrElse k = CoilKind.OnDelayTimer OrElse k = CoilKind.OffDelayTimer)
+        If IsActive(label, Function(k) k = CoilKind.Relay OrElse k = CoilKind.OnDelayTimer OrElse k = CoilKind.OffDelayTimer) Then Return True
+        ' Counters switch their contacts like a relay when the preset count is reached.
+        Return Not String.IsNullOrWhiteSpace(label) AndAlso _circuit.Elements.OfType(Of ElectricCounter)().
+            Any(Function(k) k.Active AndAlso String.Equals(k.Label?.Trim(), label.Trim(), StringComparison.OrdinalIgnoreCase))
     End Function
 
     ''' <summary>True if a valve solenoid coil with this label is energized.</summary>
@@ -129,6 +140,7 @@ Partial Public Class Simulator
     ' ------------------------------------------------------------ control
 
     Public Sub Reset()
+        _compressorReceivers = Nothing
         Time = 0
         AirConsumed = 0
         ResetChannels()
@@ -138,6 +150,7 @@ Partial Public Class Simulator
         For Each e In _circuit.Elements
             e.ResetSim()
         Next
+        LinkCompressors()
         RunLogic()
         If RealPhysics Then
             ' Chambers start at the pressures of the circuit at rest (e.g. rod side pressurized).
@@ -154,13 +167,29 @@ Partial Public Class Simulator
     Public Sub [Step](dt As Double)
         Time += dt
         PrepareHydraulics(dt)
+        Dim consumedBefore = AirConsumed
         For Each e In _circuit.Elements
             e.UpdateDynamics(Me, dt)
         Next
+        AddTubeLeaks(dt)
+        UpdateAirGeneration(dt, AirConsumed - consumedBefore)
         RunLogic()
+        MeasureFlows()
         RecordHistory()
         RecordChannels()
     End Sub
+
+    ''' <summary>Air blowing out of leaking tubes is counted in the air consumption.</summary>
+    Private Sub AddTubeLeaks(dt As Double)
+        For Each t In _circuit.Tubes
+            If t.Fault <> FaultKind.Leak OrElse t.A.Kind <> PortKind.Pneumatic Then Continue For
+            Dim p = Math.Max(t.A.Pressure, t.B.Pressure)
+            If p > 0.2 Then AddAirConsumption(LeakNlPerMin * (p + CylinderBase.Atm) / (6 + CylinderBase.Atm) * dt / 60)
+        Next
+    End Sub
+
+    ''' <summary>Free air lost by a leaking tube at 6 bar, normal litres per minute.</summary>
+    Public Const LeakNlPerMin As Double = 40
 
     ''' <summary>Solves the networks and lets valves, relays and contacts switch until the circuit is stable.</summary>
     Public Sub RunLogic()
@@ -211,15 +240,14 @@ Partial Public Class Simulator
         _edges.Clear()
         _supplies.Clear()
         _exhausts.Clear()
+        _exhaustCapacity.Clear()
         Warnings.Clear()
 
-        For Each t In _circuit.Tubes
-            AddEdge(t.A, t.B)
-        Next
         For Each e In _circuit.Elements
             e.AddEdges(Me)
             e.AddTerminals(Me)
         Next
+        AddTubeEdges()
 
         Dim n = _ports.Count
         Dim isExhaust(n - 1) As Boolean
@@ -338,6 +366,29 @@ Partial Public Class Simulator
     End Sub
 
     ''' <summary>
+    ''' Tubes and wires join their ports. A blocked tube or broken wire joins nothing; a leaking
+    ''' tube passes less air and loses part of the pressure.
+    ''' </summary>
+    Private Sub AddTubeEdges()
+        Dim highest = 0.0
+        For Each kv In _supplies
+            If _ports(kv.Key).Kind <> PortKind.Electric Then highest = Math.Max(highest, kv.Value)
+        Next
+        For Each t In _circuit.Tubes
+            Select Case t.Fault
+                Case FaultKind.Blocked
+                    ' Nothing passes.
+                Case FaultKind.Leak
+                    Dim limit = Math.Max(0.3, highest * 0.65)
+                    AddEdge(t.A, t.B, 0.35, 0, limit)
+                    AddEdge(t.B, t.A, 0.35, 0, limit)
+                Case Else
+                    AddEdge(t.A, t.B)
+            End Select
+        Next
+    End Sub
+
+    ''' <summary>
     ''' Realistic mode: a tube line ending at a cylinder chamber carries the chamber pressure
     ''' (the pressure drop is across the valve), so gauges and pressure sequence valves on that
     ''' line see the pressure build up.
@@ -394,7 +445,10 @@ Partial Public Class Simulator
         For i = 0 To n - 1
             Dim p = _ports(i)
             If p.State = PortState.Pressurized AndAlso _supplies.ContainsKey(i) Then f(i) = 1
-            If p.State = PortState.Exhausted AndAlso isExhaust(i) Then f(i) = 1
+            If p.State = PortState.Exhausted AndAlso isExhaust(i) Then
+                Dim cap As Double
+                f(i) = If(_exhaustCapacity.TryGetValue(i, cap), cap, 1)
+            End If
         Next
 
         Dim changed = True

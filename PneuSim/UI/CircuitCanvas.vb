@@ -380,6 +380,7 @@ Public Class CircuitCanvas
                         Dim a = el.ToWorld(el.LabelAnchor)
                         g.DrawString(el.Label, labelFont, Brushes.Black, a.X, a.Y - 15)
                     End If
+                    If el.Fault <> FaultKind.None AndAlso (Not el.FaultHidden OrElse RevealFaults) Then DrawElementFault(g, el)
                 Next
             End Using
             DrawPorts(g, interactive)
@@ -433,11 +434,54 @@ Public Class CircuitCanvas
                     pen = If(Simulating AndAlso t.IsPressurized, ctx.Energized, idleWire)
                 ElseIf t.A.Kind = PortKind.Hydraulic Then
                     pen = If(Simulating AndAlso t.IsPressurized, ctx.HydraulicPressure, If(Simulating, idleWire, ctx.Line))
+                ElseIf Simulating AndAlso Math.Min(t.A.Pressure, t.B.Pressure) < -0.1 Then
+                    pen = ctx.Vacuum
                 Else
                     pen = If(Simulating AndAlso t.IsPressurized, ctx.Pressure, idleAir)
                 End If
                 g.DrawLines(pen, pts)
+                If t.Fault <> FaultKind.None AndAlso (Not t.FaultHidden OrElse RevealFaults) Then DrawTubeFault(g, t, pts)
             Next
+        End Using
+    End Sub
+
+    ''' <summary>True while hidden (exercise) faults are shown, e.g. after giving up.</summary>
+    Public Property RevealFaults As Boolean
+
+    Private Sub DrawTubeFault(g As DrawSurface, t As Tube, pts As PointF())
+        ' Marker on the middle of the longest segment.
+        Dim best = 0, bestLen = -1.0F
+        For i = 0 To pts.Length - 2
+            Dim len = Math.Abs(pts(i + 1).X - pts(i).X) + Math.Abs(pts(i + 1).Y - pts(i).Y)
+            If len > bestLen Then bestLen = len : best = i
+        Next
+        Dim m = Symbols.Lerp(pts(best), pts(best + 1), 0.5F)
+        Using pen As New Pen(RenderContext.FaultColor, 2.2F)
+            If t.Fault = FaultKind.Leak Then
+                ' Air puffing out.
+                For k = -1 To 1
+                    g.DrawArc(pen, m.X - 4 + k * 5, m.Y - 12, 6, 8, 200, 140)
+                Next
+            Else
+                g.DrawLine(pen, m.X - 6, m.Y - 6, m.X + 6, m.Y + 6)
+                g.DrawLine(pen, m.X + 6, m.Y - 6, m.X - 6, m.Y + 6)
+            End If
+        End Using
+        Using f As New Font("Segoe UI", 7.5F, FontStyle.Bold), b As New SolidBrush(RenderContext.FaultColor)
+            g.DrawString(If(t.Fault = FaultKind.Leak, "leak", If(t.IsElectric, "broken", "blocked")), f, b, m.X + 7, m.Y - 18)
+        End Using
+    End Sub
+
+    ''' <summary>Red warning badge with the fault name next to a faulty component.</summary>
+    Private Sub DrawElementFault(g As DrawSurface, el As CircuitElement)
+        Dim b = el.WorldBounds()
+        Dim x = b.Right - 4, y = b.Top - 4
+        Using br As New SolidBrush(RenderContext.FaultColor)
+            g.FillPolygon(br, {New PointF(x, y - 9), New PointF(x + 9, y + 7), New PointF(x - 9, y + 7)})
+        End Using
+        Using f As New Font("Segoe UI", 7.5F, FontStyle.Bold), br As New SolidBrush(RenderContext.FaultColor)
+            g.DrawString("!", f, Brushes.White, x - 3, y - 4)
+            g.DrawString(Faults.ShortName(el.Fault), f, br, x + 10, y - 6)
         End Using
     End Sub
 

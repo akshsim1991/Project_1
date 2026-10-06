@@ -141,7 +141,7 @@ Public Module CircuitAnalysis
                 ElseIf TypeOf e Is DirectionalValve AndAlso q.Name = "2" OrElse TypeOf e Is DirectionalValve AndAlso q.Name = "4" Then
                     Dim v = DirectCast(e, DirectionalValve)
                     Select Case v.Actuator
-                        Case ValveActuator.RollerLever
+                        Case ValveActuator.RollerLever, ValveActuator.IdleReturnRoller
                             If Not String.IsNullOrWhiteSpace(v.TriggerMark) Then trigger.Marks.Add(v.TriggerMark)
                             parts.Add($"roller valve {Name(v)} (operated at {v.TriggerMark})")
                         Case ValveActuator.PushButton, ValveActuator.Selector
@@ -199,7 +199,7 @@ Public Module CircuitAnalysis
                     visited.Remove(k)
                     If upstream = "?" Then Continue For
                     Dim nm = If(String.IsNullOrEmpty(k.Label), k.Reference, k.Label)
-                    If k.Operator = ContactOperator.ProximitySensor OrElse k.Operator = ContactOperator.LimitSwitch Then
+                    If k.IsSensor Then
                         If Not k.NormallyClosed AndAlso trigger IsNot Nothing Then trigger.Marks.Add(k.Reference)
                     ElseIf k.Operator <> ContactOperator.Relay AndAlso Not k.NormallyClosed AndAlso trigger IsNot Nothing Then
                         trigger.Manual.Add(nm)
@@ -257,7 +257,7 @@ Public Module CircuitAnalysis
                 ElseIf leftSide AndAlso (v.Actuator = ValveActuator.PushButton OrElse v.Actuator = ValveActuator.Selector) Then
                     mv.Trigger.Manual.Add(Name(v))
                     mv.Trigger.Description = $"operating valve {Name(v)} by hand"
-                ElseIf leftSide AndAlso v.Actuator = ValveActuator.RollerLever Then
+                ElseIf leftSide AndAlso v.IsRollerOperated Then
                     mv.Trigger.Marks.Add(v.TriggerMark)
                     mv.Trigger.Description = $"its roller at {v.TriggerMark}"
                 Else
@@ -385,7 +385,7 @@ Public Module CircuitAnalysis
                     add(IssueSeverity.Error, $"Valve {Name(v)} uses solenoid {sol}, but there is no 'Valve solenoid' coil labelled {sol} in the electrical circuit.", v)
                 End If
             Next
-            If v.Actuator = ValveActuator.RollerLever AndAlso Not MarkExists(els, v.TriggerMark) Then
+            If v.IsRollerOperated AndAlso Not MarkExists(els, v.TriggerMark) Then
                 add(IssueSeverity.Error, $"Roller valve {Name(v)}: no cylinder has a position mark named '{v.TriggerMark}', so the roller is never operated.", v)
             End If
         Next
@@ -396,7 +396,8 @@ Public Module CircuitAnalysis
         Next
         For Each k In els.OfType(Of ElectricContact)()
             Dim labelIsMark = Not String.IsNullOrWhiteSpace(k.Label) AndAlso MarkExists(els, k.Label.Trim())
-            If k.Operator = ContactOperator.Relay AndAlso Not coils.Any(Function(x) x.Kind <> CoilKind.Solenoid AndAlso x.Kind <> CoilKind.Lamp AndAlso same(x.Label, k.Reference)) Then
+            If k.Operator = ContactOperator.Relay AndAlso Not coils.Any(Function(x) x.Kind <> CoilKind.Solenoid AndAlso x.Kind <> CoilKind.Lamp AndAlso same(x.Label, k.Reference)) AndAlso
+               Not els.OfType(Of ElectricCounter)().Any(Function(x) same(x.Label, k.Reference)) Then
                 If labelIsMark Then
                     add(IssueSeverity.Error, $"Contact {Name(k)} is a relay contact, so it only closes when a relay coil switches it. To make the cylinder operate it, " &
                         $"set 'Operated by' to Limit switch (or Proximity sensor) and 'Reference' to {k.Label.Trim()}.", k)
@@ -405,6 +406,9 @@ Public Module CircuitAnalysis
                 Else
                     add(IssueSeverity.Error, $"Relay contact {Name(k)} refers to {k.Reference}, but there is no relay coil labelled {k.Reference}.", k)
                 End If
+            End If
+            If k.Operator = ContactOperator.PressureSwitch AndAlso Not els.OfType(Of PressureSwitch)().Any(Function(x) same(x.Label, k.Reference)) Then
+                add(IssueSeverity.Error, $"Pressure switch contact {Name(k)} refers to '{k.Reference}', but there is no pressure switch with that label.", k)
             End If
             If (k.Operator = ContactOperator.ProximitySensor OrElse k.Operator = ContactOperator.LimitSwitch) AndAlso Not MarkExists(els, k.Reference) Then
                 If String.IsNullOrWhiteSpace(k.Reference) AndAlso labelIsMark Then
@@ -486,8 +490,7 @@ Public Module CircuitAnalysis
 
     Private Function MarkExists(els As IEnumerable(Of CircuitElement), mark As String) As Boolean
         If String.IsNullOrWhiteSpace(mark) Then Return False
-        Return els.OfType(Of CylinderBase)().Any(Function(k) String.Equals(k.RetractedMark, mark, StringComparison.OrdinalIgnoreCase) OrElse
-                                                             String.Equals(k.ExtendedMark, mark, StringComparison.OrdinalIgnoreCase))
+        Return els.OfType(Of ISignalSource)().Any(Function(k) k.SignalNames().Contains(mark.Trim(), StringComparer.OrdinalIgnoreCase))
     End Function
 
     Private Function OverlapIssue(c As Circuit, msg As String, seq As List(Of CircuitMove)) As CheckIssue
@@ -797,7 +800,7 @@ Public Module CircuitAnalysis
                               If v.State <> valveState(v) Then
                                   valveState(v) = v.State
                                   ' Roller valves just follow the cylinders; their switching is implied.
-                                  If v.Actuator = ValveActuator.RollerLever Then Continue For
+                                  If v.IsRollerOperated Then Continue For
                                   ev.Add($"valve {Name(v)} switches to {PositionName(v)}")
                               End If
                           Next

@@ -19,6 +19,27 @@ Public Class Tube
     ''' </summary>
     Public Property Mid As Single?
 
+    ''' <summary>A fault in the tube or wire (troubleshooting practice).</summary>
+    Public Property Fault As FaultKind = FaultKind.None
+
+    ''' <summary>True if the fault is part of a troubleshooting exercise and must not be shown.</summary>
+    Public Property FaultHidden As Boolean
+
+    ''' <summary>The faults a tube or wire can have.</summary>
+    Public Function PossibleFaults() As FaultKind()
+        Return If(IsElectric, {FaultKind.Blocked}, {FaultKind.Leak, FaultKind.Blocked})
+    End Function
+
+    Public Function FaultDescription(kind As FaultKind) As String
+        If IsElectric Then Return If(kind = FaultKind.Blocked, "Wire broken (no connection)", Faults.Describe(kind))
+        Dim what = If(A.Kind = PortKind.Hydraulic, "Hose", "Tube")
+        Select Case kind
+            Case FaultKind.Leak : Return $"{what} leaking (cut or loose fitting)"
+            Case FaultKind.Blocked : Return $"{what} blocked (kinked or crushed)"
+            Case Else : Return Faults.Describe(kind)
+        End Select
+    End Function
+
     Public ReadOnly Property IsElectric As Boolean
         Get
             Return A.Kind = PortKind.Electric
@@ -280,6 +301,7 @@ Public Class Circuit
             If nt IsNot Nothing AndAlso t.Mid.HasValue Then
                 nt.Mid = t.Mid.Value + If(nt.MidAxis() = "X", dx, dy)
             End If
+            If nt IsNot Nothing Then nt.Fault = t.Fault : nt.FaultHidden = t.FaultHidden
         Next
         Return added
     End Function
@@ -303,6 +325,7 @@ Public Class Circuit
                 New XAttribute("x", e.X.ToString(inv)),
                 New XAttribute("y", e.Y.ToString(inv)),
                 New XAttribute("rotation", e.Rotation))
+            WriteFault(xe, e.Fault, e.FaultHidden)
             For Each prop In PersistentProperties(e)
                 Dim value = prop.GetValue(e)
                 xe.Add(New XElement("Property", New XAttribute("name", prop.Name),
@@ -316,6 +339,7 @@ Public Class Circuit
                 New XAttribute("from", t.A.Owner.Id), New XAttribute("fromPort", t.A.Name),
                 New XAttribute("to", t.B.Owner.Id), New XAttribute("toPort", t.B.Name))
             If t.Mid.HasValue Then xt.Add(New XAttribute("mid", t.Mid.Value.ToString(inv)))
+            WriteFault(xt, t.Fault, t.FaultHidden)
             root.Add(xt)
         Next
         Return New XDocument(root)
@@ -349,6 +373,10 @@ Public Class Circuit
                     ' Ignore a malformed value and keep the default.
                 End Try
             Next
+            ReadFault(xe, Sub(k, h)
+                              e.Fault = k
+                              e.FaultHidden = h
+                          End Sub)
             Dim original = e.Id
             c.Add(e, Single.Parse(CStr(xe.Attribute("x")), inv), Single.Parse(CStr(xe.Attribute("y")), inv))
             byId(original) = e
@@ -359,9 +387,35 @@ Public Class Circuit
                 Dim t = c.Connect(a.GetPort(CStr(xt.Attribute("fromPort"))), b.GetPort(CStr(xt.Attribute("toPort"))))
                 Dim mid = xt.Attribute("mid")
                 If t IsNot Nothing AndAlso mid IsNot Nothing Then t.Mid = Single.Parse(mid.Value, inv)
+                If t IsNot Nothing Then ReadFault(xt, Sub(k, h)
+                                                          t.Fault = k
+                                                          t.FaultHidden = h
+                                                      End Sub)
             End If
         Next
         Return c
+    End Function
+
+    ''' <summary>Visible faults are stored by name, hidden (exercise) faults in scrambled form.</summary>
+    Private Shared Sub WriteFault(x As XElement, kind As FaultKind, hidden As Boolean)
+        If kind = FaultKind.None Then Return
+        If hidden Then x.Add(New XAttribute("hf", Faults.Scramble(kind))) Else x.Add(New XAttribute("fault", kind.ToString()))
+    End Sub
+
+    Private Shared Sub ReadFault(x As XElement, apply As Action(Of FaultKind, Boolean))
+        Dim kind As FaultKind
+        Dim visible = x.Attribute("fault"), hidden = x.Attribute("hf")
+        If visible IsNot Nothing AndAlso [Enum].TryParse(visible.Value, kind) Then
+            apply(kind, False)
+        ElseIf hidden IsNot Nothing Then
+            kind = Faults.Unscramble(hidden.Value)
+            If kind <> FaultKind.None Then apply(kind, True)
+        End If
+    End Sub
+
+    ''' <summary>All faults in the circuit, in components and in tubes.</summary>
+    Public Function FaultCount() As Integer
+        Return Elements.Where(Function(e) e.Fault <> FaultKind.None).Count() + Tubes.Where(Function(t) t.Fault <> FaultKind.None).Count()
     End Function
 
     ''' <summary>Public, editable, browsable properties are what gets stored in a file.</summary>

@@ -8,6 +8,29 @@ Public Module ComponentHelp
 
     Private Function Body(e As CircuitElement) As String
         Select Case True
+            Case TypeOf e Is Compressor
+                Return "Compressor with pressure switch: charges the air receiver, starting at the cut-in pressure and stopping at the cut-out pressure. Click it during simulation to switch it off or on."
+            Case TypeOf e Is AirReceiver
+                Return "Air receiver (tank): stores compressed air so short peaks of air use do not make the pressure drop; its pressure falls as air is used until the compressor starts again."
+            Case TypeOf e Is ShutOffValve
+                Return "Shut-off (ball) valve: opens or closes the line by hand. Click it during simulation to turn the handle."
+            Case TypeOf e Is FlowMeter
+                Return $"Flow meter: shows how much {If(DirectCast(e, FlowMeter).Hydraulic, "oil (l/min)", "free air (NL/min)")} flows through the line and in which direction."
+            Case TypeOf e Is ForceSensor
+                Return $"Force sensor (load cell) on the rod of cylinder {DirectCast(e, ForceSensor).Cylinder}: shows the force the piston pushes or pulls with."
+            Case TypeOf e Is PressureSwitch
+                Dim ps = DirectCast(e, PressureSwitch)
+                Return If(ps.Setting < 0,
+                          $"Vacuum switch: switches when the vacuum reaches {ps.Setting:0.0#} bar, e.g. to report that a suction cup holds its part. Contacts with Reference {ps.Label} follow it.",
+                          $"Pressure switch: switches when the pressure reaches {ps.Setting:0.0#} bar (e.g. clamping pressure reached). Contacts with Reference {ps.Label} follow it.")
+            Case TypeOf e Is VacuumGenerator
+                Return "Vacuum generator (ejector): compressed air rushing through a nozzle sucks the air out of port V. It only works while it gets compressed air."
+            Case TypeOf e Is SuctionCup
+                Return "Suction cup: holds the workpiece while the vacuum is strong enough. Click it during simulation to put a workpiece under it or take it away."
+            Case TypeOf e Is Gripper
+                Return "Parallel gripper: air at port 1 closes the jaws, air at port 2 opens them. The position marks report open and closed."
+            Case TypeOf e Is ElectricCounter
+                Return $"Preset counter: counts the pulses on A1/A2. When the count reaches {DirectCast(e, ElectricCounter).Preset}, its contacts (Reference {e.Label}) switch. A pulse on R1/R2, or a click during simulation, resets it."
             Case TypeOf e Is AirSupply
                 Return "Delivers compressed air at the set pressure (usually 6 bar) from the compressor and air preparation."
             Case TypeOf e Is PressureRegulator AndAlso DirectCast(e, PressureRegulator).Hydraulic
@@ -51,6 +74,7 @@ Public Module ComponentHelp
                 Select Case v.Actuator
                     Case ValveActuator.PushButton : how = "Operated while you hold the push button."
                     Case ValveActuator.Selector : how = "A selector switch stays where you put it (detent)."
+                    Case ValveActuator.IdleReturnRoller : how = $"Idle-return roller: gives only a short pulse when the cylinder arrives at {If(String.IsNullOrWhiteSpace(v.TriggerMark), "its mark", v.TriggerMark)}, and none when it moves back. Used to avoid signal overlap."
                     Case ValveActuator.RollerLever : how = If(String.IsNullOrWhiteSpace(v.TriggerMark),
                                                               "Roller lever valve: enter the cylinder position mark that should operate it under 'Roller mark'.",
                                                               $"Operated when a cylinder reaches position mark {v.TriggerMark}.")
@@ -87,6 +111,9 @@ Public Module ComponentHelp
                     Case ContactOperator.Relay : Return kind & $" Operated by relay {k.Reference}."
                     Case ContactOperator.ProximitySensor : Return kind & $" Proximity sensor at cylinder position {k.Reference}."
                     Case ContactOperator.LimitSwitch : Return kind & $" Limit switch at cylinder position {k.Reference}."
+                    Case ContactOperator.PressureSwitch : Return kind & $" Operated by pressure switch {k.Reference}."
+                    Case ContactOperator.EmergencyStop : Return "Emergency stop: a red mushroom button that latches when pressed and opens the control circuit. Click again to release it (as turning a real one)."
+
                     Case Else : Return kind & " Operated by hand."
                 End Select
             Case TypeOf e Is ElectricCoil

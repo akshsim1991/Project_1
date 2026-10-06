@@ -8,6 +8,8 @@ Public Class RenderContext
     Public Shared ReadOnly IdleTubeColor As Color = Color.FromArgb(120, 170, 230)
     Public Shared ReadOnly EnergizedColor As Color = Color.FromArgb(215, 30, 30)
     Public Shared ReadOnly HydraulicColor As Color = Color.FromArgb(200, 90, 0)
+    Public Shared ReadOnly VacuumColor As Color = Color.FromArgb(0, 150, 140)
+    Public Shared ReadOnly FaultColor As Color = Color.FromArgb(220, 0, 90)
 
     ''' <summary>Colour of an active (pressurized / live) line of the given kind.</summary>
     Public Shared Function ActiveColor(kind As PortKind) As Color
@@ -30,6 +32,7 @@ Public Class RenderContext
     Public ReadOnly PressureDashed As New Pen(PressureColor, 1.8F) With {.DashStyle = DashStyle.Dash}
     Public ReadOnly Energized As New Pen(EnergizedColor, 2.0F)
     Public ReadOnly HydraulicPressure As New Pen(HydraulicColor, 2.4F)
+    Public ReadOnly Vacuum As New Pen(VacuumColor, 2.2F) With {.DashStyle = DashStyle.Dot}
     Public ReadOnly Font As New Font("Segoe UI", 8.0F)
     Public ReadOnly SmallFont As New Font("Segoe UI", 7.0F)
     Public ReadOnly TextBrush As New SolidBrush(Color.Black)
@@ -55,7 +58,7 @@ Public Class RenderContext
 
     Public Sub Dispose() Implements IDisposable.Dispose
         Line.Dispose() : Thin.Dispose() : Dashed.Dispose()
-        Pressure.Dispose() : PressureDashed.Dispose() : Energized.Dispose() : HydraulicPressure.Dispose()
+        Pressure.Dispose() : PressureDashed.Dispose() : Energized.Dispose() : HydraulicPressure.Dispose() : Vacuum.Dispose()
         Font.Dispose() : SmallFont.Dispose()
         TextBrush.Dispose() : MarkBrush.Dispose() : BodyBrush.Dispose()
     End Sub

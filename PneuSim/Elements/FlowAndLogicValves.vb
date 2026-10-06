@@ -197,8 +197,17 @@ Public Class FlowControlValve
         g.DrawString($"{_opening}%", r.SmallFont, r.TextBrush, 52, 32)
     End Sub
 
+    Public Overrides Function PossibleFaults() As FaultKind()
+        Return {FaultKind.Blocked}
+    End Function
+
+    Public Overrides Function FaultDescription(kind As FaultKind) As String
+        Return If(kind = FaultKind.Blocked, "Throttle clogged with dirt (almost no flow through it)", MyBase.FaultDescription(kind))
+    End Function
+
     Public Overrides Sub AddEdges(sim As Simulator)
         Dim f = _opening / 100.0
+        If Fault = FaultKind.Blocked Then f = Math.Min(f, 0.03)
         If _hasCheck Then
             sim.AddEdge(Ports(0), Ports(1), 1, f)
         Else

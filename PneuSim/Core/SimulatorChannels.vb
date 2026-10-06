@@ -48,6 +48,32 @@ Partial Public Class Simulator
         For Each a In _circuit.Elements.OfType(Of Accumulator)()
             list.Add(($"{NameOf_(a, "accumulator", 1)} oil volume (l)", a.StoredLitres))
         Next
+        i = 0
+        For Each m In _circuit.Elements.OfType(Of FlowMeter)()
+            i += 1
+            list.Add(($"{NameOf_(m, "flow meter", i)} flow ({m.Unit})", m.Flow))
+        Next
+        i = 0
+        For Each f In _circuit.Elements.OfType(Of ForceSensor)()
+            i += 1
+            list.Add(($"{NameOf_(f, "force sensor", i)} force on {f.Cylinder} (N)", f.Force))
+        Next
+        i = 0
+        For Each r In _circuit.Elements.OfType(Of AirReceiver)()
+            i += 1
+            list.Add(($"{NameOf_(r, "receiver", i)} pressure (bar)", r.Pressure))
+        Next
+        For Each ps In _circuit.Elements.OfType(Of PressureSwitch)().Where(Function(x) Not String.IsNullOrWhiteSpace(x.Label))
+            list.Add(($"{ps.Label} {If(ps.Setting < 0, "vacuum", "pressure")} switch (on = 1)", If(ps.IsOn, 1, 0)))
+        Next
+        i = 0
+        For Each cup In _circuit.Elements.OfType(Of SuctionCup)()
+            i += 1
+            list.Add(($"{NameOf_(cup, "suction cup", i)} vacuum (bar)", cup.Ports(0).Pressure))
+        Next
+        For Each k In _circuit.Elements.OfType(Of ElectricCounter)().Where(Function(x) Not String.IsNullOrWhiteSpace(x.Label))
+            list.Add(($"{k.Label} count", k.Count))
+        Next
         list.Add(("Air consumption (normal litres)", AirConsumed))
         Return list
     End Function

@@ -45,8 +45,24 @@ Public Class CheckValve
         g.DrawEllipse(r.Line, 26, 14, 12, 12)
     End Sub
 
+    Public Overrides Function PossibleFaults() As FaultKind()
+        Return {FaultKind.Leak, FaultKind.Blocked}
+    End Function
+
+    Public Overrides Function FaultDescription(kind As FaultKind) As String
+        Select Case kind
+            Case FaultKind.Leak : Return "Seat damaged: it also lets flow through in the blocked direction"
+            Case FaultKind.Blocked : Return "Stuck closed: nothing flows through it"
+        End Select
+        Return MyBase.FaultDescription(kind)
+    End Function
+
     Public Overrides Sub AddEdges(sim As Simulator)
-        sim.AddEdge(Ports(0), Ports(1), 1, 0)
+        Select Case Fault
+            Case FaultKind.Blocked
+            Case FaultKind.Leak : sim.AddEdge(Ports(0), Ports(1), 1, 0.4)
+            Case Else : sim.AddEdge(Ports(0), Ports(1), 1, 0)
+        End Select
     End Sub
 End Class
 
@@ -102,8 +118,20 @@ Public Class QuickExhaustValve
         _feeding = False
     End Sub
 
+    Public Overrides Function PossibleFaults() As FaultKind()
+        Return {FaultKind.Blocked}
+    End Function
+
+    Public Overrides Function FaultDescription(kind As FaultKind) As String
+        Return If(kind = FaultKind.Blocked, "Exhaust port blocked: the air cannot get out here", MyBase.FaultDescription(kind))
+    End Function
+
     Public Overrides Sub AddEdges(sim As Simulator)
-        If _feeding Then sim.AddEdge(Ports(0), Ports(1), 1, 0) Else sim.AddEdge(Ports(1), Ports(2), 1, 0)
+        If _feeding Then
+            sim.AddEdge(Ports(0), Ports(1), 1, 0)
+        ElseIf Fault <> FaultKind.Blocked Then
+            sim.AddEdge(Ports(1), Ports(2), 1, 0)
+        End If
     End Sub
 
     Public Overrides Function UpdateLogic(sim As Simulator) As Boolean
@@ -220,8 +248,28 @@ Public Class PressureRegulator
         g.DrawLine(r.Thin, x + 2, y - 2, x + size - 2, y - 10)
     End Sub
 
+    Public Overrides Function PossibleFaults() As FaultKind()
+        Return {FaultKind.LowOutput, FaultKind.Blocked}
+    End Function
+
+    Public Overrides Function FaultDescription(kind As FaultKind) As String
+        Select Case kind
+            Case FaultKind.LowOutput : Return If(Hydraulic, "Reducing valve faulty: the output pressure is far too low", "Regulator diaphragm torn: the output pressure is far too low")
+            Case FaultKind.Blocked : Return If(Style = RegulatorStyle.ServiceUnit AndAlso Not Hydraulic, "Filter element clogged: very little air gets through", "Clogged: very little flow gets through")
+        End Select
+        Return MyBase.FaultDescription(kind)
+    End Function
+
+    ''' <summary>Output pressure including a fault.</summary>
+    Private ReadOnly Property EffectiveSetting As Double
+        Get
+            Return If(Fault = FaultKind.LowOutput, Math.Max(0.2, _setting * 0.25), _setting)
+        End Get
+    End Property
+
     Public Overrides Sub AddEdges(sim As Simulator)
-        sim.AddEdge(Ports(0), Ports(1), 1, 1, _setting)
+        Dim cap = If(Fault = FaultKind.Blocked, 0.12, 1)
+        sim.AddEdge(Ports(0), Ports(1), cap, cap, EffectiveSetting)
     End Sub
 End Class
 
@@ -251,8 +299,16 @@ Public Class Silencer
         Next
     End Sub
 
+    Public Overrides Function PossibleFaults() As FaultKind()
+        Return {FaultKind.Blocked}
+    End Function
+
+    Public Overrides Function FaultDescription(kind As FaultKind) As String
+        Return If(kind = FaultKind.Blocked, "Silencer clogged with oil and dirt: the air escapes very slowly", MyBase.FaultDescription(kind))
+    End Function
+
     Public Overrides Sub AddTerminals(sim As Simulator)
-        sim.AddExhaust(Ports(0))
+        sim.AddExhaust(Ports(0), If(Fault = FaultKind.Blocked, 0.08, 1))
     End Sub
 End Class
 
@@ -362,11 +418,32 @@ Public Class AirMotor
         _rpm = 0
     End Sub
 
+    Public Overrides Function PossibleFaults() As FaultKind()
+        Return {FaultKind.Jammed}
+    End Function
+
+    Public Overrides Function FaultDescription(kind As FaultKind) As String
+        Return If(kind = FaultKind.Jammed, "Motor seized: the vanes are stuck", MyBase.FaultDescription(kind))
+    End Function
+
+    Public Overrides Function InspectValues() As List(Of (Name As String, Value As String))
+        Dim list = MyBase.InspectValues()
+        list.Add(("Speed", $"{_rpm:0} rpm"))
+        Return list
+    End Function
+
+    ''' <summary>Free air flowing through the motor now, NL/min.</summary>
+    Public Function ConsumptionNow() As Double
+        Dim p = Ports(0)
+        If p.State <> PortState.Pressurized OrElse p.Pressure <= 0.2 OrElse Fault = FaultKind.Jammed Then Return 0
+        Return _consumption * p.Factor * (p.Pressure + CylinderBase.Atm) / (6 + CylinderBase.Atm)
+    End Function
+
     Public Overrides Sub UpdateDynamics(sim As Simulator, dt As Double)
         Dim p = Ports(0)
-        _rpm = If(p.State = PortState.Pressurized, NominalSpeed * p.Factor * Math.Min(1, p.Pressure / 6), 0)
+        _rpm = If(p.State = PortState.Pressurized AndAlso Fault <> FaultKind.Jammed, NominalSpeed * p.Factor * Math.Min(1, p.Pressure / 6), 0)
         _angle = (_angle + _rpm * 6 * dt) Mod 360
-        If p.State = PortState.Pressurized AndAlso p.Pressure > 0.2 Then
+        If p.State = PortState.Pressurized AndAlso p.Pressure > 0.2 AndAlso Fault <> FaultKind.Jammed Then
             ' Air flows through the motor to its exhaust; consumption rises with pressure.
             sim.AddAirConsumption(_consumption * p.Factor * (p.Pressure + CylinderBase.Atm) / (6 + CylinderBase.Atm) * dt / 60)
         End If

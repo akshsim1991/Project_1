@@ -3,6 +3,7 @@ Imports System.ComponentModel
 ''' <summary>Common behaviour and drawing of cylinders, including the realistic physics model.</summary>
 Public MustInherit Class CylinderBase
     Inherits CircuitElement
+    Implements ISignalSource
 
     ' Body geometry (local coordinates). Ports sit 10 px below the body.
     Protected Const BodyLeft As Single = 0, BodyRight As Single = 120
@@ -173,6 +174,73 @@ Public MustInherit Class CylinderBase
         Return True
     End Function
 
+    Public Function IsSignalOn(name As String) As Boolean Implements ISignalSource.IsSignalOn
+        Return IsAtMark(name)
+    End Function
+
+    Public Function SignalNames() As IEnumerable(Of String) Implements ISignalSource.SignalNames
+        Return {RetractedMark, ExtendedMark}.Where(Function(m) Not String.IsNullOrWhiteSpace(m)).Select(Function(m) m.Trim())
+    End Function
+
+    Public Overrides Function PossibleFaults() As FaultKind()
+        Return {FaultKind.Leak, FaultKind.Sticking, FaultKind.Jammed}
+    End Function
+
+    Public Overrides Function FaultDescription(kind As FaultKind) As String
+        Select Case kind
+            Case FaultKind.Leak : Return If(Ports(0).Kind = PortKind.Hydraulic, "Piston seal worn: oil leaks past the piston", "Piston seal worn: air leaks past the piston")
+            Case FaultKind.Sticking : Return "Sticking: worn guide or bent rod, high friction"
+            Case FaultKind.Jammed : Return "Jammed: the rod cannot move (mechanical blockage)"
+        End Select
+        Return MyBase.FaultDescription(kind)
+    End Function
+
+    ''' <summary>Friction including a sticking fault (N).</summary>
+    Protected ReadOnly Property EffectiveFrictionN As Double
+        Get
+            Return If(Fault = FaultKind.Sticking, FrictionN * 6 + 150, FrictionN)
+        End Get
+    End Property
+
+    ''' <summary>Force the piston pushes with (N, positive = extending), from the chamber pressures.</summary>
+    Public Function PistonForce() As Double
+        Dim capP = If(_physicsReady, CapPressure, Ports(0).Pressure)
+        Dim rodP = If(HasRodPort, If(_physicsReady, RodPressure, Ports(1).Pressure), 0)
+        Return (capP * CapArea() - rodP * RodArea()) * 100000.0
+    End Function
+
+    ''' <summary>
+    ''' Flow into the chamber behind a port, from the piston speed: free air in normal litres per
+    ''' minute (pneumatic) or oil in litres per minute (hydraulic). Negative = flowing out.
+    ''' </summary>
+    Public Function PortFlow(p As Port) As Double
+        Dim area As Double
+        If p Is Ports(0) Then
+            area = CapArea()
+        ElseIf HasRodPort AndAlso p Is Ports(1) Then
+            area = -RodArea()
+        Else
+            Return 0
+        End If
+        Dim litresPerMin = area * _velocity * 1000 * 60
+        If p.Kind = PortKind.Hydraulic Then Return litresPerMin
+        Dim gauge = If(_physicsReady, If(p Is Ports(0), CapPressure, RodPressure), p.Pressure)
+        Return litresPerMin * (gauge + Atm) / Atm
+    End Function
+
+    Public Overrides Function InspectValues() As List(Of (Name As String, Value As String))
+        Dim list = MyBase.InspectValues()
+        list.Add(("Position", $"{_position * StrokeLength:0.0} mm of {StrokeLength} mm"))
+        list.Add(("Speed", $"{_velocity:0.000} m/s"))
+        If Ports(0).Kind = PortKind.Pneumatic Then
+            list.Add(("Cap-side chamber", $"{If(_physicsReady, CapPressure, Ports(0).Pressure):0.00} bar"))
+            If HasRodPort Then list.Add(("Rod-side chamber", $"{If(_physicsReady, RodPressure, Ports(1).Pressure):0.00} bar"))
+        End If
+        list.Add(("Piston force", $"{PistonForce():0} N"))
+        list.Add(("Completed cycles", CompletedCycles.ToString()))
+        Return list
+    End Function
+
     Public Function IsAtMark(mark As String) As Boolean
         If String.Equals(mark, RetractedMark, StringComparison.OrdinalIgnoreCase) AndAlso _position <= 0.005 Then Return True
         If String.Equals(mark, ExtendedMark, StringComparison.OrdinalIgnoreCase) AndAlso _position >= 0.995 Then Return True
@@ -210,6 +278,7 @@ Public MustInherit Class CylinderBase
     Protected Sub MoveAtSpeed(speed As Double, dt As Double)
         Dim length = Math.Max(0.001, StrokeLength / 1000.0)
         Dim before = _position
+        speed *= Faults.SpeedFactor(Fault)
         _position = Math.Max(0, Math.Min(1, _position + speed * dt / length))
         _velocity = (_position - before) * length / Math.Max(dt, 0.000001)
         TrackCycles()
@@ -218,6 +287,7 @@ Public MustInherit Class CylinderBase
     ''' <summary>Ideal-mode movement at a speed set by the stroke time and the flow factor.</summary>
     Protected Sub Move(direction As Integer, flowFactor As Double, dt As Double, Optional sim As Simulator = Nothing)
         Dim before = _position
+        flowFactor *= Faults.SpeedFactor(Fault)
         _position += direction * flowFactor * dt / _strokeTime
         _position = Math.Max(0, Math.Min(1, _position))
         _velocity = (_position - before) * StrokeLength / 1000 / Math.Max(dt, 0.000001)
@@ -314,12 +384,24 @@ Public MustInherit Class CylinderBase
             Dim nearStart = x_ < cushion AndAlso _velocity < 0
             _airCap += ChamberFlow(Ports(0), pCap, nearStart, sim) * h
             If HasRodPort Then _airRod += ChamberFlow(Ports(1), pRod, nearEnd, sim) * h
+            If Fault = FaultKind.Leak Then
+                ' Worn piston seal: air passes from the higher to the lower pressure chamber
+                ' (single-acting: to the vented spring chamber).
+                If HasRodPort Then
+                    Dim q = If(pCap > pRod, Flow(0.25, pCap, pRod), -Flow(0.25, pRod, pCap))
+                    _airCap -= q * h : _airRod += q * h
+                Else
+                    _airCap -= Flow(0.25, pCap, Atm) * h
+                End If
+            End If
             _airCap = Math.Max(_airCap, 0.0001)
             _airRod = Math.Max(_airRod, 0.0001)
             ' Forces (N): pressures in bar gauge * 1e5 Pa * area.
             Dim force = (pCap - Atm) * 100000.0 * CapArea() - If(HasRodPort, (pRod - Atm) * 100000.0 * RodArea(), 0) -
                         LoadForceN - SpringForce(x_) - 60 * _velocity
             Dim friction = Math.Max(0, FrictionN)
+            If Fault = FaultKind.Sticking Then friction = friction * 6 + 150
+            If Fault = FaultKind.Jammed Then friction = Double.MaxValue / 4
             Dim accel As Double
             If Math.Abs(_velocity) < 0.0005 Then
                 accel = If(Math.Abs(force) <= friction, 0, (force - Math.Sign(force) * friction) / mass)

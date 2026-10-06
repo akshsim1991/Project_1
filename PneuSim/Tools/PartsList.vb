@@ -21,6 +21,18 @@ Public Module PartsList
     ''' <summary>Typical list prices in rupees (educational estimates); users can override them.</summary>
     Public Function DefaultPrice(description As String) As Double
         Dim d = description.ToLowerInvariant()
+        If d.Contains("compressor") Then Return 35000
+        If d.Contains("air receiver") Then Return 6000
+        If d.Contains("shut-off") Then Return If(d.Contains("hydraulic"), 1500, 350)
+        If d.Contains("flow meter") Then Return 4500
+        If d.Contains("force sensor") Then Return 8000
+        If d.Contains("vacuum switch") Then Return 2000
+        If d.Contains("pressure switch") Then Return 1800
+        If d.Contains("vacuum generator") Then Return 2500
+        If d.Contains("suction cup") Then Return 300
+        If d.Contains("gripper") Then Return 9000
+        If d.Contains("preset counter") Then Return 1800
+        If d.Contains("emergency stop") Then Return 900
         If d.Contains("hydraulic power unit") Then Return 45000
         If d.Contains("hydraulic single-acting") Then Return 9000
         If d.Contains("hydraulic check") Then Return 1800
@@ -89,6 +101,8 @@ Public Module PartsList
                     Continue For
                 Case TypeOf e Is ElectricContact AndAlso DirectCast(e, ElectricContact).Operator = ContactOperator.Relay
                     Continue For ' part of the relay
+                Case TypeOf e Is ElectricContact AndAlso DirectCast(e, ElectricContact).Operator = ContactOperator.PressureSwitch
+                    Continue For ' part of the pressure switch
                 Case TypeOf e Is ElectricCoil AndAlso DirectCast(e, ElectricCoil).Kind = CoilKind.Solenoid
                     Continue For ' part of the solenoid valve
             End Select

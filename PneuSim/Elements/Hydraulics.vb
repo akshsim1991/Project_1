@@ -43,6 +43,28 @@ Public Class HydraulicPump
     End Property
     Private _maxPressure As Double = 250
 
+    ''' <summary>Delivery including a worn-pump fault.</summary>
+    <Browsable(False)> Public ReadOnly Property EffectiveFlowLpm As Double
+        Get
+            Return If(Fault = FaultKind.LowOutput, _flowLpm * 0.35, _flowLpm)
+        End Get
+    End Property
+
+    Public Overrides Function PossibleFaults() As FaultKind()
+        Return {FaultKind.LowOutput}
+    End Function
+
+    Public Overrides Function FaultDescription(kind As FaultKind) As String
+        Return If(kind = FaultKind.LowOutput, "Pump worn: it delivers much less oil", MyBase.FaultDescription(kind))
+    End Function
+
+    Public Overrides Function InspectValues() As List(Of (Name As String, Value As String))
+        Dim list = MyBase.InspectValues()
+        list.Add(("Motor", If(_running, "running", "stopped")))
+        list.Add(("Delivery", If(_running, $"{EffectiveFlowLpm:0.0} l/min", "0 l/min")))
+        Return list
+    End Function
+
     <Browsable(False)> Public ReadOnly Property Running As Boolean
         Get
             Return _running
@@ -149,10 +171,25 @@ Public Class ReliefValve
         End Set
     End Property
 
+    ''' <summary>Opening pressure including a weak-spring fault.</summary>
+    <Browsable(False)> Public ReadOnly Property EffectiveSetting As Double
+        Get
+            Return If(Fault = FaultKind.LowOutput, Math.Max(1, _setting * 0.4), _setting)
+        End Get
+    End Property
+
+    Public Overrides Function PossibleFaults() As FaultKind()
+        Return {FaultKind.LowOutput}
+    End Function
+
+    Public Overrides Function FaultDescription(kind As FaultKind) As String
+        Return If(kind = FaultKind.LowOutput, "Relief valve opens far too early (weak or broken spring)", MyBase.FaultDescription(kind))
+    End Function
+
     ''' <summary>True while the valve is open (pump flow going to tank).</summary>
     <Browsable(False)> Public ReadOnly Property IsOpen As Boolean
         Get
-            Return Ports(0).IsPressurized AndAlso Ports(0).Pressure >= _setting - 0.01
+            Return Ports(0).IsPressurized AndAlso Ports(0).Pressure >= EffectiveSetting - 0.01
         End Get
     End Property
 
@@ -218,6 +255,7 @@ Public Class HydraulicCylinder
     End Function
 
     Public Function WantsFlow() As Boolean Implements IHydraulicConsumer.WantsFlow
+        If Fault = FaultKind.Jammed Then Return False
         Dim d = DesiredDirection()
         Return d <> 0 AndAlso Not (Ports(0).State = PortState.Exhausted AndAlso Ports(1).State = PortState.Exhausted)
     End Function
@@ -225,7 +263,7 @@ Public Class HydraulicCylinder
     Public ReadOnly Property LoadPressure As Double Implements IHydraulicConsumer.LoadPressure
         Get
             Dim area = If(_direction >= 0, CapArea(), RodArea())
-            Dim force = If(_direction >= 0, LoadForceN, -LoadForceN) + FrictionN
+            Dim force = If(_direction >= 0, LoadForceN, -LoadForceN) + EffectiveFrictionN
             Return Math.Max(2, force / area / 100000.0)
         End Get
     End Property
@@ -280,12 +318,12 @@ Public Class HydraulicSingleActingCylinder
     Public Overrides ReadOnly Property DisplayName As String = "Hydraulic single-acting cylinder"
 
     Public Function WantsFlow() As Boolean Implements IHydraulicConsumer.WantsFlow
-        Return Ports(0).State = PortState.Pressurized AndAlso Position < 1
+        Return Ports(0).State = PortState.Pressurized AndAlso Position < 1 AndAlso Fault <> FaultKind.Jammed
     End Function
 
     Public ReadOnly Property LoadPressure As Double Implements IHydraulicConsumer.LoadPressure
         Get
-            Dim force = LoadForceN + SpringPreloadN * 1.5 + FrictionN
+            Dim force = LoadForceN + SpringPreloadN * 1.5 + EffectiveFrictionN
             Return Math.Max(2, force / CapArea() / 100000.0)
         End Get
     End Property

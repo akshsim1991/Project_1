@@ -37,6 +37,16 @@ Public Module ElementFactory
             Case "PowerTerminal" : Return New PowerTerminal()
             Case "ElectricContact" : Return New ElectricContact()
             Case "ElectricCoil" : Return New ElectricCoil()
+            Case "ElectricCounter" : Return New ElectricCounter()
+            Case "PressureSwitch" : Return New PressureSwitch()
+            Case "ShutOffValve" : Return New ShutOffValve()
+            Case "VacuumGenerator" : Return New VacuumGenerator()
+            Case "SuctionCup" : Return New SuctionCup()
+            Case "Gripper" : Return New Gripper()
+            Case "Compressor" : Return New Compressor()
+            Case "AirReceiver" : Return New AirReceiver()
+            Case "FlowMeter" : Return New FlowMeter()
+            Case "ForceSensor" : Return New ForceSensor()
             Case Else : Return Nothing
         End Select
     End Function

@@ -53,7 +53,7 @@ Public Module Naming
                 e.Label = NextFree("1A", used)
             Case TypeOf e Is DirectionalValve
                 Dim v = DirectCast(e, DirectionalValve)
-                Dim signal = v.Actuator = ValveActuator.PushButton OrElse v.Actuator = ValveActuator.Selector OrElse v.Actuator = ValveActuator.RollerLever
+                Dim signal = v.Actuator = ValveActuator.PushButton OrElse v.Actuator = ValveActuator.Selector OrElse v.IsRollerOperated
                 If String.IsNullOrWhiteSpace(v.Label) Then v.Label = NextFree(If(signal, "1S1", "1V1"), used)
                 ' Solenoids: first take coils already drawn that no valve uses yet, then new names.
                 Dim freeCoils = existing.OfType(Of ElectricCoil)().
@@ -87,13 +87,26 @@ Public Module Naming
                 End Select
             Case TypeOf e Is ElectricContact
                 Dim c = DirectCast(e, ElectricContact)
-                If c.Operator = ContactOperator.PushButton OrElse c.Operator = ContactOperator.Selector Then
+                If c.Operator = ContactOperator.PushButton OrElse c.Operator = ContactOperator.Selector OrElse c.Operator = ContactOperator.EmergencyStop Then
                     c.Label = NextFree(If(String.IsNullOrWhiteSpace(c.Label), "S1", c.Label), used)
                 ElseIf c.Operator = ContactOperator.Relay Then
                     ' Point a new relay contact at the most recently drawn relay.
                     Dim relay = existing.OfType(Of ElectricCoil)().LastOrDefault(Function(x) x.Kind <> CoilKind.Solenoid AndAlso x.Kind <> CoilKind.Lamp)
                     If relay IsNot Nothing AndAlso Not String.IsNullOrWhiteSpace(relay.Label) Then c.Reference = relay.Label
+                ElseIf c.Operator = ContactOperator.PressureSwitch Then
+                    ' Point a new pressure switch contact at the most recently drawn pressure switch.
+                    Dim ps = existing.OfType(Of PressureSwitch)().LastOrDefault(Function(x) Not String.IsNullOrWhiteSpace(x.Label))
+                    If ps IsNot Nothing Then c.Reference = ps.Label
                 End If
+            Case TypeOf e Is PressureSwitch
+                e.Label = NextFree("B1", used)
+            Case TypeOf e Is ElectricCounter
+                e.Label = NextFree(If(String.IsNullOrWhiteSpace(e.Label), "C1", e.Label), used)
+            Case TypeOf e Is ForceSensor
+                Dim f = DirectCast(e, ForceSensor)
+                ' Measure the most recently drawn cylinder.
+                Dim cyl = existing.OfType(Of CylinderBase)().LastOrDefault(Function(x) Not String.IsNullOrWhiteSpace(x.Label))
+                If cyl IsNot Nothing Then f.Cylinder = cyl.Label.Trim()
             Case TypeOf e Is PageConnector
                 ' Connectors work in pairs: reuse a name that has no partner yet, otherwise a new one.
                 Dim counts = existing.OfType(Of PageConnector)().Where(Function(x) Not String.IsNullOrWhiteSpace(x.Label)).
@@ -163,7 +176,10 @@ Public Module Naming
                     c.ExtendedMark = mapMark(c.ExtendedMark)
                 Case TypeOf e Is ElectricContact
                     Dim k = DirectCast(e, ElectricContact)
-                    k.Reference = If(k.Operator = ContactOperator.Relay, mapName(k.Reference), mapMark(k.Reference))
+                    k.Reference = If(k.Operator = ContactOperator.Relay OrElse k.Operator = ContactOperator.PressureSwitch, mapName(k.Reference), mapMark(k.Reference))
+                Case TypeOf e Is ForceSensor
+                    Dim f = DirectCast(e, ForceSensor)
+                    f.Cylinder = mapName(f.Cylinder)
             End Select
         Next
     End Sub

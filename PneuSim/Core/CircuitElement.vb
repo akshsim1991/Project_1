@@ -80,6 +80,14 @@ Public Class Port
     End Sub
 End Class
 
+''' <summary>A component that gives named on/off signals, e.g. cylinder position marks or a pressure switch.</summary>
+Public Interface ISignalSource
+    ''' <summary>True if the signal with this name is on.</summary>
+    Function IsSignalOn(name As String) As Boolean
+    ''' <summary>Names of the signals this component gives.</summary>
+    Function SignalNames() As IEnumerable(Of String)
+End Interface
+
 ''' <summary>Base class for every symbol that can be placed in a circuit.</summary>
 <TypeDescriptionProvider(GetType(ElementDescriptionProvider))>
 Public MustInherit Class CircuitElement
@@ -88,6 +96,31 @@ Public MustInherit Class CircuitElement
     Public Overridable Function ShowProperty(name As String) As Boolean
         Return True
     End Function
+
+    ''' <summary>A fault put into the component (troubleshooting practice).</summary>
+    <Browsable(False)> Public Property Fault As FaultKind = FaultKind.None
+
+    ''' <summary>True if the fault is part of a troubleshooting exercise and must not be shown.</summary>
+    <Browsable(False)> Public Property FaultHidden As Boolean
+
+    ''' <summary>The faults that make sense for this component (empty: none).</summary>
+    Public Overridable Function PossibleFaults() As FaultKind()
+        Return Array.Empty(Of FaultKind)()
+    End Function
+
+    ''' <summary>What a fault means for this component, in plain words.</summary>
+    Public Overridable Function FaultDescription(kind As FaultKind) As String
+        Return Faults.Describe(kind)
+    End Function
+
+    ''' <summary>Live values shown in the state inspector: (name, value) pairs besides the port pressures.</summary>
+    Public Overridable Function InspectValues() As List(Of (Name As String, Value As String))
+        Return New List(Of (Name As String, Value As String))
+    End Function
+
+    ''' <summary>Called after a replay snapshot has been restored, to rebuild derived data.</summary>
+    Public Overridable Sub AfterStateRestored()
+    End Sub
 
     <Browsable(False)> Public Property Id As Integer
     <Browsable(False)> Public Property X As Single

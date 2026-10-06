@@ -18,7 +18,7 @@ Partial Public Class Simulator
     ''' <summary>Called before the actuators move: shares the flow among the moving consumers.</summary>
     Private Sub PrepareHydraulics(dt As Double)
         Dim pumps = _circuit.Elements.OfType(Of HydraulicPump)().Where(Function(p) p.Running).ToList()
-        HydraulicPumpFlow = pumps.Sum(Function(p) p.FlowLpm)
+        HydraulicPumpFlow = pumps.Sum(Function(p) p.EffectiveFlowLpm)
         Dim movers = _circuit.Elements.OfType(Of IHydraulicConsumer)().Count(Function(c) c.WantsFlow())
         Dim accumulatorFlow = 0.0
         For Each acc In _circuit.Elements.OfType(Of Accumulator)()
@@ -37,6 +37,7 @@ Partial Public Class Simulator
     End Sub
 
     Private Sub AfterSolve()
+        ApplyVacuum()
         Dim n = _ports.Count
         If Not _ports.Any(Function(p) p.Kind = PortKind.Hydraulic) Then Return
 
@@ -72,7 +73,7 @@ Partial Public Class Simulator
         For Each rv In _circuit.Elements.OfType(Of ReliefValve)()
             If Not live(rv.Ports(0).NodeIndex) Then Continue For
             Dim root = find(rv.Ports(0).NodeIndex)
-            reliefs(root) = Math.Min(If(reliefs.ContainsKey(root), reliefs(root), Double.MaxValue), rv.Setting)
+            reliefs(root) = Math.Min(If(reliefs.ContainsKey(root), reliefs(root), Double.MaxValue), rv.EffectiveSetting)
         Next
         Dim unloaded As New HashSet(Of Integer)
         For i = 0 To n - 1

@@ -813,6 +813,8 @@ Module TestMain
         Dim allTypes = Library.Presets.Select(Function(p) p.Factory.Invoke()).ToList()
         Check("factory knows all types", allTypes.All(Function(e) ElementFactory.Create(e.TypeName) IsNot Nothing))
 
+        TestV32.RunAll()
+
         Console.WriteLine(If(failures = 0, "ALL TESTS PASSED", $"{failures} FAILURE(S)"))
         Environment.ExitCode = failures
     End Sub
