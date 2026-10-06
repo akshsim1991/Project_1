@@ -170,8 +170,14 @@ LRESULT PdfView::Handle(UINT msg, WPARAM wp, LPARAM lp) {
                 case VK_NEXT: NextPage(); return 0;
                 case VK_LEFT: PrevPage(); return 0;
                 case VK_RIGHT: NextPage(); return 0;
-                case VK_HOME: GoToPage(0); return 0;
-                case VK_END: GoToPage(PageCount() - 1); return 0;
+                case VK_HOME:
+                    PushHistory();
+                    GoToPage(0);
+                    return 0;
+                case VK_END:
+                    PushHistory();
+                    GoToPage(PageCount() - 1);
+                    return 0;
                 case VK_SPACE:
                     ScrollOrFlip(shift ? -(ClientH() - LineStep()) : (ClientH() - LineStep()));
                     return 0;
