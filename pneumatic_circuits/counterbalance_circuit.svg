@@ -1,0 +1,184 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="1000" viewBox="0 0 1000 1000" font-family="Arial, Helvetica, sans-serif">
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#111"/>
+    </marker>
+    <pattern id="hatch" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+      <line x1="0" y1="0" x2="0" y2="8" stroke="#999" stroke-width="2"/>
+    </pattern>
+  </defs>
+  <rect width="1000" height="1000" fill="#fff"/>
+  <text x="30" y="40" font-size="24" font-weight="bold" fill="#111">Pneumatic Counterbalance Circuit</text>
+  <text x="30" y="64" font-size="14" fill="#444">ISO 1219 style schematic – vertical load held and lowered under control by a counterbalance valve</text>
+
+  <g transform="translate(0,80)" stroke="#111" stroke-width="2" fill="none">
+    <!-- ===== 1A1 cylinder + load ===== -->
+    <rect x="290" y="40" width="160" height="50" fill="url(#hatch)"/>
+    <text x="370" y="71" font-size="16" font-weight="bold" text-anchor="middle" fill="#111" stroke="none">LOAD  m</text>
+    <line x1="475" y1="45" x2="475" y2="95" marker-end="url(#ah)"/>
+    <text x="485" y="78" font-size="15" fill="#111" stroke="none">W = m·g</text>
+    <rect x="362" y="90" width="16" height="200" fill="#ddd"/>
+    <rect x="330" y="150" width="80" height="250" fill="#f4f7fb"/>
+    <rect x="332" y="288" width="76" height="14" fill="#555"/>
+    <text x="420" y="250" font-size="15" font-weight="bold" fill="#111" stroke="none">1A1</text>
+    <text x="420" y="268" font-size="12" fill="#444" stroke="none">Ø50 / Ø20</text>
+    <text x="420" y="284" font-size="12" fill="#444" stroke="none">stroke 200</text>
+    <text x="250" y="172" font-size="12" fill="#444" stroke="none">rod end</text>
+    <text x="300" y="418" font-size="12" fill="#444" stroke="none">cap end</text>
+
+    <!-- rod-end line: cylinder -> DCV port 4 -->
+    <polyline points="330,180 200,180 200,650 340,650 340,680"/>
+    <text x="180" y="420" font-size="13" fill="#111" stroke="none" transform="rotate(-90 180 420)">line A</text>
+
+    <!-- cap-end line: cylinder -> CBV -> DCV port 2 -->
+    <line x1="370" y1="400" x2="370" y2="500"/>
+    <line x1="370" y1="560" x2="370" y2="680"/>
+    <text x="378" y="660" font-size="13" fill="#111" stroke="none">line B</text>
+
+    <!-- 1Z1 gauge on cap end -->
+    <circle cx="370" cy="430" r="3.5" fill="#111"/>
+    <line x1="370" y1="430" x2="431" y2="430"/>
+    <circle cx="445" cy="430" r="14" fill="#fff"/>
+    <line x1="437" y1="440" x2="453" y2="420" marker-end="url(#ah)"/>
+    <text x="465" y="435" font-size="13" font-weight="bold" fill="#111" stroke="none">1Z1</text>
+
+    <!-- ===== 1V2 counterbalance valve ===== -->
+    <rect x="290" y="455" width="230" height="155" stroke-dasharray="8 5" stroke-width="1.5"/>
+    <text x="528" y="540" font-size="15" font-weight="bold" fill="#111" stroke="none">1V2</text>
+    <text x="528" y="558" font-size="12" fill="#444" stroke="none">counterbalance</text>
+    <text x="528" y="573" font-size="12" fill="#444" stroke="none">valve, set 3.2 bar</text>
+    <!-- sequence/pressure element -->
+    <rect x="340" y="500" width="60" height="60" fill="#fff"/>
+    <line x1="385" y1="506" x2="385" y2="554" marker-end="url(#ah)"/>
+    <line x1="370" y1="500" x2="370" y2="506"/>
+    <line x1="370" y1="506" x2="385" y2="506"/>
+    <line x1="370" y1="560" x2="370" y2="554"/>
+    <line x1="370" y1="554" x2="383" y2="554"/>
+    <!-- internal pilot from cylinder side -->
+    <circle cx="370" cy="485" r="3.5" fill="#111"/>
+    <polyline points="370,485 318,485 318,530 340,530" stroke-dasharray="5 4" stroke-width="1.5"/>
+    <!-- adjustable spring -->
+    <polyline points="400,530 405,521 413,539 421,521 429,539 434,530"/>
+    <line x1="400" y1="550" x2="438" y2="510" stroke-width="1.5" marker-end="url(#ah)"/>
+    <!-- bypass check valve (free flow DCV -> cylinder) -->
+    <circle cx="370" cy="470" r="3.5" fill="#111"/>
+    <polyline points="370,470 480,470 480,519"/>
+    <circle cx="480" cy="528" r="9" fill="#fff"/>
+    <polyline points="465,524 480,548 495,524"/>
+    <polyline points="480,548 480,595 370,595"/>
+    <circle cx="370" cy="595" r="3.5" fill="#111"/>
+
+    <!-- ===== 1V1 5/3 DCV closed centre ===== -->
+    <rect x="265" y="680" width="60" height="50" fill="#fff"/>
+    <rect x="325" y="680" width="60" height="50" fill="#fff"/>
+    <rect x="385" y="680" width="60" height="50" fill="#fff"/>
+    <!-- left box a: 1->4, 2->3 (LOWER) -->
+    <line x1="295" y1="728" x2="281" y2="684" marker-end="url(#ah)"/>
+    <line x1="310" y1="684" x2="315" y2="726" marker-end="url(#ah)"/>
+    <line x1="275" y1="730" x2="275" y2="720"/><line x1="269" y1="720" x2="281" y2="720"/>
+    <!-- centre: all blocked -->
+    <line x1="340" y1="680" x2="340" y2="692"/><line x1="334" y1="692" x2="346" y2="692"/>
+    <line x1="370" y1="680" x2="370" y2="692"/><line x1="364" y1="692" x2="376" y2="692"/>
+    <line x1="335" y1="730" x2="335" y2="718"/><line x1="329" y1="718" x2="341" y2="718"/>
+    <line x1="355" y1="730" x2="355" y2="718"/><line x1="349" y1="718" x2="361" y2="718"/>
+    <line x1="375" y1="730" x2="375" y2="718"/><line x1="369" y1="718" x2="381" y2="718"/>
+    <!-- right box b: 1->2, 4->5 (RAISE) -->
+    <line x1="415" y1="728" x2="429" y2="684" marker-end="url(#ah)"/>
+    <line x1="400" y1="684" x2="395" y2="726" marker-end="url(#ah)"/>
+    <line x1="435" y1="730" x2="435" y2="720"/><line x1="429" y1="720" x2="441" y2="720"/>
+    <!-- actuators: lever left, spring centring both sides -->
+    <line x1="265" y1="692" x2="245" y2="692"/>
+    <line x1="245" y1="692" x2="232" y2="674"/>
+    <circle cx="230" cy="671" r="3.5" fill="#111"/>
+    <polyline points="265,718 260,710 254,726 248,710 242,726 237,718"/>
+    <polyline points="445,705 450,697 456,713 462,697 468,713 473,705"/>
+    <text x="295" y="672" font-size="13" font-weight="bold" fill="#111" stroke="none" text-anchor="middle">a</text>
+    <text x="415" y="672" font-size="13" font-weight="bold" fill="#111" stroke="none" text-anchor="middle">b</text>
+    <text x="482" y="700" font-size="15" font-weight="bold" fill="#111" stroke="none">1V1</text>
+    <text x="482" y="717" font-size="12" fill="#444" stroke="none">5/3 closed centre</text>
+    <!-- port numbers -->
+    <text x="327" y="676" font-size="11" fill="#c00" stroke="none">4</text>
+    <text x="374" y="676" font-size="11" fill="#c00" stroke="none">2</text>
+    <text x="324" y="745" font-size="11" fill="#c00" stroke="none">5</text>
+    <text x="345" y="770" font-size="11" fill="#c00" stroke="none">1</text>
+    <text x="380" y="745" font-size="11" fill="#c00" stroke="none">3</text>
+    <!-- exhausts -->
+    <line x1="335" y1="730" x2="335" y2="745"/><polygon points="327,745 343,745 335,758"/>
+    <line x1="375" y1="730" x2="375" y2="745"/><polygon points="367,745 383,745 375,758"/>
+
+    <!-- ===== supply ===== -->
+    <line x1="355" y1="730" x2="355" y2="840"/>
+    <circle cx="110" cy="840" r="16" fill="#fff"/>
+    <polygon points="103,849 117,849 110,835"/>
+    <text x="110" y="878" font-size="15" font-weight="bold" fill="#111" stroke="none" text-anchor="middle">0P1</text>
+    <text x="110" y="894" font-size="12" fill="#444" stroke="none" text-anchor="middle">6 bar supply</text>
+    <line x1="126" y1="840" x2="175" y2="840"/>
+    <!-- 0Z1 FRL -->
+    <rect x="160" y="800" width="130" height="75" stroke-dasharray="8 5" stroke-width="1.5"/>
+    <polygon points="175,840 190,825 205,840 190,855" fill="#fff"/>
+    <line x1="190" y1="827" x2="190" y2="853" stroke-dasharray="3 3" stroke-width="1.5"/>
+    <line x1="205" y1="840" x2="220" y2="840"/>
+    <rect x="220" y="825" width="30" height="30" fill="#fff"/>
+    <line x1="224" y1="846" x2="246" y2="846" marker-end="url(#ah)"/>
+    <polyline points="235,825 228,820 242,815 228,810 235,805"/>
+    <line x1="250" y1="840" x2="355" y2="840"/>
+    <text x="225" y="893" font-size="15" font-weight="bold" fill="#111" stroke="none" text-anchor="middle">0Z1</text>
+    <text x="225" y="909" font-size="12" fill="#444" stroke="none" text-anchor="middle">FRL service unit</text>
+    <!-- 0Z2 gauge -->
+    <circle cx="310" cy="840" r="3.5" fill="#111"/>
+    <line x1="310" y1="840" x2="310" y2="818"/>
+    <circle cx="310" cy="804" r="14" fill="#fff"/>
+    <line x1="302" y1="814" x2="318" y2="794" marker-end="url(#ah)"/>
+    <text x="300" y="782" font-size="13" font-weight="bold" fill="#111" stroke="none" text-anchor="end">0Z2</text>
+  </g>
+
+  <!-- ===== legend ===== -->
+  <g font-size="13" fill="#111">
+    <rect x="640" y="100" width="340" height="860" fill="#f7f7f7" stroke="#bbb"/>
+    <text x="655" y="128" font-size="16" font-weight="bold">Components</text>
+    <text x="655" y="152"><tspan font-weight="bold">0P1</tspan>  Compressed-air source, 6 bar</text>
+    <text x="655" y="172"><tspan font-weight="bold">0Z1</tspan>  FRL unit (filter + regulator)</text>
+    <text x="655" y="192"><tspan font-weight="bold">0Z2, 1Z1</tspan>  Pressure gauges</text>
+    <text x="655" y="212"><tspan font-weight="bold">1V1</tspan>  5/3 DCV, closed centre,</text>
+    <text x="690" y="228">lever-operated, spring-centred</text>
+    <text x="655" y="248"><tspan font-weight="bold">1V2</tspan>  Counterbalance valve:</text>
+    <text x="690" y="264">pressure-sequence valve, internal</text>
+    <text x="690" y="280">pilot, adjustable spring, with</text>
+    <text x="690" y="296">bypass check valve</text>
+    <text x="655" y="316"><tspan font-weight="bold">1A1</tspan>  Double-acting cylinder, vertical,</text>
+    <text x="690" y="332">rod up, carrying load m</text>
+
+    <text x="655" y="372" font-size="16" font-weight="bold">Operation</text>
+    <text x="655" y="396" font-weight="bold">Centre (neutral)</text>
+    <text x="655" y="414">All ports blocked. Load weight</text>
+    <text x="655" y="430">pressurises cap end, but 1V2 stays</text>
+    <text x="655" y="446">shut (setting &gt; load pressure),</text>
+    <text x="655" y="462">so the load is held.</text>
+    <text x="655" y="488" font-weight="bold">Position b – RAISE</text>
+    <text x="655" y="506">1→2: air passes the check valve</text>
+    <text x="655" y="522">freely into the cap end.</text>
+    <text x="655" y="538">4→5: rod end exhausts.</text>
+    <text x="655" y="564" font-weight="bold">Position a – LOWER</text>
+    <text x="655" y="582">1→4: rod end pressurised. Cap-end</text>
+    <text x="655" y="598">pressure (load + drive) pilots 1V2</text>
+    <text x="655" y="614">open; air exhausts 2→3. Descent is</text>
+    <text x="655" y="630">controlled – no free fall/runaway.</text>
+
+    <text x="655" y="670" font-size="16" font-weight="bold">Suggested simulation values</text>
+    <text x="655" y="694">Supply pressure          6 bar</text>
+    <text x="655" y="712">Bore / rod / stroke   50 / 20 / 200 mm</text>
+    <text x="655" y="730">Load m                     50 kg (W ≈ 490 N)</text>
+    <text x="655" y="748">Cap area A₁              1963 mm²</text>
+    <text x="655" y="766">Rod-side area A₂       1649 mm²</text>
+    <text x="655" y="784">Load pressure W/A₁    ≈ 2.5 bar</text>
+    <text x="655" y="802">1V2 setting (~1.3×)   ≈ 3.2 bar</text>
+    <text x="655" y="820">Rod-end p to lower    ≈ 0.85 bar</text>
+    <text x="655" y="838">Raise force @ 6 bar   ≈ 1178 N</text>
+
+    <text x="655" y="876" font-size="16" font-weight="bold">Port numbering (ISO 5599)</text>
+    <text x="655" y="898">1 = supply   2, 4 = working ports</text>
+    <text x="655" y="916">3, 5 = exhausts</text>
+    <text x="655" y="940" fill="#444">Line A: rod end ↔ port 4</text>
+    <text x="820" y="940" fill="#444">Line B: cap end ↔ 2</text>
+  </g>
+</svg>
