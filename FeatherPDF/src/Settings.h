@@ -19,6 +19,10 @@ struct Settings {
     int sidebarWidth = 240;  // in 96-DPI pixels
     bool matchCase = false;
     int highlightColor = 0;  // index into kHighlightColors
+    COLORREF drawColor = RGB(220, 30, 30);  // shapes, pen and new text
+    int lineWidthTenths = 20;               // line width, in tenths of a point
+    int textSize = 12;                      // new text, in points
+    std::vector<std::wstring> recent;       // recently opened files, newest first
 
     int themeMode = 0;     // ThemeMode: 0 = system, 1 = light, 2 = dark
 

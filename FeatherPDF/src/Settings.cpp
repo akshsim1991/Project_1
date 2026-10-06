@@ -9,6 +9,29 @@ DWORD ReadDword(HKEY key, const wchar_t* name, DWORD def) {
     return v;
 }
 
+std::vector<std::wstring> ReadList(HKEY key, const wchar_t* name) {
+    std::vector<std::wstring> out;
+    DWORD bytes = 0;
+    if (RegGetValueW(key, nullptr, name, RRF_RT_REG_MULTI_SZ, nullptr, nullptr, &bytes) != ERROR_SUCCESS ||
+        bytes < sizeof(wchar_t) || bytes > (1u << 20))
+        return out;
+    std::wstring buf(bytes / sizeof(wchar_t) + 1, L'\0');
+    if (RegGetValueW(key, nullptr, name, RRF_RT_REG_MULTI_SZ, nullptr, buf.data(), &bytes) != ERROR_SUCCESS)
+        return out;
+    for (const wchar_t* p = buf.c_str(); *p && out.size() < 50; p += wcslen(p) + 1) out.push_back(p);
+    return out;
+}
+
+void WriteList(HKEY key, const wchar_t* name, const std::vector<std::wstring>& items) {
+    std::wstring multi;
+    for (const std::wstring& item : items) {
+        multi += item;
+        multi.push_back(L'\0');
+    }
+    multi.push_back(L'\0');
+    RegSetValueExW(key, name, 0, REG_MULTI_SZ, (const BYTE*)multi.data(), (DWORD)(multi.size() * sizeof(wchar_t)));
+}
+
 void WriteDword(HKEY key, const wchar_t* name, DWORD v) {
     RegSetValueExW(key, name, 0, REG_DWORD, (const BYTE*)&v, sizeof(v));
 }
@@ -44,6 +67,12 @@ void Settings::Load() {
     themeMode = (int)ReadDword(key, L"Theme", 0);
     if (themeMode < 0 || themeMode > 2) themeMode = 0;
     activeTab = (int)ReadDword(key, L"ActiveTab", 0);
+    drawColor = (COLORREF)ReadDword(key, L"DrawColor", RGB(220, 30, 30)) & 0xFFFFFF;
+    lineWidthTenths = (int)ReadDword(key, L"LineWidth", 20);
+    if (lineWidthTenths < 5 || lineWidthTenths > 200) lineWidthTenths = 20;
+    textSize = (int)ReadDword(key, L"TextSize", 12);
+    if (textSize < 4 || textSize > 200) textSize = 12;
+    recent = ReadList(key, L"Recent");
 
     // Session: REG_MULTI_SZ of "page|path" entries.
     DWORD bytes = 0;
@@ -83,6 +112,10 @@ void Settings::Save() const {
     WriteDword(key, L"HighlightColor", (DWORD)highlightColor);
     WriteDword(key, L"Theme", (DWORD)themeMode);
     WriteDword(key, L"ActiveTab", (DWORD)activeTab);
+    WriteDword(key, L"DrawColor", (DWORD)drawColor);
+    WriteDword(key, L"LineWidth", (DWORD)lineWidthTenths);
+    WriteDword(key, L"TextSize", (DWORD)textSize);
+    WriteList(key, L"Recent", recent);
     std::wstring multi;
     for (const OpenFile& f : session) {
         multi += std::to_wstring(f.page) + L"|" + f.path;

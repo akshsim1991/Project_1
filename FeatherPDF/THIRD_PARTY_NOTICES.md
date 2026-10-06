@@ -30,5 +30,5 @@ including commercially and in closed-source form, as long as these notices
 are shipped with it.
 
 The application itself uses only Windows system libraries (user32, gdi32,
-comctl32, comdlg32, shell32, ole32, dwmapi, uxtheme, advapi32) and the C++
+comctl32, comdlg32, shell32, ole32, dwmapi, uxtheme, advapi32, gdiplus) and the C++
 standard library, which is statically linked.

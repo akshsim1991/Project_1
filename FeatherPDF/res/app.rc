@@ -70,9 +70,62 @@ BEGIN
     DEFPUSHBUTTON   "Close", IDCANCEL, 318, 198, 52, 15
 END
 
+IDD_SIGNATURE DIALOGEX 0, 0, 320, 196
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Signature"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "Draw your signature in the box, type your name, or use a picture of it.", -1, 10, 8, 300, 10
+    CONTROL         "", IDC_SIG_PAD, "FeatherSignPad", WS_BORDER | WS_TABSTOP, 10, 22, 300, 100
+    EDITTEXT        IDC_SIG_TYPE, 10, 128, 190, 14, ES_AUTOHSCROLL | WS_TABSTOP
+    PUSHBUTTON      "&Picture...", IDC_SIG_PICTURE, 206, 127, 50, 15, WS_TABSTOP
+    PUSHBUTTON      "&Clear", IDC_SIG_CLEAR, 260, 127, 50, 15, WS_TABSTOP
+    LTEXT           "Ink:", -1, 10, 152, 18, 10
+    AUTORADIOBUTTON "&Black", IDC_SIG_BLACK, 30, 151, 40, 10, WS_GROUP | WS_TABSTOP
+    AUTORADIOBUTTON "Bl&ue", IDC_SIG_BLUE, 72, 151, 40, 10
+    AUTOCHECKBOX    "&Remember this signature on this PC", IDC_SIG_REMEMBER, 130, 151, 180, 10, WS_GROUP | WS_TABSTOP
+    DEFPUSHBUTTON   "OK", IDOK, 204, 174, 50, 15
+    PUSHBUTTON      "Cancel", IDCANCEL, 260, 174, 50, 15
+END
+
+IDD_INPUT DIALOGEX 0, 0, 260, 74
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Feather PDF"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "", IDC_INPUT_LABEL, 10, 8, 240, 18
+    EDITTEXT        IDC_INPUT_EDIT, 10, 28, 240, 14, ES_AUTOHSCROLL | WS_TABSTOP
+    DEFPUSHBUTTON   "OK", IDOK, 146, 52, 50, 15
+    PUSHBUTTON      "Cancel", IDCANCEL, 200, 52, 50, 15
+END
+
+IDD_ABOUT DIALOGEX 0, 0, 300, 208
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "About Feather PDF"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    ICON            IDI_APP, IDC_ABOUT_ICON, 12, 10, 21, 20
+    LTEXT           "", IDC_ABOUT_NAME, 44, 10, 246, 14, SS_NOPREFIX
+    LTEXT           "", IDC_ABOUT_VERSION, 44, 26, 246, 10, SS_NOPREFIX
+    LTEXT           "", IDC_ABOUT_TEXT, 12, 44, 278, 136, SS_NOPREFIX
+    PUSHBUTTON      "Third-Party &Licenses and Attributions", IDC_ABOUT_LICENSES, 12, 186, 150, 15, WS_TABSTOP
+    DEFPUSHBUTTON   "OK", IDOK, 240, 186, 50, 15
+END
+
+IDD_LICENSES DIALOGEX 0, 0, 360, 240
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Third-Party Licenses and Attributions"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    EDITTEXT        IDC_LICENSES_TEXT, 10, 10, 340, 200, ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL | WS_TABSTOP
+    DEFPUSHBUTTON   "Close", IDCANCEL, 300, 218, 50, 15
+END
+
+IDR_NOTICES RCDATA "../THIRD_PARTY_NOTICES.md"
+
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 1,4,0,0
- PRODUCTVERSION 1,4,0,0
+ FILEVERSION 2,1,0,0
+ PRODUCTVERSION 2,1,0,0
  FILEFLAGSMASK 0x3fL
  FILEFLAGS 0x0L
  FILEOS VOS_NT_WINDOWS32
@@ -86,11 +139,11 @@ BEGIN
             VALUE "CompanyName", "Akshaya Simha"
             VALUE "FileDescription", "Feather PDF - lightweight PDF viewer and editor"
             VALUE "LegalCopyright", "\251 2026 Akshaya Simha"
-            VALUE "FileVersion", "1.4.0.0"
+            VALUE "FileVersion", "2.1.0.0"
             VALUE "InternalName", "FeatherPDF"
             VALUE "OriginalFilename", "FeatherPDF.exe"
             VALUE "ProductName", "Feather PDF"
-            VALUE "ProductVersion", "1.4.0.0"
+            VALUE "ProductVersion", "2.1.0.0"
         END
     END
     BLOCK "VarFileInfo"

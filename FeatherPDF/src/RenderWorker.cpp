@@ -341,7 +341,7 @@ void RenderWorker::Execute(Command& cmd) {
             auto* res = new TextLayerResult;
             res->docId = cmd.docId;
             res->page = cmd.page;
-            engine->ExtractPageInfo(cmd.page, res->chars, res->links, res->comments);
+            engine->ExtractPageInfo(cmd.page, res->chars, res->links, res->comments, res->fields);
             Post(WM_APP_TEXT_LAYER, res);
             break;
         }

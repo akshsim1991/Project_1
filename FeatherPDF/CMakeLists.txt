@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(FeatherPDF VERSION 1.4.0 LANGUAGES CXX RC)
+project(FeatherPDF VERSION 2.1.0 LANGUAGES CXX RC)
 
 # ---------------------------------------------------------------------------
 # PDFium (prebuilt binaries from https://github.com/bblanchon/pdfium-binaries)
@@ -55,6 +55,8 @@ add_executable(FeatherPDF WIN32
   src/Settings.cpp
   src/FileAssoc.cpp
   src/Util.cpp
+  src/Picture.cpp
+  src/CommandPalette.cpp
   res/app.rc
 )
 
@@ -63,7 +65,7 @@ target_compile_definitions(FeatherPDF PRIVATE
   UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX
   _WIN32_WINNT=0x0A00 WINVER=0x0A00)
 target_link_libraries(FeatherPDF PRIVATE
-  comctl32 comdlg32 shell32 ole32 dwmapi uxtheme advapi32 gdi32 user32)
+  comctl32 comdlg32 shell32 ole32 dwmapi uxtheme advapi32 gdi32 user32 gdiplus)
 
 if(MSVC)
   # Static CRT: no Visual C++ Redistributable needed on the target PC.

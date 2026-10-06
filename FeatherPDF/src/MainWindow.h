@@ -10,6 +10,7 @@
 #include "Settings.h"
 #include "Sidebar.h"
 #include "TabBar.h"
+#include "CommandPalette.h"
 #include "Toolbar.h"
 
 // COPYDATASTRUCT::dwData used when a second instance forwards a file.
@@ -116,6 +117,23 @@ private:
     void OpenComment(int page, const CommentInfo& comment);
     void CommentOnSelection();
     void OnCommentList(CommentListResult* res);
+    // Annotate menu: drawing, stamps, signatures, pictures, new text
+    HMENU CreateAnnotateMenu();
+    HMENU CreateMarkupMenuColors();
+    void ShowAnnotateMenu();
+    void StartTool(ViewTool tool);
+    void StartStamp(const std::wstring& text, COLORREF color);
+    void StartSignature(bool newOne);
+    void SignField(int page, const RectF& rect);
+    void InsertImage();
+    // Command palette, history, recent files, presentation, About
+    void ShowCommandPalette();
+    void RunPaletteCommand(int id, const std::wstring& arg);
+    void AddRecent(const std::wstring& path);
+    HMENU CreateRecentMenu();
+    void TogglePresentation();
+    void ShowAbout();
+    bool InputBox(const std::wstring& title, const std::wstring& label, std::wstring& text);
     void ShowPagesMenu(POINT screen);
     HMENU CreatePagesMenu();
     std::vector<std::wstring> PickPdfFiles(bool multiple, const wchar_t* title);
@@ -134,7 +152,14 @@ private:
     HINSTANCE m_inst = nullptr;
     HWND m_hwnd = nullptr;
     HACCEL m_accel = nullptr;
-    bool m_toldAboutFonts = false;  // "a similar font was used" is said once
+    bool m_toldAboutFonts = false;
+    CommandPalette m_palette;
+    // presentation: the view settings to restore afterwards
+    bool m_presenting = false;
+    bool m_presentWasFullscreen = false;
+    ViewMode m_presentViewMode = ViewMode::Continuous;
+    ZoomMode m_presentZoomMode = ZoomMode::FitWidth;
+    double m_presentZoom = 1.0;  // "a similar font was used" is said once
     std::wstring m_replaceFind, m_replaceWith;
     bool m_replaceCase = false;
     TabBar m_tabBar;

@@ -34,7 +34,23 @@ class RenderWorker;
 enum class ZoomMode { Custom = 0, FitWidth = 1, FitPage = 2 };
 enum class ViewMode { Single = 0, Continuous = 1, TwoPage = 2 };
 // What a click on the page does.
-enum class ViewTool { Select = 0, EditText = 1, AddComment = 2 };
+enum class ViewTool {
+    Select = 0, EditText, AddComment, AddText,      // click
+    Rectangle, Ellipse, Line, Arrow, Pen,           // drag
+    Stamp, Signature, Image,                        // click or drag to place
+};
+
+// What the drawing and placing tools draw (set by the main window).
+struct ToolOptions {
+    COLORREF color = RGB(220, 30, 30);
+    float width = 2;              // line width in points
+    float textSize = 12;          // new text, in points
+    std::wstring stamp;           // Stamp: the word ("APPROVED")
+    COLORREF stampColor = RGB(0, 130, 60);
+    std::vector<uint8_t> pixels;  // Signature / Image: BGRA, top-down
+    int imageW = 0, imageH = 0;
+    std::wstring author;
+};
 
 // Zoom steps used by zoom in / zoom out (1.0 == 100 %).
 extern const double kZoomPresets[];
@@ -113,12 +129,23 @@ public:
     // AddComment: a click places a comment. Esc goes back to Select.
     ViewTool Tool() const { return m_tool; }
     void SetTool(ViewTool tool);
+    void SetToolOptions(const ToolOptions& options) { m_toolOptions = options; }
     void OnTextRuns(TextRunsResult* result);  // takes ownership
     // Called to record an edit (text changed in place, comment deleted).
     std::function<void(EditOp&&)> onEdit;
     // A new comment at (x, y) on `page` (page points), or an existing one.
     std::function<void(int page, float x, float y)> onNewComment;
     std::function<void(int page, const CommentInfo&)> onOpenComment;
+    // A signature field was clicked: sign inside `rect` (page points).
+    std::function<void(int page, const RectF& rect)> onSignField;
+    // Back / forward through the places jumped to (links, bookmarks, page numbers).
+    void PushHistory();
+    bool Back();
+    bool Forward();
+    bool CanGoBack() const { return !m_back.empty(); }
+    bool CanGoForward() const { return !m_forward.empty(); }
+    // Presentation: black surroundings, a click shows the next page.
+    void SetPresenting(bool on);
 
     // --- page images for the clipboard (arrive as WM_APP_IMAGE_READY) ---
     void CopyPageImage();
@@ -192,6 +219,7 @@ private:
         std::vector<TextChar> chars;
         std::vector<LinkInfo> links;
         std::vector<CommentInfo> comments;
+        std::vector<FormField> fields;
     };
     const LinkInfo* HitLink(POINT pt);
     void UpdateLinkTip(const LinkInfo* link);
@@ -207,6 +235,15 @@ private:
     void DrawRuns(HDC dc, int page, const RECT& vis);
     void DrawBanner(HDC dc);
     void BeginInlineEdit(int page, int run);
+    enum class InlineKind { Run, Field, NewText };
+    void OpenInlineEditor(InlineKind kind, int page, const RectF& rect, const std::wstring& text,
+                          HFONT font, bool multiline, bool password);
+    const FormField* HitField(POINT pt, int* page = nullptr);
+    void ClickField(int page, const FormField& field);
+    void DrawToolPreview(HDC dc);
+    void FinishDrawing(POINT pt);
+    void ShowRunMenu(POINT screen, int page, int run);
+    POINT ClientPointOf(int page, float x, float y) const;  // unrotated points -> client
     void EndInlineEdit(bool commit);
     void PositionInlineEdit();
     static LRESULT CALLBACK InlineEditProc(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
@@ -289,6 +326,16 @@ private:
     HFONT m_inlineFont = nullptr;
     int m_inlinePage = -1;
     TextRun m_inlineRun;
+    InlineKind m_inlineKind = InlineKind::Run;
+    RectF m_inlineRect;         // page points, what the box covers
+    FormField m_inlineField;
+    bool m_inlineMultiline = false;
+    ToolOptions m_toolOptions;
+    bool m_drawing = false;     // a drag of a drawing / placing tool
+    int m_drawPage = -1;
+    std::vector<PointF> m_drawPoints;
+    std::vector<int> m_back, m_forward;
+    bool m_presenting = false;
     bool m_inlineClosing = false;
     HFONT m_bannerFont = nullptr;
     std::wstring m_tipText;

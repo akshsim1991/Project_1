@@ -1,13 +1,14 @@
-# Feather PDF
+# Feather PDF 2.1
 
 A small, fast, native PDF **viewer and editor** for Windows 10 and 11.
 It opens PDFs in tabs and lets you scroll, jump to pages, zoom, search,
 follow links, browse bookmarks and thumbnails, read in two-page, rotated or
-night mode, select and copy text or images, and print. With **Edit PDF** you
-can change the text of a PDF in place, find and replace text, add and edit
-**comments**, highlight, underline or strike through text, and delete,
-reorder, rotate, insert, merge, split and extract pages, with undo/redo and
-crash-safe saving. It has no accounts, cloud features, telemetry or
+night mode, select and copy text or images, print and present. With **Edit
+PDF** and **Annotate** you can change the text of a PDF in place, find and
+replace text, fill in forms, sign, add comments, highlights, drawings,
+stamps, pictures and new text, and delete, reorder, rotate, insert, merge,
+split and extract pages, with undo/redo and crash-safe saving. A command
+palette (Ctrl+K) finds any command by typing. It has no accounts, cloud features, telemetry or
 background services.
 
 © 2026 Akshaya Simha. Developed for faster experience.
@@ -105,7 +106,9 @@ MainWindow ─► Tab × N ─► PdfView ── layout, visible pages, zoom, na
 | `src/Search.*` | UI-side search state (sorted matches, current match, status) |
 | `src/Toolbar.*` | Flat themed toolbar with icon-font buttons and hosted edits |
 | `src/Theme.*` | Light/dark palette (System/Light/Dark), dark title bar/scrollbars/menus |
-| `src/Settings.*` | Persisted window placement, zoom mode, view mode, theme, open tabs and pages |
+| `src/Settings.*` | Persisted window placement, zoom mode, view mode, theme, open tabs and pages, recent files, drawing options |
+| `src/Picture.*` | Pictures (GDI+): loading image files, the saved signature, the signature dialog |
+| `src/CommandPalette.*` | The Ctrl+K command palette |
 | `src/FileAssoc.*` | `.pdf` "Open with" / Default-apps registration (HKCU) |
 
 ### Threading
@@ -258,6 +261,21 @@ actual size (100% equals the printed size on screen), 5%–1600% zoom,
 Ctrl+wheel zoom anchored at the cursor, touchpad pinch, drag-to-pan, and
 full screen (F11).
 
+**Presentation (F5):** the current page fills the screen on black, with no
+toolbars. Click, Space, Page Down or the arrow keys go forward; right-click
+or Page Up go back; Esc returns to the previous view and zoom.
+
+**Command palette (Ctrl+K):** type what you want to do and press Enter, for
+example "rotate", "dark", "stamp", "merge", "sign". A number goes to that
+page ("72"), "zoom 150" zooms, and "find bearing" (or any text that is not
+a command) searches the document. Recent files can be opened from it too.
+
+**Back and forward (Alt+Left / Alt+Right, or the mouse's back and forward
+buttons):** returns to the pages you jumped from, through links,
+bookmarks, page numbers, thumbnails, the comment list and the palette.
+
+**Open recent:** ⋯ › Open recent lists the last 20 files opened.
+
 **Search:** Ctrl+F, incremental search as you type, Enter/F3 for next,
 Shift+Enter/Shift+F3 for previous, a match-case toggle, a match count, and
 highlighted matches with the current one in orange. Esc closes the bar.
@@ -358,13 +376,47 @@ were changed. The same font rules apply.
   delete it. Right-click a highlight without a comment to add one or to
   remove the highlight.
 * **Edit PDF › All comments** lists every comment in the document (page,
-  type, author, text): go to one, edit it or delete it.
+  type, author, text): go to one (it is scrolled into view), edit it or
+  delete it.
 * New comments are signed with your Windows user name. They are standard
   PDF annotations, so Acrobat, Edge, Chrome and other viewers show them.
 
+**Forms:** fillable PDF forms work straight away. Fields are tinted; click
+a text field and type (Enter keeps it, Shift+Enter starts a new line in
+multi-line fields), click a check box or option button to set it, and
+click a drop-down or list to choose from its options. Clicking a signature
+field signs it with your signature (see below). The values are saved into
+the form, so other programs see them.
+
+**Annotate:** the **Annotate** button on the toolbar (also in Edit PDF):
+
+* **Highlight, Underline, Strikethrough, Squiggly underline** for selected
+  text, with a choice of highlight colour.
+* **Add text:** click where the text should start and type; Shift+Enter
+  starts a new line, Enter places it. The text becomes part of the page
+  (and can be changed later with Edit text).
+* **Rectangle, Ellipse, Line, Arrow, Pen (freehand):** drag on the page.
+  The tool stays on until Esc, so you can draw several.
+* **Colour, Line width, Text size** for these tools, remembered.
+* **Stamp:** APPROVED, REJECTED, DRAFT, CONFIDENTIAL, REVIEWED, FINAL, PAID,
+  RECEIVED, NOT APPROVED, FOR INFORMATION, or your own words. Click to place
+  it, or drag to choose its size.
+* **Signature:** draw it with the mouse or a pen, type your name (shown in
+  a handwriting font), or use a picture of it (a scan's white paper becomes
+  transparent). Choose black or blue ink. It can be remembered on this PC
+  (in %APPDATA%\FeatherPDF) so next time it is one click. Click or drag to
+  place it.
+* **Insert picture:** PNG, JPEG, BMP, GIF or TIFF, placed and sized the same
+  way.
+* Drawings, stamps and signatures are standard PDF annotations: right-click
+  one to add a comment to it or delete it. They also appear in All comments.
+
+**Text size and colour:** in Edit text mode (Ctrl+E), right-click a line of
+text › Text size or Text colour (or Delete this text).
+
 **Text markup:** select text, then right-click › Highlight (Ctrl+H),
-Underline (Ctrl+U) or Strikethrough (Ctrl+K), or use Edit PDF › Mark up text.
-Choose the highlight colour (yellow, green, blue or pink) in the same menu.
+Underline (Ctrl+U) or Strikethrough (Ctrl+Shift+K), or use Annotate.
+Choose the highlight colour (yellow, green, blue or pink) in Annotate.
 These are standard PDF annotations, so Acrobat, Edge, Chrome and other
 viewers show them too.
 
@@ -395,7 +447,8 @@ and version info, and `.pdf` association.
 | Ctrl+Shift+S | Save as |
 | Ctrl+Z | Undo |
 | Ctrl+Y / Ctrl+Shift+Z | Redo |
-| Ctrl+H / Ctrl+U / Ctrl+K | Highlight / underline / strike through the selected text |
+| Ctrl+K | Command palette |
+| Ctrl+H / Ctrl+U / Ctrl+Shift+K | Highlight / underline / strike through the selected text |
 | Ctrl+E | Edit text on/off (click a line to change it; Enter keeps, Esc cancels) |
 | Ctrl+Shift+H | Find and replace text |
 | Ctrl+M | Add a comment (then click on the page) |
@@ -427,6 +480,8 @@ and version info, and `.pdf` association.
 | Space / Shift+Space | Scroll one screen down / up |
 | Shift+Mouse wheel | Scroll horizontally |
 | F11 | Full screen |
+| F5 | Presentation (Esc ends it) |
+| Alt+Left / Alt+Right | Back / forward |
 
 ### Command line
 
@@ -500,7 +555,7 @@ script:
 ```powershell
 cmake --install build --config Release --prefix dist        # 1. portable folder
 & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" installer\FeatherPDF.iss   # 2. compile
-# -> installer\Output\FeatherPDF-Setup-1.4.0.exe
+# -> installer\Output\FeatherPDF-Setup-2.1.0.exe
 ```
 
 The installer:

@@ -47,7 +47,7 @@ public:
     // Text layer of one page (every character with its box, for selection),
     // its links (annotations plus URLs detected in the text) and comments.
     void ExtractPageInfo(int page, std::vector<TextChar>& chars, std::vector<LinkInfo>& links,
-                         std::vector<CommentInfo>& comments);
+                         std::vector<CommentInfo>& comments, std::vector<FormField>& fields);
 
     // The editable lines of text on one page (see TextRun).
     void GetTextRuns(int page, std::vector<TextRun>& runs);
@@ -95,6 +95,15 @@ private:
     bool ReplaceEverywhere(const EditOp& op, std::wstring& error);
     bool AddNote(const EditOp& op);
     bool ChangeAnnot(const EditOp& op, std::wstring& error);
+    bool SetField(const EditOp& op, std::wstring& error);
+    bool AddShape(const EditOp& op);
+    bool AddStamp(const EditOp& op);
+    bool AddImage(const EditOp& op);
+    bool AddText(const EditOp& op, std::wstring& error);
+    bool StyleText(const EditOp& op, std::wstring& error);
+    // Pages loaded for an edit, with the form-filling layer attached.
+    FPDF_PAGE LoadEditPage(int index);
+    void CloseEditPage(FPDF_PAGE page);
     struct FontCache;
     bool SetRunText(FPDF_PAGE page, int firstIndex, const std::vector<FPDF_PAGEOBJECT>& objs,
                     const std::wstring& text, FontCache& fonts, std::wstring& error);
@@ -111,6 +120,11 @@ private:
     // parsed pages are kept. Front = most recently used.
     static constexpr size_t kMaxParsedPages = 4;
     std::vector<std::pair<int, FPDF_PAGE>> m_pages;
+
+    // Form filling (AcroForm): PDFium's form layer for this document. It
+    // draws field values and highlights, and changes fields.
+    struct FormEnv;
+    std::unique_ptr<FormEnv> m_form;
 
     int m_editCount = 0;
     bool m_editFontChanged = false;

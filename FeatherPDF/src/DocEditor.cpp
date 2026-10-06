@@ -50,6 +50,12 @@ void DocEditor::Describe(const EditOp& op, int before, int after, int& focus,
         case EditOp::AddNote:
         case EditOp::EditComment:
         case EditOp::DeleteAnnot:
+        case EditOp::SetField:
+        case EditOp::AddShape:
+        case EditOp::AddStamp:
+        case EditOp::AddImage:
+        case EditOp::AddText:
+        case EditOp::StyleText:
             break;  // the reader stays where they are
     }
 }

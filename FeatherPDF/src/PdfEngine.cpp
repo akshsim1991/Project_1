@@ -13,6 +13,7 @@
 #include "fpdf_annot.h"
 #include "fpdf_doc.h"
 #include "fpdf_edit.h"
+#include "fpdf_formfill.h"
 #include "fpdf_ppo.h"
 #include "fpdf_save.h"
 #include "fpdf_text.h"
@@ -82,10 +83,74 @@ std::wstring AnnotString(FPDF_ANNOTATION annot, const char* key) {
     return std::wstring(reinterpret_cast<const wchar_t*>(buf.data()), bytes / 2 - 1);
 }
 
+// Comments, markup, and the drawings, stamps and signatures added by the
+// annotation tools (they can be commented on and deleted the same way).
 bool IsCommentType(int subtype) {
-    return subtype == FPDF_ANNOT_TEXT || subtype == FPDF_ANNOT_HIGHLIGHT ||
-           subtype == FPDF_ANNOT_UNDERLINE || subtype == FPDF_ANNOT_SQUIGGLY ||
-           subtype == FPDF_ANNOT_STRIKEOUT;
+    switch (subtype) {
+        case FPDF_ANNOT_TEXT:
+        case FPDF_ANNOT_HIGHLIGHT:
+        case FPDF_ANNOT_UNDERLINE:
+        case FPDF_ANNOT_SQUIGGLY:
+        case FPDF_ANNOT_STRIKEOUT:
+        case FPDF_ANNOT_FREETEXT:
+        case FPDF_ANNOT_LINE:
+        case FPDF_ANNOT_SQUARE:
+        case FPDF_ANNOT_CIRCLE:
+        case FPDF_ANNOT_POLYGON:
+        case FPDF_ANNOT_POLYLINE:
+        case FPDF_ANNOT_STAMP:
+        case FPDF_ANNOT_INK: return true;
+        default: return false;
+    }
+}
+
+template <typename Get>
+std::wstring FieldString(Get get, FPDF_FORMHANDLE form, FPDF_ANNOTATION annot) {
+    const unsigned long bytes = get(form, annot, nullptr, 0);
+    if (bytes <= 2 || bytes > (1u << 20)) return {};
+    std::vector<FPDF_WCHAR> buf(bytes / 2);
+    get(form, annot, buf.data(), bytes);
+    return std::wstring(reinterpret_cast<const wchar_t*>(buf.data()), bytes / 2 - 1);
+}
+
+// The form fields (widget annotations) of a page.
+void ReadFields(FPDF_FORMHANDLE form, FPDF_PAGE page, int sx, int sy, std::vector<FormField>& out) {
+    constexpr int kMaxFields = 4000;
+    const int n = std::min(FPDFPage_GetAnnotCount(page), kMaxFields);
+    for (int i = 0; i < n; ++i) {
+        FPDF_ANNOTATION annot = FPDFPage_GetAnnot(page, i);
+        if (!annot) continue;
+        FS_RECTF r;
+        if (FPDFAnnot_GetSubtype(annot) == FPDF_ANNOT_WIDGET && FPDFAnnot_GetRect(annot, &r)) {
+            FormField f;
+            f.rect = ToDisplay(page, sx, sy, r.left, r.top, r.right, r.bottom);
+            f.annot = i;
+            f.type = FPDFAnnot_GetFormFieldType(form, annot);
+            f.name = FieldString([](auto... a) { return FPDFAnnot_GetFormFieldName(a...); }, form, annot);
+            f.value = FieldString([](auto... a) { return FPDFAnnot_GetFormFieldValue(a...); }, form, annot);
+            const int flags = FPDFAnnot_GetFormFieldFlags(form, annot);
+            f.readOnly = (flags & FPDF_FORMFLAG_READONLY) != 0;
+            f.multiline = (flags & FPDF_FORMFLAG_TEXT_MULTILINE) != 0;
+            f.password = (flags & FPDF_FORMFLAG_TEXT_PASSWORD) != 0;
+            if (f.type == kFieldCheckBox || f.type == kFieldRadio) f.checked = FPDFAnnot_IsChecked(form, annot) != 0;
+            if (f.type == kFieldComboBox || f.type == kFieldListBox) {
+                const int count = std::min(FPDFAnnot_GetOptionCount(form, annot), 500);
+                for (int k = 0; k < count; ++k) {
+                    const unsigned long bytes = FPDFAnnot_GetOptionLabel(form, annot, k, nullptr, 0);
+                    std::wstring label;
+                    if (bytes > 2 && bytes < 8192) {
+                        std::vector<FPDF_WCHAR> buf(bytes / 2);
+                        FPDFAnnot_GetOptionLabel(form, annot, k, buf.data(), bytes);
+                        label.assign(reinterpret_cast<const wchar_t*>(buf.data()), bytes / 2 - 1);
+                    }
+                    f.options.push_back(label);
+                    if (f.selected < 0 && FPDFAnnot_IsOptionSelected(form, annot, k)) f.selected = k;
+                }
+            }
+            if (f.type != kFieldUnknown) out.push_back(std::move(f));
+        }
+        FPDFPage_CloseAnnot(annot);
+    }
 }
 
 // Sticky notes and text markup of a page (markup may have no comment).
@@ -141,6 +206,11 @@ struct PdfEngine::FileSource {
     }
 };
 
+struct PdfEngine::FormEnv {
+    FPDF_FORMFILLINFO info{};
+    FPDF_FORMHANDLE handle = nullptr;
+};
+
 void PdfEngine::InitLibrary() {
     FPDF_LIBRARY_CONFIG config{};
     config.version = 2;
@@ -153,12 +223,19 @@ PdfEngine::PdfEngine() = default;
 PdfEngine::~PdfEngine() { Close(); }
 
 void PdfEngine::ReleasePages() {
-    for (auto& p : m_pages) FPDF_ClosePage(p.second);
+    for (auto& p : m_pages) {
+        if (m_form) FORM_OnBeforeClosePage(p.second, m_form->handle);
+        FPDF_ClosePage(p.second);
+    }
     m_pages.clear();
 }
 
 void PdfEngine::Close() {
     ReleasePages();
+    if (m_form) {
+        Guarded([&] { FPDFDOC_ExitFormFillEnvironment(m_form->handle); });
+        m_form.reset();
+    }
     if (m_doc) {
         FPDF_CloseDocument(m_doc);
         m_doc = nullptr;
@@ -257,7 +334,36 @@ OpenError PdfEngine::Open(const std::wstring& path, const std::string& password,
     m_file = std::move(file);
     m_pageCount = (int)sizes.size();
     pageSizes = std::move(sizes);
+
+    // Documents with form fields get PDFium's form layer (no JavaScript:
+    // this PDFium build has none, and no callbacks are needed to fill fields).
+    bool hasForm = false;
+    Guarded([&] { hasForm = FPDF_GetFormType(m_doc) == FORMTYPE_ACRO_FORM; });
+    if (hasForm) {
+        auto form = std::make_unique<FormEnv>();
+        form->info.version = 1;
+        Guarded([&] {
+            form->handle = FPDFDOC_InitFormFillEnvironment(m_doc, &form->info);
+            if (form->handle) {
+                FPDF_SetFormFieldHighlightColor(form->handle, FPDF_FORMFIELD_UNKNOWN, 0xDDE8FF);
+                FPDF_SetFormFieldHighlightAlpha(form->handle, 110);
+            }
+        });
+        if (form->handle) m_form = std::move(form);
+    }
     return OpenError::None;
+}
+
+FPDF_PAGE PdfEngine::LoadEditPage(int index) {
+    FPDF_PAGE page = FPDF_LoadPage(m_doc, index);
+    if (page && m_form) FORM_OnAfterLoadPage(page, m_form->handle);
+    return page;
+}
+
+void PdfEngine::CloseEditPage(FPDF_PAGE page) {
+    if (!page) return;
+    if (m_form) FORM_OnBeforeClosePage(page, m_form->handle);
+    FPDF_ClosePage(page);
 }
 
 FPDF_PAGE PdfEngine::GetPage(int index) {
@@ -271,10 +377,10 @@ FPDF_PAGE PdfEngine::GetPage(int index) {
         }
     }
     FPDF_PAGE page = nullptr;
-    if (!Guarded([&] { page = FPDF_LoadPage(m_doc, index); }) || !page) return nullptr;
+    if (!Guarded([&] { page = LoadEditPage(index); }) || !page) return nullptr;
     m_pages.insert(m_pages.begin(), {index, page});
     if (m_pages.size() > kMaxParsedPages) {
-        FPDF_ClosePage(m_pages.back().second);
+        CloseEditPage(m_pages.back().second);
         m_pages.pop_back();
     }
     return page;
@@ -321,6 +427,10 @@ bool PdfEngine::RenderTile(const TileRequest& req, PixelBuffer& out) {
         ok = Guarded([&] {
             FPDF_RenderPageBitmap(bmp, page, -req.x, -req.y, req.pageW, req.pageH, req.rotate & 3,
                                   FPDF_ANNOT | FPDF_RENDER_LIMITEDIMAGECACHE);
+            // Form fields: their current values and a light highlight.
+            if (m_form)
+                FPDF_FFLDraw(m_form->handle, bmp, page, -req.x, -req.y, req.pageW, req.pageH,
+                             req.rotate & 3, FPDF_ANNOT | FPDF_RENDER_LIMITEDIMAGECACHE);
         });
         if (!ok) {
             // PDFium faulted: drop the parsed page and show a grey tile.
@@ -387,7 +497,8 @@ void PdfEngine::SearchPage(int pageIndex, const std::wstring& query, bool matchC
 
 
 void PdfEngine::ExtractPageInfo(int pageIndex, std::vector<TextChar>& chars,
-                                std::vector<LinkInfo>& links, std::vector<CommentInfo>& comments) {
+                                std::vector<LinkInfo>& links, std::vector<CommentInfo>& comments,
+                                std::vector<FormField>& fields) {
     FPDF_PAGE page = GetPage(pageIndex);  // the page is on screen: cache it
     if (!page) return;
     Guarded([&] {
@@ -411,6 +522,7 @@ void PdfEngine::ExtractPageInfo(int pageIndex, std::vector<TextChar>& chars,
         }
 
         ReadComments(page, sx, sy, comments);
+        if (m_form) ReadFields(m_form->handle, page, sx, sy, fields);
 
         FPDF_TEXTPAGE text = FPDFText_LoadPage(page);
         if (!text) return;
@@ -786,6 +898,12 @@ bool PdfEngine::ApplyEdit(const EditOp& op, std::wstring& error) {
         case EditOp::DeleteAnnot:
             ok = ChangeAnnot(op, error);
             break;
+        case EditOp::SetField: ok = SetField(op, error); break;
+        case EditOp::AddShape: ok = AddShape(op); break;
+        case EditOp::AddStamp: ok = AddStamp(op); break;
+        case EditOp::AddImage: ok = AddImage(op); break;
+        case EditOp::AddText: ok = AddText(op, error); break;
+        case EditOp::StyleText: ok = StyleText(op, error); break;
     }
     int count = m_pageCount;
     Guarded([&] { count = FPDF_GetPageCount(m_doc); });
@@ -1299,6 +1417,357 @@ bool PdfEngine::ReplaceEverywhere(const EditOp& op, std::wstring& error) {
         return false;
     }
     error.clear();
+    return ok;
+}
+
+
+// ===========================================================================
+// Forms, drawings, stamps, pictures and new text
+// ===========================================================================
+namespace {
+// Display points (top-left origin, unrotated) -> PDF user space.
+FS_POINTF ToPage(FPDF_PAGE page, float x, float y) {
+    const int sx = (int)std::lround(FPDF_GetPageWidthF(page) * 100);
+    const int sy = (int)std::lround(FPDF_GetPageHeightF(page) * 100);
+    double px = 0, py = 0;
+    FPDF_DeviceToPage(page, 0, 0, sx, sy, 0, (int)std::lround(x * 100), (int)std::lround(y * 100), &px, &py);
+    return {(float)px, (float)py};
+}
+
+FS_RECTF ToPageRect(FPDF_PAGE page, const RectF& r) {
+    const FS_POINTF a = ToPage(page, r.left, r.top), b = ToPage(page, r.right, r.bottom);
+    return {std::min(a.x, b.x), std::max(a.y, b.y), std::max(a.x, b.x), std::min(a.y, b.y)};
+}
+
+// The direction of "right" and "up" on the screen, in page space (so new
+// text and pictures are upright on rotated pages too).
+void ScreenAxes(FPDF_PAGE page, float x, float y, FS_POINTF& right, FS_POINTF& up) {
+    const FS_POINTF o = ToPage(page, x, y), rx = ToPage(page, x + 100, y), uy = ToPage(page, x, y - 100);
+    right = {(rx.x - o.x) / 100, (rx.y - o.y) / 100};
+    up = {(uy.x - o.x) / 100, (uy.y - o.y) / 100};
+    auto norm = [](FS_POINTF& v) {
+        const float len = std::hypot(v.x, v.y);
+        if (len > 0) v = {v.x / len, v.y / len};
+    };
+    norm(right);
+    norm(up);
+}
+
+void SetAnnotDate(FPDF_ANNOTATION annot, const std::wstring& author, const std::wstring& now) {
+    FPDFAnnot_SetStringValue(annot, "M", reinterpret_cast<FPDF_WIDESTRING>(now.c_str()));
+    FPDFAnnot_SetStringValue(annot, "CreationDate", reinterpret_cast<FPDF_WIDESTRING>(now.c_str()));
+    if (!author.empty()) FPDFAnnot_SetStringValue(annot, "T", reinterpret_cast<FPDF_WIDESTRING>(author.c_str()));
+}
+
+// A BGRA picture as a PDF image object filling the display rectangle `rc`
+// (upright as seen on screen, also on rotated pages).
+FPDF_PAGEOBJECT MakeImage(FPDF_DOCUMENT doc, FPDF_PAGE page, const EditOp& op, const RectF& rc) {
+    if (op.imageW <= 0 || op.imageH <= 0 || op.pixels.size() < (size_t)op.imageW * op.imageH * 4) return nullptr;
+    FPDF_BITMAP bmp = FPDFBitmap_Create(op.imageW, op.imageH, 1);
+    if (!bmp) return nullptr;
+    uint8_t* dst = static_cast<uint8_t*>(FPDFBitmap_GetBuffer(bmp));
+    const int stride = FPDFBitmap_GetStride(bmp);
+    for (int y = 0; y < op.imageH; ++y)
+        memcpy(dst + (size_t)y * stride, op.pixels.data() + (size_t)y * op.imageW * 4, (size_t)op.imageW * 4);
+    FPDF_PAGEOBJECT obj = FPDFPageObj_NewImageObj(doc);
+    if (obj && !FPDFImageObj_SetBitmap(nullptr, 0, obj, bmp)) {
+        FPDFPageObj_Destroy(obj);
+        obj = nullptr;
+    }
+    FPDFBitmap_Destroy(bmp);
+    if (!obj) return nullptr;
+    // The image's unit square: (0,0) bottom-left, (1,0) bottom-right, (0,1) top-left.
+    const FS_POINTF bl = ToPage(page, rc.left, rc.bottom), br = ToPage(page, rc.right, rc.bottom),
+                    tl = ToPage(page, rc.left, rc.top);
+    FS_MATRIX m{br.x - bl.x, br.y - bl.y, tl.x - bl.x, tl.y - bl.y, bl.x, bl.y};
+    FPDFPageObj_SetMatrix(obj, &m);
+    return obj;
+}
+}  // namespace
+
+bool PdfEngine::SetField(const EditOp& op, std::wstring& error) {
+    if (!m_form || op.page < 0 || op.page >= m_pageCount) return false;
+    FPDF_FORMHANDLE form = m_form->handle;
+    bool ok = false;
+    Guarded([&] {
+        FPDF_PAGE page = LoadEditPage(op.page);
+        if (!page) return;
+        FPDF_ANNOTATION annot = op.index >= 0 && op.index < FPDFPage_GetAnnotCount(page)
+                                    ? FPDFPage_GetAnnot(page, op.index)
+                                    : nullptr;
+        if (annot && FPDFAnnot_GetSubtype(annot) == FPDF_ANNOT_WIDGET) {
+            const int type = FPDFAnnot_GetFormFieldType(form, annot);
+            if (type == kFieldText || (type == kFieldComboBox && op.option < 0)) {
+                if (FORM_SetFocusedAnnot(form, annot)) {
+                    FORM_SelectAllText(form, page);
+                    FORM_ReplaceSelection(form, page, reinterpret_cast<FPDF_WIDESTRING>(op.text.c_str()));
+                    ok = FORM_ForceToKillFocus(form) != 0;
+                }
+            } else if (type == kFieldCheckBox || type == kFieldRadio) {
+                if ((FPDFAnnot_IsChecked(form, annot) != 0) == op.checked) {
+                    ok = true;
+                } else {
+                    // A click in the middle of the box toggles it, as in any viewer.
+                    FS_RECTF r;
+                    FPDFAnnot_GetRect(annot, &r);
+                    const double cx = (r.left + r.right) / 2, cy = (r.top + r.bottom) / 2;
+                    FORM_OnMouseMove(form, page, 0, cx, cy);
+                    FORM_OnLButtonDown(form, page, 0, cx, cy);
+                    FORM_OnLButtonUp(form, page, 0, cx, cy);
+                    FORM_ForceToKillFocus(form);
+                    ok = (FPDFAnnot_IsChecked(form, annot) != 0) == op.checked;
+                }
+            } else if ((type == kFieldComboBox || type == kFieldListBox) && op.option >= 0) {
+                if (FORM_SetFocusedAnnot(form, annot)) {
+                    ok = FORM_SetIndexSelected(form, page, op.option, TRUE) != 0;
+                    FORM_ForceToKillFocus(form);
+                }
+            }
+        }
+        if (annot) FPDFPage_CloseAnnot(annot);
+        CloseEditPage(page);
+    });
+    if (!ok) error = L"The form field could not be changed.";
+    return ok;
+}
+
+bool PdfEngine::AddShape(const EditOp& op) {
+    if (op.page < 0 || op.page >= m_pageCount || op.points.size() < 2) return false;
+    bool ok = false;
+    const std::wstring now = PdfDateNow();
+    Guarded([&] {
+        FPDF_PAGE page = FPDF_LoadPage(m_doc, op.page);
+        if (!page) return;
+        std::vector<FS_POINTF> pts;
+        for (const PointF& p : op.points) pts.push_back(ToPage(page, p.x, p.y));
+        const bool box = op.shape == kShapeRect || op.shape == kShapeEllipse;
+        FPDF_ANNOTATION annot = FPDFPage_CreateAnnot(
+            page, op.shape == kShapeRect ? FPDF_ANNOT_SQUARE : op.shape == kShapeEllipse ? FPDF_ANNOT_CIRCLE : FPDF_ANNOT_INK);
+        if (annot) {
+            const float w = std::max(0.5f, op.width);
+            FS_RECTF bounds{1e9f, -1e9f, -1e9f, 1e9f};
+            auto grow = [&](const FS_POINTF& p) {
+                bounds.left = std::min(bounds.left, p.x);
+                bounds.right = std::max(bounds.right, p.x);
+                bounds.top = std::max(bounds.top, p.y);
+                bounds.bottom = std::min(bounds.bottom, p.y);
+            };
+            if (box) {
+                grow(pts.front());
+                grow(pts.back());
+            } else {
+                std::vector<FS_POINTF> stroke = op.shape == kShapePen ? pts : std::vector<FS_POINTF>{pts.front(), pts.back()};
+                for (const FS_POINTF& p : stroke) grow(p);
+                FPDFAnnot_AddInkStroke(annot, stroke.data(), stroke.size());
+                if (op.shape == kShapeArrow) {
+                    // The head: two short strokes back from the tip.
+                    const FS_POINTF a = pts.front(), b = pts.back();
+                    const float dx = b.x - a.x, dy = b.y - a.y, len = std::hypot(dx, dy);
+                    if (len > 0.1f) {
+                        const float head = std::max(8.0f, w * 4), ux = dx / len, uy = dy / len;
+                        const float c = 0.866f, s2 = 0.5f;  // 30 degrees
+                        FS_POINTF l{b.x - head * (ux * c - uy * s2), b.y - head * (uy * c + ux * s2)};
+                        FS_POINTF r{b.x - head * (ux * c + uy * s2), b.y - head * (uy * c - ux * s2)};
+                        FS_POINTF headStroke[] = {l, b, r};
+                        FPDFAnnot_AddInkStroke(annot, headStroke, 3);
+                        grow(l);
+                        grow(r);
+                    }
+                }
+            }
+            bounds.left -= w;
+            bounds.right += w;
+            bounds.top += w;
+            bounds.bottom -= w;
+            FPDFAnnot_SetRect(annot, &bounds);
+            FPDFAnnot_SetColor(annot, FPDFANNOT_COLORTYPE_Color, GetRValue(op.color), GetGValue(op.color),
+                               GetBValue(op.color), 255);
+            FPDFAnnot_SetBorder(annot, 0, 0, w);
+            FPDFAnnot_SetFlags(annot, FPDF_ANNOT_FLAG_PRINT);
+            SetAnnotDate(annot, op.author, now);
+            FPDFPage_CloseAnnot(annot);
+            ok = true;
+        }
+        FPDF_ClosePage(page);
+    });
+    return ok;
+}
+
+bool PdfEngine::AddStamp(const EditOp& op) {
+    if (op.page < 0 || op.page >= m_pageCount || op.text.empty()) return false;
+    bool ok = false;
+    const std::wstring now = PdfDateNow();
+    Guarded([&] {
+        FPDF_PAGE page = FPDF_LoadPage(m_doc, op.page);
+        if (!page) return;
+        const FS_RECTF r = ToPageRect(page, op.rect);
+        FPDF_ANNOTATION annot = FPDFPage_CreateAnnot(page, FPDF_ANNOT_STAMP);
+        if (annot) {
+            FPDFAnnot_SetRect(annot, &r);
+            const unsigned cr = GetRValue(op.color), cg = GetGValue(op.color), cb = GetBValue(op.color);
+            const float w = r.right - r.left, h = r.top - r.bottom;
+            const float line = std::max(1.5f, h * 0.06f);
+            // A rounded frame...
+            FPDF_PAGEOBJECT frame = FPDFPageObj_CreateNewRect(r.left + line, r.bottom + line, w - 2 * line, h - 2 * line);
+            FPDFPageObj_SetStrokeColor(frame, cr, cg, cb, 255);
+            FPDFPageObj_SetStrokeWidth(frame, line);
+            FPDFPath_SetDrawMode(frame, FPDF_FILLMODE_NONE, TRUE);
+            FPDFAnnot_AppendObject(annot, frame);
+            // ...and the word, as large as fits, centred.
+            float size = h * 0.55f;
+            FPDF_PAGEOBJECT text = FPDFPageObj_NewTextObj(m_doc, "Helvetica-Bold", size);
+            if (text) {
+                FPDFText_SetText(text, reinterpret_cast<FPDF_WIDESTRING>(op.text.c_str()));
+                float l, b, rr, t;
+                if (FPDFPageObj_GetBounds(text, &l, &b, &rr, &t) && rr - l > w - 4 * line) {
+                    size *= (w - 4 * line) / (rr - l);
+                    FPDFTextObj_SetFontSize(text, size);
+                    FPDFPageObj_GetBounds(text, &l, &b, &rr, &t);
+                }
+                const float tw = rr - l;
+                FPDFPageObj_Transform(text, 1, 0, 0, 1, r.left + (w - tw) / 2 - l, r.bottom + (h - size * 0.72f) / 2);
+                FPDFPageObj_SetFillColor(text, cr, cg, cb, 255);
+                FPDFAnnot_AppendObject(annot, text);
+            }
+            FPDFAnnot_SetColor(annot, FPDFANNOT_COLORTYPE_Color, cr, cg, cb, 255);
+            FPDFAnnot_SetFlags(annot, FPDF_ANNOT_FLAG_PRINT);
+            FPDFAnnot_SetStringValue(annot, "Contents", reinterpret_cast<FPDF_WIDESTRING>(op.text.c_str()));
+            SetAnnotDate(annot, op.author, now);
+            FPDFPage_CloseAnnot(annot);
+            ok = true;
+        }
+        FPDF_ClosePage(page);
+    });
+    return ok;
+}
+
+bool PdfEngine::AddImage(const EditOp& op) {
+    if (op.page < 0 || op.page >= m_pageCount) return false;
+    bool ok = false;
+    const std::wstring now = PdfDateNow();
+    Guarded([&] {
+        FPDF_PAGE page = FPDF_LoadPage(m_doc, op.page);
+        if (!page) return;
+        const FS_RECTF r = ToPageRect(page, op.rect);
+        if (FPDF_PAGEOBJECT img = MakeImage(m_doc, page, op, op.rect)) {
+            if (op.asAnnot) {
+                // Signatures: a stamp annotation, so it can be deleted again.
+                if (FPDF_ANNOTATION annot = FPDFPage_CreateAnnot(page, FPDF_ANNOT_STAMP)) {
+                    FPDFAnnot_SetRect(annot, &r);
+                    ok = FPDFAnnot_AppendObject(annot, img) != 0;
+                    if (!ok) FPDFPageObj_Destroy(img);
+                    FPDFAnnot_SetFlags(annot, FPDF_ANNOT_FLAG_PRINT);
+                    if (!op.text.empty())
+                        FPDFAnnot_SetStringValue(annot, "Contents", reinterpret_cast<FPDF_WIDESTRING>(op.text.c_str()));
+                    SetAnnotDate(annot, op.author, now);
+                    FPDFPage_CloseAnnot(annot);
+                } else {
+                    FPDFPageObj_Destroy(img);
+                }
+            } else {
+                FPDFPage_InsertObject(page, img);
+                ok = FPDFPage_GenerateContent(page) != 0;
+            }
+        }
+        FPDF_ClosePage(page);
+    });
+    return ok;
+}
+
+bool PdfEngine::AddText(const EditOp& op, std::wstring& error) {
+    if (op.page < 0 || op.page >= m_pageCount || IsBlank(op.text)) return false;
+    bool ok = false;
+    Guarded([&] {
+        FPDF_PAGE page = FPDF_LoadPage(m_doc, op.page);
+        if (!page) return;
+        FontStyle st;
+        st.bold = op.bold;
+        st.italic = op.italic;
+        st.serif = op.serif;
+        st.mono = op.mono;
+        FontCache fonts;
+        const float size = op.fontSize > 0 ? op.fontSize : 12;
+        FS_POINTF right, up;
+        ScreenAxes(page, op.x, op.y, right, up);
+        // One text object per line, each a line height below the previous.
+        size_t start = 0;
+        int line = 0;
+        ok = true;
+        while (ok && start <= op.text.size()) {
+            size_t end = op.text.find(L'\n', start);
+            if (end == std::wstring::npos) end = op.text.size();
+            std::wstring text = op.text.substr(start, end - start);
+            if (!text.empty() && text.back() == L'\r') text.pop_back();
+            if (!IsBlank(text)) {
+                FPDF_FONT font = fonts.Get(m_doc, st, text, error);
+                FPDF_PAGEOBJECT obj = font ? FPDFPageObj_CreateTextObj(m_doc, font, size) : nullptr;
+                if (!obj || !FPDFText_SetText(obj, reinterpret_cast<FPDF_WIDESTRING>(text.c_str()))) {
+                    if (obj) FPDFPageObj_Destroy(obj);
+                    ok = false;
+                    break;
+                }
+                // Baseline: the top of the box plus the ascent, then line by line.
+                const FS_POINTF o = ToPage(page, op.x, op.y + size * (0.85f + 1.2f * line));
+                FS_MATRIX m{right.x, right.y, up.x, up.y, o.x, o.y};
+                FPDFPageObj_SetMatrix(obj, &m);
+                FPDFPageObj_SetFillColor(obj, GetRValue(op.color), GetGValue(op.color), GetBValue(op.color), 255);
+                FPDFPage_InsertObject(page, obj);
+            }
+            ++line;
+            start = end + 1;
+        }
+        if (ok) ok = FPDFPage_GenerateContent(page) != 0;
+        FPDF_ClosePage(page);
+    });
+    return ok;
+}
+
+bool PdfEngine::StyleText(const EditOp& op, std::wstring& error) {
+    if (op.page < 0 || op.page >= m_pageCount || op.count <= 0) return false;
+    bool ok = false;
+    Guarded([&] {
+        FPDF_PAGE page = FPDF_LoadPage(m_doc, op.page);
+        if (!page) return;
+        std::vector<FPDF_PAGEOBJECT> objs;
+        const int n = FPDFPage_CountObjects(page);
+        for (int i = op.index; i < op.index + op.count && i < n; ++i) {
+            FPDF_PAGEOBJECT obj = FPDFPage_GetObject(page, i);
+            if (obj && FPDFPageObj_GetType(obj) == FPDF_PAGEOBJ_TEXT) objs.push_back(obj);
+        }
+        if ((int)objs.size() != op.count) {
+            error = L"The text could not be found on the page any more.";
+        } else {
+            // The size given is the size as shown: scale every object alike.
+            float factor = 1;
+            if (op.fontSize > 0) {
+                float tf = 0;
+                FS_MATRIX m{1, 0, 0, 1, 0, 0};
+                FPDFTextObj_GetFontSize(objs.front(), &tf);
+                FPDFPageObj_GetMatrix(objs.front(), &m);
+                const float shown = tf * std::hypot(m.c, m.d);
+                if (shown > 0) factor = op.fontSize / shown;
+            }
+            // Keep the left end of the line where it was.
+            float left0 = 0, b0, r0, t0;
+            FPDFPageObj_GetBounds(objs.front(), &left0, &b0, &r0, &t0);
+            for (FPDF_PAGEOBJECT obj : objs) {
+                if (factor != 1) {
+                    float tf = 0;
+                    FPDFTextObj_GetFontSize(obj, &tf);
+                    FPDFTextObj_SetFontSize(obj, tf * factor);
+                    // Objects after the first move so the gaps scale too.
+                    FS_MATRIX m{1, 0, 0, 1, 0, 0};
+                    FPDFPageObj_GetMatrix(obj, &m);
+                    m.e = left0 + (m.e - left0) * factor;
+                    FPDFPageObj_SetMatrix(obj, &m);
+                }
+                if (op.color != CLR_INVALID)
+                    FPDFPageObj_SetFillColor(obj, GetRValue(op.color), GetGValue(op.color), GetBValue(op.color), 255);
+            }
+            ok = FPDFPage_GenerateContent(page) != 0;
+        }
+        FPDF_ClosePage(page);
+    });
     return ok;
 }
 

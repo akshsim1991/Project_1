@@ -131,12 +131,31 @@ struct CommentInfo {
     std::wstring date;        // PDF date string ("D:2026...")
 };
 
+// Form field types (the values of PDFium's FPDF_FORMFIELD_*).
+enum FieldType {
+    kFieldUnknown = 0, kFieldPushButton = 1, kFieldCheckBox = 2, kFieldRadio = 3,
+    kFieldComboBox = 4, kFieldListBox = 5, kFieldText = 6, kFieldSignature = 7,
+};
+
+// A fillable form field on a page (one widget annotation).
+struct FormField {
+    RectF rect;               // page points, top-left origin, unrotated
+    int annot = 0;            // index among the page's annotations
+    int type = kFieldUnknown;
+    std::wstring name, value;
+    bool checked = false;
+    bool readOnly = false, multiline = false, password = false;
+    std::vector<std::wstring> options;  // combo and list boxes
+    int selected = -1;
+};
+
 struct TextLayerResult {
     uint32_t docId = 0;
     int page = 0;
     std::vector<TextChar> chars;
     std::vector<LinkInfo> links;  // link annotations and URLs found in the text
     std::vector<CommentInfo> comments;
+    std::vector<FormField> fields;
 };
 
 // A line of editable text: consecutive text objects of the page's content
@@ -191,8 +210,18 @@ struct PrintJob {
 
 // Text markup annotation types (values are PDFium's FPDF_ANNOT_* subtypes).
 enum MarkupType { kMarkupHighlight = 9, kMarkupUnderline = 10, kMarkupStrikeOut = 12 };
-// A sticky note (FPDF_ANNOT_TEXT); squiggly underlines are shown as markup.
-enum { kAnnotNote = 1, kMarkupSquiggly = 11 };
+// Other annotation types (PDFium's FPDF_ANNOT_* values).
+enum {
+    kAnnotNote = 1, kAnnotFreeText = 3, kAnnotLine = 4, kAnnotSquare = 5, kAnnotCircle = 6,
+    kAnnotPolygon = 7, kAnnotPolyline = 8, kMarkupSquiggly = 11, kAnnotStamp = 13, kAnnotInk = 15,
+};
+
+// Drawing tools (EditOp::AddShape).
+enum ShapeKind { kShapeRect = 0, kShapeEllipse = 1, kShapeLine = 2, kShapeArrow = 3, kShapePen = 4 };
+
+struct PointF {
+    float x = 0, y = 0;
+};
 
 // A PDF whose pages are inserted. The worker replaces `path` with a private
 // copy before applying the edit, so undo/redo can replay it later even if
@@ -213,6 +242,12 @@ struct EditOp {
         AddNote,      // a sticky note at (x, y) on `page` with `text`
         EditComment,  // the comment of annotation `index` on `page` becomes `text`
         DeleteAnnot,  // annotation `index` on `page` (and its pop-up)
+        SetField,     // form field (annotation `index` on `page`): text / checked / option
+        AddShape,     // rectangle, ellipse, line, arrow or pen stroke: shape, points, color, width
+        AddStamp,     // a stamp ("APPROVED") in `rect`: text, color
+        AddImage,     // a picture in `rect` (signature: as a removable stamp annotation)
+        AddText,      // new text at (x, y): text, fontSize, color, bold/italic/serif/mono
+        StyleText,    // text run (page, index, count): fontSize (0: keep), color (CLR_INVALID: keep)
     } kind = DeletePages;
     std::vector<int> pages;  // Delete/Move/Rotate: ascending page indices
     int index = 0;           // Move: new index of the first moved page;
@@ -230,6 +265,19 @@ struct EditOp {
     std::wstring find;       // FindReplace: what to find; EditText: the old text
     bool matchCase = false;  // FindReplace
     std::wstring author;     // comments
+    // forms
+    bool checked = false;    // SetField: check boxes and radio buttons
+    int option = -1;         // SetField: combo / list box choice
+    // drawing, stamps, pictures and new text
+    int shape = kShapeRect;
+    std::vector<PointF> points;  // AddShape: page points, top-left origin, unrotated
+    float width = 2;             // AddShape: line width in points
+    RectF rect;                  // AddStamp / AddImage
+    std::vector<uint8_t> pixels; // AddImage: BGRA, top-down
+    int imageW = 0, imageH = 0;
+    bool asAnnot = false;        // AddImage: a stamp annotation (signatures)
+    float fontSize = 0;          // AddText / StyleText: font size in points
+    bool bold = false, italic = false, serif = false, mono = false;  // AddText
 };
 
 enum class EditAction { Edit, Undo, Redo, Save };

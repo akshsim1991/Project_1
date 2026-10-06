@@ -11,6 +11,7 @@
 #include <windowsx.h>
 
 #include "FileAssoc.h"
+#include "Picture.h"
 #include "Theme.h"
 #include "Util.h"
 #include "resource.h"
@@ -38,6 +39,27 @@ const wchar_t kGlyphRedo[] = L"\xE7A6";
 const COLORREF kHighlightColors[] = {RGB(255, 230, 0), RGB(120, 220, 110), RGB(110, 190, 255),
                                      RGB(255, 140, 200)};
 const wchar_t* const kHighlightColorNames[] = {L"&Yellow", L"&Green", L"&Blue", L"&Pink"};
+
+struct StampDef {
+    const wchar_t* text;
+    COLORREF color;
+};
+const StampDef kStamps[] = {
+    {L"APPROVED", RGB(0, 130, 60)},   {L"REJECTED", RGB(200, 20, 20)},     {L"DRAFT", RGB(0, 70, 200)},
+    {L"CONFIDENTIAL", RGB(200, 20, 20)}, {L"REVIEWED", RGB(0, 130, 60)},   {L"FINAL", RGB(0, 130, 60)},
+    {L"PAID", RGB(0, 130, 60)},       {L"RECEIVED", RGB(0, 70, 200)},      {L"NOT APPROVED", RGB(200, 20, 20)},
+    {L"FOR INFORMATION", RGB(0, 70, 200)},
+};
+constexpr int kStampCount = (int)(sizeof(kStamps) / sizeof(kStamps[0]));
+const COLORREF kDrawColors[] = {RGB(220, 30, 30), RGB(0, 90, 210), RGB(0, 140, 60), RGB(0, 0, 0),
+                                RGB(240, 130, 0), RGB(130, 40, 170), RGB(250, 210, 0), RGB(120, 120, 120)};
+const wchar_t* const kDrawColorNames[] = {L"&Red", L"&Blue", L"&Green", L"Blac&k", L"&Orange", L"&Purple", L"&Yellow", L"Gr&ey"};
+constexpr int kDrawColorCount = 8;
+const int kLineWidths[] = {10, 20, 40};  // tenths of a point
+const wchar_t* const kLineWidthNames[] = {L"&Thin (1 pt)", L"&Medium (2 pt)", L"T&hick (4 pt)"};
+constexpr int kLineWidthCount = 3;
+const int kTextSizes[] = {10, 12, 14, 18, 24, 36};
+constexpr int kTextSizeCount = 6;
 constexpr COLORREF kUnderlineColor = RGB(0, 90, 220);
 constexpr COLORREF kStrikeOutColor = RGB(220, 30, 30);
 
@@ -199,6 +221,8 @@ void MainWindow::CreateChildren() {
     m_toolbar.AddSeparator();
     m_toolbar.AddTextButton(ID_EDIT_PDF_MENU, L"Edit PDF",
                             L"Edit text, find and replace, comments, markup and pages", 72);
+    m_toolbar.AddTextButton(ID_ANNOTATE_MENU, L"Annotate",
+                            L"Highlight, draw, add text, stamps, signatures and pictures", 78);
     m_toolbar.AddTextButton(ID_ADD_COMMENT, L"Comment", L"Add a comment: click where it should go (Ctrl+M)", 78);
     m_toolbar.AddSeparator();
     m_toolbar.AddButton(ID_PREV_PAGE, kGlyphPrev, L"Previous page (Page Up)");
@@ -277,6 +301,10 @@ void MainWindow::CreateAccelerators() {
         {FCONTROL | FSHIFT | FVIRTKEY, 'H', ID_REPLACE_TEXT},
         {FCONTROL | FVIRTKEY, 'M', ID_ADD_COMMENT},
         {FCONTROL | FSHIFT | FVIRTKEY, 'M', ID_COMMENT_SELECTION},
+        {FCONTROL | FVIRTKEY, 'K', ID_COMMAND_PALETTE},
+        {FALT | FVIRTKEY, VK_LEFT, ID_BACK},
+        {FALT | FVIRTKEY, VK_RIGHT, ID_FORWARD},
+        {FVIRTKEY, VK_F5, ID_PRESENT},
     };
     m_accel = CreateAcceleratorTableW(acc, (int)(sizeof(acc) / sizeof(acc[0])));
 }
@@ -353,6 +381,9 @@ int MainWindow::NewTab() {
     };
     tab->view->onOpenComment = [this, raw](int page, const CommentInfo& c) {
         if (m_active >= 0 && raw == &Active()) OpenComment(page, c);
+    };
+    tab->view->onSignField = [this, raw](int page, const RectF& rect) {
+        if (m_active >= 0 && raw == &Active()) SignField(page, rect);
     };
     // New tabs inherit the view mode and zoom of the current tab.
     if (m_active >= 0) {
@@ -738,7 +769,10 @@ void MainWindow::GoToPageFromEdit() {
     const std::wstring text = GetText(m_pageEdit);
     if (text.empty() || !View().HasDocument()) return;
     const long page = wcstol(text.c_str(), nullptr, 10);
-    if (page >= 1) View().GoToPage((int)std::min<long>(page, View().PageCount()) - 1);
+    if (page >= 1) {
+        View().PushHistory();
+        View().GoToPage((int)std::min<long>(page, View().PageCount()) - 1);
+    }
 }
 
 // ===========================================================================
@@ -749,6 +783,39 @@ void MainWindow::OnCommand(int id, int code, HWND ctl) {
     if (id >= ID_HL_COLOR_FIRST && id <= ID_HL_COLOR_LAST) {
         m_settings.highlightColor = id - ID_HL_COLOR_FIRST;
         if (view.HasSelection()) AddMarkup(kMarkupHighlight);
+        return;
+    }
+    if (id >= ID_STAMP_FIRST && id < ID_STAMP_FIRST + kStampCount) {
+        StartStamp(kStamps[id - ID_STAMP_FIRST].text, kStamps[id - ID_STAMP_FIRST].color);
+        return;
+    }
+    if (id >= ID_DRAWCOLOR_FIRST && id < ID_DRAWCOLOR_FIRST + kDrawColorCount) {
+        m_settings.drawColor = kDrawColors[id - ID_DRAWCOLOR_FIRST];
+        StartTool(view.Tool());  // the active tool takes the new colour
+        return;
+    }
+    if (id >= ID_WIDTH_FIRST && id < ID_WIDTH_FIRST + kLineWidthCount) {
+        m_settings.lineWidthTenths = kLineWidths[id - ID_WIDTH_FIRST];
+        StartTool(view.Tool());
+        return;
+    }
+    if (id >= ID_TEXTSIZE_FIRST && id < ID_TEXTSIZE_FIRST + kTextSizeCount) {
+        m_settings.textSize = kTextSizes[id - ID_TEXTSIZE_FIRST];
+        StartTool(view.Tool());
+        return;
+    }
+    if (id >= ID_RECENT_FIRST && id < ID_RECENT_FIRST + 20) {
+        const size_t i = (size_t)(id - ID_RECENT_FIRST);
+        if (i < m_settings.recent.size()) {
+            const std::wstring path = m_settings.recent[i];
+            if (FileExists(path)) {
+                OpenFile(path, 0);
+            } else {
+                m_settings.recent.erase(m_settings.recent.begin() + (ptrdiff_t)i);
+                MessageBoxW(m_hwnd, (L"\x201C" + path + L"\x201D no longer exists, so it was removed from the list.").c_str(),
+                            APP_NAME, MB_ICONINFORMATION);
+            }
+        }
         return;
     }
     if (id >= ID_ZOOM_PRESET_FIRST && id < ID_ZOOM_PRESET_FIRST + kZoomPresetCount) {
@@ -788,6 +855,48 @@ void MainWindow::OnCommand(int id, int code, HWND ctl) {
         case ID_MERGE_TABS: MergeTabs(); break;
         case ID_EXTRACT_PAGES: ExtractPages(); break;
         case ID_EDIT_PDF_MENU: ShowEditPdfMenu(); break;
+        case ID_ANNOTATE_MENU: ShowAnnotateMenu(); break;
+        case ID_TOOL_ADD_TEXT: StartTool(view.Tool() == ViewTool::AddText ? ViewTool::Select : ViewTool::AddText); break;
+        case ID_TOOL_RECT: StartTool(view.Tool() == ViewTool::Rectangle ? ViewTool::Select : ViewTool::Rectangle); break;
+        case ID_TOOL_ELLIPSE: StartTool(view.Tool() == ViewTool::Ellipse ? ViewTool::Select : ViewTool::Ellipse); break;
+        case ID_TOOL_LINE: StartTool(view.Tool() == ViewTool::Line ? ViewTool::Select : ViewTool::Line); break;
+        case ID_TOOL_ARROW: StartTool(view.Tool() == ViewTool::Arrow ? ViewTool::Select : ViewTool::Arrow); break;
+        case ID_TOOL_PEN: StartTool(view.Tool() == ViewTool::Pen ? ViewTool::Select : ViewTool::Pen); break;
+        case ID_SQUIGGLY: AddMarkup(kMarkupSquiggly); break;
+        case ID_STAMP_CUSTOM: {
+            std::wstring text;
+            if (InputBox(L"Custom stamp", L"The word or words on the stamp (for example \x201C" L"CHECKED BY RAHUL\x201D):", text) &&
+                !text.empty()) {
+                CharUpperBuffW(text.data(), (DWORD)text.size());
+                StartStamp(text, RGB(0, 70, 200));
+            }
+            break;
+        }
+        case ID_SIGNATURE_USE: StartSignature(false); break;
+        case ID_SIGNATURE_NEW: StartSignature(true); break;
+        case ID_SIGNATURE_FORGET:
+            DeleteSavedSignature();
+            MessageBoxW(m_hwnd, L"The saved signature was removed from this PC.", APP_NAME, MB_ICONINFORMATION);
+            break;
+        case ID_INSERT_IMAGE: InsertImage(); break;
+        case ID_DRAWCOLOR_MORE: {
+            static COLORREF custom[16] = {};
+            CHOOSECOLORW cc{sizeof(cc)};
+            cc.hwndOwner = m_hwnd;
+            cc.lpCustColors = custom;
+            cc.rgbResult = m_settings.drawColor;
+            cc.Flags = CC_FULLOPEN | CC_RGBINIT;
+            if (ChooseColorW(&cc)) {
+                m_settings.drawColor = cc.rgbResult;
+                StartTool(view.Tool());
+            }
+            break;
+        }
+        case ID_COMMAND_PALETTE: ShowCommandPalette(); break;
+        case ID_BACK: view.Back(); break;
+        case ID_FORWARD: view.Forward(); break;
+        case ID_RECENT_CLEAR: m_settings.recent.clear(); break;
+        case ID_PRESENT: TogglePresentation(); break;
         case ID_EDIT_TEXT:
             SetTool(view.Tool() == ViewTool::EditText ? ViewTool::Select : ViewTool::EditText);
             break;
@@ -809,8 +918,14 @@ void MainWindow::OnCommand(int id, int code, HWND ctl) {
             break;
         case ID_PREV_PAGE: view.PrevPage(); break;
         case ID_NEXT_PAGE: view.NextPage(); break;
-        case ID_FIRST_PAGE: view.GoToPage(0); break;
-        case ID_LAST_PAGE: view.GoToPage(view.PageCount() - 1); break;
+        case ID_FIRST_PAGE:
+            view.PushHistory();
+            view.GoToPage(0);
+            break;
+        case ID_LAST_PAGE:
+            view.PushHistory();
+            view.GoToPage(view.PageCount() - 1);
+            break;
         case ID_GOTO_PAGE:
             if (m_fullscreen) ToggleFullscreen();
             SetFocus(m_pageEdit);
@@ -880,7 +995,9 @@ void MainWindow::OnCommand(int id, int code, HWND ctl) {
             break;
         case ID_SEARCH_CLOSE: ShowSearch(false); break;
         case ID_ESCAPE:
-            if (m_searchVisible)
+            if (m_presenting)
+                TogglePresentation();
+            else if (m_searchVisible)
                 ShowSearch(false);
             else if (m_fullscreen)
                 ToggleFullscreen();
@@ -899,15 +1016,7 @@ void MainWindow::OnCommand(int id, int code, HWND ctl) {
                             MB_ICONWARNING);
             }
             break;
-        case ID_ABOUT:
-            MessageBoxW(m_hwnd,
-                        APP_NAME L" " APP_VERSION L"\n\n"
-                        APP_COPYRIGHT L".\n"
-                        L"Developed for faster experience.\n\n"
-                        L"PDF rendering: PDFium (BSD-3-Clause / Apache-2.0),\n"
-                        L"Copyright The PDFium Authors.",
-                        L"About " APP_NAME, MB_ICONINFORMATION);
-            break;
+        case ID_ABOUT: ShowAbout(); break;
         case ID_EXIT: PostMessageW(m_hwnd, WM_CLOSE, 0, 0); break;
     }
 }
@@ -950,6 +1059,8 @@ void MainWindow::ShowMoreMenu() {
     const Tab& tab = Active();
     HMENU m = CreatePopupMenu();
     AppendMenuW(m, MF_STRING, ID_OPEN, L"&Open\x2026\tCtrl+O");
+    AppendMenuW(m, MF_POPUP | (m_settings.recent.empty() ? MF_GRAYED : 0), (UINT_PTR)CreateRecentMenu(),
+                L"Open rece&nt");
     AppendMenuW(m, MF_STRING | (doc && tab.dirty ? 0 : MF_GRAYED), ID_SAVE, L"&Save\tCtrl+S");
     AppendMenuW(m, MF_STRING | docFlag, ID_SAVE_AS, L"Sa&ve as\x2026\tCtrl+Shift+S");
     AppendMenuW(m, MF_STRING, ID_CLOSE_TAB, L"&Close tab\tCtrl+W");
@@ -972,6 +1083,8 @@ void MainWindow::ShowMoreMenu() {
     AppendMenuW(m, MF_STRING | docFlag, ID_FIRST_PAGE, L"&First page\tHome");
     AppendMenuW(m, MF_STRING | docFlag, ID_LAST_PAGE, L"&Last page\tEnd");
     AppendMenuW(m, MF_STRING | docFlag, ID_GOTO_PAGE, L"&Go to page\x2026\tCtrl+G");
+    AppendMenuW(m, MF_STRING | (view.CanGoBack() ? 0 : MF_GRAYED), ID_BACK, L"&Back\tAlt+Left");
+    AppendMenuW(m, MF_STRING | (view.CanGoForward() ? 0 : MF_GRAYED), ID_FORWARD, L"For&ward\tAlt+Right");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(m, MF_STRING | check(m_sidebar.Mode() == SidebarMode::Bookmarks),
                 ID_SIDEBAR_BOOKMARKS, L"&Bookmarks panel\tCtrl+B");
@@ -987,9 +1100,11 @@ void MainWindow::ShowMoreMenu() {
                 L"Fit pa&ge\tCtrl+0");
     AppendMenuW(m, MF_STRING, ID_ACTUAL_SIZE, L"Actual si&ze\tCtrl+1");
     AppendMenuW(m, MF_STRING | check(m_fullscreen), ID_FULLSCREEN, L"F&ull screen\tF11");
+    AppendMenuW(m, MF_STRING | docFlag | check(m_presenting), ID_PRESENT, L"&Presentation\tF5");
     AppendMenuW(m, MF_POPUP, (UINT_PTR)colors, L"Page colo&urs");
     AppendMenuW(m, MF_POPUP, (UINT_PTR)theme, L"&Theme");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_STRING, ID_COMMAND_PALETTE, L"&Command palette\x2026\tCtrl+K");
     AppendMenuW(m, MF_STRING, ID_REGISTER_DEFAULT, L"Set as &default PDF viewer\x2026");
     AppendMenuW(m, MF_STRING, ID_ABOUT, L"Abou&t " APP_NAME);
     AppendMenuW(m, MF_STRING, ID_EXIT, L"E&xit");
@@ -1048,6 +1163,8 @@ void MainWindow::UpdateUi() {
     m_toolbar.SetEnabled(ID_ADD_COMMENT, doc);
     m_toolbar.SetChecked(ID_EDIT_PDF_MENU, doc && view.Tool() == ViewTool::EditText);
     m_toolbar.SetChecked(ID_ADD_COMMENT, doc && view.Tool() == ViewTool::AddComment);
+    m_toolbar.SetEnabled(ID_ANNOTATE_MENU, doc);
+    m_toolbar.SetChecked(ID_ANNOTATE_MENU, doc && view.Tool() >= ViewTool::AddText);
     m_toolbar.SetEnabled(ID_UNDO, doc && tab.canUndo);
     m_toolbar.SetEnabled(ID_REDO, doc && tab.canRedo);
     if (doc && m_sidebar.Mode() == SidebarMode::Thumbnails)
@@ -1183,6 +1300,7 @@ void MainWindow::OnDocLoaded(DocLoadResult* result) {
     tab.info = std::move(res->info);
     tab.dirty = tab.canUndo = tab.canRedo = false;
     tab.view->SetDocument(tab.docId, std::move(res->pageSizes), tab.pendingPage);
+    AddRecent(tab.path);
     UpdateTabs();
     if (index == m_active) {
         SyncSidebar();
@@ -1430,6 +1548,7 @@ void MainWindow::OnSidebar(WPARAM event, LPARAM value) {
     Tab& tab = Active();
     if (!tab.docId) return;
     if (event == kSidebarPageClicked) {
+        tab.view->PushHistory();
         tab.view->GoToPage((int)value);
     } else if (event == kSidebarPagesMoved) {
         MovePages((int)value);
@@ -2245,6 +2364,15 @@ INT_PTR CALLBACK ReplaceDlgProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
 std::wstring CommentKind(int subtype) {
     switch (subtype) {
         case kAnnotNote: return L"Note";
+        case kMarkupSquiggly: return L"Squiggly underline";
+        case kAnnotSquare: return L"Rectangle";
+        case kAnnotCircle: return L"Ellipse";
+        case kAnnotInk: return L"Drawing";
+        case kAnnotLine: return L"Line";
+        case kAnnotStamp: return L"Stamp";
+        case kAnnotFreeText: return L"Text box";
+        case kAnnotPolygon:
+        case kAnnotPolyline: return L"Shape";
         case kMarkupHighlight: return L"Highlight";
         case kMarkupUnderline: return L"Underline";
         case kMarkupStrikeOut: return L"Strikethrough";
@@ -2342,7 +2470,7 @@ HMENU MainWindow::CreateMarkupMenu() {
     HMENU markup = CreatePopupMenu();
     AppendMenuW(markup, MF_STRING | selFlag, ID_HIGHLIGHT, L"&Highlight\tCtrl+H");
     AppendMenuW(markup, MF_STRING | selFlag, ID_UNDERLINE, L"&Underline\tCtrl+U");
-    AppendMenuW(markup, MF_STRING | selFlag, ID_STRIKEOUT, L"&Strikethrough\tCtrl+K");
+    AppendMenuW(markup, MF_STRING | selFlag, ID_STRIKEOUT, L"&Strikethrough\tCtrl+Shift+K");
     AppendMenuW(markup, MF_SEPARATOR, 0, nullptr);
     for (int i = 0; i <= ID_HL_COLOR_LAST - ID_HL_COLOR_FIRST; ++i)
         AppendMenuW(markup, MF_STRING, ID_HL_COLOR_FIRST + i, kHighlightColorNames[i]);
@@ -2366,7 +2494,7 @@ HMENU MainWindow::CreateEditPdfMenu() {
     AppendMenuW(m, MF_STRING | selFlag, ID_COMMENT_SELECTION, L"Comment on &selected text\x2026\tCtrl+Shift+M");
     AppendMenuW(m, MF_STRING | docFlag, ID_SHOW_COMMENTS, L"&All comments\x2026");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(m, MF_POPUP | docFlag, (UINT_PTR)CreateMarkupMenu(), L"Mar&k up text");
+    AppendMenuW(m, MF_POPUP | docFlag, (UINT_PTR)CreateAnnotateMenu(), L"A&nnotate");
     AppendMenuW(m, MF_POPUP | docFlag, (UINT_PTR)CreatePagesMenu(), L"Edit &pages");
     return m;
 }
@@ -2481,10 +2609,15 @@ void MainWindow::OnCommentList(CommentListResult* result) {
     const INT_PTR r = DialogBoxParamW(m_inst, MAKEINTRESOURCEW(IDD_COMMENTS), m_hwnd, CommentsDlgProc, (LPARAM)&d);
     if (d.chosen < 0 || d.chosen >= (int)res->comments.size() || TabByDocId(res->docId) != m_active) return;
     const auto& [page, comment] = res->comments[(size_t)d.chosen];
+    SearchHit spot;  // shows the comment itself, not just its page
+    spot.page = page;
+    spot.rects.push_back(comment.rect);
     if (r == IDC_COMMENTS_GOTO) {
-        View().GoToPage(page);
+        View().PushHistory();
+        View().ScrollToHit(spot);
     } else if (r == IDC_COMMENTS_EDIT) {
-        View().GoToPage(page);
+        View().PushHistory();
+        View().ScrollToHit(spot);
         OpenComment(page, comment);
     } else if (r == IDC_COMMENTS_DELETE) {
         EditOp op;
@@ -2493,4 +2626,497 @@ void MainWindow::OnCommentList(CommentListResult* result) {
         op.index = comment.annot;
         SendEdit(std::move(op));
     }
+}
+
+// ===========================================================================
+// Annotate: markup, drawing, new text, stamps, signatures and pictures
+// ===========================================================================
+HMENU MainWindow::CreateAnnotateMenu() {
+    PdfView& view = View();
+    const bool doc = view.HasDocument();
+    const UINT docFlag = doc ? 0 : MF_GRAYED;
+    const UINT selFlag = view.HasSelection() ? 0 : MF_GRAYED;
+    const ViewTool tool = view.Tool();
+    auto toolItem = [&](HMENU m, int id, ViewTool t, const wchar_t* text) {
+        AppendMenuW(m, MF_STRING | docFlag | (tool == t ? MF_CHECKED : 0), id, text);
+    };
+    HMENU stamps = CreatePopupMenu();
+    for (int i = 0; i < kStampCount; ++i) AppendMenuW(stamps, MF_STRING, ID_STAMP_FIRST + i, kStamps[i].text);
+    AppendMenuW(stamps, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(stamps, MF_STRING, ID_STAMP_CUSTOM, L"&Custom stamp\x2026");
+
+    Picture saved;
+    const bool hasSaved = LoadSavedSignature(saved);
+    HMENU sign = CreatePopupMenu();
+    if (hasSaved) AppendMenuW(sign, MF_STRING, ID_SIGNATURE_USE, L"Use &my signature");
+    AppendMenuW(sign, MF_STRING, ID_SIGNATURE_NEW, hasSaved ? L"&New signature\x2026" : L"&Create signature\x2026");
+    if (hasSaved) AppendMenuW(sign, MF_STRING, ID_SIGNATURE_FORGET, L"&Forget my signature");
+
+    HMENU colors = CreatePopupMenu();
+    for (int i = 0; i < kDrawColorCount; ++i)
+        AppendMenuW(colors, MF_STRING | (kDrawColors[i] == m_settings.drawColor ? MF_CHECKED : 0),
+                    ID_DRAWCOLOR_FIRST + i, kDrawColorNames[i]);
+    AppendMenuW(colors, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(colors, MF_STRING, ID_DRAWCOLOR_MORE, L"&More colours\x2026");
+    HMENU widths = CreatePopupMenu();
+    for (int i = 0; i < kLineWidthCount; ++i)
+        AppendMenuW(widths, MF_STRING | (kLineWidths[i] == m_settings.lineWidthTenths ? MF_CHECKED : 0),
+                    ID_WIDTH_FIRST + i, kLineWidthNames[i]);
+    HMENU sizes = CreatePopupMenu();
+    for (int i = 0; i < kTextSizeCount; ++i)
+        AppendMenuW(sizes, MF_STRING | (kTextSizes[i] == m_settings.textSize ? MF_CHECKED : 0), ID_TEXTSIZE_FIRST + i,
+                    (std::to_wstring(kTextSizes[i]) + L" pt").c_str());
+
+    HMENU m = CreatePopupMenu();
+    AppendMenuW(m, MF_STRING | selFlag, ID_HIGHLIGHT, L"&Highlight\tCtrl+H");
+    AppendMenuW(m, MF_STRING | selFlag, ID_UNDERLINE, L"&Underline\tCtrl+U");
+    AppendMenuW(m, MF_STRING | selFlag, ID_STRIKEOUT, L"&Strikethrough\tCtrl+Shift+K");
+    AppendMenuW(m, MF_STRING | selFlag, ID_SQUIGGLY, L"S&quiggly underline");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    toolItem(m, ID_TOOL_ADD_TEXT, ViewTool::AddText, L"Add &text");
+    toolItem(m, ID_TOOL_RECT, ViewTool::Rectangle, L"&Rectangle");
+    toolItem(m, ID_TOOL_ELLIPSE, ViewTool::Ellipse, L"&Ellipse");
+    toolItem(m, ID_TOOL_LINE, ViewTool::Line, L"&Line");
+    toolItem(m, ID_TOOL_ARROW, ViewTool::Arrow, L"&Arrow");
+    toolItem(m, ID_TOOL_PEN, ViewTool::Pen, L"&Pen (freehand)");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_POPUP | docFlag, (UINT_PTR)stamps, L"Sta&mp");
+    AppendMenuW(m, MF_POPUP | docFlag, (UINT_PTR)sign, L"Si&gnature");
+    AppendMenuW(m, MF_STRING | docFlag, ID_INSERT_IMAGE, L"Insert p&icture\x2026");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_POPUP, (UINT_PTR)colors, L"&Colour");
+    AppendMenuW(m, MF_POPUP, (UINT_PTR)widths, L"Line &width");
+    AppendMenuW(m, MF_POPUP, (UINT_PTR)sizes, L"Te&xt size");
+    AppendMenuW(m, MF_POPUP, (UINT_PTR)CreateMarkupMenuColors(), L"Highlight c&olour");
+    return m;
+}
+
+HMENU MainWindow::CreateMarkupMenuColors() {
+    HMENU m = CreatePopupMenu();
+    for (int i = 0; i <= ID_HL_COLOR_LAST - ID_HL_COLOR_FIRST; ++i)
+        AppendMenuW(m, MF_STRING, ID_HL_COLOR_FIRST + i, kHighlightColorNames[i]);
+    CheckMenuRadioItem(m, ID_HL_COLOR_FIRST, ID_HL_COLOR_LAST, ID_HL_COLOR_FIRST + m_settings.highlightColor,
+                       MF_BYCOMMAND);
+    return m;
+}
+
+void MainWindow::ShowAnnotateMenu() {
+    HMENU m = CreateAnnotateMenu();
+    const RECT rc = m_toolbar.ItemScreenRect(ID_ANNOTATE_MENU);
+    TrackPopupMenu(m, TPM_LEFTALIGN | TPM_TOPALIGN, rc.left, rc.bottom, 0, m_hwnd, nullptr);
+    DestroyMenu(m);
+}
+
+// Starts a tool with the current colour, line width and text size.
+void MainWindow::StartTool(ViewTool tool) {
+    if (!CanEdit()) return;
+    PdfView& view = View();
+    ToolOptions o;
+    if (tool == ViewTool::Stamp || tool == ViewTool::Signature || tool == ViewTool::Image) return;  // own setup
+    o.color = m_settings.drawColor;
+    o.width = m_settings.lineWidthTenths / 10.0f;
+    o.textSize = (float)m_settings.textSize;
+    o.author = CurrentUserName();
+    view.SetToolOptions(o);
+    SetTool(tool);
+}
+
+void MainWindow::StartStamp(const std::wstring& text, COLORREF color) {
+    if (!CanEdit()) return;
+    ToolOptions o;
+    o.stamp = text;
+    o.stampColor = color;
+    o.author = CurrentUserName();
+    View().SetToolOptions(o);
+    SetTool(ViewTool::Stamp);
+}
+
+void MainWindow::StartSignature(bool newOne) {
+    if (!CanEdit()) return;
+    Picture sig;
+    if (newOne || !LoadSavedSignature(sig)) {
+        if (!ShowSignatureDialog(m_inst, m_hwnd, sig)) return;
+    }
+    ToolOptions o;
+    o.pixels = std::move(sig.pixels);
+    o.imageW = sig.width;
+    o.imageH = sig.height;
+    o.author = CurrentUserName();
+    View().SetToolOptions(o);
+    SetTool(ViewTool::Signature);
+}
+
+// A signature field was clicked: the signature goes inside it.
+void MainWindow::SignField(int page, const RectF& field) {
+    if (!CanEdit()) return;
+    Picture sig;
+    if (!LoadSavedSignature(sig) && !ShowSignatureDialog(m_inst, m_hwnd, sig)) return;
+    const float fw = field.right - field.left, fh = field.bottom - field.top;
+    const float aspect = (float)sig.width / std::max(1, sig.height);
+    float w = fw, h = fw / aspect;
+    if (h > fh) {
+        h = fh;
+        w = fh * aspect;
+    }
+    EditOp op;
+    op.kind = EditOp::AddImage;
+    op.page = page;
+    op.rect = {field.left + (fw - w) / 2, field.top + (fh - h) / 2, field.left + (fw + w) / 2, field.top + (fh + h) / 2};
+    op.asAnnot = true;
+    op.text = L"Signature";
+    op.author = CurrentUserName();
+    op.pixels = std::move(sig.pixels);
+    op.imageW = sig.width;
+    op.imageH = sig.height;
+    SendEdit(std::move(op));
+}
+
+void MainWindow::InsertImage() {
+    if (!CanEdit()) return;
+    std::vector<wchar_t> file(32768, L'\0');
+    OPENFILENAMEW ofn{sizeof(ofn)};
+    ofn.hwndOwner = m_hwnd;
+    ofn.lpstrFilter = L"Pictures (*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.tif)\0*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.tif;*.tiff\0";
+    ofn.lpstrFile = file.data();
+    ofn.nMaxFile = (DWORD)file.size();
+    ofn.lpstrTitle = L"Insert picture";
+    ofn.Flags = OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_HIDEREADONLY;
+    if (!GetOpenFileNameW(&ofn)) return;
+    Picture pic;
+    // Large photos are scaled down: 2400 pixels is sharp at full-page size.
+    if (!LoadPictureFile(file.data(), 2400, pic)) {
+        MessageBoxW(m_hwnd, L"That picture could not be read.", APP_NAME, MB_ICONWARNING);
+        return;
+    }
+    ToolOptions o;
+    o.pixels = std::move(pic.pixels);
+    o.imageW = pic.width;
+    o.imageH = pic.height;
+    View().SetToolOptions(o);
+    SetTool(ViewTool::Image);
+}
+
+// ===========================================================================
+// Command palette (Ctrl+K)
+// ===========================================================================
+void MainWindow::ShowCommandPalette() {
+    if (m_fullscreen && !m_presenting) ToggleFullscreen();
+    PdfView& view = View();
+    const bool doc = view.HasDocument();
+    const bool sel = view.HasSelection();
+    const Tab& tab = Active();
+    std::vector<PaletteCommand> c = {
+        {ID_OPEN, L"Open a PDF", L"Ctrl+O", L"file new tab browse"},
+        {ID_SAVE, L"Save", L"Ctrl+S", L"", doc && tab.dirty},
+        {ID_SAVE_AS, L"Save as", L"Ctrl+Shift+S", L"copy", doc},
+        {ID_PRINT, L"Print", L"Ctrl+P", L"printer paper", doc},
+        {ID_CLOSE_TAB, L"Close tab", L"Ctrl+W", L""},
+        {ID_UNDO, L"Undo", L"Ctrl+Z", L"", doc && tab.canUndo},
+        {ID_REDO, L"Redo", L"Ctrl+Y", L"", doc && tab.canRedo},
+        {ID_EDIT_TEXT, L"Edit text", L"Ctrl+E", L"change words typo correct modify", doc},
+        {ID_REPLACE_TEXT, L"Find and replace text", L"Ctrl+Shift+H", L"substitute change everywhere", doc},
+        {ID_ADD_COMMENT, L"Add a comment", L"Ctrl+M", L"note sticky review", doc},
+        {ID_COMMENT_SELECTION, L"Comment on the selected text", L"Ctrl+Shift+M", L"note", doc && sel},
+        {ID_SHOW_COMMENTS, L"List all comments", L"", L"notes review annotations", doc},
+        {ID_HIGHLIGHT, L"Highlight the selected text", L"Ctrl+H", L"marker", doc && sel},
+        {ID_UNDERLINE, L"Underline the selected text", L"Ctrl+U", L"", doc && sel},
+        {ID_STRIKEOUT, L"Strike through the selected text", L"Ctrl+Shift+K", L"strikethrough cross out", doc && sel},
+        {ID_SQUIGGLY, L"Squiggly underline", L"", L"wavy", doc && sel},
+        {ID_TOOL_ADD_TEXT, L"Add text", L"", L"type write typewriter text box", doc},
+        {ID_TOOL_RECT, L"Draw a rectangle", L"", L"box square shape", doc},
+        {ID_TOOL_ELLIPSE, L"Draw an ellipse", L"", L"circle oval shape", doc},
+        {ID_TOOL_LINE, L"Draw a line", L"", L"shape", doc},
+        {ID_TOOL_ARROW, L"Draw an arrow", L"", L"pointer shape", doc},
+        {ID_TOOL_PEN, L"Draw with the pen", L"", L"freehand ink pencil sketch", doc},
+        {ID_STAMP_FIRST, L"Stamp: APPROVED", L"", L"stamp", doc},
+        {ID_STAMP_FIRST + 1, L"Stamp: REJECTED", L"", L"stamp", doc},
+        {ID_STAMP_FIRST + 3, L"Stamp: CONFIDENTIAL", L"", L"stamp", doc},
+        {ID_STAMP_CUSTOM, L"Custom stamp", L"", L"stamp", doc},
+        {ID_SIGNATURE_USE, L"Sign the document", L"", L"signature autograph", doc},
+        {ID_SIGNATURE_NEW, L"Create a new signature", L"", L"sign autograph", doc},
+        {ID_INSERT_IMAGE, L"Insert a picture", L"", L"image photo logo png jpg", doc},
+        {ID_DELETE_PAGES, L"Delete the current or selected pages", L"", L"remove", doc},
+        {ID_ROTATE_PAGES_CW, L"Rotate pages clockwise (saved)", L"", L"turn", doc},
+        {ID_ROTATE_PAGES_CCW, L"Rotate pages counterclockwise (saved)", L"", L"turn", doc},
+        {ID_INSERT_BLANK, L"Insert a blank page", L"", L"add empty", doc},
+        {ID_INSERT_FILE, L"Insert pages from a file", L"", L"add merge", doc},
+        {ID_MERGE_FILES, L"Merge PDFs into this document", L"", L"combine join", doc},
+        {ID_MERGE_TABS, L"Merge open tabs into this document", L"", L"combine join", doc && m_tabs.size() > 1},
+        {ID_EXTRACT_PAGES, L"Extract or split pages", L"", L"split save pages separate", doc},
+        {ID_GOTO_PAGE, L"Go to page", L"Ctrl+G", L"jump", doc},
+        {ID_FIRST_PAGE, L"First page", L"Home", L"start beginning", doc},
+        {ID_LAST_PAGE, L"Last page", L"End", L"end", doc},
+        {ID_BACK, L"Back", L"Alt+Left", L"previous history", doc && view.CanGoBack()},
+        {ID_FORWARD, L"Forward", L"Alt+Right", L"next history", doc && view.CanGoForward()},
+        {ID_SEARCH, L"Search in the document", L"Ctrl+F", L"find", doc},
+        {ID_FIT_WIDTH, L"Fit width", L"Ctrl+2", L"zoom", doc},
+        {ID_FIT_PAGE, L"Fit page", L"Ctrl+0", L"zoom whole", doc},
+        {ID_ACTUAL_SIZE, L"Actual size (100%)", L"Ctrl+1", L"zoom", doc},
+        {ID_ZOOM_IN, L"Zoom in", L"Ctrl++", L"bigger", doc},
+        {ID_ZOOM_OUT, L"Zoom out", L"Ctrl+-", L"smaller", doc},
+        {ID_SINGLE_PAGE, L"Single page view", L"", L"layout", doc},
+        {ID_CONTINUOUS, L"Continuous view", L"", L"layout scroll", doc},
+        {ID_VIEW_TWO_PAGE, L"Two pages side by side", L"", L"layout book spread", doc},
+        {ID_ROTATE_LEFT, L"Rotate the view left", L"Ctrl+L", L"turn", doc},
+        {ID_ROTATE_RIGHT, L"Rotate the view right", L"Ctrl+R", L"turn", doc},
+        {ID_PRESENT, L"Presentation", L"F5", L"slideshow present full screen", doc},
+        {ID_FULLSCREEN, L"Full screen", L"F11", L"", true},
+        {ID_COLORS_NORMAL, L"Page colours: normal", L"", L"light", doc},
+        {ID_COLORS_DARK, L"Page colours: dark (night mode)", L"", L"night black invert", doc},
+        {ID_COLORS_DIM, L"Page colours: dimmed", L"", L"grey", doc},
+        {ID_THEME_LIGHT, L"Light theme", L"", L"appearance"},
+        {ID_THEME_DARK, L"Dark theme", L"", L"appearance night"},
+        {ID_THEME_SYSTEM, L"Theme like Windows", L"", L"appearance system"},
+        {ID_SIDEBAR_BOOKMARKS, L"Bookmarks panel", L"Ctrl+B", L"outline contents", doc},
+        {ID_SIDEBAR_THUMBNAILS, L"Thumbnails panel", L"Ctrl+Shift+B", L"pages preview", doc},
+        {ID_COPY, L"Copy the selected text", L"Ctrl+C", L"", doc && sel},
+        {ID_SELECT_ALL, L"Select all text", L"Ctrl+A", L"", doc},
+        {ID_COPY_PAGE_IMAGE, L"Copy the page as a picture", L"", L"image clipboard", doc},
+        {ID_COPY_AREA_IMAGE, L"Copy an area as a picture", L"", L"image clipboard snapshot", doc},
+        {ID_PROPERTIES, L"Document properties", L"Ctrl+D", L"info author title metadata", doc},
+        {ID_REGISTER_DEFAULT, L"Set as the default PDF viewer", L"", L"associate"},
+        {ID_ABOUT, L"About Feather PDF", L"", L"version licenses"},
+        {ID_EXIT, L"Exit", L"", L"quit close"},
+    };
+    for (size_t i = 0; i < m_settings.recent.size() && i < 10; ++i)
+        c.push_back({ID_RECENT_FIRST + (int)i, L"Open recent: " + FileNameFromPath(m_settings.recent[i]), L"",
+                     m_settings.recent[i]});
+    m_palette.Show(m_hwnd, std::move(c), [this](int id, const std::wstring& arg) { RunPaletteCommand(id, arg); });
+}
+
+void MainWindow::RunPaletteCommand(int id, const std::wstring& arg) {
+    PdfView& view = View();
+    if (id == kPaletteGoTo) {
+        const long page = wcstol(arg.c_str(), nullptr, 10);
+        if (view.HasDocument() && page >= 1) {
+            view.PushHistory();
+            view.GoToPage((int)std::min<long>(page, view.PageCount()) - 1);
+        }
+    } else if (id == kPaletteZoom) {
+        const long pct = wcstol(arg.c_str(), nullptr, 10);
+        if (view.HasDocument() && pct > 0) view.SetZoom(std::clamp(pct / 100.0, PdfView::kMinZoom, PdfView::kMaxZoom));
+    } else if (id == kPaletteFind) {
+        if (!view.HasDocument()) return;
+        ShowSearch(true);
+        SetWindowTextW(m_searchEdit, arg.c_str());
+        StartSearch();
+    } else if (id > 0) {
+        OnCommand(id, 0, nullptr);
+    }
+    if (!m_palette.IsOpen() && GetFocus() == nullptr) SetFocus(view.Hwnd());
+}
+
+// ===========================================================================
+// Recent files, presentation
+// ===========================================================================
+void MainWindow::AddRecent(const std::wstring& path) {
+    if (path.empty()) return;
+    auto& list = m_settings.recent;
+    list.erase(std::remove_if(list.begin(), list.end(), [&](const std::wstring& p) { return SamePath(p, path); }),
+               list.end());
+    list.insert(list.begin(), path);
+    if (list.size() > 20) list.resize(20);
+}
+
+HMENU MainWindow::CreateRecentMenu() {
+    HMENU m = CreatePopupMenu();
+    for (size_t i = 0; i < m_settings.recent.size() && i < 20; ++i) {
+        std::wstring name;  // "&" in a file name is not a menu accelerator
+        for (wchar_t ch : FileNameFromPath(m_settings.recent[i])) {
+            if (ch == L'&') name += L'&';
+            name += ch;
+        }
+        const std::wstring label = (i < 9 ? L"&" : L"") + std::to_wstring(i + 1) + L"  " + name;
+        AppendMenuW(m, MF_STRING, ID_RECENT_FIRST + (int)i, label.c_str());
+    }
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_STRING, ID_RECENT_CLEAR, L"&Clear the list");
+    return m;
+}
+
+void MainWindow::TogglePresentation() {
+    PdfView& view = View();
+    if (!m_presenting) {
+        if (!view.HasDocument()) return;
+        m_presenting = true;
+        m_presentWasFullscreen = m_fullscreen;
+        m_presentViewMode = view.GetViewMode();
+        m_presentZoomMode = view.GetZoomMode();
+        m_presentZoom = view.Zoom();
+        if (m_searchVisible) ShowSearch(false);
+        if (!m_fullscreen) ToggleFullscreen();
+        view.SetPresenting(true);
+        view.SetViewMode(ViewMode::Single);
+        view.SetZoomMode(ZoomMode::FitPage);
+    } else {
+        m_presenting = false;
+        view.SetPresenting(false);
+        view.SetViewMode(m_presentViewMode);
+        if (m_presentZoomMode == ZoomMode::Custom)
+            view.SetZoom(m_presentZoom);
+        else
+            view.SetZoomMode(m_presentZoomMode);
+        if (m_fullscreen && !m_presentWasFullscreen) ToggleFullscreen();
+    }
+    SetFocus(view.Hwnd());
+    UpdateUi();
+}
+
+// ===========================================================================
+// About, licences, input box
+// ===========================================================================
+namespace {
+std::wstring NoticesText() {
+    HRSRC res = FindResourceW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDR_NOTICES), RT_RCDATA);
+    HGLOBAL data = res ? LoadResource(GetModuleHandleW(nullptr), res) : nullptr;
+    const char* bytes = data ? (const char*)LockResource(data) : nullptr;
+    const DWORD size = res ? SizeofResource(GetModuleHandleW(nullptr), res) : 0;
+    const std::wstring text = bytes ? Utf8ToWide(std::string(bytes, size)) : L"";
+    // Shown as plain text: the Markdown table and marks are tidied up.
+    std::wstring out;
+    size_t pos = 0;
+    while (pos < text.size()) {
+        size_t end = text.find(L'\n', pos);
+        if (end == std::wstring::npos) end = text.size();
+        std::wstring line = text.substr(pos, end - pos);
+        pos = end + 1;
+        if (!line.empty() && line.back() == L'\r') line.pop_back();
+        if (line.rfind(L"|---", 0) == 0 || line.rfind(L"| ---", 0) == 0) continue;
+        while (!line.empty() && line.front() == L'#') line.erase(line.begin());
+        std::wstring clean;
+        for (size_t i = 0; i < line.size(); ++i) {
+            if (line[i] == L'`' || (line[i] == L'*' && i + 1 < line.size() && line[i + 1] == L'*')) {
+                if (line[i] == L'*') ++i;
+                continue;
+            }
+            clean += line[i];
+        }
+        if (!clean.empty() && clean.front() == L'|') {  // a table row
+            std::wstring row;
+            size_t a = 1;
+            while (a < clean.size()) {
+                size_t b = clean.find(L'|', a);
+                if (b == std::wstring::npos) b = clean.size();
+                std::wstring cell = clean.substr(a, b - a);
+                while (!cell.empty() && cell.front() == L' ') cell.erase(cell.begin());
+                while (!cell.empty() && cell.back() == L' ') cell.pop_back();
+                if (!cell.empty()) row += (row.empty() ? L"" : L"  \x2014  ") + cell;
+                a = b + 1;
+            }
+            clean = L"\x2022 " + row;
+        }
+        while (!clean.empty() && clean.front() == L' ') clean.erase(clean.begin());
+        out += clean + L"\r\n";
+    }
+    return out;
+}
+
+INT_PTR CALLBACK LicensesDlgProc(HWND dlg, UINT msg, WPARAM wp, LPARAM) {
+    switch (msg) {
+        case WM_INITDIALOG:
+            SetDlgItemTextW(dlg, IDC_LICENSES_TEXT, NoticesText().c_str());
+            SetFocus(GetDlgItem(dlg, IDCANCEL));
+            return FALSE;  // the focus was set (the text is not all selected)
+        case WM_COMMAND:
+            if (LOWORD(wp) == IDCANCEL || LOWORD(wp) == IDOK) EndDialog(dlg, IDCANCEL);
+            return TRUE;
+    }
+    return FALSE;
+}
+
+struct AboutFonts {
+    HFONT title = nullptr;
+};
+
+INT_PTR CALLBACK AboutDlgProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
+    auto* fonts = (AboutFonts*)GetWindowLongPtrW(dlg, DWLP_USER);
+    switch (msg) {
+        case WM_INITDIALOG: {
+            fonts = (AboutFonts*)lp;
+            SetWindowLongPtrW(dlg, DWLP_USER, (LONG_PTR)fonts);
+            fonts->title = CreateMessageFont(GetWindowDpi(dlg), 160);
+            LOGFONTW lf{};
+            GetObjectW(fonts->title, sizeof(lf), &lf);
+            lf.lfWeight = FW_SEMIBOLD;
+            DeleteObject(fonts->title);
+            fonts->title = CreateFontIndirectW(&lf);
+            SendDlgItemMessageW(dlg, IDC_ABOUT_NAME, WM_SETFONT, (WPARAM)fonts->title, TRUE);
+            SetDlgItemTextW(dlg, IDC_ABOUT_NAME, APP_NAME);
+            std::wstring version = APP_VERSION;
+            while (version.size() > 3 && version.compare(version.size() - 2, 2, L".0") == 0) version.resize(version.size() - 2);
+            SetDlgItemTextW(dlg, IDC_ABOUT_VERSION, (L"Version " + version).c_str());
+            SetDlgItemTextW(dlg, IDC_ABOUT_TEXT,
+                            L"Feather PDF is a fast, lightweight PDF reader and editor for Windows. It opens "
+                            L"documents in tabs to read, search, print and present them, and lets you edit them: "
+                            L"change and replace text, fill in forms, sign, and add comments, highlights, "
+                            L"drawings, stamps, pictures and text, as well as reorganise, merge, split and "
+                            L"extract pages, with undo and crash-safe saving. Everything happens on your PC, "
+                            L"with no account, cloud service or tracking.\r\n\r\n"
+                            L"Created by: Akshaya Simha\r\n\r\n"
+                            L"\x00A9 2026 Akshaya Simha. All rights reserved.\r\n"
+                            L"This application incorporates third-party software and materials. See Third-Party "
+                            L"Licenses and Attributions for applicable notices and license terms.\r\n\r\n"
+                            L"Built with care for a faster, simpler document experience.");
+            SetFocus(GetDlgItem(dlg, IDOK));
+            return FALSE;
+        }
+        case WM_COMMAND:
+            if (LOWORD(wp) == IDC_ABOUT_LICENSES) {
+                DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_LICENSES), dlg, LicensesDlgProc, 0);
+                return TRUE;
+            }
+            if (LOWORD(wp) == IDOK || LOWORD(wp) == IDCANCEL) {
+                EndDialog(dlg, IDOK);
+                return TRUE;
+            }
+            break;
+        case WM_DESTROY:
+            if (fonts && fonts->title) DeleteObject(fonts->title);
+            break;
+    }
+    return FALSE;
+}
+
+struct InputDialog {
+    std::wstring title, label, text;
+};
+
+INT_PTR CALLBACK InputDlgProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
+    auto* d = (InputDialog*)GetWindowLongPtrW(dlg, DWLP_USER);
+    switch (msg) {
+        case WM_INITDIALOG:
+            d = (InputDialog*)lp;
+            SetWindowLongPtrW(dlg, DWLP_USER, (LONG_PTR)d);
+            SetWindowTextW(dlg, d->title.c_str());
+            SetDlgItemTextW(dlg, IDC_INPUT_LABEL, d->label.c_str());
+            SetDlgItemTextW(dlg, IDC_INPUT_EDIT, d->text.c_str());
+            SetFocus(GetDlgItem(dlg, IDC_INPUT_EDIT));
+            SendDlgItemMessageW(dlg, IDC_INPUT_EDIT, EM_SETSEL, 0, -1);
+            return FALSE;
+        case WM_COMMAND:
+            if (LOWORD(wp) == IDOK) {
+                d->text = DialogText(dlg, IDC_INPUT_EDIT);
+                EndDialog(dlg, IDOK);
+                return TRUE;
+            }
+            if (LOWORD(wp) == IDCANCEL) {
+                EndDialog(dlg, IDCANCEL);
+                return TRUE;
+            }
+            break;
+    }
+    return FALSE;
+}
+}  // namespace
+
+void MainWindow::ShowAbout() {
+    AboutFonts fonts;
+    DialogBoxParamW(m_inst, MAKEINTRESOURCEW(IDD_ABOUT), m_hwnd, AboutDlgProc, (LPARAM)&fonts);
+}
+
+bool MainWindow::InputBox(const std::wstring& title, const std::wstring& label, std::wstring& text) {
+    InputDialog d{title, label, text};
+    if (DialogBoxParamW(m_inst, MAKEINTRESOURCEW(IDD_INPUT), m_hwnd, InputDlgProc, (LPARAM)&d) != IDOK) return false;
+    text = d.text;
+    return true;
 }

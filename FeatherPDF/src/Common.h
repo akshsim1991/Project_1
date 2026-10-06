@@ -22,7 +22,7 @@
 #include <vector>
 
 #define APP_NAME L"Feather PDF"
-#define APP_VERSION L"1.4.0"
+#define APP_VERSION L"2.1.0"
 #define APP_COPYRIGHT L"\x00A9 2026 Akshaya Simha"
 #define APP_WINDOW_CLASS L"FeatherPdfMain"
 #define APP_REG_KEY L"Software\\FeatherPDF"
@@ -142,7 +142,31 @@ enum : int {
     ID_ADD_COMMENT_HERE,
     ID_COMMENT_EDIT,
     ID_COMMENT_DELETE,
+    ID_ANNOTATE_MENU,
+    ID_TOOL_ADD_TEXT,
+    ID_TOOL_RECT,
+    ID_TOOL_ELLIPSE,
+    ID_TOOL_LINE,
+    ID_TOOL_ARROW,
+    ID_TOOL_PEN,
+    ID_SQUIGGLY,
+    ID_STAMP_CUSTOM,
+    ID_SIGNATURE_USE,
+    ID_SIGNATURE_NEW,
+    ID_SIGNATURE_FORGET,
+    ID_INSERT_IMAGE,
+    ID_DRAWCOLOR_MORE,
+    ID_COMMAND_PALETTE,
+    ID_BACK,
+    ID_FORWARD,
+    ID_RECENT_CLEAR,
+    ID_PRESENT,
     ID_ZOOM_PRESET_FIRST = 300,  // + index into kZoomPresets
+    ID_STAMP_FIRST = 400,        // + index into kStamps
+    ID_DRAWCOLOR_FIRST = 420,    // + index into kDrawColors
+    ID_WIDTH_FIRST = 440,        // + index into kLineWidths
+    ID_TEXTSIZE_FIRST = 450,     // + index into kTextSizes
+    ID_RECENT_FIRST = 500,       // + index into the recent files (up to 20)
 };
 
 // Page geometry in PDF points (1/72 inch), already adjusted for /Rotate.

@@ -17,6 +17,7 @@
 #include <shellapi.h>
 
 #include "FileAssoc.h"
+#include "GdiPlusInc.h"
 #include "MainWindow.h"
 
 namespace {
@@ -106,8 +107,12 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int showCmd) {
 
     // The Open dialog and ShellExecute expect COM on the UI thread.
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
-    INITCOMMONCONTROLSEX icc{sizeof(icc), ICC_STANDARD_CLASSES | ICC_BAR_CLASSES};
+    INITCOMMONCONTROLSEX icc{sizeof(icc), ICC_STANDARD_CLASSES | ICC_BAR_CLASSES | ICC_LISTVIEW_CLASSES};
     InitCommonControlsEx(&icc);
+    // GDI+ (part of Windows) draws signatures and reads pictures.
+    Gdiplus::GdiplusStartupInput gdiInput;
+    ULONG_PTR gdiToken = 0;
+    Gdiplus::GdiplusStartup(&gdiToken, &gdiInput, nullptr);
 
     MainWindow window;
     const bool created = window.Create(inst, showCmd, file, page);
@@ -124,6 +129,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int showCmd) {
             DispatchMessageW(&msg);
         }
     }
+    Gdiplus::GdiplusShutdown(gdiToken);
     CoUninitialize();
     if (instanceLock) CloseHandle(instanceLock);
     return (int)msg.wParam;
