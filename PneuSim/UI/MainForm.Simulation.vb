@@ -31,10 +31,14 @@ Partial Public Class MainForm
             _canvas.Simulator = _simulator
             _canvas.Simulating = True
             _simulator.Reset()
+            _recorder = New SimulationRecorder(_simulator)
+            _recorder.Record(force:=True)
             _diagram.Simulator = _simulator
             _plotter.Simulator = _simulator
             _statusMessage.Text = "Click push buttons and selector switches to operate the valves."
         End If
+        ' Continuing after rewinding: the run goes on from the moment shown.
+        _recorder?.TruncateAfterCurrent()
         _paused = False
         _timer.Start()
         UpdateUiState()
@@ -62,6 +66,9 @@ Partial Public Class MainForm
             el.ResetSim()
         Next
         _canvas.Simulating = False
+        _canvas.PickingTarget = False
+        _recorder = Nothing
+        ClearInspector()
         _canvas.Invalidate()
         _diagram.Invalidate()
         _plotter.RefreshPlot()
@@ -100,17 +107,26 @@ Partial Public Class MainForm
         For i = 1 To SubSteps
             _simulator.Step(dt)
         Next
+        _recorder?.Record()
         _tickCount += 1
         ShowSimulationStatus()
         _canvas.Invalidate()
         _diagram.Invalidate()
-        If _tickCount Mod 5 = 0 Then _plotter.RefreshPlot()
+        If _tickCount Mod 5 = 0 Then
+            _plotter.RefreshPlot()
+            _inspector.RefreshValues()
+            UpdateReplayUi()
+        End If
+        If _tickCount Mod 25 = 0 AndAlso _exercise IsNot Nothing Then _trouble.ShowExercise(_exercise)
         If _gif IsNot Nothing AndAlso _tickCount Mod 3 = 0 Then CaptureFrame()
     End Sub
 
     Private Sub OnElementOperated(sender As Object, e As EventArgs)
         If Not _running Then Return
         _simulator.RunLogic()
+        ' Operating something while paused (or rewound) is part of the recorded run.
+        If _paused Then _recorder?.Record(force:=True) : UpdateReplayUi()
+        _inspector.RefreshValues()
         ShowSimulationStatus()
         _canvas.Invalidate()
     End Sub

@@ -1,4 +1,4 @@
-PneuSim 3.1
+PneuSim 3.2
 (c) 2026 Akshaya Simha. All rights reserved.
 
 Developed in VB.NET initially, and improved it with vibe coding using Claude Pro.

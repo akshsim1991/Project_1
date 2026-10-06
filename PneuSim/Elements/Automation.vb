@@ -191,7 +191,7 @@ Public Class ShutOffValve
 
     Public Overrides ReadOnly Property LocalBounds As RectangleF
         Get
-            Return New RectangleF(0, 4, 60, 40)
+            Return New RectangleF(0, 4, 60, 48)
         End Get
     End Property
 
@@ -216,7 +216,7 @@ Public Class ShutOffValve
         Else
             g.DrawLine(r.Line, 30, 6, 30, 18)
         End If
-        If r.Simulating Then g.DrawString(If(open, "open", "closed"), r.SmallFont, r.TextBrush, 34, 32)
+        If r.Simulating Then g.DrawString(If(open, "open", "closed"), r.SmallFont, r.TextBrush, 18, 40)
     End Sub
 
     <Browsable(False)> Public Overrides ReadOnly Property IsManuallyOperated As Boolean

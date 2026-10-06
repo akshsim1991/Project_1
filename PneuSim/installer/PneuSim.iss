@@ -3,7 +3,7 @@
 ; Installs per user (no administrator rights needed) and opens .pneu files with PneuSim.
 
 #ifndef AppVersion
-  #define AppVersion "3.1.0"
+  #define AppVersion "3.2.0"
 #endif
 #ifndef SourceDir
   #define SourceDir "..\..\dist\PneuSim"

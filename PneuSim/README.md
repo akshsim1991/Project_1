@@ -1,4 +1,4 @@
-# PneuSim 3.1 – Pneumatic, Electro-pneumatic & Hydraulic Circuit Simulator
+# PneuSim 3.2 – Pneumatic, Electro-pneumatic & Hydraulic Circuit Simulator
 
 A free, FluidSIM-style desktop application for designing, simulating, checking and learning
 pneumatic, electro-pneumatic and hydraulic circuits. Written in VB.NET (Windows Forms,
@@ -9,6 +9,35 @@ Claude Pro. Software is used to study pneumatic and hydraulic systems, so that i
 simulated to understand different types of circuits.
 
 ![A circuit designed by the generator from "A+ B+ B- A-", running](docs/generator-electro.png)
+
+## What's new in 3.2
+
+- **Troubleshooting practice.** *New exercise* hides a fault somewhere in the circuit – a
+  leaking or blocked tube, a stuck valve, a burnt coil, a broken wire, a sensor that never
+  switches, a sticking or jammed cylinder, a clogged silencer or throttle, a weak supply.
+  Run the circuit, measure (right-click), ask for hints (area → neighbours → cause) and name
+  the faulty part. You get a score and a diagnosis log you can save. Teachers can put any
+  fault into any part with *Add fault…*, tick *Hidden*, and hand out the file: it opens as an
+  exercise and the answer is not readable in the file.
+- **State inspector.** Right-click any component or tube during the simulation to see its live
+  values (pressures at every port, position, speed, force, coil voltage, timer, count …).
+- **Live sliders.** Change supply pressure, regulator setting, throttle opening, load, mass,
+  friction, timer delays, pump flow and more while the circuit runs.
+- **Replay.** Step back and forward, jump to the previous or next event (a valve, relay or
+  cylinder changing), or drag the time slider; *Start* continues from the moment shown.
+- **Parameter sweep** (Tools): run the circuit with one setting changed step by step (e.g.
+  3 to 8 bar) and compare cycle time, air per cycle, cylinder timing and top speed in a table
+  and a chart; export to CSV.
+- **Oscilloscope upgrade.** Trigger (rising / falling, auto or single shot), zoom with the
+  mouse wheel, hold and scroll, minimum / maximum / average between the cursors, CSV and PNG
+  export.
+- **New components:** compressor with pressure switch and air receiver (watch the receiver
+  fill and empty), shut-off valve, pressure switch and vacuum switch, vacuum generator
+  (ejector) and suction cup, parallel gripper, flow meter, force sensor, preset counter,
+  latching emergency stop and the idle-return roller valve – all with symbols, cutaways,
+  help texts, prices and checker rules.
+- Two new examples (vacuum handling; compressor, receiver and flow meter) and new quiz
+  questions on vacuum, air generation and fault finding.
 
 ## What's new in 3.1
 
@@ -85,11 +114,11 @@ A full review fixed 30 problems. The most important:
 
 | Group | Components |
 |---|---|
-| Supply and air preparation | Compressed air supply, service unit, pressure regulator, pressure gauge, silencer, tube junction |
-| Actuators | Single-acting cylinder, double-acting cylinder, semi-rotary actuator, air motor |
-| Directional control valves | 2/2, 3/2 (NC/NO), 4/2, 5/2 and 5/3 (closed, exhaust or pressure centre) valves, operated by push button, selector switch, roller lever, pneumatic pilot, time-delayed pilot or solenoid; spring, pilot or solenoid return |
+| Supply and air preparation | Compressed air supply, compressor, air receiver, shut-off valve, service unit, pressure regulator, pressure gauge, flow meter, force sensor, pressure switch, vacuum switch, silencer, tube junction |
+| Actuators and handling | Single-acting cylinder, double-acting cylinder, semi-rotary actuator, air motor, parallel gripper, vacuum generator, suction cup |
+| Directional control valves | 2/2, 3/2 (NC/NO), 4/2, 5/2 and 5/3 (closed, exhaust or pressure centre) valves, operated by push button, selector switch, roller lever, idle-return roller, pneumatic pilot, time-delayed pilot or solenoid; spring, pilot or solenoid return |
 | Logic, non-return and flow | Shuttle valve (OR), two-pressure valve (AND), check valve, quick exhaust valve, one-way flow control valve, flow control valve |
-| Electrical (24 V DC) | +24 V / 0 V connection, push button NO/NC, selector switch, relay contact NO/NC, proximity sensor, limit switch, relay coil, on-delay and off-delay timer relays, valve solenoid, indicator lamp, wire junction |
+| Electrical (24 V DC) | +24 V / 0 V connection, push button NO/NC, selector switch, emergency stop, relay contact NO/NC, proximity sensor, limit switch, pressure switch contact, preset counter, relay coil, on-delay and off-delay timer relays, valve solenoid, indicator lamp, wire junction |
 | Hydraulics | Pump, tank, pressure relief valve, pressure reducing valve, 4/3 valve (closed, tandem, float, open centre), 4/2 valve, check valve, one-way flow control valve, throttle valve, pressure-compensated flow control valve, counterbalance valve, double- and single-acting hydraulic cylinder, hydraulic motor, accumulator, hydraulic gauge |
 | Pressure control | Pressure regulator, pressure sequence valve |
 | Drawing | Text notes, page connectors |
@@ -106,6 +135,8 @@ A full review fixed 30 problems. The most important:
 8. Electro-pneumatic: self-holding circuit with start / stop and lamp
 9. Hydraulics: cylinder with 4/3 valve, relief valve and gauge
 10. Realistic mode: pressure sequence valve (clamp, then drill)
+11. Vacuum handling: ejector, suction cup and vacuum switch
+12. Air generation: compressor, receiver, service unit and flow meter
 
 ![Cascade circuit generated from "A+ B+ C+ C- B- A-"](docs/generator-cascade.png)
 
@@ -132,6 +163,11 @@ A full review fixed 30 problems. The most important:
 | Record | Toolbar *Record GIF*, operate the circuit, click again to save |
 | Learn | Learn menu: lessons, quiz, timed exam, cutaway view of the selected or hovered component (F7) |
 | Dark mode | View → Dark mode |
+| Inspect / tune while running | Right-click a component or tube; sliders on the *Inspector* tab |
+| Replay | Toolbar step and event buttons or the time slider; Shift+F12 / F12 step, Ctrl+Shift+F12 / Ctrl+F12 events |
+| Troubleshooting | Tools → Troubleshooting, or the *Troubleshoot* tab |
+| Parameter sweep | Tools → Parameter sweep |
+| Plotter | Click / right-click for cursors A / B, wheel zooms, Shift+wheel scrolls, trigger and export at the top |
 
 Names link things together:
 - A valve's *solenoid label* (e.g. `1M1`) matches a *Valve solenoid* coil.
@@ -187,16 +223,20 @@ set by the load, and the relief valve limits it. The ideal (default) mode works 
 
 ```
 PneuSim/
-  Core/        Circuit model, ports, tubes, projects, simulator (ideal, realistic, hydraulic),
+  Core/        Circuit model, ports, tubes, projects, simulator (ideal, realistic, hydraulic,
+               air generation, vacuum, flow measurement), faults, replay recorder,
                drawing surfaces, SVG / DXF / PDF export
-  Elements/    Supply, cylinders, directional valves, logic/flow valves, extras, electrical
+  Elements/    Supply, cylinders, directional valves, logic/flow valves, extras, electrical,
+               automation parts (switches, vacuum, gripper, compressor, receiver, meters)
   Generator/   Sequence parser, circuit generator (relay step chain, cascade), dialog
   Learning/    Lessons, question bank, component help
-  Tools/       Circuit checker and explainer, parts list, PDF report, GIF recorder
+  Tools/       Circuit checker and explainer, troubleshooting exercises, parameter sweep,
+               parts list, PDF report, GIF recorder
   UI/          Main window, canvas, diagram, plotter, dialogs, library, examples
   installer/   Inno Setup script
 ```
 
 To add a component: derive from `CircuitElement`, add ports in the constructor, draw it in
-`DrawSymbol`, and add its passages in `AddEdges`. Then register it in
+`DrawSymbol`, and add its passages in `AddEdges`. Optionally list its faults in
+`PossibleFaults`, its live values in `InspectValues` and its cutaway in `UI/Cutaways.vb`. Then register it in
 `Elements/ElementFactory.vb` and in `UI/Library.vb`.

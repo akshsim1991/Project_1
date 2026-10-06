@@ -7,7 +7,7 @@ Partial Public Class MainForm
     Inherits Form
 
     Private Const AppName = "PneuSim"
-    Private Const AppVersion = "3.1"
+    Private Const AppVersion = "3.2"
     Private Const FileFilter = "PneuSim projects (*.pneu)|*.pneu|All files (*.*)|*.*"
 
     Private ReadOnly _canvas As New CircuitCanvas() With {.Dock = DockStyle.Fill}
@@ -56,6 +56,7 @@ Partial Public Class MainForm
         AddHandler _lessons.LoadCircuit, Sub(s, c) LoadLessonCircuit(c)
         _lessons.CurrentCircuit = Function() _project.SimulationCircuit()
         _canvas.NameScope = Function() _project.AllElements()
+        InitTroubleshooting()
 
         NewProject(New Project(New Circuit()))
         _realPhysics = AppSettings.RealPhysics
@@ -111,6 +112,8 @@ Partial Public Class MainForm
         AddBottomTab("Check circuit", BuildCheckPanel())
         AddBottomTab("Explain", BuildExplainPanel())
         AddBottomTab("Lessons", _lessons)
+        AddBottomTab("Inspector", _inspector)
+        AddBottomTab("Troubleshoot", _trouble)
 
         _diagramSplit = New SplitContainer() With {.Dock = DockStyle.Fill, .Orientation = Orientation.Horizontal, .FixedPanel = FixedPanel.Panel2}
         _diagramSplit.Panel1.Controls.Add(canvasPanel)
@@ -214,7 +217,7 @@ Partial Public Class MainForm
         view.DropDownItems.Add(Item("&Actual Size", Sub() SetZoom(1), Keys.Control Or Keys.D0))
         view.DropDownItems.Add(Item("Zoom to &Fit", Sub() FitView(), Keys.Control Or Keys.D9))
         view.DropDownItems.Add(New ToolStripSeparator())
-        Dim tools = Item("&Bottom panel (diagram, plotter, check, explain, lessons)", Nothing)
+        Dim tools = Item("&Bottom panel (diagram, plotter, check, explain, lessons, inspector, troubleshoot)", Nothing)
         tools.Checked = True
         tools.CheckOnClick = True
         AddHandler tools.CheckedChanged, Sub() _diagramSplit.Panel2Collapsed = Not tools.Checked
@@ -229,7 +232,12 @@ Partial Public Class MainForm
         _menuStop = Item("S&top and Reset", AddressOf OnStop, Keys.F11)
         _menuReal = Item("&Realistic physics (pressure build-up, loads, air consumption)", AddressOf OnToggleReal)
         _menuRecord = Item("Record animated &GIF", AddressOf OnToggleRecord)
-        sim.DropDownItems.AddRange({_menuStart, _menuPause, _menuStop, New ToolStripSeparator(), _menuReal, _menuRecord})
+        sim.DropDownItems.AddRange({_menuStart, _menuPause, _menuStop, New ToolStripSeparator(),
+                                    Item("Step &back", Sub() ReplayStep(-1), Keys.Shift Or Keys.F12),
+                                    Item("Step &forward", Sub() ReplayStep(+1), Keys.F12),
+                                    Item("Back to the &previous event", Sub() ReplayEvent(-1), Keys.Control Or Keys.Shift Or Keys.F12),
+                                    Item("Forward to the &next event", Sub() ReplayEvent(+1), Keys.Control Or Keys.F12),
+                                    New ToolStripSeparator(), _menuReal, _menuRecord})
 
         Dim toolsMenu = New ToolStripMenuItem("&Tools")
         toolsMenu.DropDownItems.Add(Item("&Circuit Generator (from a sequence)...", AddressOf OnGenerator, Keys.Control Or Keys.G))
@@ -238,6 +246,9 @@ Partial Public Class MainForm
         toolsMenu.DropDownItems.Add(New ToolStripSeparator())
         toolsMenu.DropDownItems.Add(Item("Ca&lculators...", AddressOf OnCalculators))
         toolsMenu.DropDownItems.Add(Item("&Parts list and costs...", AddressOf OnPartsList))
+        toolsMenu.DropDownItems.Add(Item("Parameter &sweep (compare settings)...", AddressOf OnSweep))
+        toolsMenu.DropDownItems.Add(New ToolStripSeparator())
+        toolsMenu.DropDownItems.Add(BuildTroubleshootMenu())
 
         Dim learn = New ToolStripMenuItem("&Learn")
         learn.DropDownItems.Add(Item("&Lessons", Sub() ShowBottomTab("Lessons")))
@@ -278,6 +289,7 @@ Partial Public Class MainForm
         _btnPause = Button("Pause", Icons.Pause, AddressOf OnPause)
         _btnStop = Button("Stop", Icons.StopIcon, AddressOf OnStop)
         bar.Items.AddRange({_btnStart, _btnPause, _btnStop})
+        AddReplayButtons(bar)
         bar.Items.Add(New ToolStripLabel("  Speed:"))
         _speedBox = New ToolStripComboBox() With {.DropDownStyle = ComboBoxStyle.DropDownList, .AutoSize = False, .Width = 60}
         _speedBox.Items.AddRange({"0.1x", "0.25x", "0.5x", "1x", "2x", "4x"})
@@ -398,6 +410,7 @@ Partial Public Class MainForm
         End If
         _statusZoom.Text = $"Zoom {_canvas.Zoom * 100:0}%"
         UpdateUndoButtons()
+        UpdateReplayUi()
     End Sub
 
     ' ================================================================= theme

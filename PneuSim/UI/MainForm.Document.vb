@@ -36,6 +36,7 @@ Partial Public Class MainForm
         UpdateTitle()
         UpdateUndoButtons()
         ScheduleCheck()
+        CheckForHiddenFault()
     End Sub
 
     Private Sub RefreshPageTabs()

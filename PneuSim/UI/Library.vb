@@ -32,7 +32,7 @@ Public Module Library
         New LibraryPreset(CatSupply, "Pressure regulator", Function() New PressureRegulator()),
         New LibraryPreset(CatSupply, "Pressure gauge", Function() New PressureGauge()),
         New LibraryPreset(CatSupply, "Flow meter", Function() New FlowMeter()),
-        New LibraryPreset(CatSupply, "Force sensor (on a cylinder)", Function() New ForceSensor()),
+        New LibraryPreset(CatSupply, "Force sensor", Function() New ForceSensor()),
         New LibraryPreset(CatSupply, "Pressure switch", Function() New PressureSwitch()),
         New LibraryPreset(CatSupply, "Vacuum switch", Function() New PressureSwitch() With {.Setting = -0.5}),
         New LibraryPreset(CatSupply, "Silencer", Function() New Silencer()),

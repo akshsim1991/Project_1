@@ -130,7 +130,7 @@ Public Module CircuitAnalysis
                 Dim e = q.Owner
                 If TypeOf e Is Junction Then
                     queue.Enqueue(q)
-                ElseIf TypeOf e Is AirSupply Then
+                ElseIf IsAirSource(e) Then
                     trigger.AlwaysOn = True
                     parts.Add("the air supply directly")
                 ElseIf (TypeOf e Is ShuttleValve OrElse TypeOf e Is TwoPressureValve) AndAlso q.Name = "2" Then
@@ -328,7 +328,7 @@ Public Module CircuitAnalysis
         Dim els = c.Elements
 
         Dim hasAir = els.Any(Function(e) e.Ports.Any(Function(p) p.Kind = PortKind.Pneumatic) AndAlso TypeOf e IsNot Junction AndAlso TypeOf e IsNot TextNote)
-        If hasAir AndAlso Not els.OfType(Of AirSupply)().Any() AndAlso Not els.OfType(Of PageConnector)().Any() Then
+        If hasAir AndAlso Not els.Any(Function(x) IsAirSource(x)) AndAlso Not els.OfType(Of PageConnector)().Any() Then
             add(IssueSeverity.Error, "There is no compressed air supply in the circuit.", Nothing)
         End If
         Dim hasOil = els.Any(Function(e) e.Ports.Any(Function(p) p.Kind = PortKind.Hydraulic) AndAlso TypeOf e IsNot Junction)
@@ -368,8 +368,8 @@ Public Module CircuitAnalysis
                 Next
             ElseIf TypeOf e Is ElectricCoil OrElse TypeOf e Is ElectricContact OrElse TypeOf e Is PowerTerminal Then
                 add(IssueSeverity.Error, $"{e.DisplayName} {Name(e)}: terminal {open(0).Name} is not wired.", e)
-            ElseIf TypeOf e Is AirSupply OrElse TypeOf e Is HydraulicPump Then
-                add(IssueSeverity.Warning, $"{e.DisplayName} {Name(e)} is not connected to anything.", e)
+            ElseIf IsAirSource(e) OrElse TypeOf e Is HydraulicPump Then
+                add(IssueSeverity.Warning, $"{e.DisplayName} {Name(e)}: port {open(0).Name} is not connected.", e)
             ElseIf Not TypeOf e Is Silencer AndAlso Not TypeOf e Is QuickExhaustValve Then
                 add(IssueSeverity.Warning, $"{e.DisplayName} {Name(e)}: port {open(0).Name} is not connected.", e)
             End If
@@ -488,6 +488,11 @@ Public Module CircuitAnalysis
         Return issues
     End Function
 
+    ''' <summary>Components that feed compressed air into the circuit.</summary>
+    Private Function IsAirSource(e As CircuitElement) As Boolean
+        Return TypeOf e Is AirSupply OrElse TypeOf e Is Compressor OrElse TypeOf e Is AirReceiver
+    End Function
+
     Private Function MarkExists(els As IEnumerable(Of CircuitElement), mark As String) As Boolean
         If String.IsNullOrWhiteSpace(mark) Then Return False
         Return els.OfType(Of ISignalSource)().Any(Function(k) k.SignalNames().Contains(mark.Trim(), StringComparer.OrdinalIgnoreCase))
@@ -552,7 +557,8 @@ Public Module CircuitAnalysis
                 For Each p In e.Ports.Skip(1)
                     join(firstPort, p)
                 Next
-            ElseIf TypeOf e Is FlowControlValve OrElse TypeOf e Is CheckValve OrElse TypeOf e Is PressureRegulator OrElse TypeOf e Is CompensatedFlowControl Then
+            ElseIf TypeOf e Is FlowControlValve OrElse TypeOf e Is CheckValve OrElse TypeOf e Is PressureRegulator OrElse TypeOf e Is CompensatedFlowControl OrElse
+                   TypeOf e Is AirReceiver OrElse TypeOf e Is FlowMeter OrElse TypeOf e Is ShutOffValve Then
                 join(e.Ports(0), e.Ports(1))
             End If
         Next
@@ -565,7 +571,7 @@ Public Module CircuitAnalysis
         Dim sources As New HashSet(Of Integer)
         Dim sinks As New HashSet(Of Integer)
         For Each p In ports
-            If TypeOf p.Owner Is AirSupply OrElse TypeOf p.Owner Is HydraulicPump OrElse TypeOf p.Owner Is PageConnector Then sources.Add(find(index(p)))
+            If IsAirSource(p.Owner) OrElse TypeOf p.Owner Is HydraulicPump OrElse TypeOf p.Owner Is PageConnector Then sources.Add(find(index(p)))
             If (p.VentsWhenOpen AndAlso p.ConnectionCount = 0) OrElse TypeOf p.Owner Is Silencer OrElse TypeOf p.Owner Is HydraulicTank OrElse
                TypeOf p.Owner Is PageConnector Then sinks.Add(find(index(p)))
         Next
@@ -598,7 +604,10 @@ Public Module CircuitAnalysis
                         If l.StartsWith("S") OrElse l.Contains("S") Then Return 1
                         Return 2
                     End Function
-        Return c.Elements.Where(Function(e) e.IsManuallyOperated AndAlso TypeOf e IsNot HydraulicPump AndAlso
+        ' Main switches, shut-off valves, workpieces, counters and emergency stops are not 'start' controls.
+        Return c.Elements.Where(Function(e) e.IsManuallyOperated AndAlso TypeOf e IsNot HydraulicPump AndAlso TypeOf e IsNot Compressor AndAlso
+                                     TypeOf e IsNot ShutOffValve AndAlso TypeOf e IsNot SuctionCup AndAlso TypeOf e IsNot ElectricCounter AndAlso
+                                     Not (TypeOf e Is ElectricContact AndAlso DirectCast(e, ElectricContact).Operator = ContactOperator.EmergencyStop) AndAlso
                                      Not (TypeOf e Is DirectionalValve AndAlso DirectCast(e, DirectionalValve).Actuator = ValveActuator.Solenoid)).
                           OrderBy(score).ThenBy(Function(e) e.Label).ToList()
     End Function

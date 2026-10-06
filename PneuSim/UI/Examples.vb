@@ -11,8 +11,54 @@ Public Module Examples
         ("7. Electro-pneumatic: direct control with a solenoid valve", AddressOf ElectroDirect),
         ("8. Electro-pneumatic: self-holding circuit with start / stop and lamp", AddressOf ElectroLatch),
         ("9. Hydraulics: cylinder with 4/3 valve, relief valve and gauge", AddressOf HydraulicBasic),
-        ("10. Realistic mode: pressure sequence valve (clamp, then drill)", AddressOf SequenceValveDemo)
+        ("10. Realistic mode: pressure sequence valve (clamp, then drill)", AddressOf SequenceValveDemo),
+        ("11. Vacuum handling: ejector, suction cup and vacuum switch", AddressOf VacuumHandling),
+        ("12. Air generation: compressor, receiver, service unit and flow meter", AddressOf AirGeneration)
     }
+
+    Private Function VacuumHandling() As Circuit
+        Dim c As New Circuit()
+        Dim cup = c.Add(New SuctionCup(), 240, 180, "1U1")
+        Dim vs = c.Add(New PressureSwitch() With {.Setting = -0.5}, 320, 40, "B1")
+        Dim j = c.Add(New Junction(), 170, 140)
+        Dim gen = c.Add(New VacuumGenerator(), 150, 190, "1Z1")
+        Dim v = c.Add(V32(ValveActuator.Selector), 100, 300, "1S1")
+        Dim s = c.Add(New AirSupply(), 150, 420, "0Z")
+        c.Connect(s, "1", v, "1")
+        c.Connect(v, "2", gen, "1")
+        c.Connect(gen, "V", j, "1")
+        c.Connect(j, "1", cup, "1")
+        c.Connect(j, "1", vs, "1")
+        ' Lamp H1 lights while the vacuum switch reports that the part is held.
+        Dim plus = c.Add(New PowerTerminal(), 520, 40)
+        Dim k = c.Add(Contact(ContactOperator.PressureSwitch, False, "", "B1"), 520, 120)
+        Dim lamp = c.Add(New ElectricCoil() With {.Kind = CoilKind.Lamp}, 520, 230, "H1")
+        Dim zero = c.Add(New PowerTerminal() With {.Polarity = Polarity.Zero0V}, 520, 330)
+        c.Connect(plus, "1", k, "1")
+        c.Connect(k, "2", lamp, "A1")
+        c.Connect(lamp, "A2", zero, "1")
+        c.Add(New TextNote() With {.Text = "Switch on 1S1: the ejector sucks the air out of the cup. Click the cup to take the part away or put it back."}, 40, 0)
+        Return c
+    End Function
+
+    Private Function AirGeneration() As Circuit
+        Dim c As New Circuit()
+        Dim comp = c.Add(New Compressor(), 40, 440, "0P1")
+        Dim rec = c.Add(New AirReceiver() With {.VolumeLitres = 10, .InitialPressure = 0}, 120, 340, "0Z1")
+        Dim shut = c.Add(New ShutOffValve(), 260, 340, "0V1")
+        Dim unit = c.Add(New PressureRegulator() With {.Style = RegulatorStyle.ServiceUnit, .Setting = 6}, 360, 340, "0Z2")
+        Dim fm = c.Add(New FlowMeter(), 500, 340, "0F1")
+        Dim v = c.Add(V32(ValveActuator.PushButton), 560, 200, "1S1")
+        Dim cyl = c.Add(New SingleActingCylinder(), 600, 40, "1A")
+        c.Connect(comp, "1", rec, "1")
+        c.Connect(rec, "2", shut, "1")
+        c.Connect(shut, "2", unit, "1")
+        c.Connect(unit, "2", fm, "1")
+        c.Connect(fm, "2", v, "1")
+        c.Connect(v, "2", cyl, "1")
+        c.Add(New TextNote() With {.Text = "The receiver starts empty: watch the compressor fill it, then operate 1S1 and read the flow meter."}, 40, 0)
+        Return c
+    End Function
 
     Private Function DirectSingleActing() As Circuit
         Dim c As New Circuit()

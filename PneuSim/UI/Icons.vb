@@ -38,6 +38,23 @@ Public Module Icons
         Return Draw(Sub(g) g.FillPolygon(Brushes.ForestGreen, {New Point(3, 1), New Point(14, 8), New Point(3, 15)}))
     End Function
 
+    ''' <summary>Replay buttons: a triangle and a bar (step), or two triangles (jump to the next event).</summary>
+    Public Function StepIcon(forward As Boolean, toEvent As Boolean) As Image
+        Return Draw(Sub(g)
+                        If Not forward Then
+                            g.TranslateTransform(16, 0)
+                            g.ScaleTransform(-1, 1)
+                        End If
+                        If toEvent Then
+                            g.FillPolygon(Brushes.SteelBlue, {New Point(1, 2), New Point(8, 8), New Point(1, 14)})
+                            g.FillPolygon(Brushes.SteelBlue, {New Point(7, 2), New Point(14, 8), New Point(7, 14)})
+                        Else
+                            g.FillPolygon(Brushes.SteelBlue, {New Point(3, 2), New Point(10, 8), New Point(3, 14)})
+                            g.FillRectangle(Brushes.SteelBlue, 11, 2, 3, 12)
+                        End If
+                    End Sub)
+    End Function
+
     Public Function Pause() As Image
         Return Draw(Sub(g)
                         g.FillRectangle(Brushes.DarkOrange, 3, 2, 4, 12)

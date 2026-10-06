@@ -39,6 +39,31 @@ Public Class CircuitCanvas
 
     Private _hoverElement As CircuitElement
 
+    ''' <summary>Raised on a right-click during simulation: the component or tube to show in the inspector.</summary>
+    Public Event InspectRequested As EventHandler(Of Object)
+    ''' <summary>Raised when the user picked a component or tube while <see cref="PickingTarget"/> was set.</summary>
+    Public Event TargetPicked As EventHandler(Of Object)
+
+    ''' <summary>When True, the next left click picks a component or tube instead of operating it.</summary>
+    Public Property PickingTarget As Boolean
+
+    ''' <summary>The component or tube shown in the inspector (outlined during simulation).</summary>
+    Public Property InspectedObject As Object
+
+    ''' <summary>The selected tube or wire, if any.</summary>
+    Public ReadOnly Property SelectedTube As Tube
+        Get
+            Return _selectedTube
+        End Get
+    End Property
+
+    ''' <summary>Component or tube at a world position (components first).</summary>
+    Private Function ObjectAt(w As PointF) As Object
+        Dim el = _circuit.FindElementAt(w)
+        If el IsNot Nothing Then Return el
+        Return _circuit.FindTubeAt(w, 5 / _zoom + 1)
+    End Function
+
     ''' <summary>The element under the mouse, if any.</summary>
     Public ReadOnly Property HoverElement As CircuitElement
         Get
@@ -385,6 +410,7 @@ Public Class CircuitCanvas
             End Using
             DrawPorts(g, interactive)
             If Not interactive Then Return
+            If Simulating AndAlso InspectedObject IsNot Nothing Then DrawInspected(g)
             DrawSelection(g)
             If _connectFrom IsNot Nothing AndAlso _connectMoved Then
                 Using p As New Pen(Color.FromArgb(0, 140, 70), 1.5F) With {.DashStyle = DashStyle.Dash}
@@ -442,6 +468,24 @@ Public Class CircuitCanvas
                 g.DrawLines(pen, pts)
                 If t.Fault <> FaultKind.None AndAlso (Not t.FaultHidden OrElse RevealFaults) Then DrawTubeFault(g, t, pts)
             Next
+        End Using
+    End Sub
+
+    ''' <summary>Outlines the component or tube shown in the inspector.</summary>
+    Private Sub DrawInspected(g As DrawSurface)
+        Using p As New Pen(Color.FromArgb(0, 170, 190), 2) With {.DashStyle = DashStyle.Dot}
+            Dim el = TryCast(InspectedObject, CircuitElement)
+            If el IsNot Nothing AndAlso _circuit.Elements.Contains(el) Then
+                Dim r = el.WorldBounds()
+                r.Inflate(6, 6)
+                g.DrawRectangle(p, r.X, r.Y, r.Width, r.Height)
+            End If
+            Dim t = TryCast(InspectedObject, Tube)
+            If t IsNot Nothing AndAlso _circuit.Tubes.Contains(t) Then
+                p.Width = 6
+                p.Color = Color.FromArgb(110, 0, 170, 190)
+                g.DrawLines(p, t.Route())
+            End If
         End Using
     End Sub
 
@@ -533,7 +577,25 @@ Public Class CircuitCanvas
         Dim w = ToWorld(e.Location)
         _mouseWorld = w
 
+        If PickingTarget AndAlso e.Button = MouseButtons.Left Then
+            Dim picked = ObjectAt(w)
+            If picked Is Nothing Then Return
+            PickingTarget = False
+            Cursor = Cursors.Default
+            RaiseEvent TargetPicked(Me, picked)
+            Return
+        End If
+
         If Simulating Then
+            If e.Button = MouseButtons.Right Then
+                Dim target = ObjectAt(w)
+                If target IsNot Nothing Then
+                    InspectedObject = target
+                    RaiseEvent InspectRequested(Me, target)
+                    Invalidate()
+                End If
+                Return
+            End If
             If e.Button <> MouseButtons.Left Then Return
             Dim el = _circuit.FindElementAt(w)
             If el IsNot Nothing AndAlso el.IsManuallyOperated Then
@@ -785,6 +847,8 @@ Public Class CircuitCanvas
             Case Keys.Left, Keys.Right, Keys.Up, Keys.Down
                 NudgeSelection(e.KeyCode)
             Case Keys.Escape
+                PickingTarget = False
+                Cursor = Cursors.Default
                 PlacingPreset = Nothing
                 _connectFrom = Nothing
                 RaiseEvent StatusMessage(Me, "")

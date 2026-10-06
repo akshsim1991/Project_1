@@ -232,13 +232,21 @@ SIMULATING
 • Start (F9). Pressurized tubes turn blue, live wires red, hydraulic pressure lines orange.
 • Click push buttons, switches and pumps; clicking a solenoid valve operates its manual override.
 • Realistic physics: pressures build up, cylinders move by bore, load and friction; air consumption and cost are shown.
-• Plotter tab: tick any quantity, click for cursor A, right-click for cursor B to measure times.
+• Right-click any component or tube to see its live values in the Inspector tab and change settings with sliders.
+• Replay: the step and event buttons (or drag the time slider) go back and forward in time; Start continues from there.
+• Plotter tab: tick any quantity, click for cursor A, right-click for cursor B (min / max / average between them);
+  set a trigger, zoom with the mouse wheel, and export CSV or PNG.
 • Record GIF saves an animation of the running circuit.
+
+TROUBLESHOOTING
+• Tools > Troubleshooting > New exercise hides a fault; find it with as few checks and hints as possible.
+• 'Add fault…' puts a chosen fault into the selected part or tube (tick Hidden to make an exercise file for students).
 
 TOOLS
 • Check my circuit (F6) finds mistakes and signal overlap; Explain (F8) describes the circuit step by step.
 • Circuit Generator (Ctrl+G) designs a circuit from a sequence such as A+ B+ B- A-.
 • Calculators, parts list with costs, PDF report with title block, SVG and DXF export.
+• Parameter sweep: run the circuit with a setting changed step by step and compare cycle time, air use and speed.
 • Learn menu: lessons with automatic checking, practice quiz, timed exam, cutaway view of any component (F7).",
             "PneuSim Quick Guide", MessageBoxButtons.OK, MessageBoxIcon.Information)
     End Sub

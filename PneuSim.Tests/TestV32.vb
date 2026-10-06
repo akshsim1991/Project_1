@@ -60,7 +60,12 @@ Module TestV32
 
     Sub RunAll()
         NewComponents()
+        ExampleTests()
         FaultTests()
+        ExerciseTests()
+        ReplayTests()
+        SweepTests()
+        PlotterTests()
     End Sub
 
     Sub NewComponents()
@@ -287,6 +292,29 @@ Module TestV32
               String.Join(", ", newOnes.Where(Function(e) PartsList.DefaultPrice(e.DisplayName) = 0).Select(Function(e) e.DisplayName)))
     End Sub
 
+    Sub ExampleTests()
+        Dim c = Examples.All(10).Build()
+        Dim s As New Simulator(c) : s.Reset()
+        Dim lamp = DirectCast(Find(c, "H1"), ElectricCoil)
+        Check("ex11 lamp off before the ejector runs", Not lamp.Active)
+        Press(s, Find(c, "1S1")) : Run(s, 0.1)
+        Check("ex11 vacuum holds the part and lights the lamp", DirectCast(Find(c, "1U1"), SuctionCup).Holding AndAlso lamp.Active)
+        Check("ex11 has no checker errors", Not CircuitAnalysis.StaticChecks(c).Any(Function(i) i.Severity = IssueSeverity.Error),
+              String.Join(" | ", CircuitAnalysis.StaticChecks(c).Where(Function(i) i.Severity = IssueSeverity.Error).Select(Function(i) i.Message)))
+        Render(c, True, "ex11_running")
+        c = Examples.All(11).Build()
+        s = New Simulator(c) : s.Reset()
+        Dim rec = DirectCast(Find(c, "0Z1"), AirReceiver)
+        Check("ex12 starts with an empty receiver", rec.Pressure = 0 AndAlso Pos(c) = 0)
+        Run(s, 25)
+        Check("ex12 compressor fills the receiver and stops", rec.Pressure > 7.5 AndAlso Not DirectCast(Find(c, "0P1"), Compressor).Running, rec.Pressure.ToString("0.0"))
+        Press(s, Find(c, "1S1")) : Run(s, 0.3)
+        Check("ex12 flow meter reads while the cylinder extends", DirectCast(Find(c, "0F1"), FlowMeter).Flow > 10)
+        Run(s, 1)
+        Check("ex12 cylinder extends", Pos(c) = 1)
+        Render(c, True, "ex12_running")
+    End Sub
+
     Sub FaultTests()
         ' A blocked tube stops the cylinder.
         Dim c = SimpleCylinder()
@@ -407,5 +435,163 @@ Module TestV32
         Check("scrambled faults round-trip", [Enum].GetValues(GetType(FaultKind)).Cast(Of FaultKind)().Where(Function(k) k <> FaultKind.None).
               All(Function(k) Faults.Unscramble(Faults.Scramble(k)) = k) AndAlso Faults.Unscramble("garbage!") = FaultKind.None)
         Render(c, False, "faults_visible")
+    End Sub
+
+    Sub ExerciseTests()
+        Dim proj As New Project(SimpleCylinder())
+        Dim ex = TroubleshootExercise.StartRandom(proj, New Random(7))
+        Dim hidden = TroubleshootExercise.FindHidden(proj)
+        Check("exercise hides exactly one fault", ex IsNot Nothing AndAlso hidden IsNot Nothing AndAlso proj.Pages(0).Circuit.FaultCount() = 1)
+        Dim xml = proj.ToXml()
+        Check("hidden exercise fault survives save/load", TroubleshootExercise.FindHidden(Project.FromXml(xml)) IsNot Nothing)
+        ' Measuring counts each part once.
+        Dim c = proj.Pages(0).Circuit
+        ex.RecordCheck(Find(c, "1S1")) : ex.RecordCheck(Find(c, "1S1")) : ex.RecordCheck(c.Tubes(0))
+        Check("checks are counted once per part", ex.Checks.Count = 2)
+        ' Hints go from area to neighbours to the cause.
+        Dim h1 = ex.NextHint(proj), h2 = ex.NextHint(proj), h3 = ex.NextHint(proj)
+        Check("hint 1 names the area", h1.Contains("column") AndAlso h1.Contains("circuit"), h1)
+        Check("hint 3 names the faulty part", h3.Contains(TroubleshootExercise.NameOf_(hidden)), h3)
+        Check("hints are counted", ex.HintsUsed = 3)
+        ' A wrong guess, then the right one.
+        Dim wrong As Object = If(hidden Is Find(c, "0Z"), CObj(Find(c, "1A")), CObj(Find(c, "0Z")))
+        Dim g1 = ex.Guess(proj, wrong, FaultKind.None)
+        Check("wrong guess is rejected", Not g1.Correct AndAlso ex.WrongGuesses = 1, g1.Message)
+        Dim g2 = ex.Guess(proj, hidden, TroubleshootExercise.FaultOf(hidden))
+        Check("right guess solves the exercise", g2.Correct AndAlso ex.Solved AndAlso ex.KindRight, g2.Message)
+        Check("solved fault becomes visible", TroubleshootExercise.FindHidden(proj) Is Nothing AndAlso TroubleshootExercise.FaultOf(hidden) <> FaultKind.None)
+        Check("score takes off for hints and wrong guesses", ex.Score() = 100 - 45 - 20, ex.Score().ToString())
+        Check("report lists the diagnosis", ex.Report("test").Contains("Wrong guess") AndAlso ex.Report("test").Contains("Hint 1"))
+        ' Clean run: right first time with few checks gives full marks.
+        Dim ex2 = TroubleshootExercise.StartRandom(proj, New Random(3))
+        Dim target = TroubleshootExercise.FindHidden(proj)
+        ex2.Guess(proj, target, TroubleshootExercise.FaultOf(target))
+        Check("perfect diagnosis scores 100", ex2.Score() = 100)
+        Check("only one fault after a new exercise", proj.Pages(0).Circuit.FaultCount() = 1)
+        TroubleshootExercise.RemoveAllFaults(proj)
+        Check("repair all removes faults", proj.Pages(0).Circuit.FaultCount() = 0)
+        ' Every example can host an exercise, and the candidates are connected parts.
+        Dim allOk = Examples.All.All(Function(e) TroubleshootExercise.Candidates(New Project(e.Build())).Count > 0)
+        Check("every example can be used for troubleshooting", allOk)
+        ' Live settings exist for the important parts and can be changed.
+        Dim sup = Find(c, "0Z")
+        Dim knob = LiveTuning.KnobsFor(sup).First()
+        LiveTuning.SetValue(sup, knob, 4.5)
+        Check("live setting changes the supply pressure", Math.Abs(DirectCast(sup, AirSupply).Pressure - 4.5) < 0.001)
+        Check("cylinder has live load settings", LiveTuning.KnobsFor(Find(c, "1A")).Any(Function(k) k.PropertyName = "LoadForceN"))
+        Dim allKnobsValid = Library.Presets.All(Function(lp)
+                                                    Dim el = lp.Factory.Invoke()
+                                                    Return LiveTuning.KnobsFor(el).All(Function(k) Not Double.IsNaN(LiveTuning.GetValue(el, k)))
+                                                End Function)
+        Check("live settings read for every library part", allKnobsValid)
+        Dim inspect = LiveTuning.Inspect(Find(c, "1A"))
+        Check("inspector shows cylinder values and ports", inspect.Any(Function(v) v.Name = "Position") AndAlso inspect.Any(Function(v) v.Name = "Port 1"))
+    End Sub
+
+    Sub ReplayTests()
+        Dim c = Examples.All(4).Build()
+        Dim s As New Simulator(c) : s.Reset()
+        Dim rec As New SimulationRecorder(s)
+        rec.Record(force:=True)
+        Dim manual = c.Elements.First(Function(e) e.IsManuallyOperated)
+        Press(s, manual)
+        For i = 1 To 300
+            s.Step(0.01) : rec.Record()
+        Next
+        Dim frames = rec.Count
+        Check("recorder keeps frames", frames >= 55, frames.ToString())
+        ' Remember the state half way, then restore it and compare.
+        Dim mid = frames \ 2
+        rec.Restore(mid)
+        Dim tMid = s.Time
+        Dim stateMid = s.DiscreteState()
+        Dim positions = c.Elements.OfType(Of CylinderBase)().Select(Function(x) x.Position).ToList()
+        Check("restore goes back in time", Math.Abs(tMid - rec.TimeAt(mid)) < 0.000001 AndAlso tMid < 3)
+        Check("plotter data cut back on rewind", s.Channels.Values.All(Function(l) l.Count = 0 OrElse l(l.Count - 1).X <= tMid + 0.000001))
+        rec.Restore(frames - 1)
+        rec.Restore(mid)
+        Check("restoring twice gives the same state", s.DiscreteState() = stateMid AndAlso
+              c.Elements.OfType(Of CylinderBase)().Select(Function(x) x.Position).SequenceEqual(positions))
+        ' Continuing from the rewound moment gives the same result as the first time (deterministic).
+        Dim later = rec.TimeAt(frames - 1)
+        Dim target = c.Elements.OfType(Of CylinderBase)().Select(Function(x) x.Position).ToList()
+        rec.Restore(frames - 1)
+        Dim finalPositions = c.Elements.OfType(Of CylinderBase)().Select(Function(x) x.Position).ToList()
+        rec.Restore(mid)
+        rec.TruncateAfterCurrent()
+        While s.Time < later - 0.000001
+            s.Step(0.01) : rec.Record()
+        End While
+        Dim again = c.Elements.OfType(Of CylinderBase)().Select(Function(x) x.Position).ToList()
+        Check("replay from a rewound moment repeats the run", again.Zip(finalPositions, Function(a, b) Math.Abs(a - b) < 0.02).All(Function(ok) ok),
+              String.Join(",", again.Select(Function(q) q.ToString("0.00"))) & " vs " & String.Join(",", finalPositions.Select(Function(q) q.ToString("0.00"))))
+        rec.Restore(0)
+        Dim nextEv = rec.NextEventFrame()
+        Check("next event is found", nextEv > 0 AndAlso rec.TimeAt(nextEv) > 0)
+        ' Valves rebuild their ports after a restore (the active box moves).
+        Dim v = c.Elements.OfType(Of DirectionalValve)().First()
+        rec.Restore(nextEv)
+        Check("valve ports follow the restored position", v.Ports.All(Function(p) v.LocalBounds.Contains(p.Local) OrElse p.Local.Y = 0 OrElse p.Local.Y = 60 OrElse p.Local.Y = 30))
+    End Sub
+
+    Sub SweepTests()
+        Dim proj As New Project(SimpleCylinder())
+        Dim all = proj.AllElements().ToList()
+        Dim cylIndex = all.IndexOf(Find(proj.Pages(0).Circuit, "1A"))
+        Dim settings As New SweepSettings With {
+            .ElementIndex = cylIndex, .Knob = LiveTuning.KnobsFor(all(cylIndex)).First(Function(k) k.PropertyName = "StrokeTime"),
+            .FromValue = 0.5, .ToValue = 2, .Steps = 4, .Seconds = 3,
+            .Operate = New List(Of Integer) From {all.IndexOf(Find(proj.Pages(0).Circuit, "1S1"))}}
+        Dim res = ParameterSweep.Run(proj, settings)
+        Check("sweep makes one row per value", res.Rows.Count = 4 AndAlso res.Columns.Count = 6)
+        Dim times = res.Rows.Select(Function(r) r(4)).ToList()
+        Check("longer stroke time: cylinder out later", times.Zip(times.Skip(1), Function(a, b) b > a).All(Function(ok) ok) AndAlso Math.Abs(times(0) - 0.5) < 0.05,
+              String.Join(",", times.Select(Function(t) t.ToString("0.00"))))
+        Check("sweep leaves the drawing unchanged", DirectCast(Find(proj.Pages(0).Circuit, "1A"), CylinderBase).StrokeTime = 1)
+        Check("sweep CSV", res.ToCsv().Split({vbLf}, StringSplitOptions.RemoveEmptyEntries).Length = 5)
+        ' Realistic mode: higher pressure makes the cylinder faster.
+        Dim supIndex = all.IndexOf(Find(proj.Pages(0).Circuit, "0Z"))
+        Dim pres As New SweepSettings With {.ElementIndex = supIndex, .Knob = LiveTuning.KnobsFor(all(supIndex)).First(),
+            .FromValue = 3, .ToValue = 7, .Steps = 3, .Seconds = 3, .RealPhysics = True, .Operate = settings.Operate}
+        Dim pr = ParameterSweep.Run(proj, pres)
+        Check("realistic sweep: more pressure, faster stroke", pr.Rows(2)(4) < pr.Rows(0)(4), String.Join(",", pr.Rows.Select(Function(r) r(4).ToString("0.00"))))
+    End Sub
+
+    Sub PlotterTests()
+        Dim c = Examples.All(0).Build()
+        Dim s As New Simulator(c) : s.Reset()
+        Using plot As New PlotterPanel()
+            plot.Simulator = s
+            For k = 1 To 3
+                Press(s, Find(c, "1S1")) : Run(s, 1.5)
+                Release(s, Find(c, "1S1")) : Run(s, 1.5)
+            Next
+            plot.RefreshPlot()
+            Dim posName = s.Channels.Keys.First(Function(n) n.EndsWith("position (mm)"))
+            plot.ShowChannel(posName)
+            plot.CursorA = 0.2 : plot.CursorB = 2.5
+            Dim st = plot.StatsBetweenCursors(posName)
+            Check("plotter statistics between cursors", st.Min < 1 AndAlso st.Max > 99 AndAlso st.Avg > 20 AndAlso st.Avg < 90, $"{st.Min:0} {st.Max:0} {st.Avg:0}")
+            plot.SetTrigger(posName, True, 50, False)
+            Dim trig = plot.TriggerTimes()
+            Check("trigger finds every rising crossing", trig.Count = 3, String.Join(",", trig.Select(Function(t) t.ToString("0.00"))))
+            Check("auto trigger lines up on the latest crossing", Math.Abs(plot.TriggerTime() - trig(2)) < 0.000001 AndAlso plot.TimeRange().Start < trig(2))
+            plot.SetTrigger(posName, False, 50, True)
+            Dim armed = s.Time
+            Check("single trigger waits after arming", Double.IsNaN(plot.TriggerTime()))
+            Press(s, Find(c, "1S1")) : Run(s, 1.5) : Release(s, Find(c, "1S1")) : Run(s, 1.5)
+            Dim firstFall = plot.TriggerTime()
+            Press(s, Find(c, "1S1")) : Run(s, 1.5) : Release(s, Find(c, "1S1")) : Run(s, 1.5)
+            Check("single trigger holds the first crossing after arming", firstFall > armed AndAlso plot.TriggerTime() = firstFall AndAlso plot.TriggerTimes().Count = 5,
+                  $"{firstFall:0.00} {plot.TriggerTime():0.00}")
+            Dim csv = plot.ToCsv()
+            Dim lines = csv.Split({vbLf}, StringSplitOptions.RemoveEmptyEntries)
+            Check("plotter CSV has a header and samples", lines(0).Contains("Time (s)") AndAlso lines.Length > 100, lines.Length.ToString())
+            plot.Size = New Drawing.Size(800, 300)
+            Using bmp = plot.ToImage()
+                bmp.Save(IO.Path.Combine("out", "v32_plotter.png"), Drawing.Imaging.ImageFormat.Png)
+            End Using
+            Check("plotter exports a picture", IO.File.Exists(IO.Path.Combine("out", "v32_plotter.png")))
+        End Using
     End Sub
 End Module

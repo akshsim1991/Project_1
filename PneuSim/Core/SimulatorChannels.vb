@@ -78,6 +78,38 @@ Partial Public Class Simulator
         Return list
     End Function
 
+    ''' <summary>
+    ''' A text that changes whenever a valve, relay, lamp, contact, switch or cylinder end position
+    ''' changes (used to jump to the next event in a replay).
+    ''' </summary>
+    Public Function DiscreteState() As String
+        Dim sb As New Text.StringBuilder()
+        For Each e In _circuit.Elements
+            Select Case True
+                Case TypeOf e Is DirectionalValve : sb.Append(DirectCast(e, DirectionalValve).State)
+                Case TypeOf e Is ElectricCoil : sb.Append(If(DirectCast(e, ElectricCoil).Active, "1", "0"))
+                Case TypeOf e Is ElectricContact : sb.Append(If(DirectCast(e, ElectricContact).IsClosed, "1", "0"))
+                Case TypeOf e Is ElectricCounter : sb.Append(DirectCast(e, ElectricCounter).Count)
+                Case TypeOf e Is PressureSwitch : sb.Append(If(DirectCast(e, PressureSwitch).IsOn, "1", "0"))
+                Case TypeOf e Is CylinderBase
+                    Dim p = DirectCast(e, CylinderBase).Position
+                    sb.Append(If(p <= 0.005, "-", If(p >= 0.995, "+", "~")))
+                Case Else : Continue For
+            End Select
+            sb.Append(","c)
+        Next
+        Return sb.ToString()
+    End Function
+
+    ''' <summary>Cuts the recorded plotter and diagram data back to a time (after rewinding a replay).</summary>
+    Public Sub TrimRecordings(t As Double)
+        For Each list In Channels.Values.Concat(History.Values)
+            list.RemoveAll(Function(pt) pt.X > t + 0.000001)
+        Next
+        _nextChannelSample = t
+        _nextSample = t
+    End Sub
+
     Private Sub ResetChannels()
         Channels.Clear()
         _nextChannelSample = 0
