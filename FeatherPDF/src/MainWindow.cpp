@@ -1,6 +1,7 @@
 // MainWindow.cpp - top-level window, tabs and command handling.
 #include "MainWindow.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cwctype>
 
