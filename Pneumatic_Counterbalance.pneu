@@ -1,0 +1,155 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<PneuSimProject version="3">
+  <Info Title="Pneumatic counterbalance circuit" Author="" Company="" DrawingNumber="" Revision="A" DateText="07-10-2026" Description="" AirCostPerM3="2" CyclesPerMinute="2" HoursPerDay="8" DaysPerYear="300" />
+  <PartCosts />
+  <Page name="Page 1">
+    <PneuSimCircuit version="2">
+      <Element type="TextNote" id="1" x="40" y="110" rotation="0">
+        <Property name="Text" value="Pneumatic counterbalance circuit – vertical load held and lowered under control" />
+        <Property name="FontSize" value="13" />
+        <Property name="Bold" value="True" />
+        <Property name="Label" value="" />
+      </Element>
+      <Element type="TextNote" id="2" x="40" y="140" rotation="0">
+        <Property name="Text" value="Turn on Realistic physics. S2 = RAISE (position b), S1 = LOWER (position a), release = hold.&#xA;1V2 = counterbalance valve: pilot-operated 2/2 valve set to 3.2 bar (pilot from the cap end) with bypass check valve 1V3." />
+        <Property name="FontSize" value="10" />
+        <Property name="Bold" value="False" />
+        <Property name="Label" value="" />
+      </Element>
+      <Element type="DoubleActingCylinder" id="3" x="300" y="440" rotation="3">
+        <Property name="StrokeTime" value="1" />
+        <Property name="StrokeLength" value="200" />
+        <Property name="BoreMm" value="50" />
+        <Property name="RodMm" value="20" />
+        <Property name="LoadMassKg" value="50" />
+        <Property name="LoadForceN" value="490" />
+        <Property name="FrictionN" value="25" />
+        <Property name="Cushioning" value="True" />
+        <Property name="RetractedMark" value="" />
+        <Property name="ExtendedMark" value="" />
+        <Property name="Label" value="1A1" />
+      </Element>
+      <Element type="TextNote" id="4" x="120" y="380" rotation="0">
+        <Property name="Text" value="Ø50 / Ø20, stroke 200&#xA;Load 50 kg (W ≈ 490 N)" />
+        <Property name="FontSize" value="10" />
+        <Property name="Bold" value="False" />
+        <Property name="Label" value="" />
+      </Element>
+      <Element type="Valve22" id="5" x="540" y="520" rotation="0">
+        <Property name="NormallyOpen" value="False" />
+        <Property name="Actuator" value="Pilot" />
+        <Property name="ReturnType" value="Spring" />
+        <Property name="SolenoidLabel" value="1M1" />
+        <Property name="ReturnSolenoidLabel" value="1M2" />
+        <Property name="TriggerMark" value="" />
+        <Property name="SwitchingPressure" value="3.2" />
+        <Property name="DelaySeconds" value="2" />
+        <Property name="Label" value="1V2" />
+      </Element>
+      <Element type="CheckValve" id="6" x="700" y="580" rotation="3">
+        <Property name="Hydraulic" value="False" />
+        <Property name="Label" value="1V3" />
+      </Element>
+      <Element type="Junction" id="7" x="660" y="470" rotation="0">
+        <Property name="Medium" value="Pneumatic" />
+        <Property name="Label" value="" />
+      </Element>
+      <Element type="Junction" id="8" x="660" y="640" rotation="0">
+        <Property name="Medium" value="Pneumatic" />
+        <Property name="Label" value="" />
+      </Element>
+      <Element type="PressureGauge" id="9" x="740" y="380" rotation="0">
+        <Property name="Hydraulic" value="False" />
+        <Property name="Label" value="1Z1" />
+      </Element>
+      <Element type="Valve53" id="10" x="380" y="700" rotation="0">
+        <Property name="Centre" value="Closed" />
+        <Property name="Actuator" value="Pilot" />
+        <Property name="ReturnType" value="Pilot" />
+        <Property name="SolenoidLabel" value="1M1" />
+        <Property name="ReturnSolenoidLabel" value="1M2" />
+        <Property name="TriggerMark" value="" />
+        <Property name="SwitchingPressure" value="1.5" />
+        <Property name="DelaySeconds" value="2" />
+        <Property name="Label" value="1V1" />
+      </Element>
+      <Element type="Valve32" id="11" x="150" y="700" rotation="0">
+        <Property name="NormallyOpen" value="False" />
+        <Property name="Actuator" value="PushButton" />
+        <Property name="ReturnType" value="Spring" />
+        <Property name="SolenoidLabel" value="1M1" />
+        <Property name="ReturnSolenoidLabel" value="1M2" />
+        <Property name="TriggerMark" value="" />
+        <Property name="SwitchingPressure" value="1.5" />
+        <Property name="DelaySeconds" value="2" />
+        <Property name="Label" value="S1" />
+      </Element>
+      <Element type="Valve32" id="12" x="700" y="760" rotation="0">
+        <Property name="NormallyOpen" value="False" />
+        <Property name="Actuator" value="PushButton" />
+        <Property name="ReturnType" value="Spring" />
+        <Property name="SolenoidLabel" value="1M1" />
+        <Property name="ReturnSolenoidLabel" value="1M2" />
+        <Property name="TriggerMark" value="" />
+        <Property name="SwitchingPressure" value="1.5" />
+        <Property name="DelaySeconds" value="2" />
+        <Property name="Label" value="S2" />
+      </Element>
+      <Element type="AirSupply" id="13" x="200" y="820" rotation="0">
+        <Property name="Pressure" value="6" />
+        <Property name="Label" value="" />
+      </Element>
+      <Element type="AirSupply" id="14" x="750" y="880" rotation="0">
+        <Property name="Pressure" value="6" />
+        <Property name="Label" value="" />
+      </Element>
+      <Element type="PressureRegulator" id="15" x="300" y="830" rotation="0">
+        <Property name="Setting" value="6" />
+        <Property name="Hydraulic" value="False" />
+        <Property name="Style" value="ServiceUnit" />
+        <Property name="Label" value="0Z1" />
+      </Element>
+      <Element type="AirSupply" id="16" x="240" y="900" rotation="0">
+        <Property name="Pressure" value="6" />
+        <Property name="Label" value="0P1" />
+      </Element>
+      <Element type="Junction" id="17" x="504" y="860" rotation="0">
+        <Property name="Medium" value="Pneumatic" />
+        <Property name="Label" value="" />
+      </Element>
+      <Element type="PressureGauge" id="18" x="540" y="770" rotation="0">
+        <Property name="Hydraulic" value="False" />
+        <Property name="Label" value="0Z2" />
+      </Element>
+      <Element type="TextNote" id="19" x="150" y="680" rotation="0">
+        <Property name="Text" value="LOWER" />
+        <Property name="FontSize" value="10" />
+        <Property name="Bold" value="False" />
+        <Property name="Label" value="" />
+      </Element>
+      <Element type="TextNote" id="20" x="700" y="740" rotation="0">
+        <Property name="Text" value="RAISE" />
+        <Property name="FontSize" value="10" />
+        <Property name="Bold" value="False" />
+        <Property name="Label" value="" />
+      </Element>
+      <Tube from="16" fromPort="1" to="15" toPort="1" />
+      <Tube from="15" fromPort="2" to="17" toPort="1" />
+      <Tube from="17" fromPort="1" to="18" toPort="1" />
+      <Tube from="17" fromPort="1" to="10" toPort="1" />
+      <Tube from="10" fromPort="4" to="3" toPort="2" />
+      <Tube from="10" fromPort="2" to="8" toPort="1" />
+      <Tube from="8" fromPort="1" to="5" toPort="1" />
+      <Tube from="8" fromPort="1" to="6" toPort="1" />
+      <Tube from="5" fromPort="2" to="7" toPort="1" />
+      <Tube from="6" fromPort="2" to="7" toPort="1" />
+      <Tube from="7" fromPort="1" to="3" toPort="1" />
+      <Tube from="7" fromPort="1" to="5" toPort="12" />
+      <Tube from="7" fromPort="1" to="9" toPort="1" />
+      <Tube from="13" fromPort="1" to="11" toPort="1" />
+      <Tube from="11" fromPort="2" to="10" toPort="14" />
+      <Tube from="14" fromPort="1" to="12" toPort="1" />
+      <Tube from="12" fromPort="2" to="10" toPort="12" />
+    </PneuSimCircuit>
+  </Page>
+</PneuSimProject>
