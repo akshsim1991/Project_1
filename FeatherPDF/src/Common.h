@@ -49,6 +49,8 @@ enum : UINT {
     WM_APP_OCR_IMAGE,                // OcrImage* (a page rendered for text recognition)
     WM_APP_OCR_DONE,                 // OcrResult* (from the recognition thread)
     WM_APP_EXPORT_PROGRESS,          // ExportProgress*
+    WM_APP_COMPARED,                 // CompareResult*
+    WM_APP_REDACT_FOUND,             // RedactFindResult*
 };
 
 // WM_APP_SIDEBAR notifications: lParam = outline index / page index.

@@ -67,12 +67,17 @@ public:
     // stays responsive (-> WM_APP_EXPORT_PROGRESS).
     void StartExport(ExportJob&& job);
     void CancelExport();
+    // Compares the document with a file (or an open tab: otherDocId) and
+    // writes a marked copy of that one to `outPath` (-> WM_APP_COMPARED).
+    void Compare(uint32_t docId, const std::wstring& otherPath, uint32_t otherDocId, const std::wstring& outPath);
+    // Places to redact (-> WM_APP_REDACT_FOUND).
+    void FindForRedaction(uint32_t docId, const std::wstring& query, bool matchCase, int patterns);
 
 private:
     struct Command {
         enum Type {
             Open, Close, TextLayer, Copy, Search, CancelSearch, Trim, Image, Print, CancelPrint,
-            Edit, Undo, Redo, Save, Extract, TextRuns, Comments, OcrPage, Export, CancelExport
+            Edit, Undo, Redo, Save, Extract, TextRuns, Comments, OcrPage, Export, CancelExport, Compare, FindRedact
         } type = Open;
         uint32_t docId = 0;
         uint32_t newDocId = 0;   // Edit / Undo / Redo
@@ -88,6 +93,7 @@ private:
         EditOp op;
         std::vector<int> pages;  // Extract
         float scale = 1;         // OcrPage
+        std::wstring path;       // Compare: the output file
         ExportJob exportJob;
     };
 

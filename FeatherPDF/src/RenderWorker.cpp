@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cwctype>
 
+#include "Compare.h"
 #include "Export.h"
 #include "Util.h"
 
@@ -243,6 +244,27 @@ void RenderWorker::StartExport(ExportJob&& job) {
     c.type = Command::Export;
     c.docId = job.docId;
     c.exportJob = std::move(job);
+    Push(std::move(c));
+}
+
+void RenderWorker::Compare(uint32_t docId, const std::wstring& otherPath, uint32_t otherDocId,
+                           const std::wstring& outPath) {
+    Command c;
+    c.type = Command::Compare;
+    c.docId = docId;
+    c.text = otherPath;
+    c.newDocId = otherDocId;
+    c.path = outPath;
+    Push(std::move(c));
+}
+
+void RenderWorker::FindForRedaction(uint32_t docId, const std::wstring& query, bool matchCase, int patterns) {
+    Command c;
+    c.type = Command::FindRedact;
+    c.docId = docId;
+    c.text = query;
+    c.matchCase = matchCase;
+    c.flags = (uint32_t)patterns;
     Push(std::move(c));
 }
 
@@ -497,6 +519,39 @@ void RenderWorker::Execute(Command& cmd) {
         case Command::CancelExport:
             if (m_exportActive) EndExport(false, {});
             break;
+        case Command::Compare: {
+            auto* res = new CompareResult;
+            PdfEngine* engine = Engine(cmd.docId);
+            std::wstring other = cmd.text, temp;
+            if (cmd.newDocId) {  // an open tab, as it is now (unsaved changes included)
+                PdfEngine* tab = Engine(cmd.newDocId);
+                temp = MakeTempPdfPath();
+                if (!tab || !tab->WritePlainCopy(temp)) other.clear();
+                else other = temp;
+            }
+            if (!engine || other.empty()) {
+                res->ok = false;
+                res->error = L"The documents could not be read.";
+            } else {
+                CompareDocuments(*engine, other, "", cmd.path, *res);
+            }
+            if (!temp.empty()) DeleteFileW(temp.c_str());
+            Post(WM_APP_COMPARED, res);
+            break;
+        }
+        case Command::FindRedact: {
+            PdfEngine* engine = Engine(cmd.docId);
+            if (!engine) break;
+            auto* res = new RedactFindResult;
+            res->docId = cmd.docId;
+            for (int p = 0; p < engine->PageCount(); ++p) {
+                std::vector<RectF> rects;
+                engine->FindForRedaction(p, cmd.text, cmd.matchCase, (int)cmd.flags, rects);
+                for (const RectF& r : rects) res->marks.push_back({p, r});
+            }
+            Post(WM_APP_REDACT_FOUND, res);
+            break;
+        }
     }
 }
 
@@ -539,6 +594,44 @@ bool RenderWorker::PrepareSources(EditOp& op, DocEditor& target, std::wstring& e
     return true;
 }
 
+namespace {
+std::wstring Megabytes(ULONGLONG bytes) {
+    wchar_t buf[32];
+    if (bytes >= 1048576)
+        swprintf_s(buf, L"%.1f MB", bytes / 1048576.0);
+    else
+        swprintf_s(buf, L"%llu KB", (bytes + 1023) / 1024);
+    return buf;
+}
+
+ULONGLONG FileBytes(const std::wstring& path) {
+    WIN32_FILE_ATTRIBUTE_DATA a{};
+    if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &a)) return 0;
+    return ((ULONGLONG)a.nFileSizeHigh << 32) | a.nFileSizeLow;
+}
+
+// "8.4 MB -> 1.2 MB" once saved: measured by writing a temporary copy.
+std::wstring CompressNote(DocEditor& doc, int pictures) {
+    if (pictures == 0)
+        return L"No pictures could be made smaller: they are already at or below this resolution, or "
+               L"have transparent parts. The document is unchanged.";
+    std::wstring note = std::to_wstring(pictures) + (pictures == 1 ? L" picture was" : L" pictures were") +
+                        L" made smaller.";
+    const std::wstring temp = MakeTempPdfPath();
+    const ULONGLONG before = FileBytes(doc.Path());
+    if (doc.Engine() && doc.Engine()->WritePlainCopy(temp)) {
+        const ULONGLONG after = FileBytes(temp);
+        if (before > 0 && after > 0) {
+            note += L" The file will be about " + Megabytes(after) + L" instead of " + Megabytes(before);
+            if (after < before) note += L" (" + std::to_wstring((before - after) * 100 / before) + L"% smaller)";
+            note += L" once saved.";
+        }
+    }
+    DeleteFileW(temp.c_str());
+    return note + L"\n\nSave as a new file to keep the original as it is.";
+}
+}  // namespace
+
 void RenderWorker::ExecuteEdit(Command& cmd) {
     auto it = m_docs.find(cmd.docId);
     if (it == m_docs.end()) return;
@@ -556,6 +649,11 @@ void RenderWorker::ExecuteEdit(Command& cmd) {
                 const int n = doc.Engine()->LastEditCount();
                 if (kind == EditOp::FindReplace)
                     res->note = n == 1 ? L"1 place was changed." : std::to_wstring(n) + L" places were changed.";
+                if (kind == EditOp::Compress) res->note = CompressNote(doc, n);
+                if (kind == EditOp::Redact)
+                    res->note = L"The marked text and pictures were removed from the document. Save it (or "
+                                L"\x201CSave as\x201D to keep the original) to make it permanent; until then "
+                                L"Undo (Ctrl+Z) brings them back.";
                 res->fontChanged = doc.Engine()->LastEditChangedFont();
             }
             break;

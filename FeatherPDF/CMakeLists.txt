@@ -61,6 +61,7 @@ add_executable(FeatherPDF WIN32
   src/Export.cpp
   src/ToolDialogs.cpp
   src/PdfCrypt.cpp
+  src/Compare.cpp
   res/app.rc
 )
 
