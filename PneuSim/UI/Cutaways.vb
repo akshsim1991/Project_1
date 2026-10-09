@@ -457,14 +457,17 @@ Public Module Cutaways
             ZigzagV(g, sp, 210, 60, 104 - lift, 10, 8)
         End Using
         ' Pilot X opens it from above; the check valve below lets oil in freely (1 → 2).
-        Fill(g, Fluid(v.Ports(2), pal), 120, 0, 16, 90)
-        Metal(g, pal, 112, 86, 32, 8, dark:=True)
+        If v.ExternalPilot Then
+            Fill(g, Fluid(v.GetPort("X"), pal), 120, 0, 16, 90)
+            Metal(g, pal, 112, 86, 32, 8, dark:=True)
+        End If
         Fill(g, Fluid(v.Ports(0), pal), 90, 150, 240, 12)
         Disc(g, pal.MetalDark, pal.Edge, If(Flows(v.Ports(0), v.Ports(1)), 226.0F, 214.0F), 156, 6)
         Txt(g, pal, "1 (valve)", 42, 100, bold:=True) : Txt(g, pal, "2 (cylinder)", 320, 100, bold:=True)
-        Txt(g, pal, "X (pilot)", 140, 4, bold:=True)
-        Return If(v.IsOpen, "Open: the load pressure or the pilot X has lifted the poppet; the load can move down under control.",
-                  "Closed: the poppet holds the oil in the cylinder, so the load cannot fall.")
+        If v.ExternalPilot Then Txt(g, pal, "X (pilot)", 140, 4, bold:=True)
+        Dim medium = If(v.Hydraulic, "oil", "air")
+        Return If(v.IsOpen, $"{v.Opening * 100:0} % open: the load pressure{If(v.ExternalPilot, " or the pilot X", "")} has lifted the poppet; the {medium} escapes throttled, so the load moves down under control.",
+                  $"Closed: the poppet holds the {medium} in the cylinder, so the load cannot fall.")
     End Function
 
     Private Function AccumulatorView(g As Graphics, v As Accumulator, area As RectangleF, pal As CutawayPalette) As String

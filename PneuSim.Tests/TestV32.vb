@@ -60,6 +60,7 @@ Module TestV32
 
     Sub RunAll()
         NewComponents()
+        CounterbalanceTests()
         ExampleTests()
         FaultTests()
         ExerciseTests()
@@ -290,6 +291,51 @@ Module TestV32
               back.Elements.Select(Function(e) e.TypeName).SequenceEqual(newOnes.Select(Function(e) e.TypeName)))
         Check("new parts have prices", newOnes.All(Function(e) PartsList.DefaultPrice(e.DisplayName) > 0 OrElse TypeOf e Is ElectricContact),
               String.Join(", ", newOnes.Where(Function(e) PartsList.DefaultPrice(e.DisplayName) = 0).Select(Function(e) e.DisplayName)))
+    End Sub
+
+    Sub CounterbalanceTests()
+        ' The file is in the repository root; the tests run from PneuSim.Tests or a folder below it.
+        Dim dir = New IO.DirectoryInfo(IO.Directory.GetCurrentDirectory())
+        While dir IsNot Nothing AndAlso Not IO.File.Exists(IO.Path.Combine(dir.FullName, "Pneumatic_Counterbalance.pneu"))
+            dir = dir.Parent
+        End While
+        Check("counterbalance example file found", dir IsNot Nothing)
+        If dir Is Nothing Then Return
+        Dim proj = Project.Load(IO.Path.Combine(dir.FullName, "Pneumatic_Counterbalance.pneu"))
+        Dim c = proj.SimulationCircuit()
+        Dim cb = c.Elements.OfType(Of CounterbalanceValve)().First()
+        Dim cyl = c.Elements.OfType(Of CylinderBase)().First()
+        Check("pneumatic counterbalance file loads", Not cb.Hydraulic AndAlso Not cb.ExternalPilot AndAlso cb.Ports.Count = 2 AndAlso cb.Setting = 3.2)
+        Check("counterbalance circuit passes the checker", Not CircuitAnalysis.StaticChecks(c).Any(Function(i) i.Severity = IssueSeverity.Error))
+        For Each real In {True, False}
+            Dim mode = If(real, "realistic", "ideal")
+            Dim s As New Simulator(c) With {.RealPhysics = real} : s.Reset()
+            Dim warned = False
+            Press(s, Find(c, "S2"))
+            For k = 1 To 400 : s.Step(0.005) : warned = warned OrElse s.Warnings.Count > 0 : Next
+            Release(s, Find(c, "S2"))
+            Check($"counterbalance ({mode}): load raised", cyl.Position = 1)
+            Run(s, 2)
+            Check($"counterbalance ({mode}): load held in the centre position", cyl.Position > 0.99)
+            Press(s, Find(c, "S1"))
+            Dim tDown = -1.0, t0 = s.Time
+            For k = 1 To 1200
+                s.Step(0.005)
+                warned = warned OrElse s.Warnings.Count > 0
+                If tDown < 0 AndAlso cyl.Position <= 0.005 Then tDown = s.Time - t0
+            Next
+            Check($"counterbalance ({mode}): load lowered without oscillation", tDown > 0.5 AndAlso Not warned, $"{tDown:0.00} s")
+            s.Reset() : Press(s, Find(c, "S2")) : Run(s, 2) : Release(s, Find(c, "S2")) : Run(s, 1)
+            Press(s, Find(c, "S1"))
+            While cyl.Position > 0.5 AndAlso s.Time < 30 : s.Step(0.005) : End While
+            Release(s, Find(c, "S1"))
+            Dim mid = cyl.Position
+            Run(s, 3)
+            Check($"counterbalance ({mode}): load stops and stays when released", Math.Abs(cyl.Position - mid) < 0.02, $"{mid:0.000} → {cyl.Position:0.000}")
+        Next
+        ' The hydraulic counterbalance valve still opens with its pilot.
+        Dim h As New CounterbalanceValve()
+        Check("hydraulic counterbalance valve keeps its pilot port", h.Hydraulic AndAlso h.ExternalPilot AndAlso h.GetPort("X") IsNot Nothing)
     End Sub
 
     Sub ExampleTests()

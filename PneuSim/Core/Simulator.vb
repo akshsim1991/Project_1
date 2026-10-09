@@ -417,6 +417,13 @@ Partial Public Class Simulator
         For Each kv In _supplies
             supplied.Add(find(kv.Key))
         Next
+        ' A line that is itself open to atmosphere (silencer, open port) has no pressure; a line
+        ' that only vents through a valve or throttle still carries the chamber pressure.
+        Dim open As New HashSet(Of Integer)
+        For i = 0 To n - 1
+            Dim p = _ports(i)
+            If _exhausts.Contains(i) OrElse (p.VentsWhenOpen AndAlso p.ConnectionCount = 0) Then open.Add(find(i))
+        Next
         For Each cyl In _circuit.Elements.OfType(Of CylinderBase)()
             For Each p In cyl.Ports
                 If p.Kind <> PortKind.Pneumatic Then Continue For
@@ -431,7 +438,8 @@ Partial Public Class Simulator
         If netPressure.Count = 0 Then Return
         For i = 0 To n - 1
             Dim v As Double
-            If netPressure.TryGetValue(find(i), v) AndAlso _ports(i).State <> PortState.Exhausted Then _ports(i).Pressure = v
+            Dim root = find(i)
+            If netPressure.TryGetValue(root, v) AndAlso (_ports(i).State <> PortState.Exhausted OrElse Not open.Contains(root)) Then _ports(i).Pressure = v
         Next
     End Sub
 

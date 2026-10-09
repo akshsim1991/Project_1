@@ -103,6 +103,7 @@ Public Module Library
         New LibraryPreset(CatHydraulic, "Hydraulic check valve", Function() New CheckValve() With {.Hydraulic = True}),
         New LibraryPreset(CatHydraulic, "Pressure reducing valve", Function() New PressureRegulator() With {.Hydraulic = True, .Setting = 30}),
         New LibraryPreset(CatHydraulic, "Counterbalance valve", Function() New CounterbalanceValve()),
+        New LibraryPreset(CatFlow, "Counterbalance valve (pneumatic)", Function() New CounterbalanceValve() With {.Hydraulic = False, .ExternalPilot = False, .Setting = 3.2}),
         New LibraryPreset(CatHydraulic, "Accumulator", Function() New Accumulator()),
         New LibraryPreset(CatHydraulic, "Hydraulic pressure gauge", Function() New PressureGauge() With {.Hydraulic = True}),
         New LibraryPreset(CatHydraulic, "Hydraulic junction (T)", Function() New Junction() With {.Medium = PortKind.Hydraulic}),

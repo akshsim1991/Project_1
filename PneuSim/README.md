@@ -36,6 +36,10 @@ simulated to understand different types of circuits.
   (ejector) and suction cup, parallel gripper, flow meter, force sensor, preset counter,
   latching emergency stop and the idle-return roller valve – all with symbols, cutaways,
   help texts, prices and checker rules.
+- **Pneumatic counterbalance valve:** the counterbalance valve now works with air as well as
+  oil, with an internal pilot, a built-in check valve and a poppet that opens gradually, so a
+  hanging load is held and lowered smoothly (see `Pneumatic_Counterbalance.pneu`). Gauges on a
+  line that empties through a valve now show the real chamber pressure.
 - Two new examples (vacuum handling; compressor, receiver and flow meter) and new quiz
   questions on vacuum, air generation and fault finding.
 
@@ -117,7 +121,7 @@ A full review fixed 30 problems. The most important:
 | Supply and air preparation | Compressed air supply, compressor, air receiver, shut-off valve, service unit, pressure regulator, pressure gauge, flow meter, force sensor, pressure switch, vacuum switch, silencer, tube junction |
 | Actuators and handling | Single-acting cylinder, double-acting cylinder, semi-rotary actuator, air motor, parallel gripper, vacuum generator, suction cup |
 | Directional control valves | 2/2, 3/2 (NC/NO), 4/2, 5/2 and 5/3 (closed, exhaust or pressure centre) valves, operated by push button, selector switch, roller lever, idle-return roller, pneumatic pilot, time-delayed pilot or solenoid; spring, pilot or solenoid return |
-| Logic, non-return and flow | Shuttle valve (OR), two-pressure valve (AND), check valve, quick exhaust valve, one-way flow control valve, flow control valve |
+| Logic, non-return and flow | Shuttle valve (OR), two-pressure valve (AND), check valve, quick exhaust valve, one-way flow control valve, flow control valve, counterbalance valve |
 | Electrical (24 V DC) | +24 V / 0 V connection, push button NO/NC, selector switch, emergency stop, relay contact NO/NC, proximity sensor, limit switch, pressure switch contact, preset counter, relay coil, on-delay and off-delay timer relays, valve solenoid, indicator lamp, wire junction |
 | Hydraulics | Pump, tank, pressure relief valve, pressure reducing valve, 4/3 valve (closed, tandem, float, open centre), 4/2 valve, check valve, one-way flow control valve, throttle valve, pressure-compensated flow control valve, counterbalance valve, double- and single-acting hydraulic cylinder, hydraulic motor, accumulator, hydraulic gauge |
 | Pressure control | Pressure regulator, pressure sequence valve |

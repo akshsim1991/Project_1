@@ -720,31 +720,77 @@ End Class
 Public Class CounterbalanceValve
     Inherits CircuitElement
 
-    Private _open As Boolean
+    ''' <summary>Pressure rise above the setting at which the valve is fully open (bar).</summary>
+    Private Const OpeningBand As Double = 0.6
 
-    ''' <summary>True while oil may flow back from 2 to 1 (load lowered).</summary>
+    Private ReadOnly _x As Port
+    Private _opening As Double
+    Private _lowering As Boolean
+    Private _loadSide As List(Of (Cyl As CylinderBase, P As Port))
+
+    ''' <summary>True while fluid may flow back from 2 to 1 (load lowered).</summary>
     <Browsable(False)> Public ReadOnly Property IsOpen As Boolean
         Get
-            Return _open
+            Return _opening > 0.005
+        End Get
+    End Property
+
+    ''' <summary>How far the valve is open for the return flow from 2 to 1 (0 to 1).</summary>
+    <Browsable(False)> Public ReadOnly Property Opening As Double
+        Get
+            Return _opening
         End Get
     End Property
 
     Public Sub New()
         AddPort("1", 0, 50, -1, 0, kind:=PortKind.Hydraulic)
         AddPort("2", 70, 50, 1, 0, kind:=PortKind.Hydraulic)
-        AddPort("X", 35, 0, 0, -1, kind:=PortKind.Hydraulic)
+        _x = AddPort("X", 35, 0, 0, -1, kind:=PortKind.Hydraulic)
     End Sub
 
     Public Overrides ReadOnly Property TypeName As String = "CounterbalanceValve"
-    Public Overrides ReadOnly Property DisplayName As String = "Counterbalance valve"
 
-    <Category("Valve"), DisplayName("Opening pressure (bar)"), Description("Set about 1.3 times the load-induced pressure.")>
+    Public Overrides ReadOnly Property DisplayName As String
+        Get
+            Return If(Hydraulic, "Counterbalance valve", "Counterbalance valve (pneumatic)")
+        End Get
+    End Property
+
+    <Category("Medium"), DisplayName("Hydraulic"), Description("True: fitted in a hydraulic (oil) line. False: compressed air.")>
+    Public Property Hydraulic As Boolean
+        Get
+            Return Ports(0).Kind = PortKind.Hydraulic
+        End Get
+        Set(value As Boolean)
+            Dim kind = If(value, PortKind.Hydraulic, PortKind.Pneumatic)
+            Ports(0).Kind = kind : Ports(1).Kind = kind : _x.Kind = kind
+        End Set
+    End Property
+
+    <Category("Valve"), DisplayName("External pilot port X"),
+     Description("True: a pilot line on X can also open the valve. False: internal pilot only (the load pressure at port 2 opens it).")>
+    Public Property ExternalPilot As Boolean
+        Get
+            Return Ports.Contains(_x)
+        End Get
+        Set(value As Boolean)
+            If value AndAlso Not Ports.Contains(_x) Then Ports.Add(_x)
+            If Not value Then Ports.Remove(_x)
+        End Set
+    End Property
+
+    Public Overrides Function ShowProperty(name As String) As Boolean
+        If name = NameOf(PilotPressure) Then Return ExternalPilot
+        Return True
+    End Function
+
+    <Category("Valve"), DisplayName("Opening pressure (bar)"), Description("Set about 1.3 times the pressure the load produces at port 2.")>
     Public Property Setting As Double
         Get
             Return _setting
         End Get
         Set(value As Double)
-            _setting = Math.Max(1, Math.Min(400, value))
+            _setting = Math.Max(0.5, Math.Min(400, value))
         End Set
     End Property
     Private _setting As Double = 50
@@ -755,10 +801,17 @@ Public Class CounterbalanceValve
             Return _pilot
         End Get
         Set(value As Double)
-            _pilot = Math.Max(1, Math.Min(400, value))
+            _pilot = Math.Max(0.5, Math.Min(400, value))
         End Set
     End Property
     Private _pilot As Double = 10
+
+    Public Overrides Function InspectValues() As List(Of (Name As String, Value As String))
+        Dim list = MyBase.InspectValues()
+        list.Add(("Opening for lowering", $"{_opening * 100:0} %"))
+        list.Add(("Load pressure at 2", $"{LoadPressure():0.00} bar"))
+        Return list
+    End Function
 
     Public Overrides ReadOnly Property LocalBounds As RectangleF
         Get
@@ -771,31 +824,96 @@ Public Class CounterbalanceValve
         g.DrawLine(r.PenFor(Ports(1)), 50, 50, 70, 50)
         g.FillRectangle(r.BodyBrush, 20, 20, 30, 40)
         g.DrawRectangle(r.Line, 20, 20, 30, 40)
-        Symbols.Arrow(g, If(r.Simulating AndAlso _open, r.HydraulicPressure, r.Line), New PointF(If(_open, 46, 40), 50), New PointF(If(_open, 24, 30), 50), 5)
+        Dim open = r.Simulating AndAlso IsOpen
+        Symbols.Arrow(g, If(open, r.PenFor(Ports(1)), r.Line), New PointF(If(open, 46, 40), 50), New PointF(If(open, 24, 30), 50), 5)
+        ' Adjustable spring.
         Symbols.Spring(g, r.Thin, 50, 60, 30, 3)
+        g.DrawLine(r.Thin, 52, 36, 62, 24)
         Using d As New Pen(Color.Black, 1) With {.DashStyle = Drawing2D.DashStyle.Dash}
-            g.DrawLine(d, 35, 0, 35, 20)
+            If ExternalPilot Then g.DrawLine(d, 35, 0, 35, 20)
+            ' Internal pilot from the load side (port 2).
+            g.DrawLines(d, {New PointF(56, 50), New PointF(56, 42), New PointF(50, 42)})
         End Using
         ' Check valve: free flow 1 -> 2 below.
         g.DrawLines(r.Line, {New PointF(10, 50), New PointF(10, 64), New PointF(60, 64), New PointF(60, 50)})
         g.FillEllipse(r.BodyBrush, 33, 60, 8, 8)
         g.DrawEllipse(r.Line, 33, 60, 8, 8)
-        g.DrawString($"{Setting:0} bar", r.SmallFont, r.TextBrush, 52, 14)
+        Dim txt = If(Hydraulic, $"{Setting:0} bar", $"{Setting:0.0#} bar")
+        If open Then txt &= $"  {_opening * 100:0}%"
+        g.DrawString(txt, r.SmallFont, r.TextBrush, 52, 6)
     End Sub
 
     Public Overrides Sub ResetSim()
         MyBase.ResetSim()
-        _open = False
+        _opening = 0
+        _lowering = False
+        _loadSide = Nothing
     End Sub
 
-    Public Overrides Function UpdateLogic(sim As Simulator) As Boolean
-        Dim open = Ports(1).Pressure >= Setting - 0.01 OrElse Ports(2).Pressure >= PilotPressure
-        If open = _open Then Return False
-        _open = open
-        Return True
+    ''' <summary>
+    ''' Pressure on the load side. In realistic mode this is the pressure in the cylinder chamber
+    ''' behind port 2 (the line itself reads zero as soon as air or oil flows out through the valve).
+    ''' </summary>
+    Private Function LoadPressure() As Double
+        Dim best = Ports(1).Pressure
+        If _loadSide IsNot Nothing Then
+            For Each ls In _loadSide
+                Dim cp = ls.Cyl.ChamberPressureAt(ls.P)
+                If cp >= 0 Then best = Math.Max(best, cp)
+            Next
+        End If
+        Return best
     End Function
 
+    ''' <summary>Cylinder ports joined to port 2 by tubes (through junctions).</summary>
+    Private Sub FindLoadSide(sim As Simulator)
+        _loadSide = New List(Of (CylinderBase, Port))
+        Dim tubes = sim.Circuit.Tubes
+        Dim seen As New HashSet(Of Port) From {Ports(1)}
+        Dim queue As New Queue(Of Port)
+        queue.Enqueue(Ports(1))
+        While queue.Count > 0
+            Dim p = queue.Dequeue()
+            For Each t In tubes
+                Dim other = If(t.A Is p, t.B, If(t.B Is p, t.A, Nothing))
+                If other Is Nothing OrElse Not seen.Add(other) Then Continue For
+                If TypeOf other.Owner Is Junction Then
+                    queue.Enqueue(other)
+                ElseIf TypeOf other.Owner Is CylinderBase Then
+                    _loadSide.Add((DirectCast(other.Owner, CylinderBase), other))
+                End If
+            Next
+        End While
+    End Sub
+
+    ''' <summary>
+    ''' The opening is set once per time step (not in the switching loop), in proportion to how far
+    ''' the load pressure is above the setting, so the valve throttles smoothly instead of
+    ''' snapping open and shut.
+    ''' </summary>
+    Public Overrides Sub UpdateDynamics(sim As Simulator, dt As Double)
+        If _loadSide Is Nothing Then FindLoadSide(sim)
+        Dim target As Double
+        If ExternalPilot AndAlso _x.Pressure >= _pilot Then
+            target = 1
+        ElseIf sim.RealPhysics Then
+            target = Math.Max(0, Math.Min(1, (LoadPressure() - _setting) / OpeningBand))
+        Else
+            ' Ideal mode has no loads: once the load side has the opening pressure and the line to
+            ' the valve is vented, the valve lets the load down (throttled) until that line gets air again.
+            If Ports(0).State <> PortState.Exhausted Then
+                _lowering = False
+            ElseIf LoadPressure() >= _setting - 0.01 Then
+                _lowering = True
+            End If
+            target = If(_lowering, 0.35, 0)
+        End If
+        ' A short lag, like the movement of the poppet, keeps the valve steady.
+        _opening += (target - _opening) * Math.Min(1, dt / 0.03)
+        If target = 0 AndAlso _opening < 0.002 Then _opening = 0
+    End Sub
+
     Public Overrides Sub AddEdges(sim As Simulator)
-        sim.AddEdge(Ports(0), Ports(1), 1, If(_open, 1, 0))
+        sim.AddEdge(Ports(0), Ports(1), 1, _opening)
     End Sub
 End Class

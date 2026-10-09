@@ -137,7 +137,8 @@ Public Module ComponentHelp
             Case TypeOf e Is CompensatedFlowControl
                 Return "Keeps the flow constant even when the load pressure changes, so the speed stays constant."
             Case TypeOf e Is CounterbalanceValve
-                Return "Holds a hanging load: oil can leave the cylinder only when the pressure reaches the setting or the pilot opens it."
+                Dim cb = DirectCast(e, CounterbalanceValve)
+                Return $"Holds a hanging load: {If(cb.Hydraulic, "oil", "air")} can leave the cylinder (2 → 1) only when the load pressure rises above {cb.Setting:0.#} bar{If(cb.ExternalPilot, " or the pilot X opens it", "")}; it then opens just enough to let the load down under control. The built-in check valve lets {If(cb.Hydraulic, "oil", "air")} in freely (1 → 2) to lift it."
             Case TypeOf e Is PageConnector
                 Return "Continues the line on another page: connectors with the same name are connected."
             Case TypeOf e Is TextNote
