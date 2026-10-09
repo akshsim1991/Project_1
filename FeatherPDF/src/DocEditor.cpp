@@ -8,6 +8,7 @@
 DocEditor::~DocEditor() {
     m_engine.reset();  // close files before deleting them
     SecureZeroMemory(m_password.data(), m_password.size());
+    SecureZeroMemory(m_basePassword.data(), m_basePassword.size());
     for (const std::wstring& t : m_temps) DeleteFileW(t.c_str());
 }
 
@@ -18,7 +19,7 @@ OpenError DocEditor::Open(const std::wstring& path, const std::string& password,
     if (err != OpenError::None) return err;
     m_engine = std::move(engine);
     m_path = m_basePath = path;
-    m_password = password;  // needed to re-open the file for undo
+    m_password = m_basePassword = password;  // needed to re-open the file for undo
     return OpenError::None;
 }
 
@@ -59,6 +60,10 @@ void DocEditor::Describe(const EditOp& op, int before, int after, int& focus,
         case EditOp::Watermark:
         case EditOp::PageNumbers:
         case EditOp::AddOcrText:
+        case EditOp::Compress:
+        case EditOp::Redact:
+        case EditOp::SetSecurity:
+        case EditOp::AddMeasure:
             break;  // the reader stays where they are
     }
 }
@@ -105,7 +110,7 @@ bool DocEditor::Redo(std::wstring& error, int& focus, std::vector<int>& select) 
 bool DocEditor::Rebuild(size_t count, std::wstring& error) {
     auto engine = std::make_unique<PdfEngine>();
     std::vector<SizeF> sizes;
-    if (engine->Open(m_basePath, m_password, sizes) != OpenError::None) {
+    if (engine->Open(m_basePath, m_basePassword, sizes) != OpenError::None) {
         error = L"The original file could not be read again, so the change can not be undone.";
         return false;
     }
@@ -123,6 +128,8 @@ bool DocEditor::Rebuild(size_t count, std::wstring& error) {
 bool DocEditor::Save(const std::wstring& target, std::wstring& error) {
     if (!m_engine) return false;
     const int pages = m_engine->PageCount();
+    // A new password (or none) applies to the file being written.
+    const std::string password = m_engine->PasswordAfterSave(m_password);
 
     // 1. Write the new version next to the target (same volume, so it can
     //    replace it atomically) and flush it to disk.
@@ -141,7 +148,7 @@ bool DocEditor::Save(const std::wstring& target, std::wstring& error) {
     // 2. Check that what was written opens and has every page.
     auto fresh = std::make_unique<PdfEngine>();
     std::vector<SizeF> sizes;
-    if (fresh->Open(temp, m_password, sizes) != OpenError::None || (int)sizes.size() != pages) {
+    if (fresh->Open(temp, password, sizes) != OpenError::None || (int)sizes.size() != pages) {
         fresh.reset();
         DeleteFileW(temp.c_str());
         error = L"The saved file could not be verified, so the original was left unchanged.";
@@ -194,7 +201,7 @@ bool DocEditor::Save(const std::wstring& target, std::wstring& error) {
     }
     if (!fresh) {
         fresh = std::make_unique<PdfEngine>();
-        if (fresh->Open(target, m_password, sizes) != OpenError::None) {
+        if (fresh->Open(target, password, sizes) != OpenError::None) {
             // Saved, but can not be read back: keep working from the history.
             fresh.reset();
             std::wstring ignored;
@@ -206,6 +213,7 @@ bool DocEditor::Save(const std::wstring& target, std::wstring& error) {
     }
     m_engine = std::move(fresh);
     m_path = target;
+    m_password = password;
     m_saved = m_cursor;
     return true;
 }

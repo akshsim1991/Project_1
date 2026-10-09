@@ -15,6 +15,18 @@ typedef struct fpdf_dest_t__* FPDF_DEST;
 typedef struct fpdf_action_t__* FPDF_ACTION;
 typedef struct fpdf_pageobject_t__* FPDF_PAGEOBJECT;
 
+// A word of a document and its box (PDF user space), for comparing.
+struct DocWord {
+    std::wstring text;
+    int page = 0;
+    float l = 0, t = 0, r = 0, b = 0;
+};
+
+// Data the document reads when it is saved (see Compress).
+struct JpegData {
+    virtual ~JpegData() = default;
+};
+
 class PdfEngine {
 public:
     PdfEngine();
@@ -90,8 +102,26 @@ public:
     bool LastEditChangedFont() const { return m_editFontChanged; }
     // Current page sizes (in points, after /Rotate), e.g. after an edit.
     void GetPageSizes(std::vector<SizeF>& out);
-    // Writes the whole document (all edits included) to a new file.
+    // Writes the whole document (all edits included) to a new file, with
+    // the password set by SetSecurity (or the file's own encryption).
     bool WriteTo(const std::wstring& path);
+    // An unencrypted copy, for the program's own temporary files.
+    bool WritePlainCopy(const std::wstring& path);
+    // The password that opens the file WriteTo writes (`current` if unchanged).
+    std::string PasswordAfterSave(const std::string& current) const;
+
+    // --- redaction search and comparison ---------------------------------------
+    // Places on a page to redact: occurrences of `query` and of `patterns`
+    // (kFindEmails...), in page points (top-left origin).
+    void FindForRedaction(int page, const std::wstring& query, bool matchCase, int patterns,
+                          std::vector<RectF>& out);
+    // Every word of the document with its box (PDF user space).
+    void ReadWords(std::vector<DocWord>& out);
+    // Highlights words [from, to) with a comment; adds a note icon at a point.
+    void MarkWords(const std::vector<DocWord>& words, size_t from, size_t to, COLORREF color,
+                   const std::wstring& note, const std::wstring& author);
+    void AddNoteAtPoint(int page, float x, float y, COLORREF color, const std::wstring& text,
+                        const std::wstring& author);
     // Writes the given pages, in order, as a new document.
     bool WritePagesTo(const std::vector<int>& pages, const std::wstring& path);
 
@@ -114,6 +144,9 @@ private:
     bool AddWatermark(const EditOp& op, std::wstring& error);
     bool AddPageNumbers(const EditOp& op, std::wstring& error);
     bool AddOcrText(const EditOp& op);
+    bool Compress(const EditOp& op);
+    bool Redact(const EditOp& op, std::wstring& error);
+    bool AddMeasure(const EditOp& op, std::wstring& error);
     // Pages loaded for an edit, with the form-filling layer attached.
     FPDF_PAGE LoadEditPage(int index);
     void CloseEditPage(FPDF_PAGE page);
@@ -138,6 +171,15 @@ private:
     // draws field values and highlights, and changes fields.
     struct FormEnv;
     std::unique_ptr<FormEnv> m_form;
+
+    // The password to save with (EditOp::SetSecurity); unset: as the file was.
+    struct Security {
+        bool set = false, encrypt = false;
+        std::string user, owner;
+        uint32_t permissions = 0xFFFFFFFF;
+    } m_security;
+    // Data PDFium reads lazily (compressed pictures), alive as long as m_doc.
+    std::vector<std::unique_ptr<JpegData>> m_keep;
 
     int m_editCount = 0;
     bool m_editFontChanged = false;

@@ -7,6 +7,9 @@
 // temporary name and renamed when complete.
 bool SavePicture(const PixelBuffer& px, const std::wstring& path, bool jpeg, int dpi);
 
+// Encodes 32-bit BGRx pixels as a JPEG file in memory (quality 1-100).
+bool EncodeJpeg(const uint8_t* bits, int w, int h, int stride, int quality, std::string& out);
+
 // Writes `text` as UTF-8 (with a byte order mark when `bom`), CRLF line
 // endings, through a temporary file.
 bool WriteTextFile(const std::wstring& path, const std::wstring& text, bool bom);

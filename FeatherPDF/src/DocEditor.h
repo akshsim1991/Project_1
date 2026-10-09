@@ -61,7 +61,8 @@ private:
     std::unique_ptr<PdfEngine> m_engine;
     std::wstring m_path;      // where the document is saved
     std::wstring m_basePath;  // file the history replays from
-    std::string m_password;
+    std::string m_password;      // opens m_path
+    std::string m_basePassword;  // opens m_basePath (the file as first opened)
     std::vector<EditOp> m_ops;
     size_t m_cursor = 0;      // edits applied: m_ops[0, m_cursor)
     size_t m_saved = 0;       // m_cursor when last saved (SIZE_MAX: unreachable)

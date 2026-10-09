@@ -6,9 +6,12 @@
 #include <cmath>
 #include <cwctype>
 #include <map>
+#include <regex>
 #include <set>
 #include <type_traits>
 
+#include "Export.h"
+#include "PdfCrypt.h"
 #include "Util.h"
 #include "fpdf_annot.h"
 #include "fpdf_doc.h"
@@ -241,6 +244,7 @@ void PdfEngine::Close() {
         m_doc = nullptr;
     }
     m_file.reset();
+    m_keep.clear();  // after the document: PDFium may read these until it is closed
     m_pageCount = 0;
 }
 
@@ -651,6 +655,8 @@ void PdfEngine::GetInfo(DocInfo& info) {
         int version = 0;
         if (FPDF_GetFileVersion(m_doc, &version)) info.version = version;
         info.encrypted = FPDF_GetSecurityHandlerRevision(m_doc) != -1;
+        info.permissions = (uint32_t)FPDF_GetDocPermissions(m_doc);
+        info.pendingSecurity = m_security.set ? (m_security.encrypt ? 1 : 0) : -1;
     });
 }
 
@@ -736,8 +742,42 @@ struct FileWriter : FPDF_FILEWRITE {
     }
 };
 
+// Writes `data` to `path` (overwriting it) and flushes it to disk.
+bool WriteData(const std::wstring& path, const std::string& data) {
+    HANDLE h = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                           FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    size_t done = 0;
+    bool ok = true;
+    while (ok && done < data.size()) {
+        DWORD written = 0;
+        const DWORD chunk = (DWORD)std::min<size_t>(data.size() - done, 1u << 24);
+        ok = WriteFile(h, data.data() + done, chunk, &written, nullptr) && written > 0;
+        done += written;
+    }
+    ok = FlushFileBuffers(h) && ok;
+    CloseHandle(h);
+    return ok;
+}
+
+// The document as a complete file in memory.
+bool SaveToMemory(FPDF_DOCUMENT doc, unsigned long flags, std::string& out) {
+    struct MemoryWriter : FPDF_FILEWRITE {
+        std::string* out = nullptr;
+        static int Write(FPDF_FILEWRITE* self, const void* data, unsigned long size) {
+            static_cast<MemoryWriter*>(self)->out->append(static_cast<const char*>(data), size);
+            return 1;
+        }
+    } w;
+    w.version = 1;
+    w.WriteBlock = &MemoryWriter::Write;
+    w.out = &out;
+    FPDF_BOOL saved = 0;
+    return Guarded([&] { saved = FPDF_SaveAsCopy(doc, &w, flags); }) && saved;
+}
+
 // Saves `doc` to `path` (overwriting it) and flushes it to disk.
-bool SaveDocument(FPDF_DOCUMENT doc, const std::wstring& path) {
+bool SaveDocument(FPDF_DOCUMENT doc, const std::wstring& path, unsigned long flags = FPDF_NO_INCREMENTAL) {
     FileWriter w;
     w.version = 1;
     w.WriteBlock = &FileWriter::Write;
@@ -745,7 +785,7 @@ bool SaveDocument(FPDF_DOCUMENT doc, const std::wstring& path) {
                            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
     if (w.handle == INVALID_HANDLE_VALUE) return false;
     FPDF_BOOL saved = 0;
-    const bool ok = Guarded([&] { saved = FPDF_SaveAsCopy(doc, &w, FPDF_NO_INCREMENTAL); });
+    const bool ok = Guarded([&] { saved = FPDF_SaveAsCopy(doc, &w, flags); });
     // The data must be on disk before the file replaces the original.
     const bool flushed = FlushFileBuffers(w.handle) != 0;
     CloseHandle(w.handle);
@@ -767,7 +807,29 @@ void PdfEngine::GetPageSizes(std::vector<SizeF>& out) {
     if (m_doc) ReadPageSizes(m_doc, out);
 }
 
-bool PdfEngine::WriteTo(const std::wstring& path) { return m_doc && SaveDocument(m_doc, path); }
+bool PdfEngine::WriteTo(const std::wstring& path) {
+    if (!m_doc) return false;
+    // Without a change of password PDFium keeps the file's own encryption.
+    if (!m_security.set) return SaveDocument(m_doc, path);
+    if (!m_security.encrypt) return SaveDocument(m_doc, path, FPDF_NO_INCREMENTAL | FPDF_REMOVE_SECURITY);
+    // Encrypted in memory, so the unprotected file never reaches the disk.
+    std::string plain, sealed;
+    bool ok = SaveToMemory(m_doc, FPDF_NO_INCREMENTAL | FPDF_REMOVE_SECURITY, plain) &&
+              EncryptPdf(plain, m_security.user, m_security.owner, m_security.permissions, sealed);
+    SecureZeroMemory(plain.data(), plain.size());
+    return ok && WriteData(path, sealed);
+}
+
+bool PdfEngine::WritePlainCopy(const std::wstring& path) {
+    return m_doc && SaveDocument(m_doc, path, FPDF_NO_INCREMENTAL | FPDF_REMOVE_SECURITY);
+}
+
+std::string PdfEngine::PasswordAfterSave(const std::string& current) const {
+    if (!m_security.set) return current;
+    if (!m_security.encrypt) return {};
+    // The owner password opens it without restrictions for the one who set them.
+    return !m_security.owner.empty() ? m_security.owner : m_security.user;
+}
 
 bool PdfEngine::WritePagesTo(const std::vector<int>& pages, const std::wstring& path) {
     if (!m_doc || pages.empty()) return false;
@@ -907,6 +969,17 @@ bool PdfEngine::ApplyEdit(const EditOp& op, std::wstring& error) {
         case EditOp::Watermark: ok = AddWatermark(op, error); break;
         case EditOp::PageNumbers: ok = AddPageNumbers(op, error); break;
         case EditOp::AddOcrText: ok = AddOcrText(op); break;
+        case EditOp::Compress: ok = Compress(op); break;
+        case EditOp::Redact: ok = Redact(op, error); break;
+        case EditOp::AddMeasure: ok = AddMeasure(op, error); break;
+        case EditOp::SetSecurity:
+            m_security.set = true;
+            m_security.encrypt = op.encrypt;
+            m_security.user = op.userPassword;
+            m_security.owner = op.ownerPassword;
+            m_security.permissions = op.permissions;
+            ok = true;
+            break;
     }
     int count = m_pageCount;
     Guarded([&] { count = FPDF_GetPageCount(m_doc); });
@@ -2224,6 +2297,695 @@ void PdfEngine::PageLines(int index, std::vector<TextLine>& lines) {
         }
         flush();
         FPDFText_ClosePage(tp);
+        FPDF_ClosePage(page);
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Compression, redaction, measurements, comparison and redaction search
+// ---------------------------------------------------------------------------
+namespace {
+// Row-vector PDF matrices: point * a * b.
+FS_MATRIX Multiply(const FS_MATRIX& a, const FS_MATRIX& b) {
+    return {a.a * b.a + a.b * b.c, a.a * b.b + a.b * b.d, a.c * b.a + a.d * b.c, a.c * b.b + a.d * b.d,
+            a.e * b.a + a.f * b.c + b.e, a.e * b.b + a.f * b.d + b.f};
+}
+
+FS_POINTF Apply(const FS_MATRIX& m, float x, float y) {
+    return {x * m.a + y * m.c + m.e, x * m.b + y * m.d + m.f};
+}
+
+bool Invert(const FS_MATRIX& m, FS_MATRIX& out) {
+    const float det = m.a * m.d - m.b * m.c;
+    if (std::fabs(det) < 1e-9f) return false;
+    out.a = m.d / det;
+    out.b = -m.b / det;
+    out.c = -m.c / det;
+    out.d = m.a / det;
+    out.e = -(m.e * out.a + m.f * out.c);
+    out.f = -(m.e * out.b + m.f * out.d);
+    return true;
+}
+
+// A page object with the matrix from its own space to the page, and the
+// form object holding it (null at the top level).
+struct ObjRef {
+    FPDF_PAGEOBJECT obj = nullptr;
+    FPDF_PAGEOBJECT parent = nullptr;
+    FS_MATRIX toPage{1, 0, 0, 1, 0, 0};  // the parent's space -> page (identity at the top)
+};
+
+void CollectObjects(FPDF_PAGE page, std::vector<ObjRef>& out) {
+    struct Walker {
+        std::vector<ObjRef>& out;
+        void Walk(FPDF_PAGEOBJECT parent, int count, const FS_MATRIX& toPage, FPDF_PAGE page) {
+            for (int i = 0; i < count; ++i) {
+                FPDF_PAGEOBJECT o = parent ? FPDFFormObj_GetObject(parent, (unsigned long)i) : FPDFPage_GetObject(page, i);
+                if (!o) continue;
+                out.push_back({o, parent, toPage});
+                if (FPDFPageObj_GetType(o) == FPDF_PAGEOBJ_FORM && out.size() < 200000) {
+                    FS_MATRIX m{1, 0, 0, 1, 0, 0};
+                    FPDFPageObj_GetMatrix(o, &m);
+                    Walk(o, FPDFFormObj_CountObjects(o), Multiply(m, toPage), page);
+                }
+            }
+        }
+    } w{out};
+    w.Walk(nullptr, FPDFPage_CountObjects(page), FS_MATRIX{1, 0, 0, 1, 0, 0}, page);
+}
+
+// The page-space bounding box of an object (l, b, r, t).
+bool PageBounds(const ObjRef& ref, float& l, float& b, float& r, float& t) {
+    float x0, y0, x1, y1;
+    if (!FPDFPageObj_GetBounds(ref.obj, &x0, &y0, &x1, &y1)) return false;
+    const FS_POINTF p[4] = {Apply(ref.toPage, x0, y0), Apply(ref.toPage, x1, y0), Apply(ref.toPage, x0, y1),
+                            Apply(ref.toPage, x1, y1)};
+    l = r = p[0].x;
+    b = t = p[0].y;
+    for (const FS_POINTF& q : p) {
+        l = std::min(l, q.x);
+        r = std::max(r, q.x);
+        b = std::min(b, q.y);
+        t = std::max(t, q.y);
+    }
+    return true;
+}
+
+void RemoveObject(FPDF_PAGE page, const ObjRef& ref) {
+    const bool removed = ref.parent ? FPDFFormObj_RemoveObject(ref.parent, ref.obj) : FPDFPage_RemoveObject(page, ref.obj);
+    if (removed) FPDFPageObj_Destroy(ref.obj);
+}
+
+// A copy of an image's pixels as 32-bit BGRx; false for formats we do not know.
+bool ImagePixels(FPDF_PAGEOBJECT img, std::vector<uint8_t>& px, int& w, int& h) {
+    FPDF_BITMAP bmp = FPDFImageObj_GetBitmap(img);
+    if (!bmp) return false;
+    w = FPDFBitmap_GetWidth(bmp);
+    h = FPDFBitmap_GetHeight(bmp);
+    const int stride = FPDFBitmap_GetStride(bmp), format = FPDFBitmap_GetFormat(bmp);
+    const auto* src = static_cast<const uint8_t*>(FPDFBitmap_GetBuffer(bmp));
+    const int bpp = format == FPDFBitmap_Gray ? 1 : format == FPDFBitmap_BGR ? 3 : format == FPDFBitmap_BGRx || format == FPDFBitmap_BGRA ? 4 : 0;
+    const bool ok = bpp && src && w > 0 && h > 0 && (double)w * h < 400e6;
+    if (ok) {
+        px.resize((size_t)w * h * 4);
+        for (int y = 0; y < h; ++y) {
+            const uint8_t* s = src + (size_t)y * stride;
+            uint8_t* d = px.data() + (size_t)y * w * 4;
+            for (int x = 0; x < w; ++x, s += bpp, d += 4) {
+                d[0] = s[0];
+                d[1] = bpp == 1 ? s[0] : s[1];
+                d[2] = bpp == 1 ? s[0] : s[2];
+                d[3] = 0xFF;
+            }
+        }
+    }
+    FPDFBitmap_Destroy(bmp);
+    return ok;
+}
+
+struct JpegSource : JpegData {
+    FPDF_FILEACCESS access{};
+    std::string data;
+    static int GetBlock(void* param, unsigned long pos, unsigned char* buf, unsigned long size) {
+        auto* self = static_cast<JpegSource*>(param);
+        if ((size_t)pos + size > self->data.size()) return 0;
+        memcpy(buf, self->data.data() + pos, size);
+        return 1;
+    }
+};
+
+// True if the picture shows anything through itself (a soft mask or a
+// colour key): JPEG has no transparency, so such pictures are left alone.
+bool HasTransparency(FPDF_DOCUMENT doc, FPDF_PAGE page, FPDF_PAGEOBJECT img) {
+    FPDF_BITMAP r = FPDFImageObj_GetRenderedBitmap(doc, page, img);
+    if (!r) return true;  // can not tell: keep it as it is
+    bool transparent = FPDFBitmap_GetFormat(r) != FPDFBitmap_BGRA;
+    if (!transparent) {
+        const int w = FPDFBitmap_GetWidth(r), h = FPDFBitmap_GetHeight(r), stride = FPDFBitmap_GetStride(r);
+        const auto* p = static_cast<const uint8_t*>(FPDFBitmap_GetBuffer(r));
+        for (int y = 0; y < h && !transparent; ++y)
+            for (int x = 0; x < w; ++x)
+                if (p[(size_t)y * stride + (size_t)x * 4 + 3] < 250) {
+                    transparent = true;
+                    break;
+                }
+    }
+    FPDFBitmap_Destroy(r);
+    return transparent;
+}
+}  // namespace
+
+bool PdfEngine::Compress(const EditOp& op) {
+    const float target = (float)std::clamp(op.dpi, 36, 600);
+    int changed = 0;
+    for (int p = 0; p < m_pageCount; ++p) {
+        Guarded([&] {
+            FPDF_PAGE page = FPDF_LoadPage(m_doc, p);
+            if (!page) return;
+            std::vector<ObjRef> objs;
+            CollectObjects(page, objs);
+            bool pageChanged = false;
+            for (const ObjRef& ref : objs) {
+                FPDF_PAGEOBJECT img = ref.obj;
+                // Inside a form XObject a replaced picture would not be written
+                // back (only the page's own content is regenerated).
+                if (ref.parent || FPDFPageObj_GetType(img) != FPDF_PAGEOBJ_IMAGE) continue;
+                FPDF_IMAGEOBJ_METADATA md{};
+                if (!FPDFImageObj_GetImageMetadata(img, page, &md) || md.bits_per_pixel <= 1 ||
+                    (double)md.width * md.height < 160.0 * 160.0)
+                    continue;
+                // Resolution as printed: pixels per inch of the area it covers.
+                FS_MATRIX m{1, 0, 0, 1, 0, 0};
+                FPDFPageObj_GetMatrix(img, &m);
+                m = Multiply(m, ref.toPage);
+                const float wIn = std::hypot(m.a, m.b) / 72, hIn = std::hypot(m.c, m.d) / 72;
+                if (wIn <= 0.01f || hIn <= 0.01f) continue;
+                const float dpi = std::max(md.width / wIn, md.height / hIn);
+                if (dpi <= target * 1.1f) continue;  // already small enough
+                if (HasTransparency(m_doc, page, img)) continue;
+                std::vector<uint8_t> px;
+                int w = 0, h = 0;
+                if (!ImagePixels(img, px, w, h)) continue;
+                const float f = target / dpi;
+                const int nw = std::max(1, (int)std::lround(w * f)), nh = std::max(1, (int)std::lround(h * f));
+                // Box filter down to the new size.
+                std::vector<uint8_t> small((size_t)nw * nh * 4);
+                for (int y = 0; y < nh; ++y) {
+                    const int y0 = (int)((double)y * h / nh), y1 = std::max(y0 + 1, (int)((double)(y + 1) * h / nh));
+                    for (int x = 0; x < nw; ++x) {
+                        const int x0 = (int)((double)x * w / nw), x1 = std::max(x0 + 1, (int)((double)(x + 1) * w / nw));
+                        unsigned sum[3] = {0, 0, 0}, n = 0;
+                        for (int yy = y0; yy < y1 && yy < h; ++yy)
+                            for (int xx = x0; xx < x1 && xx < w; ++xx, ++n) {
+                                const uint8_t* s = px.data() + ((size_t)yy * w + xx) * 4;
+                                sum[0] += s[0];
+                                sum[1] += s[1];
+                                sum[2] += s[2];
+                            }
+                        uint8_t* d = small.data() + ((size_t)y * nw + x) * 4;
+                        n = std::max(n, 1u);
+                        d[0] = (uint8_t)(sum[0] / n);
+                        d[1] = (uint8_t)(sum[1] / n);
+                        d[2] = (uint8_t)(sum[2] / n);
+                        d[3] = 0xFF;
+                    }
+                }
+                auto src = std::make_unique<JpegSource>();
+                if (!EncodeJpeg(small.data(), nw, nh, nw * 4, std::clamp(op.quality, 10, 100), src->data))
+                    continue;
+                // Only when it really is smaller than what the file holds now.
+                const unsigned long before = FPDFImageObj_GetImageDataRaw(img, nullptr, 0);
+                if (before > 0 && src->data.size() >= before * 9 / 10) continue;
+                src->access.m_FileLen = (unsigned long)src->data.size();
+                src->access.m_GetBlock = &JpegSource::GetBlock;
+                src->access.m_Param = src.get();
+                // PDFium reads the data when it saves, so it is kept with the document.
+                if (FPDFImageObj_LoadJpegFile(&page, 1, img, &src->access)) {
+                    m_keep.push_back(std::move(src));
+                    ++changed;
+                    pageChanged = true;
+                }
+            }
+            // The new picture becomes part of the page only when its content is regenerated.
+            if (pageChanged) FPDFPage_GenerateContent(page);
+            FPDF_ClosePage(page);
+        });
+    }
+    m_editCount = changed;
+    return true;
+}
+
+namespace {
+struct RedactChar {
+    int index = 0;
+    bool remove = false;
+    unsigned cp = 0;
+    double ox = 0, oy = 0;
+};
+
+// Paints the parts of an image under `areas` black, in the image's own pixels.
+bool BlackOutImage(FPDF_PAGE page, FPDF_PAGEOBJECT img, const FS_MATRIX& toPage, const std::vector<FS_RECTF>& areas) {
+    std::vector<uint8_t> px;
+    int w = 0, h = 0;
+    if (!ImagePixels(img, px, w, h)) return false;
+    FS_MATRIX m{1, 0, 0, 1, 0, 0}, inv;
+    FPDFPageObj_GetMatrix(img, &m);
+    if (!Invert(Multiply(m, toPage), inv)) return false;
+    for (const FS_RECTF& a : areas) {
+        float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
+        const FS_POINTF corners[4] = {{a.left, a.bottom}, {a.right, a.bottom}, {a.left, a.top}, {a.right, a.top}};
+        for (const FS_POINTF& c : corners) {
+            const FS_POINTF u = Apply(inv, c.x, c.y);  // the image's unit square, (0,0) bottom-left
+            const float px_ = u.x * w, py = (1 - u.y) * h;
+            x0 = std::min(x0, px_);
+            x1 = std::max(x1, px_);
+            y0 = std::min(y0, py);
+            y1 = std::max(y1, py);
+        }
+        const int l = std::max(0, (int)std::floor(x0) - 1), r = std::min(w, (int)std::ceil(x1) + 1);
+        const int t = std::max(0, (int)std::floor(y0) - 1), b = std::min(h, (int)std::ceil(y1) + 1);
+        for (int y = t; y < b; ++y)
+            for (int x = l; x < r; ++x) {
+                uint8_t* d = px.data() + ((size_t)y * w + x) * 4;
+                d[0] = d[1] = d[2] = 0;
+            }
+    }
+    FPDF_BITMAP bmp = FPDFBitmap_CreateEx(w, h, FPDFBitmap_BGRx, px.data(), w * 4);
+    if (!bmp) return false;
+    const bool ok = FPDFImageObj_SetBitmap(&page, 1, img, bmp) != 0;
+    FPDFBitmap_Destroy(bmp);
+    return ok;
+}
+}  // namespace
+
+// Redaction removes, for each marked area: the letters of text under it
+// (text objects are split so the rest of a line stays), the pixels of
+// pictures under it (painted black in the picture itself), drawings and
+// pictures entirely inside it, and annotations touching it. A black box
+// is then drawn over the area.
+bool PdfEngine::Redact(const EditOp& op, std::wstring& error) {
+    std::map<int, std::vector<RectF>> byPage;
+    for (const PageRect& m : op.marks)
+        if (m.page >= 0 && m.page < m_pageCount && m.rect.right > m.rect.left && m.rect.bottom > m.rect.top)
+            byPage[m.page].push_back(m.rect);
+    if (byPage.empty()) return false;
+    FontCache fonts;
+    for (const auto& entry : byPage) {
+        bool ok = false;
+        Guarded([&] {
+            FPDF_PAGE page = FPDF_LoadPage(m_doc, entry.first);
+            if (!page) return;
+            std::vector<FS_RECTF> areas;
+            for (const RectF& r : entry.second) {
+                FS_RECTF a = ToPageRect(page, r);  // left, top (max y), right, bottom (min y)
+                areas.push_back(a);
+            }
+            auto overlaps = [&](float l, float b, float r, float t) {
+                for (const FS_RECTF& a : areas)
+                    if (l < a.right && r > a.left && b < a.top && t > a.bottom) return true;
+                return false;
+            };
+            auto inside = [&](float l, float b, float r, float t) {
+                for (const FS_RECTF& a : areas)
+                    if (l >= a.left - 0.5f && r <= a.right + 0.5f && b >= a.bottom - 0.5f && t <= a.top + 0.5f) return true;
+                return false;
+            };
+            auto covered = [&](double l, double r, double b, double t) {
+                // A letter goes when its middle, or a third of it, is under an area.
+                const double cx = (l + r) / 2, cy = (b + t) / 2, area = std::max(1e-6, (r - l) * (t - b));
+                for (const FS_RECTF& a : areas) {
+                    if (cx >= a.left && cx <= a.right && cy >= a.bottom && cy <= a.top) return true;
+                    const double w = std::min<double>(r, a.right) - std::max<double>(l, a.left);
+                    const double h = std::min<double>(t, a.top) - std::max<double>(b, a.bottom);
+                    if (w > 0 && h > 0 && w * h >= area / 3) return true;
+                }
+                return false;
+            };
+
+            // 1. Text: which letters of which text objects go.
+            std::map<FPDF_PAGEOBJECT, std::vector<RedactChar>> textObjs;
+            if (FPDF_TEXTPAGE tp = FPDFText_LoadPage(page)) {
+                const int n = FPDFText_CountChars(tp);
+                for (int i = 0; i < n; ++i) {
+                    FPDF_PAGEOBJECT obj = FPDFText_GetTextObject(tp, i);
+                    if (!obj) continue;
+                    RedactChar c;
+                    c.index = i;
+                    c.cp = FPDFText_GetUnicode(tp, i);
+                    FPDFText_GetCharOrigin(tp, i, &c.ox, &c.oy);
+                    double l, r, b, t;
+                    if (FPDFText_GetCharBox(tp, i, &l, &r, &b, &t) && r - l > 0.01 && t - b > 0.01)
+                        c.remove = covered(l, r, b, t);
+                    else
+                        c.remove = covered(c.ox - 0.5, c.ox + 0.5, c.oy - 0.5, c.oy + 0.5);
+                    textObjs[obj].push_back(c);
+                }
+                FPDFText_ClosePage(tp);
+            }
+            std::vector<ObjRef> objs;
+            CollectObjects(page, objs);
+            std::map<FPDF_PAGEOBJECT, ObjRef> refs;
+            for (const ObjRef& r : objs) refs[r.obj] = r;
+            for (auto& t : textObjs) {
+                auto& chars = t.second;
+                if (std::none_of(chars.begin(), chars.end(), [](const RedactChar& c) { return c.remove; })) continue;
+                const auto refIt = refs.find(t.first);
+                if (refIt == refs.end()) continue;
+                const ObjRef& ref = refIt->second;
+                const bool all = std::all_of(chars.begin(), chars.end(), [](const RedactChar& c) { return c.remove; });
+                if (all || ref.parent) {  // inside a form the rest can not be put back: it all goes
+                    RemoveObject(page, ref);
+                    continue;
+                }
+                // The rest of the text, as new objects starting where their letters were.
+                int index = -1;
+                for (int i = 0, n = FPDFPage_CountObjects(page); i < n; ++i)
+                    if (FPDFPage_GetObject(page, i) == t.first) {
+                        index = i;
+                        break;
+                    }
+                if (index < 0) continue;
+                FPDF_FONT font = FPDFTextObj_GetFont(t.first);
+                float size = 0;
+                FPDFTextObj_GetFontSize(t.first, &size);
+                FS_MATRIX m{1, 0, 0, 1, 0, 0};
+                FPDFPageObj_GetMatrix(t.first, &m);
+                unsigned fr = 0, fg = 0, fb = 0, fa = 255, sr = 0, sg = 0, sb = 0, sa = 255;
+                FPDFPageObj_GetFillColor(t.first, &fr, &fg, &fb, &fa);
+                const bool stroke = FPDFPageObj_GetStrokeColor(t.first, &sr, &sg, &sb, &sa) != 0;
+                const FPDF_TEXT_RENDERMODE mode = FPDFTextObj_GetTextRenderMode(t.first);
+                std::vector<std::pair<std::wstring, RedactChar>> segments;
+                std::wstring text;
+                RedactChar first;
+                for (const RedactChar& c : chars) {
+                    if (c.remove) {
+                        if (!text.empty()) segments.push_back({text, first});
+                        text.clear();
+                        continue;
+                    }
+                    if (c.cp == 0 || c.cp == 0xFFFE || c.cp == 0xFFFF || c.cp >= 0x10000) continue;
+                    if (text.empty()) first = c;
+                    text += (wchar_t)c.cp;
+                }
+                if (!text.empty()) segments.push_back({text, first});
+                RemoveObject(page, ref);
+                int at = index;
+                for (const auto& seg : segments) {
+                    if (IsBlank(seg.first)) continue;
+                    FPDF_PAGEOBJECT obj = FPDFPageObj_CreateTextObj(m_doc, font, size);
+                    // The original font may not map every letter back; a similar
+                    // standard font keeps the text readable then.
+                    if (obj && !FPDFText_SetText(obj, reinterpret_cast<FPDF_WIDESTRING>(seg.first.c_str()))) {
+                        FPDFPageObj_Destroy(obj);
+                        obj = nullptr;
+                    }
+                    if (!obj) {
+                        std::wstring err;
+                        if (FPDF_FONT similar = fonts.Get(m_doc, StyleOf(font), seg.first, err)) {
+                            obj = FPDFPageObj_CreateTextObj(m_doc, similar, size);
+                            if (obj && !FPDFText_SetText(obj, reinterpret_cast<FPDF_WIDESTRING>(seg.first.c_str()))) {
+                                FPDFPageObj_Destroy(obj);
+                                obj = nullptr;
+                            }
+                        }
+                    }
+                    if (!obj) continue;
+                    const FS_MATRIX nm{m.a, m.b, m.c, m.d, (float)seg.second.ox, (float)seg.second.oy};
+                    FPDFPageObj_SetMatrix(obj, &nm);
+                    FPDFPageObj_SetFillColor(obj, fr, fg, fb, fa);
+                    if (stroke) FPDFPageObj_SetStrokeColor(obj, sr, sg, sb, sa);
+                    if (mode != FPDF_TEXTRENDERMODE_UNKNOWN) FPDFTextObj_SetTextRenderMode(obj, mode);
+                    if (!FPDFPage_InsertObjectAtIndex(page, obj, (size_t)at)) FPDFPage_InsertObject(page, obj);
+                    ++at;
+                }
+            }
+
+            // 2. Pictures, drawings and other objects.
+            objs.clear();
+            CollectObjects(page, objs);
+            std::set<FPDF_PAGEOBJECT> gone;
+            for (const ObjRef& ref : objs) {
+                if (gone.count(ref.parent)) {
+                    gone.insert(ref.obj);
+                    continue;
+                }
+                const int type = FPDFPageObj_GetType(ref.obj);
+                if (type == FPDF_PAGEOBJ_TEXT) continue;
+                float l, b, r, t;
+                if (!PageBounds(ref, l, b, r, t) || !overlaps(l, b, r, t)) continue;
+                if (inside(l, b, r, t)) {
+                    RemoveObject(page, ref);
+                    gone.insert(ref.obj);
+                } else if (type == FPDF_PAGEOBJ_IMAGE) {
+                    // Inside a form XObject a changed picture would not be written back.
+                    if (ref.parent || !BlackOutImage(page, ref.obj, ref.toPage, areas)) {
+                        RemoveObject(page, ref);  // could not be changed safely: it goes
+                        gone.insert(ref.obj);
+                    }
+                }
+            }
+
+            // 3. Annotations touching an area (comments, links, form fields).
+            for (int i = FPDFPage_GetAnnotCount(page) - 1; i >= 0; --i) {
+                FPDF_ANNOTATION annot = FPDFPage_GetAnnot(page, i);
+                if (!annot) continue;
+                FS_RECTF r{};
+                const bool hit = FPDFAnnot_GetRect(annot, &r) &&
+                                 overlaps(std::min(r.left, r.right), std::min(r.bottom, r.top),
+                                          std::max(r.left, r.right), std::max(r.bottom, r.top));
+                FPDFPage_CloseAnnot(annot);
+                if (hit) FPDFPage_RemoveAnnot(page, i);
+            }
+
+            // 4. The black boxes.
+            for (const FS_RECTF& a : areas) {
+                FPDF_PAGEOBJECT box = FPDFPageObj_CreateNewRect(a.left, a.bottom, a.right - a.left, a.top - a.bottom);
+                if (!box) continue;
+                FPDFPageObj_SetFillColor(box, 0, 0, 0, 255);
+                FPDFPath_SetDrawMode(box, FPDF_FILLMODE_WINDING, 0);
+                FPDFPage_InsertObject(page, box);
+            }
+            ok = FPDFPage_GenerateContent(page) != 0;
+            FPDF_ClosePage(page);
+        });
+        if (!ok) {
+            error = L"Page " + std::to_wstring(entry.first + 1) + L" could not be redacted.";
+            return false;
+        }
+    }
+    m_editCount = (int)op.marks.size();
+    return true;
+}
+
+bool PdfEngine::AddMeasure(const EditOp& op, std::wstring& error) {
+    if (op.page < 0 || op.page >= m_pageCount || op.points.size() < 2) return false;
+    bool ok = false;
+    Guarded([&] {
+        FPDF_PAGE page = FPDF_LoadPage(m_doc, op.page);
+        if (!page) return;
+        const unsigned r = GetRValue(op.color), g = GetGValue(op.color), b = GetBValue(op.color);
+        auto line = [&](const std::vector<PointF>& pts) {
+            if (pts.size() < 2) return;
+            const FS_POINTF p0 = ToPage(page, pts[0].x, pts[0].y);
+            FPDF_PAGEOBJECT path = FPDFPageObj_CreateNewPath(p0.x, p0.y);
+            for (size_t i = 1; i < pts.size(); ++i) {
+                const FS_POINTF p = ToPage(page, pts[i].x, pts[i].y);
+                FPDFPath_LineTo(path, p.x, p.y);
+            }
+            FPDFPageObj_SetStrokeColor(path, r, g, b, 255);
+            FPDFPageObj_SetStrokeWidth(path, 1);
+            FPDFPath_SetDrawMode(path, FPDF_FILLMODE_NONE, 1);
+            FPDFPage_InsertObject(page, path);
+        };
+        const PointF a = op.points[0], v = op.points[1];
+        PointF label{};
+        if (op.points.size() == 2) {
+            // A distance: the line with a short tick across each end.
+            line({a, v});
+            const float dx = v.x - a.x, dy = v.y - a.y, len = std::max(0.01f, std::hypot(dx, dy));
+            const float nx = -dy / len * 4, ny = dx / len * 4;
+            line({{a.x - nx, a.y - ny}, {a.x + nx, a.y + ny}});
+            line({{v.x - nx, v.y - ny}, {v.x + nx, v.y + ny}});
+            label = {(a.x + v.x) / 2 + 4, (a.y + v.y) / 2 - 4};
+        } else {
+            // An angle at `v` between `a` and `c`, with an arc.
+            const PointF c = op.points[2];
+            line({a, v, c});
+            const float a1 = std::atan2(a.y - v.y, a.x - v.x), a2 = std::atan2(c.y - v.y, c.x - v.x);
+            float sweep = a2 - a1;
+            while (sweep > 3.14159265f) sweep -= 6.2831853f;
+            while (sweep < -3.14159265f) sweep += 6.2831853f;
+            const float rad = std::clamp(0.35f * std::min(std::hypot(a.x - v.x, a.y - v.y), std::hypot(c.x - v.x, c.y - v.y)), 8.0f, 30.0f);
+            std::vector<PointF> arc;
+            for (int i = 0; i <= 24; ++i) {
+                const float t = a1 + sweep * i / 24;
+                arc.push_back({v.x + rad * std::cos(t), v.y + rad * std::sin(t)});
+            }
+            line(arc);
+            const float mid = a1 + sweep / 2;
+            label = {v.x + (rad + 6) * std::cos(mid), v.y + (rad + 6) * std::sin(mid) + 3};
+        }
+        if (!IsBlank(op.text)) {
+            FontCache fonts;
+            FPDF_FONT font = fonts.Get(m_doc, FontStyle(), op.text, error);
+            FPDF_PAGEOBJECT text = font ? FPDFPageObj_CreateTextObj(m_doc, font, 9) : nullptr;
+            if (text && FPDFText_SetText(text, reinterpret_cast<FPDF_WIDESTRING>(op.text.c_str()))) {
+                FS_POINTF right, up;
+                ScreenAxes(page, label.x, label.y, right, up);
+                PlaceText(page, text, label.x, label.y, right, up);
+                FPDFPageObj_SetFillColor(text, r, g, b, 255);
+                FPDFPage_InsertObject(page, text);
+            } else if (text) {
+                FPDFPageObj_Destroy(text);
+            }
+        }
+        ok = FPDFPage_GenerateContent(page) != 0;
+        FPDF_ClosePage(page);
+    });
+    return ok;
+}
+
+void PdfEngine::FindForRedaction(int index, const std::wstring& query, bool matchCase, int patterns,
+                                 std::vector<RectF>& out) {
+    if (!m_doc || index < 0 || index >= m_pageCount) return;
+    if (!query.empty()) {
+        std::vector<SearchHit> hits;
+        SearchPage(index, query, matchCase, hits);
+        for (const SearchHit& h : hits) out.insert(out.end(), h.rects.begin(), h.rects.end());
+    }
+    if (!patterns) return;
+    Guarded([&] {
+        FPDF_PAGE page = FPDF_LoadPage(m_doc, index);
+        if (!page) return;
+        if (FPDF_TEXTPAGE tp = FPDFText_LoadPage(page)) {
+            const int sx = (int)std::lround(FPDF_GetPageWidthF(page) * 100);
+            const int sy = (int)std::lround(FPDF_GetPageHeightF(page) * 100);
+            const int n = FPDFText_CountChars(tp);
+            std::wstring text((size_t)std::max(0, n), L' ');
+            for (int i = 0; i < n; ++i) {
+                const unsigned u = FPDFText_GetUnicode(tp, i);
+                text[(size_t)i] = u > 0 && u < 0xFFFF ? (wchar_t)u : L'?';
+            }
+            auto mark = [&](size_t start, size_t len) {
+                const int rects = FPDFText_CountRects(tp, (int)start, (int)len);
+                for (int r = 0; r < rects; ++r) {
+                    double l, t, rr, b;
+                    if (FPDFText_GetRect(tp, r, &l, &t, &rr, &b)) out.push_back(ToDisplay(page, sx, sy, l, t, rr, b));
+                }
+            };
+            auto digits = [](const std::wstring& s) {
+                return (int)std::count_if(s.begin(), s.end(), [](wchar_t c) { return c >= L'0' && c <= L'9'; });
+            };
+            struct Pattern {
+                int flag;
+                const wchar_t* re;
+                int minDigits;
+            } const kPatterns[] = {
+                {kFindEmails, L"[A-Za-z0-9._%+\\-]+@[A-Za-z0-9.\\-]+\\.[A-Za-z]{2,}", 0},
+                {kFindPhones, L"\\+?\\(?\\d[\\d ().\\-]{6,}\\d", 7},
+                {kFindNumbers, L"\\d[\\d \\-]{5,}\\d", 6},
+            };
+            for (const Pattern& pat : kPatterns) {
+                if (!(patterns & pat.flag)) continue;
+                const std::wregex re(pat.re);
+                for (auto it = std::wsregex_iterator(text.begin(), text.end(), re); it != std::wsregex_iterator(); ++it) {
+                    const std::wstring found = it->str();
+                    if (digits(found) < pat.minDigits) continue;
+                    mark((size_t)it->position(), found.size());
+                }
+            }
+            FPDFText_ClosePage(tp);
+        }
+        FPDF_ClosePage(page);
+    });
+}
+
+void PdfEngine::ReadWords(std::vector<DocWord>& out) {
+    for (int p = 0; p < m_pageCount; ++p) {
+        Guarded([&] {
+            FPDF_PAGE page = FPDF_LoadPage(m_doc, p);
+            if (!page) return;
+            if (FPDF_TEXTPAGE tp = FPDFText_LoadPage(page)) {
+                DocWord w;
+                auto flush = [&] {
+                    if (!w.text.empty()) out.push_back(w);
+                    w = DocWord();
+                };
+                const int n = FPDFText_CountChars(tp);
+                for (int i = 0; i < n; ++i) {
+                    const unsigned u = FPDFText_GetUnicode(tp, i);
+                    if (u <= 32 || iswspace((wint_t)u) || u == 0xFFFE || u == 0xFFFF) {
+                        flush();
+                        continue;
+                    }
+                    double l, r, b, t;
+                    if (!FPDFText_GetCharBox(tp, i, &l, &r, &b, &t)) continue;
+                    if (w.text.empty()) {
+                        w.page = p;
+                        w.l = (float)l, w.r = (float)r, w.b = (float)b, w.t = (float)t;
+                    } else if ((float)b > w.t || (float)t < w.b) {
+                        flush();  // a new line without a break character
+                        w.page = p;
+                        w.l = (float)l, w.r = (float)r, w.b = (float)b, w.t = (float)t;
+                    }
+                    w.l = std::min(w.l, (float)l);
+                    w.r = std::max(w.r, (float)r);
+                    w.b = std::min(w.b, (float)b);
+                    w.t = std::max(w.t, (float)t);
+                    w.text += u < 0x10000 ? (wchar_t)u : L'?';
+                }
+                flush();
+                FPDFText_ClosePage(tp);
+            }
+            FPDF_ClosePage(page);
+        });
+    }
+}
+
+void PdfEngine::MarkWords(const std::vector<DocWord>& words, size_t from, size_t to, COLORREF color,
+                          const std::wstring& note, const std::wstring& author) {
+    const std::wstring now = PdfDateNow();
+    bool first = true;
+    size_t i = from;
+    while (i < to && i < words.size()) {
+        const int pageIndex = words[i].page;
+        size_t end = i;
+        while (end < to && end < words.size() && words[end].page == pageIndex) ++end;
+        Guarded([&] {
+            FPDF_PAGE page = FPDF_LoadPage(m_doc, pageIndex);
+            if (!page) return;
+            if (FPDF_ANNOTATION annot = FPDFPage_CreateAnnot(page, FPDF_ANNOT_HIGHLIGHT)) {
+                FPDFAnnot_SetColor(annot, FPDFANNOT_COLORTYPE_Color, GetRValue(color), GetGValue(color), GetBValue(color), 255);
+                FS_RECTF bounds{1e9f, -1e9f, -1e9f, 1e9f};
+                // One quad per run of words on the same line.
+                for (size_t k = i; k < end;) {
+                    DocWord box = words[k];
+                    size_t j = k + 1;
+                    while (j < end && std::fabs(words[j].b - box.b) < 2 && words[j].l >= box.l &&
+                           words[j].l - box.r < (box.t - box.b) * 2) {
+                        box.r = std::max(box.r, words[j].r);
+                        box.t = std::max(box.t, words[j].t);
+                        box.b = std::min(box.b, words[j].b);
+                        ++j;
+                    }
+                    FS_QUADPOINTSF q{box.l, box.t, box.r, box.t, box.l, box.b, box.r, box.b};
+                    FPDFAnnot_AppendAttachmentPoints(annot, &q);
+                    bounds.left = std::min(bounds.left, box.l);
+                    bounds.right = std::max(bounds.right, box.r);
+                    bounds.top = std::max(bounds.top, box.t);
+                    bounds.bottom = std::min(bounds.bottom, box.b);
+                    k = j;
+                }
+                FPDFAnnot_SetRect(annot, &bounds);
+                FPDFAnnot_SetFlags(annot, FPDF_ANNOT_FLAG_PRINT);
+                SetAnnotDate(annot, author, now);
+                const std::wstring text = first ? note : note + L" (continued)";
+                FPDFAnnot_SetStringValue(annot, "Contents", reinterpret_cast<FPDF_WIDESTRING>(text.c_str()));
+                FPDFPage_CloseAnnot(annot);
+            }
+            FPDF_ClosePage(page);
+        });
+        first = false;
+        i = end;
+    }
+}
+
+void PdfEngine::AddNoteAtPoint(int pageIndex, float x, float y, COLORREF color, const std::wstring& text,
+                               const std::wstring& author) {
+    if (pageIndex < 0 || pageIndex >= m_pageCount) return;
+    const std::wstring now = PdfDateNow();
+    Guarded([&] {
+        FPDF_PAGE page = FPDF_LoadPage(m_doc, pageIndex);
+        if (!page) return;
+        if (FPDF_ANNOTATION annot = FPDFPage_CreateAnnot(page, FPDF_ANNOT_TEXT)) {
+            FS_RECTF r{x - 10, y + 16, x + 6, y};
+            FPDFAnnot_SetRect(annot, &r);
+            FPDFAnnot_SetColor(annot, FPDFANNOT_COLORTYPE_Color, GetRValue(color), GetGValue(color), GetBValue(color), 255);
+            FPDFAnnot_SetFlags(annot, FPDF_ANNOT_FLAG_PRINT | FPDF_ANNOT_FLAG_NOZOOM | FPDF_ANNOT_FLAG_NOROTATE);
+            FPDFAnnot_SetStringValue(annot, "Contents", reinterpret_cast<FPDF_WIDESTRING>(text.c_str()));
+            SetAnnotDate(annot, author, now);
+            FPDFPage_CloseAnnot(annot);
+        }
         FPDF_ClosePage(page);
     });
 }

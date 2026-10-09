@@ -522,12 +522,12 @@ bool RenderWorker::PrepareSources(EditOp& op, DocEditor& target, std::wstring& e
         if (src.docId) {
             auto it = m_docs.find(src.docId);
             if (it == m_docs.end() || !it->second->Engine() ||
-                !it->second->Engine()->WriteTo(copy)) {
+                !it->second->Engine()->WritePlainCopy(copy)) {
                 DeleteFileW(copy.c_str());
                 error = L"An open tab could not be added.";
                 return false;
             }
-            src.password = it->second->Password();
+            src.password.clear();  // the copy is written without a password
             src.docId = 0;
         } else if (!CopyFileW(src.path.c_str(), copy.c_str(), FALSE)) {
             error = FileNameFromPath(src.path) + L" could not be read.";

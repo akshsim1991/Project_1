@@ -57,6 +57,38 @@ bool SavePicture(const PixelBuffer& px, const std::wstring& path, bool jpeg, int
     return Commit(temp, path, ok);
 }
 
+bool EncodeJpeg(const uint8_t* bits, int w, int h, int stride, int quality, std::string& out) {
+    CLSID clsid;
+    if (!bits || w <= 0 || h <= 0 || !EncoderFor(L"image/jpeg", clsid)) return false;
+    IStream* stream = nullptr;
+    if (FAILED(CreateStreamOnHGlobal(nullptr, TRUE, &stream))) return false;
+    bool ok = false;
+    {
+        Bitmap bmp(w, h, stride, PixelFormat32bppRGB, const_cast<BYTE*>(bits));
+        ULONG q = (ULONG)quality;
+        EncoderParameters params;
+        params.Count = 1;
+        params.Parameter[0].Guid = EncoderQuality;
+        params.Parameter[0].Type = EncoderParameterValueTypeLong;
+        params.Parameter[0].NumberOfValues = 1;
+        params.Parameter[0].Value = &q;
+        ok = bmp.GetLastStatus() == Ok && bmp.Save(stream, &clsid, &params) == Ok;
+    }
+    HGLOBAL mem = nullptr;
+    if (ok && SUCCEEDED(GetHGlobalFromStream(stream, &mem))) {
+        STATSTG st{};
+        stream->Stat(&st, STATFLAG_NONAME);
+        const void* p = GlobalLock(mem);
+        ok = p != nullptr;
+        if (ok) out.assign(static_cast<const char*>(p), (size_t)st.cbSize.QuadPart);
+        GlobalUnlock(mem);
+    } else {
+        ok = false;
+    }
+    stream->Release();
+    return ok;
+}
+
 bool WriteTextFile(const std::wstring& path, const std::wstring& text, bool bom) {
     std::wstring crlf;
     crlf.reserve(text.size() + text.size() / 16);

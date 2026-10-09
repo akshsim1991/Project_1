@@ -88,6 +88,8 @@ struct DocInfo {
     std::wstring title, author, subject, keywords, creator, producer, created, modified;
     int version = 0;        // e.g. 17 for PDF 1.7
     bool encrypted = false;
+    uint32_t permissions = 0xFFFFFFFF;  // what this reader may do (PDF /P bits)
+    int pendingSecurity = -1;  // a password change waiting for Save: 1 set, 0 removed, -1 none
 };
 
 struct DocLoadResult {
@@ -223,6 +225,12 @@ struct PointF {
     float x = 0, y = 0;
 };
 
+// A rectangle on a page (redaction marks), page points, top-left origin.
+struct PageRect {
+    int page = 0;
+    RectF rect;
+};
+
 // Where page numbers go (EditOp::PageNumbers).
 enum NumberPosition {
     kNumBottomCenter = 0, kNumBottomRight, kNumBottomLeft, kNumTopCenter, kNumTopRight, kNumTopLeft,
@@ -322,6 +330,10 @@ struct EditOp {
                       // diagonal, behind
         PageNumbers,  // on `pages`: text = pattern ({n}, {total}), position, fontSize, color, firstNumber
         AddOcrText,   // recognised words of scanned pages as invisible, searchable text: ocr
+        Compress,     // pictures above `dpi` are made smaller, as JPEG of `quality`
+        Redact,       // removes everything under `marks` and paints them black
+        SetSecurity,  // the password used when saving: encrypt, passwords, permissions
+        AddMeasure,   // a measurement drawn on `page`: points (2: distance, 3: angle), text
     } kind = DeletePages;
     std::vector<int> pages;  // Delete/Move/Rotate: ascending page indices
     int index = 0;           // Move: new index of the first moved page;
@@ -359,6 +371,15 @@ struct EditOp {
     int position = 0;            // PageNumbers: NumberPosition
     int firstNumber = 1;         // PageNumbers: the number shown on the first page of `pages`
     std::vector<OcrPage> ocr;    // AddOcrText
+    // compression
+    int dpi = 150;
+    int quality = 75;            // JPEG quality, 1-100
+    // redaction
+    std::vector<PageRect> marks;
+    // password protection (SetSecurity); passwords are UTF-8
+    bool encrypt = false;        // false: save without any password
+    std::string userPassword, ownerPassword;
+    uint32_t permissions = 0xFFFFFFFF;  // PDF /P bits allowed to others
 };
 
 enum class EditAction { Edit, Undo, Redo, Save };
@@ -389,4 +410,22 @@ struct ExtractResult {
     bool ok = true;
     std::wstring error;
     std::vector<std::wstring> files;  // written files
+};
+
+// Redaction marks found by text or pattern (WM_APP_REDACT_FOUND).
+struct RedactFindResult {
+    uint32_t docId = 0;
+    std::vector<PageRect> marks;
+};
+
+// Patterns for finding text to redact.
+enum : int { kFindEmails = 1, kFindPhones = 2, kFindNumbers = 4 };
+
+// The result of comparing two documents (WM_APP_COMPARED).
+struct CompareResult {
+    bool ok = true;
+    std::wstring error;
+    std::wstring path;       // the marked copy
+    std::wstring otherName;  // the document it was compared with
+    int added = 0, removed = 0, changed = 0;
 };
