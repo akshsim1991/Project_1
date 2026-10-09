@@ -807,21 +807,34 @@ void PdfEngine::GetPageSizes(std::vector<SizeF>& out) {
     if (m_doc) ReadPageSizes(m_doc, out);
 }
 
+namespace {
+// The document as PDFium writes it, without objects nothing refers to any
+// more (see DropUnusedObjects), optionally encrypted.
+bool WriteClean(FPDF_DOCUMENT doc, unsigned long flags, const std::wstring& path,
+                const PdfEngine::Security* encrypt) {
+    std::string raw, clean, sealed;
+    if (!SaveToMemory(doc, flags, raw)) return false;
+    const std::string& kept = DropUnusedObjects(raw, clean) ? clean : raw;
+    bool ok = true;
+    if (encrypt) ok = EncryptPdf(kept, encrypt->user, encrypt->owner, encrypt->permissions, sealed);
+    ok = ok && WriteData(path, encrypt ? sealed : kept);
+    // The unprotected bytes are not left lying around in memory.
+    SecureZeroMemory(raw.data(), raw.size());
+    SecureZeroMemory(clean.data(), clean.size());
+    return ok;
+}
+}  // namespace
+
 bool PdfEngine::WriteTo(const std::wstring& path) {
     if (!m_doc) return false;
     // Without a change of password PDFium keeps the file's own encryption.
-    if (!m_security.set) return SaveDocument(m_doc, path);
-    if (!m_security.encrypt) return SaveDocument(m_doc, path, FPDF_NO_INCREMENTAL | FPDF_REMOVE_SECURITY);
-    // Encrypted in memory, so the unprotected file never reaches the disk.
-    std::string plain, sealed;
-    bool ok = SaveToMemory(m_doc, FPDF_NO_INCREMENTAL | FPDF_REMOVE_SECURITY, plain) &&
-              EncryptPdf(plain, m_security.user, m_security.owner, m_security.permissions, sealed);
-    SecureZeroMemory(plain.data(), plain.size());
-    return ok && WriteData(path, sealed);
+    if (!m_security.set) return WriteClean(m_doc, FPDF_NO_INCREMENTAL, path, nullptr);
+    return WriteClean(m_doc, FPDF_NO_INCREMENTAL | FPDF_REMOVE_SECURITY, path,
+                      m_security.encrypt ? &m_security : nullptr);
 }
 
 bool PdfEngine::WritePlainCopy(const std::wstring& path) {
-    return m_doc && SaveDocument(m_doc, path, FPDF_NO_INCREMENTAL | FPDF_REMOVE_SECURITY);
+    return m_doc && WriteClean(m_doc, FPDF_NO_INCREMENTAL | FPDF_REMOVE_SECURITY, path, nullptr);
 }
 
 std::string PdfEngine::PasswordAfterSave(const std::string& current) const {
@@ -2941,7 +2954,12 @@ void PdfEngine::MarkWords(const std::vector<DocWord>& words, size_t from, size_t
                 for (size_t k = i; k < end;) {
                     DocWord box = words[k];
                     size_t j = k + 1;
-                    while (j < end && std::fabs(words[j].b - box.b) < 2 && words[j].l >= box.l &&
+                    // Same line: the words overlap vertically by at least half.
+                    auto sameLine = [&](const DocWord& w) {
+                        const float overlap = std::min(w.t, box.t) - std::max(w.b, box.b);
+                        return overlap > 0.5f * std::min(w.t - w.b, box.t - box.b);
+                    };
+                    while (j < end && sameLine(words[j]) && words[j].l >= box.l &&
                            words[j].l - box.r < (box.t - box.b) * 2) {
                         box.r = std::max(box.r, words[j].r);
                         box.t = std::max(box.t, words[j].t);

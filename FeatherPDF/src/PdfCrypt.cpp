@@ -6,6 +6,8 @@
 #include <bcrypt.h>
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <map>
 #include <vector>
@@ -260,7 +262,7 @@ std::string DecodeString(const std::string& s, const Token& t) {
 
 struct Xref {
     std::map<uint32_t, size_t> offsets;  // object number -> offset (in-use objects)
-    std::string root, info, id;          // "n g R" / "[<..><..>]" from the trailer
+    std::string root, info, id, encrypt;  // "n g R" / "[<..><..>]" from the trailer
 };
 
 bool ReadXref(const std::string& s, Xref& x) {
@@ -307,10 +309,10 @@ bool ReadXref(const std::string& s, Xref& x) {
             key = lex.Text(t);
             continue;
         }
-        if (key == "/Root" || key == "/Info") {
+        if (key == "/Root" || key == "/Info" || key == "/Encrypt") {
             Token g, r;
             if (!lex.Next(g) || !lex.Next(r)) return false;
-            (key == "/Root" ? x.root : x.info) = s.substr(t.start, r.end - t.start);
+            (key == "/Root" ? x.root : key == "/Info" ? x.info : x.encrypt) = s.substr(t.start, r.end - t.start);
         } else if (key == "/ID" && t.kind == Token::ArrayOpen) {
             const size_t start = t.start;
             while (lex.Next(t) && t.kind != Token::ArrayClose) {}
@@ -544,5 +546,124 @@ bool EncryptPdf(const std::string& in, const std::string& userPassword, const st
     out += "trailer\r\n<</Size " + std::to_string(encNum + 1) + "/Root " + x.root +
            (x.info.empty() ? "" : "/Info " + x.info) + "/Encrypt " + std::to_string(encNum) + " 0 R/ID" + id +
            ">>\r\nstartxref\r\n" + std::to_string(xrefAt) + "\r\n%%EOF\r\n";
+    return true;
+}
+
+namespace {
+// Where an object ends ("endobj") and the objects it refers to.
+bool ScanObject(const std::string& s, const Xref& x, size_t offset, size_t& end, std::vector<uint32_t>& refs) {
+    Lexer lex(s, offset, s.size());
+    Token tn, tg, tobj;
+    if (!lex.Next(tn) || !lex.Next(tg) || !lex.Next(tobj) || lex.Text(tobj) != "obj") return false;
+    std::vector<Token> tokens;
+    Token t;
+    int depth = 0;
+    long long length = -1;
+    while (lex.Next(t)) {
+        const std::string word = t.kind == Token::Keyword ? lex.Text(t) : std::string();
+        if (word == "endobj") {
+            end = t.end;
+            return true;
+        }
+        if (word == "R" && tokens.size() >= 2 && tokens[tokens.size() - 1].kind == Token::Number &&
+            tokens[tokens.size() - 2].kind == Token::Number) {
+            refs.push_back((uint32_t)strtoul(lex.Text(tokens[tokens.size() - 2]).c_str(), nullptr, 10));
+        }
+        if (word == "stream") {
+            size_t pos = t.end;
+            if (pos < s.size() && s[pos] == '\r') ++pos;
+            if (pos < s.size() && s[pos] == '\n') ++pos;
+            size_t after = std::string::npos;
+            if (length >= 0 && pos + (size_t)length <= s.size()) {
+                after = pos + (size_t)length;
+                size_t k = after;
+                while (k < s.size() && IsWhite(s[k])) ++k;
+                if (s.compare(k, 9, "endstream") != 0) after = std::string::npos;
+            }
+            if (after == std::string::npos) after = s.find("endstream", pos);
+            if (after == std::string::npos) return false;
+            lex.Seek(after);
+            tokens.clear();
+            continue;
+        }
+        if (t.kind == Token::DictOpen || t.kind == Token::ArrayOpen) ++depth;
+        if (t.kind == Token::DictClose || t.kind == Token::ArrayClose) --depth;
+        // The stream's /Length: direct, or "n g R" (read from that object).
+        if (depth == 1 && tokens.size() >= 1 && tokens.back().kind == Token::Name && lex.Text(tokens.back()) == "/Length" &&
+            t.kind == Token::Number) {
+            length = strtoll(lex.Text(t).c_str(), nullptr, 10);
+            const size_t save = lex.Pos();
+            Token g, r;
+            if (lex.Next(g) && g.kind == Token::Number && lex.Next(r) && lex.Text(r) == "R") {
+                long long v = -1;
+                length = ObjectNumber(s, x, (uint32_t)length, v) ? v : -1;
+            }
+            lex.Seek(save);
+        }
+        tokens.push_back(t);
+    }
+    return false;
+}
+}  // namespace
+
+bool DropUnusedObjects(const std::string& in, std::string& out) {
+    Xref x;
+    if (!ReadXref(in, x)) return false;
+    std::map<uint32_t, std::pair<size_t, size_t>> extent;  // object -> [start, end)
+    std::map<uint32_t, std::vector<uint32_t>> links;
+    for (const auto& e : x.offsets) {
+        size_t end = 0;
+        std::vector<uint32_t> refs;
+        if (!ScanObject(in, x, e.second, end, refs)) return false;
+        extent[e.first] = {e.second, end};
+        links[e.first] = std::move(refs);
+    }
+    // Everything reachable from the trailer.
+    std::vector<uint32_t> todo;
+    for (const std::string* ref : {&x.root, &x.info, &x.encrypt})
+        if (!ref->empty()) todo.push_back((uint32_t)strtoul(ref->c_str(), nullptr, 10));
+    std::map<uint32_t, bool> keep;
+    while (!todo.empty()) {
+        const uint32_t n = todo.back();
+        todo.pop_back();
+        if (keep[n] || !extent.count(n)) continue;
+        keep[n] = true;
+        for (uint32_t r : links[n]) todo.push_back(r);
+    }
+
+    const size_t firstObj = x.offsets.begin()->second;
+    out.clear();
+    out.reserve(in.size());
+    out.append(in, 0, std::min(firstObj, in.size()));
+    std::map<uint32_t, size_t> written;
+    uint32_t maxNum = 0;
+    for (const auto& e : extent) {
+        maxNum = std::max(maxNum, e.first);
+        if (!keep[e.first]) continue;
+        written[e.first] = out.size();
+        out.append(in, e.second.first, e.second.second - e.second.first);
+        out += "\r\n";
+    }
+    const size_t xrefAt = out.size();
+    out += "xref\r\n0 1\r\n0000000000 65535 f\r\n";
+    for (auto it = written.begin(); it != written.end();) {
+        auto run = it;
+        uint32_t next = it->first;
+        size_t n = 0;
+        while (run != written.end() && run->first == next) {
+            ++run;
+            ++next;
+            ++n;
+        }
+        out += std::to_string(it->first) + " " + std::to_string(n) + "\r\n";
+        for (; it != run; ++it) {
+            char line[32];
+            snprintf(line, sizeof(line), "%010llu 00000 n\r\n", (unsigned long long)it->second);
+            out += line;
+        }
+    }
+    out += "trailer\r\n<</Size " + std::to_string(maxNum + 1) + "/Root " + x.root +
+           (x.info.empty() ? "" : "/Info " + x.info) + (x.encrypt.empty() ? "" : "/Encrypt " + x.encrypt) +
+           (x.id.empty() ? "" : "/ID" + x.id) + ">>\r\nstartxref\r\n" + std::to_string(xrefAt) + "\r\n%%EOF\r\n";
     return true;
 }

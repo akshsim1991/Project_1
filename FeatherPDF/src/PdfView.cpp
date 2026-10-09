@@ -182,7 +182,10 @@ LRESULT PdfView::Handle(UINT msg, WPARAM wp, LPARAM lp) {
                     ScrollOrFlip(shift ? -(ClientH() - LineStep()) : (ClientH() - LineStep()));
                     return 0;
                 case VK_ESCAPE:
-                    if (m_tool != ViewTool::Select) {
+                    if (m_angleArm) {  // protractor: drop the unfinished angle
+                        m_angleArm = false;
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                    } else if (m_tool != ViewTool::Select) {
                         SetTool(ViewTool::Select);
                     } else if (m_areaMode) {
                         m_areaMode = false;
@@ -228,6 +231,13 @@ LRESULT PdfView::Handle(UINT msg, WPARAM wp, LPARAM lp) {
                     OpenInlineEditor(InlineKind::NewText, page, {x, y, x + 260, y + size * 1.3f * 3}, L"", font,
                                      true, false);
                 }
+                return 0;
+            }
+            if (m_tool == ViewTool::Protractor && m_angleArm) {  // the second arm ends here
+                m_angleArm = false;
+                if (m_drawPoints.size() >= 3)
+                    m_measures.push_back({m_drawPage, {m_drawPoints[1], m_drawPoints[0], m_drawPoints[2]}});
+                InvalidateRect(m_hwnd, nullptr, FALSE);
                 return 0;
             }
             if (m_tool >= ViewTool::Rectangle) {  // drawing and placing tools
@@ -299,6 +309,24 @@ LRESULT PdfView::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             if (m_tool == ViewTool::Select) SelectWordAt({GET_X_LPARAM(lp), GET_Y_LPARAM(lp)});
             return 0;
         case WM_MOUSEMOVE:
+            if (m_measure.rulers) {  // the mouse marker in the rulers
+                m_mouse = {GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+                const int band = Dpi(20, m_dpi);
+                RECT top = {0, 0, ClientW(), band}, left = {0, 0, band, ClientH()};
+                InvalidateRect(m_hwnd, &top, FALSE);
+                InvalidateRect(m_hwnd, &left, FALSE);
+            }
+            if (m_angleArm && m_drawPage >= 0 && m_drawPage < PageCount() && m_drawPoints.size() >= 3) {
+                const PageLayout& L = m_layout[(size_t)m_drawPage];
+                const int64_t docX = m_scrollX + GET_X_LPARAM(lp), docY = m_scrollY + GET_Y_LPARAM(lp);
+                float x = (float)(Clamp<int64_t>(docX - L.left, 0, L.w) / m_scale);
+                float y = (float)(Clamp<int64_t>(docY - L.top, 0, L.h) / m_scale);
+                FromView(x, y, m_drawPage);
+                m_drawPoints[2] = {x, y};
+                SnapPoint(m_drawPoints[2], m_drawPoints[0]);
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+                return 0;
+            }
             if (m_drawing && m_drawPage >= 0 && m_drawPage < PageCount()) {
                 const PageLayout& L = m_layout[(size_t)m_drawPage];
                 const int64_t docX = m_scrollX + GET_X_LPARAM(lp), docY = m_scrollY + GET_Y_LPARAM(lp);
@@ -310,6 +338,8 @@ LRESULT PdfView::Handle(UINT msg, WPARAM wp, LPARAM lp) {
                     if (std::hypot(x - last.x, y - last.y) * m_scale >= 2.0) m_drawPoints.push_back({x, y});
                 } else {
                     m_drawPoints.back() = {x, y};
+                    if (m_tool == ViewTool::Ruler || m_tool == ViewTool::Protractor)
+                        SnapPoint(m_drawPoints.back(), m_drawPoints.front());
                 }
                 InvalidateRect(m_hwnd, nullptr, FALSE);
                 return 0;
@@ -400,6 +430,13 @@ LRESULT PdfView::Handle(UINT msg, WPARAM wp, LPARAM lp) {
                 PrevPage();
                 return 0;
             }
+            {  // measurements and redaction marks have their own menu
+                POINT screen = {GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+                if (screen.x == -1 && screen.y == -1) GetCursorPos(&screen);
+                POINT client = screen;
+                ScreenToClient(m_hwnd, &client);
+                if (ShowGeometryMenu(screen, client)) return 0;
+            }
             if (m_tool == ViewTool::EditText) {
                 POINT screen = {GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
                 if (screen.x == -1 && screen.y == -1) GetCursorPos(&screen);
@@ -476,6 +513,8 @@ LRESULT PdfView::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             if (m_inlineEdit) EndInlineEdit(false);
             if (m_bannerFont) DeleteObject(m_bannerFont);
             m_bannerFont = nullptr;
+            if (m_smallFont) DeleteObject(m_smallFont);
+            m_smallFont = nullptr;
             if (m_linkTip) DestroyWindow(m_linkTip);
             m_linkTip = nullptr;
             m_cache.Clear();
@@ -500,6 +539,11 @@ void PdfView::SetDocument(uint32_t docId, std::vector<SizeF>&& sizes, int startP
         m_forward.clear();
     }
     ClearRuns();
+    if (docId != m_docId && !m_editPending) {  // another document: its marks are gone
+        m_measures.clear();
+        m_marks.clear();
+        m_angleArm = false;
+    }
     m_docId = docId;
     m_editPending = false;
     m_sizes = std::move(sizes);
@@ -572,6 +616,9 @@ void PdfView::CloseDocument() {
     if (m_inlineEdit) EndInlineEdit(false);
     ClearRuns();
     m_tool = ViewTool::Select;
+    m_measures.clear();
+    m_marks.clear();
+    m_angleArm = false;
     m_docId = 0;
     m_editPending = false;
     m_sizes.clear();
@@ -1181,6 +1228,8 @@ void PdfView::OnDpiChanged() {
     m_dpi = GetWindowDpi(m_hwnd);
     if (m_bannerFont) DeleteObject(m_bannerFont);
     m_bannerFont = nullptr;
+    if (m_smallFont) DeleteObject(m_smallFont);
+    m_smallFont = nullptr;
     if (m_inlineEdit) EndInlineEdit(true);
     if (m_messageFont) DeleteObject(m_messageFont);
     m_messageFont = CreateMessageFont(m_dpi, 110);
@@ -1365,7 +1414,10 @@ void PdfView::Paint(HDC hdc) {
         FrameRect(dc, &band, (HBRUSH)GetStockObject(BLACK_BRUSH));
     }
 
+    DrawMarks(dc);
+    DrawMeasures(dc);
     DrawToolPreview(dc);
+    DrawRulers(dc);
     DrawBanner(dc);
     BitBlt(hdc, 0, 0, w, h, dc, 0, 0, SRCCOPY);
     if (m_inlineEdit) PositionInlineEdit();
@@ -1628,7 +1680,17 @@ void PdfView::ClearSelection() {
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
+bool PdfView::CopyRefused() {
+    if (m_copyAllowed) return false;
+    MessageBoxW(GetParent(m_hwnd),
+                L"The author of this document does not allow copying its text and pictures. If you have the "
+                L"owner password, use Edit PDF \x203A Password protection to unlock it.",
+                APP_NAME, MB_ICONINFORMATION);
+    return true;
+}
+
 void PdfView::CopySelection() {
+    if (CopyRefused()) return;
     if (!HasSelection() || !m_worker) return;
     static uint32_t s_copyId = 0;
     TextPos start, end;
@@ -1836,6 +1898,7 @@ void PdfView::FollowLink(const LinkTarget& target) {
 // Page images for the clipboard
 // ===========================================================================
 void PdfView::CopyPageImage() {
+    if (CopyRefused()) return;
     if (!HasDocument()) return;
     const int page = CurrentPage();
     if (page < m_first || page > m_last) return;
@@ -1844,6 +1907,7 @@ void PdfView::CopyPageImage() {
 }
 
 void PdfView::StartAreaCopy() {
+    if (CopyRefused()) return;
     if (!HasDocument()) return;
     ClearSelection();
     m_areaMode = true;
@@ -1886,6 +1950,7 @@ void PdfView::SetTool(ViewTool tool) {
     if (tool == m_tool) return;
     if (m_inlineEdit) EndInlineEdit(true);
     m_tool = tool;
+    m_angleArm = false;
     m_hoverPage = m_hoverRun = -1;
     if (tool != ViewTool::Select) ClearSelection();
     if (tool != ViewTool::EditText) ClearRuns();
@@ -2056,6 +2121,16 @@ void PdfView::DrawBanner(HDC dc) {
         case ViewTool::Stamp: text = L"Stamp: click where it goes, or drag to set its size.   Esc: cancel"; break;
         case ViewTool::Signature: text = L"Signature: click where it goes, or drag to set its size.   Esc: cancel"; break;
         case ViewTool::Image: text = L"Picture: click where it goes, or drag to set its size.   Esc: cancel"; break;
+        case ViewTool::Ruler:
+            text = L"Ruler: drag to measure (Shift: straight lines). Right-click a measurement to keep it on the page.   Esc: done";
+            break;
+        case ViewTool::Protractor:
+            text = m_angleArm ? L"Protractor: click where the second arm ends (Shift: 15\x00B0 steps).   Esc: cancel"
+                              : L"Protractor: drag from the corner along the first arm.   Esc: done";
+            break;
+        case ViewTool::Redact:
+            text = L"Redact: drag over what to remove. Right-click a mark to apply or remove marks.   Esc: done";
+            break;
         default: return;
     }
     if (!m_bannerFont) m_bannerFont = CreateMessageFont(m_dpi, 100);
@@ -2065,7 +2140,8 @@ void PdfView::DrawBanner(HDC dc) {
     const int padX = Dpi(14, m_dpi), padY = Dpi(7, m_dpi);
     const int bw = std::min<int>(calc.right + 2 * padX, ClientW() - Dpi(16, m_dpi));
     const int bh = calc.bottom + 2 * padY;
-    RECT r = {(ClientW() - bw) / 2, Dpi(10, m_dpi), (ClientW() - bw) / 2 + bw, Dpi(10, m_dpi) + bh};
+    const int bannerTop = Dpi(m_measure.rulers ? 30 : 10, m_dpi);
+    RECT r = {(ClientW() - bw) / 2, bannerTop, (ClientW() - bw) / 2 + bw, bannerTop + bh};
     HBRUSH fill = CreateSolidBrush(RGB(0, 95, 184));
     HPEN pen = CreatePen(PS_SOLID, 1, RGB(0, 70, 140));
     HGDIOBJ oldBrush = SelectObject(dc, fill);
@@ -2327,6 +2403,36 @@ POINT PdfView::ClientPointOf(int page, float x, float y) const {
 
 void PdfView::DrawToolPreview(HDC dc) {
     if (!m_drawing || m_drawPage < 0 || m_drawPage >= PageCount() || m_drawPoints.size() < 2) return;
+    if (m_tool == ViewTool::Ruler || m_tool == ViewTool::Protractor) {
+        Measure live{m_drawPage, {m_drawPoints.front(), m_drawPoints.back()}};
+        if (m_tool == ViewTool::Ruler) {
+            DrawMeasure(dc, live, true);
+        } else {  // the first arm only
+            HPEN arm = CreatePen(PS_SOLID, Dpi(2, m_dpi), RGB(0, 110, 210));
+            HGDIOBJ old = SelectObject(dc, arm);
+            const POINT v = ClientPointOf(m_drawPage, live.pts[0].x, live.pts[0].y);
+            const POINT a = ClientPointOf(m_drawPage, live.pts[1].x, live.pts[1].y);
+            MoveToEx(dc, v.x, v.y, nullptr);
+            LineTo(dc, a.x, a.y);
+            SelectObject(dc, old);
+            DeleteObject(arm);
+        }
+        return;
+    }
+    if (m_tool == ViewTool::Redact) {
+        const POINT a = ClientPointOf(m_drawPage, m_drawPoints.front().x, m_drawPoints.front().y);
+        const POINT b = ClientPointOf(m_drawPage, m_drawPoints.back().x, m_drawPoints.back().y);
+        HBRUSH hatch = CreateHatchBrush(HS_BDIAGONAL, RGB(210, 30, 30));
+        HPEN pen = CreatePen(PS_DASH, 1, RGB(210, 30, 30));
+        HGDIOBJ ob = SelectObject(dc, hatch), op = SelectObject(dc, pen);
+        SetBkMode(dc, TRANSPARENT);
+        Rectangle(dc, std::min(a.x, b.x), std::min(a.y, b.y), std::max(a.x, b.x) + 1, std::max(a.y, b.y) + 1);
+        SelectObject(dc, ob);
+        SelectObject(dc, op);
+        DeleteObject(hatch);
+        DeleteObject(pen);
+        return;
+    }
     const bool place = m_tool == ViewTool::Stamp || m_tool == ViewTool::Signature || m_tool == ViewTool::Image;
     const COLORREF color = place ? RGB(0, 103, 192) : m_toolOptions.color;
     const int width = place ? 1 : std::max(1, (int)std::lround(m_toolOptions.width * m_scale));
@@ -2371,6 +2477,21 @@ void PdfView::FinishDrawing(POINT) {
     const PointF a = m_drawPoints.front(), b = m_drawPoints.back();
     const float dragged = std::hypot(b.x - a.x, b.y - a.y) * (float)m_scale;  // in pixels
     const SizeF page = m_sizes[(size_t)m_drawPage];
+    if (m_tool == ViewTool::Ruler) {
+        if (dragged >= 4) m_measures.push_back({m_drawPage, {a, b}});
+        return;  // the ruler stays on
+    }
+    if (m_tool == ViewTool::Protractor) {
+        if (dragged < 4) return;
+        m_drawPoints = {a, b, b};  // vertex, first arm; the second arm follows the mouse
+        m_angleArm = true;
+        return;
+    }
+    if (m_tool == ViewTool::Redact) {
+        if (dragged >= 4)
+            AddRedactionMarks({{m_drawPage, {std::min(a.x, b.x), std::min(a.y, b.y), std::max(a.x, b.x), std::max(a.y, b.y)}}});
+        return;
+    }
     EditOp op;
     op.page = m_drawPage;
     op.author = m_toolOptions.author;

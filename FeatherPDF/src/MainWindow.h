@@ -41,6 +41,7 @@ private:
         bool canUndo = false, canRedo = false;
         uint32_t saveDocId = 0;       // id the last save was requested under
         bool discardOnQuit = false;   // "Don't save" was chosen while exiting
+        bool unlocking = false;       // re-opened with what should be the owner password
     };
 
     static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
@@ -140,6 +141,26 @@ private:
     void AddPageNumbers();
     void ExportPages();
     void OnExportProgress(ExportProgress* progress);
+    // Compress, compare, password protection, redaction (2.3)
+    void CompressDocument();
+    HMENU CreateCompareMenu();
+    void CompareWith(int tabIndex);  // -1: choose a file
+    void OnCompared(CompareResult* result);
+    void ProtectDocument();
+    void UnlockDocument();
+    bool EditPermitted(const EditOp& op);  // tells the user when the author forbids it
+    bool Permitted(uint32_t permission, const wchar_t* what);
+    HMENU CreateRedactMenu();
+    void StartRedactTool();
+    void RedactSelection();
+    void FindForRedaction();
+    void OnRedactFound(RedactFindResult* result);
+    void ApplyRedactions();
+    // Geometry menu: ruler, protractor, rulers, units and scale
+    void ShowGeometryMenu();
+    void SetMeasureTool(ViewTool tool);
+    void ApplyMeasureOptions();
+    void SetCustomScale();
     // Command palette, history, recent files, presentation, About
     void ShowCommandPalette();
     void RunPaletteCommand(int id, const std::wstring& arg);
@@ -221,6 +242,11 @@ private:
     bool m_exporting = false;
     int m_exportDone = 0, m_exportTotal = 0;
     ExportFormat m_exportFormat = ExportFormat::Png;
+    // compress, compare, redaction
+    CompressOptions m_compressOptions;
+    RedactFindOptions m_redactFind;
+    bool m_comparing = false;
+    std::wstring m_compareNames;  // "a.pdf" and "b.pdf", for the result message
 
     // exiting with unsaved changes: saves still running before closing
     int m_quitSaves = 0;

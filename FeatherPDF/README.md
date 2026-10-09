@@ -1,4 +1,4 @@
-# Feather PDF 2.2
+# Feather PDF 2.3
 
 A small, fast, native PDF **viewer and editor** for Windows 10 and 11.
 It opens PDFs in tabs and lets you scroll, jump to pages, zoom, search,
@@ -9,8 +9,10 @@ replace text, fill in forms, sign, add comments, highlights, drawings,
 stamps, pictures and new text, and delete, reorder, rotate, insert, merge,
 split and extract pages, with undo/redo and crash-safe saving. It makes
 scanned pages searchable with the text recognition built into Windows, adds
-watermarks and page numbers, and exports pages as pictures, plain text or
-Markdown. A command
+watermarks and page numbers, truly redacts text and pictures, compresses
+pictures, compares two versions of a document, protects documents with an
+AES-256 password, measures distances and angles (Geometry menu), and
+exports pages as pictures, plain text or Markdown. A command
 palette (Ctrl+K) finds any command by typing. It has no accounts, cloud features, telemetry or
 background services.
 
@@ -114,7 +116,10 @@ MainWindow ─► Tab × N ─► PdfView ── layout, visible pages, zoom, na
 | `src/CommandPalette.*` | The Ctrl+K command palette |
 | `src/Ocr.*` | Text recognition with Windows.Media.Ocr on its own thread (raw WinRT interfaces, no extra libraries) |
 | `src/Export.*` | Exporting pages: PNG/JPEG through GDI+, text files, and the Markdown builder |
-| `src/ToolDialogs.*` | The Recognise text, Watermark, Page numbers and Export dialogs |
+| `src/ToolDialogs.*` | The Recognise text, Watermark, Page numbers, Export, Compress, Password protection and Find-and-mark dialogs |
+| `src/PdfCrypt.*` | AES-256 PDF encryption (Windows CNG) and the clean-up of unused objects when saving |
+| `src/Compare.*` | Comparing two documents word by word (Myers diff) and marking the differences |
+| `src/ViewGeometry.cpp` | Ruler, protractor, rulers along the edges and redaction marks in the page view |
 | `src/FileAssoc.*` | `.pdf` "Open with" / Default-apps registration (HKCU) |
 
 ### Threading
@@ -164,6 +169,13 @@ A crash, power cut or full disk at any step leaves the original file
 untouched. If the original is also what undo replays from, a private copy
 of it is kept first, so changes made before saving can still be undone.
 Encrypted PDFs stay encrypted with the same password.
+
+PDFium writes every object created while editing, also ones that a later
+edit replaced (an earlier version of a page's content, a picture before it
+was compressed). Before the file is written, `DropUnusedObjects`
+(`PdfCrypt.cpp`) therefore keeps only the objects reachable from the
+document's root, so redacted text can not survive in an old copy and
+compressed pictures really make the file smaller.
 
 ### Rendering and caching
 
@@ -346,7 +358,8 @@ Without the thumbnails panel, page commands apply to the current page.
 
 **Edit PDF menu:** the **Edit PDF** button on the toolbar (also ⋯ › Edit
 PDF) holds everything that changes a document: Edit text, Find and replace
-text, the comment commands, Mark up text and Edit pages.
+text, the comment commands, Recognise text, Watermark, Page numbers,
+Redact, Compress, Password protection, Annotate and Edit pages.
 
 **Edit text (Ctrl+E):** every line of text on the page gets a dotted
 outline, and a banner at the top says what to do. Click a line, change it
@@ -455,6 +468,64 @@ save.
 Exports include unsaved changes and run in the background with progress in
 the title bar (⋯ › Cancel export stops one). Scanned pages have text only
 after Recognise text.
+
+**Redact:** Edit PDF › Redact removes information for good, not just
+covers it:
+
+* **Mark areas to redact:** drag over text, pictures or anything else.
+* **Mark selected text:** select text first.
+* **Find and mark:** every occurrence of a word or phrase, and optionally
+  every e-mail address, phone number and long number (accounts, cards, IDs).
+* Marks are hatched red. Right-click one to remove it, to clear them all or
+  to apply them; **Apply redactions** asks once more, then removes the
+  letters under the marks (the rest of each line stays where it was), paints
+  the pixels of pictures under them black inside the picture itself,
+  deletes drawings and pictures entirely inside them and comments, links
+  and form fields touching them, and draws black boxes. Undo works until
+  you save; use Save as to keep the original.
+
+**Compress:** Edit PDF › Compress makes files with photos and scans much
+smaller: pictures stored at more than the chosen resolution (96, 150 or
+220 dpi) are scaled down and saved as JPEG. Text and drawings are not
+touched, pictures with transparent parts are left alone, and a picture is
+only replaced when the result is really smaller. Feather PDF says how big
+the file will be once saved.
+
+**Compare:** ⋯ › Compare with › an open tab or a file. The two documents'
+words are compared (with the same algorithm as `diff` and git) and a copy
+of the other document opens in a new tab with every difference marked:
+added text in green, changed text in orange (its comment holds the old
+text) and a note where text was removed. Edit PDF › All comments lists
+them all, and the copy can be saved like any document.
+
+**Password protection:** Edit PDF › Password protection:
+
+* **Require a password to open the document**, and/or **limit what others
+  can do** (allow or forbid printing, copying, and changes) with an owner
+  password that lifts the limits.
+* Encryption is AES-256 (PDF 2.0 / Acrobat X and later), which Acrobat,
+  Edge, Chrome, Firefox and other current readers open. It is applied when
+  you save; Undo takes it back before then. The unprotected file is never
+  written to the disk: it is encrypted in memory.
+* **Remove protection** saves the document without a password.
+* Documents that limit printing, copying or changes are respected: those
+  commands explain why they are not available. If you have the owner
+  password, Password protection unlocks the document.
+
+**Geometry:** the **Geometry** button on the toolbar:
+
+* **Ruler:** drag to measure a distance; the line shows a scale in the
+  chosen unit and its length. Shift keeps the line at 15° steps.
+* **Protractor:** drag from the corner along the first arm, then click where
+  the second arm ends; the angle is shown with a degree scale.
+* **Show rulers on the page:** rulers along the top and left edges, measured
+  from the current page's top-left corner, with a marker following the
+  mouse.
+* **Units:** millimetres, centimetres, metres, inches, feet or points.
+* **Drawing scale:** 1:1 (actual size) to 1:1000, or any other, so lengths
+  on plans and maps read in real-world size.
+* Measurements stay on screen until cleared. Right-click one to **keep it on
+  the page** (it is drawn into the document) or remove it.
 
 **Text size and colour:** in Edit text mode (Ctrl+E), right-click a line of
 text › Text size or Text colour (or Delete this text).
@@ -657,6 +728,15 @@ There are no other dependencies. The full license texts are installed to
   low-core machines.
 
 ## Known limitations (version 1)
+
+* Comparing looks at the words of the documents, not at pictures or layout;
+  scanned pages need Recognise text first.
+* Redaction removes the letters under a mark from the page's own text. Text
+  inside form XObjects (reused page parts) that a mark touches is removed as
+  a whole, and drawings only partly under a mark stay (covered by the black
+  box). Bookmarks and document properties are not redacted.
+* Compress leaves pictures with transparent parts, rotated pictures and
+  pictures inside form XObjects as they are.
 
 * Printing always fits each page to the paper; there is no "actual size"
   or booklet option. Printing ignores the night/dim page colours.

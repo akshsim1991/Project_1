@@ -38,6 +38,16 @@ enum class ViewTool {
     Select = 0, EditText, AddComment, AddText,      // click
     Rectangle, Ellipse, Line, Arrow, Pen,           // drag
     Stamp, Signature, Image,                        // click or drag to place
+    Ruler, Protractor,                              // Geometry: measure distances and angles
+    Redact,                                         // drag to mark an area for redaction
+};
+
+// How measurements are shown (Geometry menu): units and drawing scale.
+struct MeasureOptions {
+    std::wstring unit = L"mm";
+    double perPoint = 25.4 / 72;  // units per PDF point
+    double scale = 1;             // drawing scale 1:scale (1 = actual size)
+    bool rulers = false;          // rulers along the top and left edges
 };
 
 // What the drawing and placing tools draw (set by the main window).
@@ -147,6 +157,23 @@ public:
     // Presentation: black surroundings, a click shows the next page.
     void SetPresenting(bool on);
 
+    // --- Geometry: rulers, distance and angle measurements -------------
+    void SetMeasureOptions(const MeasureOptions& options);
+    bool HasMeasurements() const { return !m_measures.empty(); }
+    void ClearMeasurements();
+    void KeepMeasurements();  // draws them on their pages (one edit each)
+    std::wstring FormatLength(float points) const;
+
+    // --- redaction marks (areas to redact, shown until applied) ---------
+    const std::vector<PageRect>& RedactionMarks() const { return m_marks; }
+    void AddRedactionMarks(const std::vector<PageRect>& marks);
+    void ClearRedactionMarks();
+    std::vector<PageRect> SelectionRects();  // the selected text, line by line
+    std::function<void()> onMarksChanged;
+
+    // The document's author may forbid copying its text and pictures.
+    void SetCopyAllowed(bool allowed) { m_copyAllowed = allowed; }
+
     // --- page images for the clipboard (arrive as WM_APP_IMAGE_READY) ---
     void CopyPageImage();
     void StartAreaCopy();  // the next drag selects the area to copy
@@ -242,6 +269,20 @@ private:
     void ClickField(int page, const FormField& field);
     void DrawToolPreview(HDC dc);
     void FinishDrawing(POINT pt);
+    // Geometry and redaction (ViewGeometry.cpp)
+    struct Measure {
+        int page = 0;
+        std::vector<PointF> pts;  // 2: a distance; 3: an angle (arm end, vertex, arm end)
+    };
+    void DrawMeasure(HDC dc, const Measure& m, bool live);
+    void DrawMeasures(HDC dc);
+    void DrawRulers(HDC dc);
+    void DrawMarks(HDC dc);
+    std::wstring MeasureText(const Measure& m) const;
+    int HitMeasure(POINT pt) const;
+    int HitMark(POINT pt) const;
+    bool ShowGeometryMenu(POINT screen, POINT client);  // true if it handled the click
+    void SnapPoint(PointF& p, const PointF& from) const;  // Shift: 15 degree steps
     void ShowRunMenu(POINT screen, int page, int run);
     POINT ClientPointOf(int page, float x, float y) const;  // unrotated points -> client
     void EndInlineEdit(bool commit);
@@ -339,6 +380,16 @@ private:
     bool m_inlineClosing = false;
     HFONT m_bannerFont = nullptr;
     std::wstring m_tipText;
+
+    // Geometry and redaction marks
+    MeasureOptions m_measure;
+    std::vector<Measure> m_measures;
+    bool m_angleArm = false;  // protractor: the first arm is set, the second follows the mouse
+    POINT m_mouse{-1, -1};
+    HFONT m_smallFont = nullptr;
+    std::vector<PageRect> m_marks;
+    bool m_copyAllowed = true;
+    bool CopyRefused();  // tells the user when copying is not allowed
 
     // "copy area as image" mode
     bool m_areaMode = false, m_areaDragging = false;

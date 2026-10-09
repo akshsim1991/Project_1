@@ -7,7 +7,7 @@
 // Edit PDF > All comments:
 //   * added text: green highlight;
 //   * changed text: orange highlight, the old text in its comment;
-//   * removed text: a red note where it was, holding the removed words.
+//   * removed text: a note where it was, holding the removed words.
 // Runs on the render worker thread.
 #pragma once
 #include "PdfEngine.h"

@@ -23,7 +23,13 @@ enum : uint32_t {
     kPermAssemble = 1u << 10,     // bit 11
     kPermPrintHigh = 1u << 11,    // bit 12
     kPermAll = 0xFFFFFFFFu,
+    // Every permission that means something (the other bits are reserved).
+    kPermEverything = kPermPrint | kPermModify | kPermCopy | kPermAnnotate | kPermFillForms | kPermAccessibility |
+                      kPermAssemble | kPermPrintHigh,
 };
+
+// True when nothing is restricted.
+inline bool FullAccess(uint32_t permissions) { return (permissions & kPermEverything) == kPermEverything; }
 
 // Encrypts `in` (a complete PDF file as written by PDFium) into `out`.
 // `userPassword` opens the document (may be empty: anyone can open it, but
@@ -31,3 +37,10 @@ enum : uint32_t {
 // random one is used when empty). Passwords are UTF-8.
 bool EncryptPdf(const std::string& in, const std::string& userPassword, const std::string& ownerPassword,
                 uint32_t permissions, std::string& out);
+
+// Copies `in` (as written by PDFium) keeping only the objects reachable
+// from the trailer. PDFium writes every object created while editing,
+// including ones an edit later replaced: old page contents and pictures.
+// Dropping them makes redaction final and compression effective. False if
+// the file is not in the expected shape (then `in` is used as it is).
+bool DropUnusedObjects(const std::string& in, std::string& out);

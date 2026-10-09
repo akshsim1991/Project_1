@@ -72,6 +72,11 @@ void Settings::Load() {
     if (lineWidthTenths < 5 || lineWidthTenths > 200) lineWidthTenths = 20;
     textSize = (int)ReadDword(key, L"TextSize", 12);
     if (textSize < 4 || textSize > 200) textSize = 12;
+    measureUnit = (int)ReadDword(key, L"MeasureUnit", 0);
+    if (measureUnit < 0 || measureUnit > 5) measureUnit = 0;
+    measureScale = (int)ReadDword(key, L"MeasureScale", 1);
+    if (measureScale < 1 || measureScale > 1000000) measureScale = 1;
+    showRulers = ReadDword(key, L"ShowRulers", 0) != 0;
     recent = ReadList(key, L"Recent");
 
     // Session: REG_MULTI_SZ of "page|path" entries.
@@ -115,6 +120,9 @@ void Settings::Save() const {
     WriteDword(key, L"DrawColor", (DWORD)drawColor);
     WriteDword(key, L"LineWidth", (DWORD)lineWidthTenths);
     WriteDword(key, L"TextSize", (DWORD)textSize);
+    WriteDword(key, L"MeasureUnit", (DWORD)measureUnit);
+    WriteDword(key, L"MeasureScale", (DWORD)measureScale);
+    WriteDword(key, L"ShowRulers", showRulers ? 1 : 0);
     WriteList(key, L"Recent", recent);
     std::wstring multi;
     for (const OpenFile& f : session) {

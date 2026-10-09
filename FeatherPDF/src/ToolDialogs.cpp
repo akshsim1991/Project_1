@@ -17,6 +17,11 @@ const wchar_t* const kNumberFormats[5] = {L"{n}", L"Page {n}", L"Page {n} of {to
                                           L"- {n} -"};
 const float kNumberSizes[6] = {8, 9, 10, 11, 12, 14};
 const int kExportDpi[3] = {72, 150, 300};
+const CompressLevel kCompressLevels[3] = {
+    {96, 60, L"Smallest file (96 dpi)", L"For reading on screen and sending by e-mail. Photos lose some detail."},
+    {150, 75, L"Balanced (150 dpi) - recommended", L"Good on screen and for ordinary printing, at a fraction of the size."},
+    {220, 85, L"High quality (220 dpi)", L"For printing photos well. Saves less space."},
+};
 
 namespace {
 std::wstring Text(HWND dlg, int id) {
@@ -272,7 +277,166 @@ INT_PTR CALLBACK ExportProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
     }
     return FALSE;
 }
+INT_PTR CALLBACK CompressProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
+    switch (msg) {
+        case WM_INITDIALOG: {
+            SetWindowLongPtrW(dlg, DWLP_USER, lp);
+            auto* o = reinterpret_cast<CompressOptions*>(lp);
+            Fill(dlg, IDC_COMPRESS_LEVEL, {kCompressLevels[0].name, kCompressLevels[1].name, kCompressLevels[2].name},
+                 std::clamp(o->level, 0, 2));
+            SetDlgItemTextW(dlg, IDC_COMPRESS_NOTE, kCompressLevels[std::clamp(o->level, 0, 2)].note);
+            ApplyWindowTheme(dlg);
+            return TRUE;
+        }
+        case WM_COMMAND: {
+            auto* o = Data<CompressOptions>(dlg);
+            if (LOWORD(wp) == IDC_COMPRESS_LEVEL && HIWORD(wp) == CBN_SELCHANGE) {
+                SetDlgItemTextW(dlg, IDC_COMPRESS_NOTE, kCompressLevels[std::clamp(Selected(dlg, IDC_COMPRESS_LEVEL), 0, 2)].note);
+                return TRUE;
+            }
+            if (LOWORD(wp) == IDOK) {
+                o->level = std::clamp(Selected(dlg, IDC_COMPRESS_LEVEL), 0, 2);
+                EndDialog(dlg, IDOK);
+                return TRUE;
+            }
+            if (LOWORD(wp) == IDCANCEL) {
+                EndDialog(dlg, IDCANCEL);
+                return TRUE;
+            }
+            break;
+        }
+    }
+    return FALSE;
+}
+
+void UpdateProtect(HWND dlg) {
+    const bool open = IsDlgButtonChecked(dlg, IDC_PW_OPEN) == BST_CHECKED;
+    const bool limit = IsDlgButtonChecked(dlg, IDC_PW_LIMIT) == BST_CHECKED;
+    for (int id : {IDC_PW_USER, IDC_PW_USER2}) EnableWindow(GetDlgItem(dlg, id), open);
+    for (int id : {IDC_PW_PRINT, IDC_PW_COPY, IDC_PW_CHANGE, IDC_PW_OWNER, IDC_PW_OWNER2})
+        EnableWindow(GetDlgItem(dlg, id), limit);
+}
+
+INT_PTR CALLBACK ProtectProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
+    switch (msg) {
+        case WM_INITDIALOG: {
+            SetWindowLongPtrW(dlg, DWLP_USER, lp);
+            auto* o = reinterpret_cast<ProtectOptions*>(lp);
+            SetDlgItemTextW(dlg, IDC_PW_STATE, o->state.c_str());
+            CheckDlgButton(dlg, IDC_PW_OPEN, o->openPassword ? BST_CHECKED : BST_UNCHECKED);
+            CheckDlgButton(dlg, IDC_PW_LIMIT, o->limit ? BST_CHECKED : BST_UNCHECKED);
+            CheckDlgButton(dlg, IDC_PW_PRINT, o->allowPrint ? BST_CHECKED : BST_UNCHECKED);
+            CheckDlgButton(dlg, IDC_PW_COPY, o->allowCopy ? BST_CHECKED : BST_UNCHECKED);
+            CheckDlgButton(dlg, IDC_PW_CHANGE, o->allowChange ? BST_CHECKED : BST_UNCHECKED);
+            EnableWindow(GetDlgItem(dlg, IDC_PW_REMOVE), o->canRemove);
+            for (int id : {IDC_PW_USER, IDC_PW_USER2, IDC_PW_OWNER, IDC_PW_OWNER2})
+                SendDlgItemMessageW(dlg, id, EM_LIMITTEXT, 100, 0);
+            UpdateProtect(dlg);
+            ApplyWindowTheme(dlg);
+            SetFocus(GetDlgItem(dlg, IDC_PW_USER));
+            return FALSE;
+        }
+        case WM_COMMAND: {
+            auto* o = Data<ProtectOptions>(dlg);
+            const int id = LOWORD(wp);
+            if (id == IDC_PW_OPEN || id == IDC_PW_LIMIT) {
+                UpdateProtect(dlg);
+                return TRUE;
+            }
+            if (id == IDC_PW_REMOVE) {
+                o->remove = true;
+                EndDialog(dlg, IDOK);
+                return TRUE;
+            }
+            if (id == IDOK) {
+                auto fail = [&](const wchar_t* text, int focus) {
+                    MessageBoxW(dlg, text, APP_NAME, MB_ICONWARNING);
+                    SetFocus(GetDlgItem(dlg, focus));
+                    return TRUE;
+                };
+                o->openPassword = IsDlgButtonChecked(dlg, IDC_PW_OPEN) == BST_CHECKED;
+                o->limit = IsDlgButtonChecked(dlg, IDC_PW_LIMIT) == BST_CHECKED;
+                o->userPassword = o->openPassword ? Text(dlg, IDC_PW_USER) : std::wstring();
+                o->ownerPassword = o->limit ? Text(dlg, IDC_PW_OWNER) : std::wstring();
+                if (!o->openPassword && !o->limit)
+                    return fail(L"Choose a password to open the document, limits, or both.", IDC_PW_OPEN);
+                if (o->openPassword && o->userPassword.empty()) return fail(L"Type the password.", IDC_PW_USER);
+                if (o->openPassword && o->userPassword != Text(dlg, IDC_PW_USER2))
+                    return fail(L"The two passwords are not the same. Type them again.", IDC_PW_USER2);
+                if (o->limit && o->ownerPassword.empty())
+                    return fail(L"Type an owner password: it is needed to lift the limits later.", IDC_PW_OWNER);
+                if (o->limit && o->ownerPassword != Text(dlg, IDC_PW_OWNER2))
+                    return fail(L"The two owner passwords are not the same. Type them again.", IDC_PW_OWNER2);
+                if (o->limit && o->ownerPassword == o->userPassword)
+                    return fail(L"The owner password must be different from the password to open it.", IDC_PW_OWNER);
+                o->allowPrint = IsDlgButtonChecked(dlg, IDC_PW_PRINT) == BST_CHECKED;
+                o->allowCopy = IsDlgButtonChecked(dlg, IDC_PW_COPY) == BST_CHECKED;
+                o->allowChange = IsDlgButtonChecked(dlg, IDC_PW_CHANGE) == BST_CHECKED;
+                o->remove = false;
+                EndDialog(dlg, IDOK);
+                return TRUE;
+            }
+            if (id == IDCANCEL) {
+                EndDialog(dlg, IDCANCEL);
+                return TRUE;
+            }
+            break;
+        }
+    }
+    return FALSE;
+}
+
+INT_PTR CALLBACK RedactFindProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
+    switch (msg) {
+        case WM_INITDIALOG: {
+            SetWindowLongPtrW(dlg, DWLP_USER, lp);
+            auto* o = reinterpret_cast<RedactFindOptions*>(lp);
+            SetDlgItemTextW(dlg, IDC_RF_TEXT, o->text.c_str());
+            CheckDlgButton(dlg, IDC_RF_CASE, o->matchCase ? BST_CHECKED : BST_UNCHECKED);
+            CheckDlgButton(dlg, IDC_RF_EMAIL, o->emails ? BST_CHECKED : BST_UNCHECKED);
+            CheckDlgButton(dlg, IDC_RF_PHONE, o->phones ? BST_CHECKED : BST_UNCHECKED);
+            CheckDlgButton(dlg, IDC_RF_NUMBERS, o->numbers ? BST_CHECKED : BST_UNCHECKED);
+            ApplyWindowTheme(dlg);
+            return TRUE;
+        }
+        case WM_COMMAND: {
+            auto* o = Data<RedactFindOptions>(dlg);
+            if (LOWORD(wp) == IDOK) {
+                o->text = Text(dlg, IDC_RF_TEXT);
+                o->matchCase = IsDlgButtonChecked(dlg, IDC_RF_CASE) == BST_CHECKED;
+                o->emails = IsDlgButtonChecked(dlg, IDC_RF_EMAIL) == BST_CHECKED;
+                o->phones = IsDlgButtonChecked(dlg, IDC_RF_PHONE) == BST_CHECKED;
+                o->numbers = IsDlgButtonChecked(dlg, IDC_RF_NUMBERS) == BST_CHECKED;
+                if (o->text.find_first_not_of(L" \t") == std::wstring::npos && !o->emails && !o->phones && !o->numbers) {
+                    MessageBoxW(dlg, L"Type the text to find, or choose what else to mark.", APP_NAME, MB_ICONWARNING);
+                    SetFocus(GetDlgItem(dlg, IDC_RF_TEXT));
+                    return TRUE;
+                }
+                EndDialog(dlg, IDOK);
+                return TRUE;
+            }
+            if (LOWORD(wp) == IDCANCEL) {
+                EndDialog(dlg, IDCANCEL);
+                return TRUE;
+            }
+            break;
+        }
+    }
+    return FALSE;
+}
 }  // namespace
+
+bool ShowCompressDialog(HINSTANCE inst, HWND owner, CompressOptions& o) {
+    return Run(inst, owner, IDD_COMPRESS, CompressProc, o);
+}
+
+bool ShowProtectDialog(HINSTANCE inst, HWND owner, ProtectOptions& o) {
+    return Run(inst, owner, IDD_PROTECT, ProtectProc, o);
+}
+
+bool ShowRedactFindDialog(HINSTANCE inst, HWND owner, RedactFindOptions& o) {
+    return Run(inst, owner, IDD_REDACT_FIND, RedactFindProc, o);
+}
 
 bool ShowOcrDialog(HINSTANCE inst, HWND owner, OcrOptions& o) {
     return Run(inst, owner, IDD_OCR, OcrProc, o);

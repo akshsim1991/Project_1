@@ -42,6 +42,35 @@ struct ExportOptions {
     int dpi = 1;         // index into kExportDpi
 };
 
+struct CompressOptions {
+    int level = 1;       // index into kCompressLevels
+};
+
+struct ProtectOptions {
+    std::wstring state;  // in: what protection the document has now
+    bool canRemove = false;
+    // out
+    bool remove = false;  // "Remove protection" was chosen
+    bool openPassword = true;
+    std::wstring userPassword;
+    bool limit = false;
+    bool allowPrint = true, allowCopy = false, allowChange = false;
+    std::wstring ownerPassword;
+};
+
+struct RedactFindOptions {
+    std::wstring text;
+    bool matchCase = false;
+    bool emails = false, phones = false, numbers = false;
+};
+
+struct CompressLevel {
+    int dpi, quality;
+    const wchar_t* name;
+    const wchar_t* note;
+};
+extern const CompressLevel kCompressLevels[3];
+
 extern const COLORREF kWatermarkColors[5];
 extern const int kWatermarkOpacity[6];
 extern const float kWatermarkSizes[6];
@@ -53,3 +82,6 @@ bool ShowOcrDialog(HINSTANCE inst, HWND owner, OcrOptions& o);
 bool ShowWatermarkDialog(HINSTANCE inst, HWND owner, WatermarkOptions& o);
 bool ShowPageNumberDialog(HINSTANCE inst, HWND owner, PageNumberOptions& o);
 bool ShowExportDialog(HINSTANCE inst, HWND owner, ExportOptions& o);
+bool ShowCompressDialog(HINSTANCE inst, HWND owner, CompressOptions& o);
+bool ShowProtectDialog(HINSTANCE inst, HWND owner, ProtectOptions& o);
+bool ShowRedactFindDialog(HINSTANCE inst, HWND owner, RedactFindOptions& o);

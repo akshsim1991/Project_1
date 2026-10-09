@@ -22,7 +22,7 @@
 #include <vector>
 
 #define APP_NAME L"Feather PDF"
-#define APP_VERSION L"2.2.0"
+#define APP_VERSION L"2.3.0"
 #define APP_COPYRIGHT L"\x00A9 2026 Akshaya Simha"
 #define APP_WINDOW_CLASS L"FeatherPdfMain"
 #define APP_REG_KEY L"Software\\FeatherPDF"
@@ -172,12 +172,35 @@ enum : int {
     ID_PAGE_NUMBERS,
     ID_EXPORT,
     ID_CANCEL_EXPORT,
+    ID_COMPRESS,
+    ID_COMPARE,
+    ID_COMPARE_FILE,
+    ID_PASSWORD,
+    ID_REDACT_MENU,
+    ID_TOOL_REDACT,
+    ID_REDACT_SELECTION,
+    ID_REDACT_FIND,
+    ID_REDACT_APPLY,
+    ID_REDACT_CLEAR,
+    ID_REDACT_REMOVE_MARK,
+    ID_GEOMETRY_MENU,
+    ID_TOOL_RULER,
+    ID_TOOL_PROTRACTOR,
+    ID_SHOW_RULERS,
+    ID_SCALE_CUSTOM,
+    ID_MEASURE_KEEP,
+    ID_MEASURE_KEEP_ALL,
+    ID_MEASURE_REMOVE,
+    ID_MEASURE_CLEAR,
     ID_ZOOM_PRESET_FIRST = 300,  // + index into kZoomPresets
     ID_STAMP_FIRST = 400,        // + index into kStamps
     ID_DRAWCOLOR_FIRST = 420,    // + index into kDrawColors
     ID_WIDTH_FIRST = 440,        // + index into kLineWidths
     ID_TEXTSIZE_FIRST = 450,     // + index into kTextSizes
     ID_RECENT_FIRST = 500,       // + index into the recent files (up to 20)
+    ID_UNIT_FIRST = 600,         // + index into kUnits
+    ID_SCALE_FIRST = 620,        // + index into kScales
+    ID_COMPARE_TAB_FIRST = 640,  // + tab index (compare with an open tab)
 };
 
 // Page geometry in PDF points (1/72 inch), already adjusted for /Rotate.

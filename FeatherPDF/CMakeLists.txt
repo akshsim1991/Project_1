@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(FeatherPDF VERSION 2.2.0 LANGUAGES CXX RC)
+project(FeatherPDF VERSION 2.3.0 LANGUAGES CXX RC)
 
 # ---------------------------------------------------------------------------
 # PDFium (prebuilt binaries from https://github.com/bblanchon/pdfium-binaries)
@@ -62,6 +62,7 @@ add_executable(FeatherPDF WIN32
   src/ToolDialogs.cpp
   src/PdfCrypt.cpp
   src/Compare.cpp
+  src/ViewGeometry.cpp
   res/app.rc
 )
 

@@ -34,6 +34,13 @@ public:
     PdfEngine(const PdfEngine&) = delete;
     PdfEngine& operator=(const PdfEngine&) = delete;
 
+    // The password to save with (EditOp::SetSecurity); unset: as the file was.
+    struct Security {
+        bool set = false, encrypt = false;
+        std::string user, owner;
+        uint32_t permissions = 0xFFFFFFFF;
+    };
+
     static void InitLibrary();
     static void DestroyLibrary();
 
@@ -172,12 +179,7 @@ private:
     struct FormEnv;
     std::unique_ptr<FormEnv> m_form;
 
-    // The password to save with (EditOp::SetSecurity); unset: as the file was.
-    struct Security {
-        bool set = false, encrypt = false;
-        std::string user, owner;
-        uint32_t permissions = 0xFFFFFFFF;
-    } m_security;
+    Security m_security;
     // Data PDFium reads lazily (compressed pictures), alive as long as m_doc.
     std::vector<std::unique_ptr<JpegData>> m_keep;
 

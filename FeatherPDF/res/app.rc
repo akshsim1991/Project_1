@@ -115,6 +115,61 @@ BEGIN
     PUSHBUTTON      "Cancel", IDCANCEL, 218, 128, 52, 15
 END
 
+IDD_COMPRESS DIALOGEX 0, 0, 280, 120
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Compress"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "Makes the file smaller by storing large pictures at a lower resolution, as JPEG. Text and drawings stay sharp.", -1, 10, 8, 260, 20
+    LTEXT           "&Quality:", -1, 10, 36, 50, 10
+    COMBOBOX        IDC_COMPRESS_LEVEL, 64, 34, 206, 100, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "", IDC_COMPRESS_NOTE, 10, 56, 260, 30
+    DEFPUSHBUTTON   "Compress", IDOK, 162, 98, 52, 15
+    PUSHBUTTON      "Cancel", IDCANCEL, 218, 98, 52, 15
+END
+
+IDD_PROTECT DIALOGEX 0, 0, 290, 236
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Password protection"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "", IDC_PW_STATE, 10, 8, 270, 20
+    AUTOCHECKBOX    "Require a &password to open the document", IDC_PW_OPEN, 10, 32, 270, 12, WS_TABSTOP
+    LTEXT           "Password:", -1, 22, 50, 60, 10
+    EDITTEXT        IDC_PW_USER, 90, 48, 190, 14, ES_PASSWORD | ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "Type it again:", -1, 22, 68, 60, 10
+    EDITTEXT        IDC_PW_USER2, 90, 66, 190, 14, ES_PASSWORD | ES_AUTOHSCROLL | WS_TABSTOP
+    AUTOCHECKBOX    "&Limit what others can do with it", IDC_PW_LIMIT, 10, 90, 270, 12, WS_TABSTOP
+    AUTOCHECKBOX    "Allow p&rinting", IDC_PW_PRINT, 22, 106, 120, 12, WS_TABSTOP
+    AUTOCHECKBOX    "Allow &copying text and pictures", IDC_PW_COPY, 140, 106, 140, 12, WS_TABSTOP
+    AUTOCHECKBOX    "Allow c&hanges (editing, comments, filling in forms)", IDC_PW_CHANGE, 22, 120, 258, 12, WS_TABSTOP
+    LTEXT           "Owner password:", -1, 22, 138, 64, 10
+    EDITTEXT        IDC_PW_OWNER, 90, 136, 190, 14, ES_PASSWORD | ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "Type it again:", -1, 22, 156, 64, 10
+    EDITTEXT        IDC_PW_OWNER2, 90, 154, 190, 14, ES_PASSWORD | ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "The owner password lifts the limits. Encryption: AES-256, opened by Acrobat, Edge, Chrome and other current readers. Keep the passwords safe: they can not be recovered. The protection is applied when you save.", -1, 10, 176, 270, 30
+    PUSHBUTTON      "Remove protection", IDC_PW_REMOVE, 10, 214, 80, 15
+    DEFPUSHBUTTON   "Protect", IDOK, 172, 214, 52, 15
+    PUSHBUTTON      "Cancel", IDCANCEL, 228, 214, 52, 15
+END
+
+IDD_REDACT_FIND DIALOGEX 0, 0, 280, 144
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Find and mark for redaction"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "&Text to find (every occurrence in the document is marked):", -1, 10, 8, 260, 10
+    EDITTEXT        IDC_RF_TEXT, 10, 20, 260, 14, ES_AUTOHSCROLL | WS_TABSTOP
+    AUTOCHECKBOX    "Match &case", IDC_RF_CASE, 10, 38, 120, 12, WS_TABSTOP
+    GROUPBOX        "Also mark", -1, 10, 54, 260, 52
+    AUTOCHECKBOX    "&E-mail addresses", IDC_RF_EMAIL, 18, 66, 120, 12, WS_TABSTOP
+    AUTOCHECKBOX    "&Phone numbers", IDC_RF_PHONE, 140, 66, 120, 12, WS_TABSTOP
+    AUTOCHECKBOX    "Long &numbers (accounts, cards, IDs)", IDC_RF_NUMBERS, 18, 82, 240, 12, WS_TABSTOP
+    LTEXT           "Check the marks, then use Apply redactions.", -1, 10, 112, 260, 10
+    DEFPUSHBUTTON   "Mark", IDOK, 162, 124, 52, 15
+    PUSHBUTTON      "Cancel", IDCANCEL, 218, 124, 52, 15
+END
+
 IDD_COMMENT DIALOGEX 0, 0, 280, 156
 STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "Comment"
@@ -209,8 +264,8 @@ END
 IDR_NOTICES RCDATA "../THIRD_PARTY_NOTICES.md"
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 2,2,0,0
- PRODUCTVERSION 2,2,0,0
+ FILEVERSION 2,3,0,0
+ PRODUCTVERSION 2,3,0,0
  FILEFLAGSMASK 0x3fL
  FILEFLAGS 0x0L
  FILEOS VOS_NT_WINDOWS32
@@ -224,11 +279,11 @@ BEGIN
             VALUE "CompanyName", "Akshaya Simha"
             VALUE "FileDescription", "Feather PDF - lightweight PDF viewer and editor"
             VALUE "LegalCopyright", "\251 2026 Akshaya Simha"
-            VALUE "FileVersion", "2.2.0.0"
+            VALUE "FileVersion", "2.3.0.0"
             VALUE "InternalName", "FeatherPDF"
             VALUE "OriginalFilename", "FeatherPDF.exe"
             VALUE "ProductName", "Feather PDF"
-            VALUE "ProductVersion", "2.2.0.0"
+            VALUE "ProductVersion", "2.3.0.0"
         END
     END
     BLOCK "VarFileInfo"

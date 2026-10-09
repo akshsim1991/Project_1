@@ -1,9 +1,12 @@
 // MainWindow.cpp - top-level window, tabs and command handling.
 #include "MainWindow.h"
 
+#include "PdfCrypt.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cwctype>
+#include <set>
 
 #include <commctrl.h>
 #include <objbase.h>  // must precede commdlg.h for PrintDlgEx
@@ -100,6 +103,7 @@ std::wstring GetText(HWND hwnd) {
 struct PasswordPrompt {
     std::wstring fileName;
     bool retry = false;
+    bool unlock = false;  // asking for the owner password to lift restrictions
     std::wstring password;
 };
 
@@ -108,9 +112,11 @@ INT_PTR CALLBACK PasswordDlgProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_INITDIALOG: {
             SetWindowLongPtrW(dlg, DWLP_USER, lp);
             auto* p = (PasswordPrompt*)lp;
-            std::wstring text = (p->retry ? L"Incorrect password. " : L"") +
-                                std::wstring(L"\x201C") + p->fileName +
-                                L"\x201D is protected. Enter the password to open it:";
+            std::wstring text = p->unlock
+                                    ? L"\x201C" + p->fileName +
+                                          L"\x201D limits printing, copying or changes. Enter the owner password to unlock it:"
+                                    : (p->retry ? L"Incorrect password. " : L"") + std::wstring(L"\x201C") +
+                                          p->fileName + L"\x201D is protected. Enter the password to open it:";
             SetDlgItemTextW(dlg, IDC_PASSWORD_TEXT, text.c_str());
             ApplyWindowTheme(dlg);
             return TRUE;  // focus goes to the first tab stop (the edit)
@@ -128,6 +134,21 @@ INT_PTR CALLBACK PasswordDlgProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
     }
     return FALSE;
 }
+}  // namespace
+
+// Geometry: measurement units and drawing scales.
+namespace {
+struct Unit {
+    const wchar_t* name;
+    const wchar_t* label;
+    double perPoint;
+};
+const Unit kUnits[] = {
+    {L"mm", L"&Millimetres (mm)", 25.4 / 72}, {L"cm", L"&Centimetres (cm)", 2.54 / 72},
+    {L"m", L"M&etres (m)", 0.0254 / 72},      {L"in", L"&Inches (in)", 1.0 / 72},
+    {L"ft", L"&Feet (ft)", 1.0 / 864},        {L"pt", L"&Points (pt)", 1.0},
+};
+const int kScales[] = {1, 2, 5, 10, 20, 50, 100, 200, 500, 1000};
 }  // namespace
 
 // ===========================================================================
@@ -221,10 +242,11 @@ void MainWindow::CreateChildren() {
     m_toolbar.AddButton(ID_REDO, kGlyphRedo, L"Redo (Ctrl+Y)");
     m_toolbar.AddSeparator();
     m_toolbar.AddTextButton(ID_EDIT_PDF_MENU, L"Edit PDF",
-                            L"Edit text, comments, pages, text recognition (OCR), watermarks and page numbers", 72);
+                            L"Edit text and pages, comments, OCR, watermarks, page numbers, redaction, compression and passwords", 72);
     m_toolbar.AddTextButton(ID_ANNOTATE_MENU, L"Annotate",
                             L"Highlight, draw, add text, stamps, signatures and pictures", 78);
     m_toolbar.AddTextButton(ID_ADD_COMMENT, L"Comment", L"Add a comment: click where it should go (Ctrl+M)", 78);
+    m_toolbar.AddTextButton(ID_GEOMETRY_MENU, L"Geometry", L"Ruler and protractor: measure distances and angles", 78);
     m_toolbar.AddSeparator();
     m_toolbar.AddButton(ID_PREV_PAGE, kGlyphPrev, L"Previous page (Page Up)");
     m_toolbar.AddButton(ID_NEXT_PAGE, kGlyphNext, L"Next page (Page Down)");
@@ -386,6 +408,9 @@ int MainWindow::NewTab() {
     tab->view->onSignField = [this, raw](int page, const RectF& rect) {
         if (m_active >= 0 && raw == &Active()) SignField(page, rect);
     };
+    tab->view->onMarksChanged = [this, raw] {
+        if (m_active >= 0 && raw == &Active()) UpdateUi();
+    };
     // New tabs inherit the view mode and zoom of the current tab.
     if (m_active >= 0) {
         PdfView& cur = View();
@@ -406,6 +431,7 @@ int MainWindow::NewTab() {
             tab->view->SetZoomMode((ZoomMode)m_settings.zoomMode);
     }
     m_tabs.push_back(std::move(tab));
+    ApplyMeasureOptions();
     return (int)m_tabs.size() - 1;
 }
 
@@ -584,6 +610,12 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         case WM_APP_EXPORT_PROGRESS:
             OnExportProgress((ExportProgress*)lp);
+            return 0;
+        case WM_APP_COMPARED:
+            OnCompared((CompareResult*)lp);
+            return 0;
+        case WM_APP_REDACT_FOUND:
+            OnRedactFound((RedactFindResult*)lp);
             return 0;
 
         // Splitter between sidebar and page: drag to resize the sidebar.
@@ -815,6 +847,20 @@ void MainWindow::OnCommand(int id, int code, HWND ctl) {
         StartTool(view.Tool());
         return;
     }
+    if (id >= ID_UNIT_FIRST && id < ID_UNIT_FIRST + 6) {
+        m_settings.measureUnit = id - ID_UNIT_FIRST;
+        ApplyMeasureOptions();
+        return;
+    }
+    if (id >= ID_SCALE_FIRST && id < ID_SCALE_FIRST + (int)(sizeof(kScales) / sizeof(kScales[0]))) {
+        m_settings.measureScale = kScales[id - ID_SCALE_FIRST];
+        ApplyMeasureOptions();
+        return;
+    }
+    if (id >= ID_COMPARE_TAB_FIRST && id < ID_COMPARE_TAB_FIRST + 40) {
+        CompareWith(id - ID_COMPARE_TAB_FIRST);
+        return;
+    }
     if (id >= ID_RECENT_FIRST && id < ID_RECENT_FIRST + 20) {
         const size_t i = (size_t)(id - ID_RECENT_FIRST);
         if (i < m_settings.recent.size()) {
@@ -873,6 +919,39 @@ void MainWindow::OnCommand(int id, int code, HWND ctl) {
         case ID_CANCEL_EXPORT:
             if (m_exporting) m_worker.CancelExport();
             break;
+        case ID_COMPRESS: CompressDocument(); break;
+        case ID_COMPARE_FILE: CompareWith(-1); break;
+        case ID_COMPARE: {
+            HMENU m = CreateCompareMenu();
+            if (GetMenuItemCount(m) <= 1) {
+                DestroyMenu(m);
+                CompareWith(-1);
+                break;
+            }
+            POINT pt;
+            GetCursorPos(&pt);
+            TrackPopupMenu(m, TPM_LEFTALIGN | TPM_TOPALIGN, pt.x, pt.y, 0, m_hwnd, nullptr);
+            DestroyMenu(m);
+            break;
+        }
+        case ID_PASSWORD: ProtectDocument(); break;
+        case ID_TOOL_REDACT: StartRedactTool(); break;
+        case ID_REDACT_SELECTION: RedactSelection(); break;
+        case ID_REDACT_FIND: FindForRedaction(); break;
+        case ID_REDACT_APPLY: ApplyRedactions(); break;
+        case ID_REDACT_CLEAR: view.ClearRedactionMarks(); break;
+        case ID_GEOMETRY_MENU: ShowGeometryMenu(); break;
+        case ID_TOOL_RULER: SetMeasureTool(ViewTool::Ruler); break;
+        case ID_TOOL_PROTRACTOR: SetMeasureTool(ViewTool::Protractor); break;
+        case ID_SHOW_RULERS:
+            m_settings.showRulers = !m_settings.showRulers;
+            ApplyMeasureOptions();
+            break;
+        case ID_SCALE_CUSTOM: SetCustomScale(); break;
+        case ID_MEASURE_KEEP_ALL:
+            if (CanEdit()) view.KeepMeasurements();
+            break;
+        case ID_MEASURE_CLEAR: view.ClearMeasurements(); break;
         case ID_EDIT_PDF_MENU: ShowEditPdfMenu(); break;
         case ID_ANNOTATE_MENU: ShowAnnotateMenu(); break;
         case ID_TOOL_ADD_TEXT: StartTool(view.Tool() == ViewTool::AddText ? ViewTool::Select : ViewTool::AddText); break;
@@ -1086,6 +1165,7 @@ void MainWindow::ShowMoreMenu() {
         AppendMenuW(m, MF_STRING, ID_CANCEL_EXPORT, L"Cancel &export");
     else
         AppendMenuW(m, MF_STRING | docFlag, ID_EXPORT, L"&Export as pictures or text\x2026");
+    AppendMenuW(m, MF_POPUP | docFlag, (UINT_PTR)CreateCompareMenu(), L"Co&mpare with");
     AppendMenuW(m, MF_STRING, ID_CLOSE_TAB, L"&Close tab\tCtrl+W");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(m, MF_STRING | (doc && tab.canUndo ? 0 : MF_GRAYED), ID_UNDO, L"&Undo\tCtrl+Z");
@@ -1187,7 +1267,10 @@ void MainWindow::UpdateUi() {
     m_toolbar.SetChecked(ID_EDIT_PDF_MENU, doc && view.Tool() == ViewTool::EditText);
     m_toolbar.SetChecked(ID_ADD_COMMENT, doc && view.Tool() == ViewTool::AddComment);
     m_toolbar.SetEnabled(ID_ANNOTATE_MENU, doc);
-    m_toolbar.SetChecked(ID_ANNOTATE_MENU, doc && view.Tool() >= ViewTool::AddText);
+    m_toolbar.SetChecked(ID_ANNOTATE_MENU, doc && view.Tool() >= ViewTool::AddText && view.Tool() <= ViewTool::Image);
+    m_toolbar.SetEnabled(ID_GEOMETRY_MENU, true);
+    m_toolbar.SetChecked(ID_GEOMETRY_MENU,
+                         doc && (view.Tool() == ViewTool::Ruler || view.Tool() == ViewTool::Protractor));
     m_toolbar.SetEnabled(ID_UNDO, doc && tab.canUndo);
     m_toolbar.SetEnabled(ID_REDO, doc && tab.canRedo);
     if (doc && m_sidebar.Mode() == SidebarMode::Thumbnails)
@@ -1205,6 +1288,7 @@ void MainWindow::UpdateTitle() {
     if (m_ocrJob.active)
         title += L"  (recognising text: " + std::to_wstring(m_ocrJob.done) + L" of " +
                  std::to_wstring(m_ocrJob.pages.size()) + L" pages)";
+    if (m_comparing) title += L"  (comparing\x2026)";
     if (m_exporting)
         title += L"  (exporting " + std::to_wstring(m_exportDone) + L" of " + std::to_wstring(m_exportTotal) + L")";
     SetWindowTextW(m_hwnd, title.c_str());
@@ -1328,6 +1412,15 @@ void MainWindow::OnDocLoaded(DocLoadResult* result) {
     tab.info = std::move(res->info);
     tab.dirty = tab.canUndo = tab.canRedo = false;
     tab.view->SetDocument(tab.docId, std::move(res->pageSizes), tab.pendingPage);
+    tab.view->SetCopyAllowed((tab.info.permissions & kPermCopy) != 0);
+    if (tab.unlocking) {
+        tab.unlocking = false;
+        MessageBoxW(m_hwnd,
+                    FullAccess(tab.info.permissions)
+                        ? L"The document is unlocked: printing, copying and changes are allowed."
+                        : L"That is not the owner password, so the limits stay.",
+                    APP_NAME, FullAccess(tab.info.permissions) ? MB_ICONINFORMATION : MB_ICONWARNING);
+    }
     AddRecent(tab.path);
     UpdateTabs();
     if (index == m_active) {
@@ -1618,7 +1711,7 @@ void MainWindow::SetPageColors(int mode) {
 // ===========================================================================
 void MainWindow::Print() {
     Tab& tab = Active();
-    if (!tab.docId) return;
+    if (!tab.docId || !Permitted(kPermPrint, L"printing")) return;
     if (m_printing) {
         MessageBoxW(m_hwnd, L"A document is already being printed.", APP_NAME, MB_ICONINFORMATION);
         return;
@@ -1838,6 +1931,7 @@ void MainWindow::SendEdit(EditOp&& op, int tabIndex) {
     if (tabIndex < 0 || tabIndex >= (int)m_tabs.size()) return;
     Tab& tab = *m_tabs[(size_t)tabIndex];
     if (!tab.docId || tab.pendingDocId || !tab.view->HasDocument()) return;
+    if (tabIndex == m_active && !EditPermitted(op)) return;
     if (tabIndex == m_active && tab.search.running) CancelSearch();
     const uint32_t oldId = tab.docId;
     tab.docId = m_nextDocId++;
@@ -1965,6 +2059,7 @@ void MainWindow::OnDocEdited(EditResult* result) {
         tab.canRedo = res->canRedo;
         tab.path = res->path;
         tab.info = std::move(res->info);
+        tab.view->SetCopyAllowed((tab.info.permissions & kPermCopy) != 0);
         if (res->action != EditAction::Save) {
             tab.outline = std::move(res->outline);
             tab.view->EndEdit(std::move(res->pageSizes), res->focusPage);
@@ -2531,6 +2626,10 @@ HMENU MainWindow::CreateEditPdfMenu() {
     AppendMenuW(m, MF_STRING | docFlag, ID_WATERMARK, L"&Watermark\x2026");
     AppendMenuW(m, MF_STRING | docFlag, ID_PAGE_NUMBERS, L"Page n&umbers\x2026");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_POPUP | docFlag, (UINT_PTR)CreateRedactMenu(), L"Re&dact");
+    AppendMenuW(m, MF_STRING | docFlag, ID_COMPRESS, L"C&ompress (make the file smaller)\x2026");
+    AppendMenuW(m, MF_STRING | docFlag, ID_PASSWORD, L"Pass&word protection\x2026");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(m, MF_POPUP | docFlag, (UINT_PTR)CreateAnnotateMenu(), L"A&nnotate");
     AppendMenuW(m, MF_POPUP | docFlag, (UINT_PTR)CreatePagesMenu(), L"Edit &pages");
     return m;
@@ -3019,7 +3118,7 @@ void MainWindow::AddPageNumbers() {
 }
 
 void MainWindow::ExportPages() {
-    if (!CanEdit() || m_exporting) return;
+    if (!CanEdit() || m_exporting || !Permitted(kPermCopy, L"copying its content")) return;
     ExportOptions o = m_exportOptions;
     o.pages = NewPageChoice(o.pages);
     if (!ShowExportDialog(m_inst, m_hwnd, o)) return;
@@ -3108,6 +3207,339 @@ void MainWindow::OnExportProgress(ExportProgress* progress) {
 }
 
 // ===========================================================================
+// Compress, compare, password protection and redaction
+// ===========================================================================
+void MainWindow::CompressDocument() {
+    if (!CanEdit()) return;
+    CompressOptions o = m_compressOptions;
+    if (!ShowCompressDialog(m_inst, m_hwnd, o)) return;
+    m_compressOptions = o;
+    EditOp op;
+    op.kind = EditOp::Compress;
+    op.dpi = kCompressLevels[o.level].dpi;
+    op.quality = kCompressLevels[o.level].quality;
+    SendEdit(std::move(op));  // the worker's note says how much smaller it got
+}
+
+HMENU MainWindow::CreateCompareMenu() {
+    HMENU m = CreatePopupMenu();
+    int others = 0;
+    for (size_t i = 0; i < m_tabs.size() && i < 40; ++i) {
+        const Tab& t = *m_tabs[i];
+        if ((int)i == m_active || !t.docId || t.pendingDocId) continue;
+        std::wstring name = FileNameFromPath(t.path);
+        for (size_t at = 0; (at = name.find(L'&', at)) != std::wstring::npos; at += 2) name.insert(at, 1, L'&');
+        AppendMenuW(m, MF_STRING, ID_COMPARE_TAB_FIRST + (UINT)i, name.c_str());
+        ++others;
+    }
+    if (others) AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_STRING, ID_COMPARE_FILE, L"A &file\x2026");
+    return m;
+}
+
+void MainWindow::CompareWith(int tabIndex) {
+    const Tab& tab = Active();
+    if (!tab.docId || tab.pendingDocId) return;
+    if (m_comparing) {
+        MessageBoxW(m_hwnd, L"A comparison is already running.", APP_NAME, MB_ICONINFORMATION);
+        return;
+    }
+    std::wstring otherPath;
+    uint32_t otherDoc = 0;
+    if (tabIndex >= 0) {
+        if (tabIndex >= (int)m_tabs.size() || !m_tabs[(size_t)tabIndex]->docId) return;
+        otherDoc = m_tabs[(size_t)tabIndex]->docId;
+        otherPath = m_tabs[(size_t)tabIndex]->path;
+    } else {
+        const auto files = PickPdfFiles(false, L"Choose the other version to compare with");
+        if (files.empty()) return;
+        otherPath = files[0];
+    }
+    // The marked copy goes to the temporary folder; Save as keeps it.
+    wchar_t tempDir[MAX_PATH + 1] = L"";
+    GetTempPathW(MAX_PATH, tempDir);
+    std::wstring dir = std::wstring(tempDir) + L"Feather PDF comparisons";
+    CreateDirectoryW(dir.c_str(), nullptr);
+    std::wstring stem = FileNameFromPath(otherPath);
+    if (stem.size() > 4 && _wcsicmp(stem.c_str() + stem.size() - 4, L".pdf") == 0) stem.resize(stem.size() - 4);
+    std::wstring out = dir + L"\\" + stem + L" (compared).pdf";
+    for (int n = 2; FileExists(out) && n < 1000; ++n)
+        out = dir + L"\\" + stem + L" (compared " + std::to_wstring(n) + L").pdf";
+    m_compareNames = L"\x201C" + FileNameFromPath(tab.path) + L"\x201D with \x201C" + FileNameFromPath(otherPath) + L"\x201D";
+    m_comparing = true;
+    m_worker.Compare(tab.docId, otherPath, otherDoc, out);
+    UpdateTitle();
+}
+
+void MainWindow::OnCompared(CompareResult* result) {
+    std::unique_ptr<CompareResult> res(result);
+    m_comparing = false;
+    UpdateTitle();
+    if (!res->ok) {
+        MessageBoxW(m_hwnd, res->error.c_str(), APP_NAME, MB_ICONWARNING);
+        return;
+    }
+    const int total = res->added + res->removed + res->changed;
+    if (total == 0) {
+        DeleteFileW(res->path.c_str());
+        MessageBoxW(m_hwnd, (L"Compared " + m_compareNames + L":\n\nthe text is the same.").c_str(), APP_NAME,
+                    MB_ICONINFORMATION);
+        return;
+    }
+    OpenFile(res->path, 0);
+    const std::wstring msg = L"Compared " + m_compareNames + L": " + std::to_wstring(total) +
+                             (total == 1 ? L" difference" : L" differences") + L".\n\n" +
+                             std::to_wstring(res->added) + L" added (green), " + std::to_wstring(res->changed) +
+                             L" changed (orange, the old text in its comment), " + std::to_wstring(res->removed) +
+                             L" removed (a note where the text was).\n\nThe new tab shows the second document with the "
+                             L"differences marked. Edit PDF \x203A All comments lists them all.";
+    MessageBoxW(m_hwnd, msg.c_str(), APP_NAME, MB_ICONINFORMATION);
+}
+
+bool MainWindow::Permitted(uint32_t permission, const wchar_t* what) {
+    const Tab& tab = Active();
+    if (!tab.docId || (tab.info.permissions & permission)) return true;
+    const std::wstring msg = std::wstring(L"The author of this document does not allow ") + what +
+                             L".\n\nIf you have the owner password, use Edit PDF \x203A Password protection to "
+                             L"unlock it.";
+    MessageBoxW(m_hwnd, msg.c_str(), APP_NAME, MB_ICONINFORMATION);
+    return false;
+}
+
+bool MainWindow::EditPermitted(const EditOp& op) {
+    switch (op.kind) {
+        case EditOp::Markup:
+        case EditOp::AddNote:
+        case EditOp::EditComment:
+        case EditOp::DeleteAnnot:
+        case EditOp::AddShape:
+        case EditOp::AddStamp:
+            if (Active().info.permissions & (kPermAnnotate | kPermModify)) return true;
+            return Permitted(kPermAnnotate, L"comments and markings");
+        case EditOp::SetField:
+            if (Active().info.permissions & (kPermFillForms | kPermAnnotate | kPermModify)) return true;
+            return Permitted(kPermFillForms, L"filling in its form");
+        default:
+            return Permitted(kPermModify, L"changes to it");
+    }
+}
+
+void MainWindow::UnlockDocument() {
+    Tab& tab = Active();
+    if (tab.dirty) {
+        MessageBoxW(m_hwnd, L"Save the document (or undo the changes) first; it is opened again to unlock it.",
+                    APP_NAME, MB_ICONINFORMATION);
+        return;
+    }
+    PasswordPrompt prompt;
+    prompt.fileName = FileNameFromPath(tab.path);
+    prompt.unlock = true;
+    if (DialogBoxParamW(m_inst, MAKEINTRESOURCEW(IDD_PASSWORD), m_hwnd, PasswordDlgProc, (LPARAM)&prompt) != IDOK ||
+        prompt.password.empty())
+        return;
+    std::string pw = WideToUtf8(prompt.password);
+    SecureZeroMemory(prompt.password.data(), prompt.password.size() * sizeof(wchar_t));
+    tab.unlocking = true;
+    OpenFile(tab.path, tab.view->CurrentPage(), pw, m_active);
+    SecureZeroMemory(pw.data(), pw.size());
+}
+
+void MainWindow::ProtectDocument() {
+    Tab& tab = Active();
+    if (!CanEdit()) return;
+    if (tab.info.encrypted && !FullAccess(tab.info.permissions) && tab.info.pendingSecurity < 0) {
+        UnlockDocument();  // limited: only the owner may change the protection
+        return;
+    }
+    ProtectOptions o;
+    o.state = tab.info.pendingSecurity == 1   ? L"New protection is set. It is applied when you save the document."
+              : tab.info.pendingSecurity == 0 ? L"The protection will be removed when you save the document."
+              : tab.info.encrypted            ? L"This document is protected with a password. Set a new one, or remove it."
+                                              : L"This document is not protected.";
+    o.canRemove = tab.info.encrypted || tab.info.pendingSecurity == 1;
+    if (!ShowProtectDialog(m_inst, m_hwnd, o)) return;
+    EditOp op;
+    op.kind = EditOp::SetSecurity;
+    if (o.remove) {
+        op.encrypt = false;
+    } else {
+        op.encrypt = true;
+        op.userPassword = WideToUtf8(o.userPassword);
+        op.ownerPassword = WideToUtf8(o.ownerPassword);
+        op.permissions = kPermAll;
+        if (o.limit)
+            op.permissions = (uint32_t)kPermAccessibility | (o.allowPrint ? (uint32_t)(kPermPrint | kPermPrintHigh) : 0u) |
+                             (o.allowCopy ? (uint32_t)kPermCopy : 0u) |
+                             (o.allowChange ? (uint32_t)(kPermModify | kPermAnnotate | kPermFillForms | kPermAssemble) : 0u);
+    }
+    SecureZeroMemory(o.userPassword.data(), o.userPassword.size() * sizeof(wchar_t));
+    SecureZeroMemory(o.ownerPassword.data(), o.ownerPassword.size() * sizeof(wchar_t));
+    const bool remove = !op.encrypt;
+    SendEdit(std::move(op));
+    MessageBoxW(m_hwnd,
+                remove ? L"The password will be removed when you save the document (Ctrl+S)."
+                       : L"The document will be protected when you save it (Ctrl+S, or Save as for a protected "
+                         L"copy). Undo (Ctrl+Z) takes it back before then.",
+                APP_NAME, MB_ICONINFORMATION);
+}
+
+HMENU MainWindow::CreateRedactMenu() {
+    PdfView& view = View();
+    const size_t marks = view.RedactionMarks().size();
+    HMENU m = CreatePopupMenu();
+    AppendMenuW(m, MF_STRING | (view.Tool() == ViewTool::Redact ? MF_CHECKED : 0), ID_TOOL_REDACT,
+                L"&Mark areas to redact");
+    AppendMenuW(m, MF_STRING | (view.HasSelection() ? 0 : MF_GRAYED), ID_REDACT_SELECTION, L"Mark &selected text");
+    AppendMenuW(m, MF_STRING, ID_REDACT_FIND, L"&Find and mark\x2026");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    const std::wstring apply = L"&Apply redactions" + (marks ? L" (" + std::to_wstring(marks) + L")" : L"") + L"\x2026";
+    AppendMenuW(m, MF_STRING | (marks ? 0 : MF_GRAYED), ID_REDACT_APPLY, apply.c_str());
+    AppendMenuW(m, MF_STRING | (marks ? 0 : MF_GRAYED), ID_REDACT_CLEAR, L"&Clear marks");
+    return m;
+}
+
+void MainWindow::StartRedactTool() {
+    if (!CanEdit()) return;
+    PdfView& view = View();
+    view.SetTool(view.Tool() == ViewTool::Redact ? ViewTool::Select : ViewTool::Redact);
+    UpdateUi();
+}
+
+void MainWindow::RedactSelection() {
+    if (!CanEdit()) return;
+    PdfView& view = View();
+    const std::vector<PageRect> rects = view.SelectionRects();
+    if (rects.empty()) return;
+    view.AddRedactionMarks(rects);
+    view.ClearSelection();
+}
+
+void MainWindow::FindForRedaction() {
+    if (!CanEdit()) return;
+    RedactFindOptions o = m_redactFind;
+    if (!ShowRedactFindDialog(m_inst, m_hwnd, o)) return;
+    m_redactFind = o;
+    const int patterns = (o.emails ? kFindEmails : 0) | (o.phones ? kFindPhones : 0) | (o.numbers ? kFindNumbers : 0);
+    std::wstring text = o.text;
+    if (text.find_first_not_of(L" \t") == std::wstring::npos) text.clear();
+    m_worker.FindForRedaction(Active().docId, text, o.matchCase, patterns);
+}
+
+void MainWindow::OnRedactFound(RedactFindResult* result) {
+    std::unique_ptr<RedactFindResult> res(result);
+    const int index = TabByDocId(res->docId);
+    if (index < 0) return;
+    Tab& tab = *m_tabs[(size_t)index];
+    if (res->marks.empty()) {
+        MessageBoxW(m_hwnd, L"Nothing was found to mark.", APP_NAME, MB_ICONINFORMATION);
+        return;
+    }
+    tab.view->AddRedactionMarks(res->marks);
+    std::set<int> pages;
+    for (const PageRect& m : res->marks) pages.insert(m.page);
+    const std::wstring msg = std::to_wstring(res->marks.size()) + (res->marks.size() == 1 ? L" place was" : L" places were") +
+                             L" marked on " + std::to_wstring(pages.size()) + (pages.size() == 1 ? L" page" : L" pages") +
+                             L".\n\nCheck them, remove any you want to keep (right-click a mark), then use Edit PDF "
+                             L"\x203A Redact \x203A Apply redactions.";
+    MessageBoxW(m_hwnd, msg.c_str(), APP_NAME, MB_ICONINFORMATION);
+}
+
+void MainWindow::ApplyRedactions() {
+    if (!CanEdit()) return;
+    PdfView& view = View();
+    const std::vector<PageRect> marks = view.RedactionMarks();
+    if (marks.empty()) {
+        MessageBoxW(m_hwnd, L"Mark what to redact first: Edit PDF \x203A Redact \x203A Mark areas, Mark selected text, or Find and mark.",
+                    APP_NAME, MB_ICONINFORMATION);
+        return;
+    }
+    const std::wstring msg = L"Redaction removes the text, pictures and drawings under the " +
+                             std::to_wstring(marks.size()) + (marks.size() == 1 ? L" marked area" : L" marked areas") +
+                             L", and the comments and links touching them, and covers them with black.\n\nOnce the "
+                             L"document is saved this can not be undone. Use Save as to keep the original.\n\nApply "
+                             L"the redactions now?";
+    if (MessageBoxW(m_hwnd, msg.c_str(), APP_NAME, MB_OKCANCEL | MB_ICONWARNING) != IDOK) return;
+    EditOp op;
+    op.kind = EditOp::Redact;
+    op.marks = marks;
+    view.ClearRedactionMarks();
+    view.SetTool(ViewTool::Select);
+    SendEdit(std::move(op));
+}
+
+// ===========================================================================
+// Geometry: ruler, protractor, rulers along the edges, units and scale
+// ===========================================================================
+void MainWindow::ApplyMeasureOptions() {
+    MeasureOptions o;
+    const Unit& u = kUnits[std::clamp(m_settings.measureUnit, 0, 5)];
+    o.unit = u.name;
+    o.perPoint = u.perPoint;
+    o.scale = std::max(1, m_settings.measureScale);
+    o.rulers = m_settings.showRulers;
+    for (auto& t : m_tabs) t->view->SetMeasureOptions(o);
+}
+
+void MainWindow::SetMeasureTool(ViewTool tool) {
+    PdfView& view = View();
+    if (!view.HasDocument()) return;
+    if (m_fullscreen) ToggleFullscreen();
+    view.SetTool(view.Tool() == tool ? ViewTool::Select : tool);
+    UpdateUi();
+}
+
+void MainWindow::SetCustomScale() {
+    std::wstring text = std::to_wstring(m_settings.measureScale);
+    if (!InputBox(L"Drawing scale",
+                  L"The drawing's scale is 1 to how many? (For example 250 for a plan drawn at 1:250.)", text))
+        return;
+    const long n = wcstol(text.c_str(), nullptr, 10);
+    if (n < 1 || n > 1000000) {
+        MessageBoxW(m_hwnd, L"Enter a whole number from 1 to 1000000.", APP_NAME, MB_ICONWARNING);
+        return;
+    }
+    m_settings.measureScale = (int)n;
+    ApplyMeasureOptions();
+}
+
+void MainWindow::ShowGeometryMenu() {
+    PdfView& view = View();
+    const UINT doc = view.HasDocument() ? 0 : MF_GRAYED;
+    HMENU units = CreatePopupMenu();
+    for (int i = 0; i < 6; ++i) AppendMenuW(units, MF_STRING, ID_UNIT_FIRST + i, kUnits[i].label);
+    CheckMenuRadioItem(units, ID_UNIT_FIRST, ID_UNIT_FIRST + 5, ID_UNIT_FIRST + std::clamp(m_settings.measureUnit, 0, 5),
+                       MF_BYCOMMAND);
+    HMENU scales = CreatePopupMenu();
+    bool known = false;
+    for (int i = 0; i < (int)(sizeof(kScales) / sizeof(kScales[0])); ++i) {
+        const std::wstring label = L"1:" + std::to_wstring(kScales[i]) + (kScales[i] == 1 ? L"  (actual size)" : L"");
+        const bool on = kScales[i] == m_settings.measureScale;
+        known = known || on;
+        AppendMenuW(scales, MF_STRING | (on ? MF_CHECKED : 0), ID_SCALE_FIRST + i, label.c_str());
+    }
+    AppendMenuW(scales, MF_SEPARATOR, 0, nullptr);
+    const std::wstring custom = known ? L"&Other\x2026" : L"1:" + std::to_wstring(m_settings.measureScale) + L"  (o&ther\x2026)";
+    AppendMenuW(scales, MF_STRING | (known ? 0 : MF_CHECKED), ID_SCALE_CUSTOM, custom.c_str());
+
+    HMENU m = CreatePopupMenu();
+    AppendMenuW(m, MF_STRING | doc | (view.Tool() == ViewTool::Ruler ? MF_CHECKED : 0), ID_TOOL_RULER,
+                L"&Ruler (measure a distance)");
+    AppendMenuW(m, MF_STRING | doc | (view.Tool() == ViewTool::Protractor ? MF_CHECKED : 0), ID_TOOL_PROTRACTOR,
+                L"&Protractor (measure an angle)");
+    AppendMenuW(m, MF_STRING | (m_settings.showRulers ? MF_CHECKED : 0), ID_SHOW_RULERS, L"Show r&ulers on the page");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_POPUP, (UINT_PTR)units, L"&Units");
+    AppendMenuW(m, MF_POPUP, (UINT_PTR)scales, L"Drawing &scale");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    const UINT has = view.HasMeasurements() ? 0 : MF_GRAYED;
+    AppendMenuW(m, MF_STRING | has, ID_MEASURE_KEEP_ALL, L"&Keep the measurements on the page");
+    AppendMenuW(m, MF_STRING | has, ID_MEASURE_CLEAR, L"&Clear the measurements");
+    const RECT rc = m_toolbar.ItemScreenRect(ID_GEOMETRY_MENU);
+    TrackPopupMenu(m, TPM_LEFTALIGN | TPM_TOPALIGN, rc.left, rc.bottom, 0, m_hwnd, nullptr);
+    DestroyMenu(m);
+}
+
+// ===========================================================================
 // Command palette (Ctrl+K)
 // ===========================================================================
 void MainWindow::ShowCommandPalette() {
@@ -3133,6 +3565,16 @@ void MainWindow::ShowCommandPalette() {
         {ID_WATERMARK, L"Add a watermark", L"", L"confidential draft stamp background", doc},
         {ID_PAGE_NUMBERS, L"Add page numbers", L"", L"numbering footer header", doc},
         {ID_EXPORT, L"Export as pictures, text or Markdown", L"", L"png jpeg jpg image txt md convert save", doc && !m_exporting},
+        {ID_COMPRESS, L"Compress (make the file smaller)", L"", L"reduce size optimize shrink", doc},
+        {ID_COMPARE, L"Compare with another PDF", L"", L"difference diff versions changes", doc && !m_comparing},
+        {ID_PASSWORD, L"Password protection", L"", L"encrypt protect lock security unlock remove password", doc},
+        {ID_TOOL_REDACT, L"Redact: mark areas", L"", L"black out remove hide sensitive censor", doc},
+        {ID_REDACT_SELECTION, L"Redact the selected text", L"", L"black out remove hide", doc && sel},
+        {ID_REDACT_FIND, L"Find and mark for redaction", L"", L"email phone number black out", doc},
+        {ID_REDACT_APPLY, L"Apply redactions", L"", L"black out remove", doc && !View().RedactionMarks().empty()},
+        {ID_TOOL_RULER, L"Ruler: measure a distance", L"", L"geometry scale length measure", doc},
+        {ID_TOOL_PROTRACTOR, L"Protractor: measure an angle", L"", L"geometry angle degrees measure", doc},
+        {ID_SHOW_RULERS, L"Show rulers on the page", L"", L"geometry scale", true},
         {ID_HIGHLIGHT, L"Highlight the selected text", L"Ctrl+H", L"marker", doc && sel},
         {ID_UNDERLINE, L"Underline the selected text", L"Ctrl+U", L"", doc && sel},
         {ID_STRIKEOUT, L"Strike through the selected text", L"Ctrl+Shift+K", L"strikethrough cross out", doc && sel},
@@ -3366,7 +3808,8 @@ INT_PTR CALLBACK AboutDlgProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
                             L"change and replace text, fill in forms, sign, and add comments, highlights, "
                             L"drawings, stamps, pictures, text, watermarks and page numbers, as well as reorganise, "
                             L"merge, split and extract pages, with undo and crash-safe saving. It makes scanned "
-                            L"pages searchable with text recognition and exports pages as pictures, text or "
+                            L"pages searchable with text recognition, redacts, compresses, compares and "
+                            L"password-protects documents, measures them, and exports pages as pictures, text or "
                             L"Markdown. Everything happens on your PC, "
                             L"with no account, cloud service or tracking.\r\n\r\n"
                             L"Created by: Akshaya Simha\r\n\r\n"

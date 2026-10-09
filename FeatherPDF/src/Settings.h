@@ -22,6 +22,9 @@ struct Settings {
     COLORREF drawColor = RGB(220, 30, 30);  // shapes, pen and new text
     int lineWidthTenths = 20;               // line width, in tenths of a point
     int textSize = 12;                      // new text, in points
+    int measureUnit = 0;                    // Geometry: index into kUnits
+    int measureScale = 1;                   // Geometry: drawing scale 1:measureScale
+    bool showRulers = false;                // Geometry: rulers along the edges
     std::vector<std::wstring> recent;       // recently opened files, newest first
 
     int themeMode = 0;     // ThemeMode: 0 = system, 1 = light, 2 = dark
