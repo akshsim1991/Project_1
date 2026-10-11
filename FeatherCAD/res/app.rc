@@ -1,0 +1,132 @@
+// app.rc - icon, manifest, version information and dialogs.
+#include <windows.h>
+#include <commctrl.h>
+#include "resource.h"
+
+IDI_APP ICON "app.ico"
+
+1 RT_MANIFEST "app.manifest"
+
+IDD_UNITS DIALOGEX 0, 0, 240, 116
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Drawing units"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "&Units:", -1, 10, 12, 60, 10
+    COMBOBOX        IDC_UNITS_COMBO, 76, 10, 154, 120, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "&Precision:", -1, 10, 32, 60, 10
+    COMBOBOX        IDC_PRECISION_COMBO, 76, 30, 154, 120, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "", IDC_UNITS_SAMPLE, 76, 48, 154, 10
+    AUTOCHECKBOX    "Use these for &new drawings too", IDC_UNITS_DEFAULT, 10, 66, 220, 12, WS_TABSTOP
+    LTEXT           "Changing the units does not scale the drawing: 1 unit stays 1 unit.", -1, 10, 80, 220, 10
+    DEFPUSHBUTTON   "OK", IDOK, 124, 96, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 180, 96, 50, 14
+END
+
+IDD_DRAFTING DIALOGEX 0, 0, 280, 210
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Drafting settings"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    GROUPBOX        "Grid and snap", -1, 10, 6, 260, 66
+    AUTOCHECKBOX    "Show &grid (F7)", IDC_GRID_ON, 18, 20, 100, 12, WS_TABSTOP
+    LTEXT           "Spacing:", -1, 140, 21, 40, 10
+    EDITTEXT        IDC_GRID_SPACING, 184, 19, 78, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    AUTOCHECKBOX    "&Snap to spacing (F9)", IDC_SNAP_ON, 18, 38, 110, 12, WS_TABSTOP
+    LTEXT           "Spacing:", -1, 140, 39, 40, 10
+    EDITTEXT        IDC_SNAP_SPACING, 184, 37, 78, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    AUTOCHECKBOX    "&Ortho: horizontal and vertical only (F8; Shift swaps it while held)", IDC_ORTHO_ON, 18, 56, 248, 12, WS_TABSTOP
+    GROUPBOX        "Object snaps", -1, 10, 78, 260, 106
+    AUTOCHECKBOX    "Object snaps &on (F3)", IDC_OSNAP_ON, 18, 92, 120, 12, WS_TABSTOP
+    AUTOCHECKBOX    "&Endpoint", IDC_OSNAP_FIRST + 0, 18, 110, 70, 12, WS_TABSTOP
+    AUTOCHECKBOX    "&Midpoint", IDC_OSNAP_FIRST + 1, 18, 124, 70, 12, WS_TABSTOP
+    AUTOCHECKBOX    "&Centre", IDC_OSNAP_FIRST + 2, 18, 138, 70, 12, WS_TABSTOP
+    AUTOCHECKBOX    "&Quadrant", IDC_OSNAP_FIRST + 3, 18, 152, 70, 12, WS_TABSTOP
+    AUTOCHECKBOX    "&Intersection", IDC_OSNAP_FIRST + 4, 140, 110, 80, 12, WS_TABSTOP
+    AUTOCHECKBOX    "&Perpendicular", IDC_OSNAP_FIRST + 5, 140, 124, 80, 12, WS_TABSTOP
+    AUTOCHECKBOX    "&Tangent", IDC_OSNAP_FIRST + 6, 140, 138, 80, 12, WS_TABSTOP
+    AUTOCHECKBOX    "&Nearest", IDC_OSNAP_FIRST + 7, 140, 152, 80, 12, WS_TABSTOP
+    PUSHBUTTON      "Select &all", IDC_OSNAP_ALL, 150, 90, 54, 14, WS_TABSTOP
+    PUSHBUTTON      "C&lear all", IDC_OSNAP_NONE, 208, 90, 54, 14, WS_TABSTOP
+    LTEXT           "At a point prompt, type END, MID, CEN, QUA, INT, PER, TAN or NEA for one point.", -1, 18, 168, 248, 10
+    DEFPUSHBUTTON   "OK", IDOK, 164, 190, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 220, 190, 50, 14
+END
+
+IDD_OPTIONS DIALOGEX 0, 0, 260, 112
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Auto-save and versions"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "&Auto-save every (minutes, 0 = off):", -1, 10, 12, 150, 10
+    EDITTEXT        IDC_AUTOSAVE_MINUTES, 190, 10, 60, 13, ES_NUMBER | WS_TABSTOP
+    LTEXT           "&Versions to keep for each drawing:", -1, 10, 30, 150, 10
+    EDITTEXT        IDC_KEEP_VERSIONS, 190, 28, 60, 13, ES_NUMBER | WS_TABSTOP
+    LTEXT           "Versions are kept in:", -1, 10, 48, 240, 10
+    EDITTEXT        IDC_HISTORY_FOLDER, 10, 60, 240, 13, ES_AUTOHSCROLL | ES_READONLY
+    DEFPUSHBUTTON   "OK", IDOK, 144, 92, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 200, 92, 50, 14
+END
+
+IDD_HISTORY DIALOGEX 0, 0, 340, 220
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Version history"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "", IDC_VERSION_INFO, 10, 8, 320, 18
+    CONTROL         "", IDC_VERSION_LIST, "SysListView32", LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | WS_BORDER | WS_TABSTOP, 10, 28, 320, 164
+    PUSHBUTTON      "&Restore", IDC_RESTORE, 10, 200, 60, 14, WS_TABSTOP
+    DEFPUSHBUTTON   "Close", IDCANCEL, 280, 200, 50, 14
+END
+
+IDD_RECOVER DIALOGEX 0, 0, 360, 220
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Recover drawings"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "", IDC_VERSION_INFO, 10, 8, 340, 18
+    CONTROL         "", IDC_VERSION_LIST, "SysListView32", LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | WS_BORDER | WS_TABSTOP, 10, 28, 340, 164
+    DEFPUSHBUTTON   "&Open", IDOK, 244, 200, 50, 14, WS_TABSTOP
+    PUSHBUTTON      "Close", IDCANCEL, 300, 200, 50, 14
+END
+
+IDD_ABOUT DIALOGEX 0, 0, 280, 160
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "About Feather CAD"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    ICON            IDI_APP, IDC_ABOUT_ICON, 12, 10, 21, 20
+    LTEXT           "", IDC_ABOUT_NAME, 44, 10, 226, 14, SS_NOPREFIX
+    LTEXT           "", IDC_ABOUT_VERSION, 44, 26, 226, 10, SS_NOPREFIX
+    LTEXT           "", IDC_ABOUT_TEXT, 12, 44, 258, 90, SS_NOPREFIX
+    DEFPUSHBUTTON   "OK", IDOK, 220, 140, 50, 14
+END
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION 1,0,0,0
+ PRODUCTVERSION 1,0,0,0
+ FILEFLAGSMASK 0x3fL
+ FILEFLAGS 0x0L
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_APP
+ FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "CompanyName", "Akshaya Simha"
+            VALUE "FileDescription", "Feather CAD"
+            VALUE "FileVersion", "1.0.0.0"
+            VALUE "InternalName", "FeatherCAD"
+            VALUE "LegalCopyright", "\251 2026 Akshaya Simha"
+            VALUE "OriginalFilename", "FeatherCAD.exe"
+            VALUE "ProductName", "Feather CAD"
+            VALUE "ProductVersion", "1.0.0.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

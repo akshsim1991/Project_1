@@ -1,0 +1,39 @@
+// resource.h - resource ids.
+#pragma once
+
+#define IDI_APP 1
+
+#define IDD_UNITS 100
+#define IDD_DRAFTING 101
+#define IDD_OPTIONS 102
+#define IDD_HISTORY 103
+#define IDD_RECOVER 104
+#define IDD_ABOUT 105
+
+#define IDC_UNITS_COMBO 1000
+#define IDC_PRECISION_COMBO 1001
+#define IDC_UNITS_DEFAULT 1002
+#define IDC_UNITS_SAMPLE 1003
+
+#define IDC_GRID_ON 1010
+#define IDC_GRID_SPACING 1011
+#define IDC_SNAP_ON 1012
+#define IDC_SNAP_SPACING 1013
+#define IDC_ORTHO_ON 1014
+#define IDC_OSNAP_ON 1015
+#define IDC_OSNAP_FIRST 1020  /* + bit index of the snap mode (8 boxes) */
+#define IDC_OSNAP_ALL 1030
+#define IDC_OSNAP_NONE 1031
+
+#define IDC_AUTOSAVE_MINUTES 1040
+#define IDC_KEEP_VERSIONS 1041
+#define IDC_HISTORY_FOLDER 1042
+
+#define IDC_VERSION_LIST 1050
+#define IDC_VERSION_INFO 1051
+#define IDC_RESTORE 1052
+
+#define IDC_ABOUT_ICON 1060
+#define IDC_ABOUT_NAME 1061
+#define IDC_ABOUT_VERSION 1062
+#define IDC_ABOUT_TEXT 1063

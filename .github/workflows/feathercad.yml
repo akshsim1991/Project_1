@@ -1,0 +1,69 @@
+name: Feather CAD
+
+on:
+  push:
+    paths: ["FeatherCAD/**", ".github/workflows/feathercad.yml"]
+  pull_request:
+    paths: ["FeatherCAD/**", ".github/workflows/feathercad.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-msvc:
+    name: Windows x64 (MSVC) + tests + installer
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: FeatherCAD
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S . -B build -A x64 -DFEATHERCAD_TESTS=ON
+
+      - name: Build (Release)
+        run: cmake --build build --config Release --parallel
+
+      - name: Unit tests
+        run: build\Release\CoreTests.exe
+
+      - name: Package portable folder
+        run: cmake --install build --config Release --prefix dist
+
+      - name: Build installer (Inno Setup)
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress | Out-Null }
+          & $iscc installer\FeatherCAD.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FeatherCAD-portable-x64
+          path: FeatherCAD/dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FeatherCAD-installer-x64
+          path: FeatherCAD/installer/Output/*.exe
+
+  linux:
+    name: Unit tests (Linux, sanitizers) + MinGW-w64 cross-compile
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: FeatherCAD
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unit tests with address and undefined-behaviour sanitizers
+        run: |
+          g++ -std=c++17 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-sanitize-recover=all \
+            -Isrc tests/CoreTests.cpp src/Geometry.cpp src/Entity.cpp src/Document.cpp src/Snap.cpp \
+            src/Engine.cpp src/Commands.cpp -o coretests
+          ./coretests
+      - run: sudo apt-get update && sudo apt-get install -y g++-mingw-w64-x86-64
+      - run: cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=cmake/mingw-w64-x86_64.cmake -DCMAKE_BUILD_TYPE=Release
+      - run: cmake --build build --parallel
