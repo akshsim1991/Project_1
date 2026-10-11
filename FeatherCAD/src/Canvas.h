@@ -44,6 +44,9 @@ public:
     double PickRadius() const;
     // The snap found under the cursor (for the status bar), or nullptr.
     const wchar_t* SnapLabel() const;
+    // What is being typed in the command line (shown at the cursor with
+    // dynamic input).
+    void SetTypedText(const std::wstring& text);
 
 private:
     static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
@@ -77,6 +80,15 @@ private:
     uint64_t PickAt(Vec2 w) const;
     void FinishWindow(int x, int y, bool shift);
     void PushView();
+    // grips and tracking
+    void UpdateGrips();
+    bool GripsVisible() const;
+    int GripAt(Vec2 w) const;
+    void DrawGrips(ID2D1RenderTarget* rt);
+    bool ResolveTracking(const Prompt& pr, const Drafting& d, Vec2& p);
+    void DrawTracking(ID2D1RenderTarget* rt);
+    void StartDwell(Vec2 p);
+    void StopDwell();
     void ZoomAt(double factor, int x, int y);
     void Notify();
 
@@ -122,4 +134,23 @@ private:
     bool m_windowOn = false, m_windowDragged = false;
     POINT m_windowStart{};
     Preview m_preview;
+
+    // grips of the selection
+    std::vector<Grip> m_grips;
+    uint64_t m_gripsDocRev = 0, m_gripsSelRev = 0;
+    int m_hoverGrip = -1;
+    Vec2 m_hotGripPos;
+
+    // polar and object snap tracking
+    struct TrackLine {
+        Vec2 origin, dir;
+        bool ray;  // from the base point only (polar), or a whole line
+    };
+    std::vector<TrackLine> m_trackLines;
+    std::wstring m_trackLabel;
+    std::vector<Vec2> m_acquired;  // points rested on (object snap tracking)
+    Vec2 m_dwellPoint;
+    bool m_dwellOn = false;
+    std::wstring m_typed;
+    D2D1_COLOR_F m_gripFill, m_gripHover, m_gripHot, m_trackInk;
 };

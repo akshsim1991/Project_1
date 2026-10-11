@@ -81,7 +81,8 @@ SnapResult FindSnap(const Document& doc, const SnapQuery& q) {
         const bool curveNear = bounds.Intersects(search);
         // Centres: also found when the cursor is on the circle itself.
         if ((q.modes & kSnapCentre) && (e.type == EntityType::Circle || e.type == EntityType::Arc ||
-                                        e.type == EntityType::Polyline)) {
+                                        e.type == EntityType::Polyline || e.type == EntityType::Ellipse ||
+                                        e.type == EntityType::Array)) {
             pts.clear();
             Centres(e, pts);
             for (Vec2 c : pts) {

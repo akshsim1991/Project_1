@@ -799,7 +799,21 @@ bool StretchEntity(Entity& e, const Box& w, Vec2 d) {
                 }
             return moved;
         }
+        case EntityType::Ellipse:
+            if (!w.Contains(e.p0)) return false;
+            Translate(e, d);
+            return true;
+        case EntityType::Spline: {
+            bool moved = false;
+            for (Vertex& v : e.verts)
+                if (w.Contains(v.p)) {
+                    v.p += d;
+                    moved = true;
+                }
+            return moved;
+        }
         case EntityType::Array:
+        case EntityType::Point:
             return false;
     }
     return false;

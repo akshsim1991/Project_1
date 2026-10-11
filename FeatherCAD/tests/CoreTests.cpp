@@ -7,7 +7,10 @@
 
 #include "Document.h"
 #include "Engine.h"
+#include "Grips.h"
 #include "Modify.h"
+#include "Select.h"
+#include "Spline.h"
 #include "Snap.h"
 
 namespace {
@@ -762,6 +765,167 @@ void TestModifyCommands() {
     ExpandArray(doc.Entities().rbegin()->second, copies);
     CHECK(copies.size() == 5 && Close(copies[4].p0, {100, 0}));
 }
+
+void TestNewShapes() {
+    // Splines pass through their fit points; a closed one comes back smoothly.
+    std::vector<Vec2> pts;
+    SplinePoints({{0, 0}, {10, 10}, {20, 0}, {30, 10}}, false, 8, pts);
+    CHECK(pts.size() == 25 && Close(pts[8], {10, 10}) && Close(pts.back(), {30, 10}));
+    SplinePoints({{10, 0}, {0, 10}, {-10, 0}, {0, -10}}, true, 16, pts);
+    CHECK(pts.size() == 65 && Close(pts.front(), pts.back()));
+    double maxR = 0, minR = 1e9;
+    for (Vec2 p : pts) {
+        maxR = std::max(maxR, Length(p));
+        minR = std::min(minR, Length(p));
+    }
+    CHECK(Close(minR, 6.875 * std::sqrt(2.0), 1e-9) && Close(maxR, 10));  // symmetric, through the points
+
+    // Ellipses: points, quadrants, transforms and trimming.
+    Entity el = Entity::Ellipse({0, 0}, {10, 0}, 0.5);
+    CHECK(Close(EllipsePoint(el.p0, el.p1, el.radius, kPi / 2), {0, 5}));
+    CHECK(Close(EllipseParam(el.p0, el.p1, el.radius, {0, 5}), kPi / 2));
+    std::vector<Vec2> q;
+    Quadrants(el, q);
+    CHECK(q.size() == 4);
+    Box b = Bounds(el);
+    CHECK(Close(b.maxX, 10, 1e-6) && Close(b.maxY, 5, 1e-3));
+    Entity moved = el;
+    Translate(moved, {5, 5});
+    CHECK(Close(moved.p0, {5, 5}) && Close(moved.p1, {10, 0}));
+    Rotate(moved, {5, 5}, kPi / 2);
+    CHECK(Close(moved.p1, {0, 10}) && Close(moved.p0, {5, 5}));
+    Scale(moved, {5, 5}, 2);
+    CHECK(Close(Length(moved.p1), 20) && Close(moved.radius, 0.5));
+    Entity arc = Entity::EllipseArc({0, 0}, {10, 0}, 0.5, 0, kPi / 2);
+    Mirror(arc, {0, 0}, {0, 1});  // about the Y axis
+    std::vector<Vec2> ends;
+    EndPoints(arc, ends);
+    CHECK(ends.size() == 2 && ((Close(ends[0], {0, 5}) && Close(ends[1], {-10, 0})) ||
+                               (Close(ends[1], {0, 5}) && Close(ends[0], {-10, 0}))));
+    std::vector<Entity> out;
+    CHECK(TrimAt(el, {10, 0}, PrimsOf({Entity::Line({0, -20}, {0, 20})}), out, nullptr));
+    CHECK(out.size() == 1 && out[0].type == EntityType::Ellipse && !out[0].closed);
+    CHECK(Close(out[0].startAngle, kPi / 2, 1e-3) && Close(out[0].endAngle, 3 * kPi / 2, 1e-3));
+    double area = 0;
+    CHECK(AreaOf(el, area) && Close(area, kPi * 50));
+
+    // Polygons and points.
+    Entity hex = Entity::RegularPolygon({0, 0}, {10, 0}, 6);
+    CHECK(hex.closed && hex.verts.size() == 6 && Close(LengthOf(hex), 60));
+    Entity pt = Entity::Point({3, 4});
+    CHECK(Close(DistanceTo(pt, {0, 0}), 5));
+
+    // Files and DXF.
+    Document doc;
+    doc.Add(el);
+    doc.Add(Entity::EllipseArc({1, 2}, {3, 4}, 0.25, 0.5, 2));
+    doc.Add(Entity::Spline({{0, 0}, {5, 5}, {10, 0}}, false));
+    doc.Add(pt);
+    const std::string text = doc.ToText();
+    Document back;
+    std::wstring err;
+    CHECK(back.FromText(text, err) && back.Count() == 4 && back.ToText() == text);
+    const std::string dxf = back.ToDxf();
+    CHECK(dxf.find("POINT") != std::string::npos);
+}
+
+void TestGripsAndSelect() {
+    std::vector<Grip> g;
+    Entity line = Entity::Line({0, 0}, {10, 0});
+    GripsOf(line, g);
+    CHECK(g.size() == 3);
+    CHECK(DragGrip(line, 1, {10, 0}, {10, 5}) && Close(line.p1, {10, 5}));
+    CHECK(DragGrip(line, 2, {5, 2.5}, {5, 12.5}) && Close(line.p0, {0, 10}));
+
+    Entity circle = Entity::Circle({0, 0}, 5);
+    CHECK(DragGrip(circle, 1, {5, 0}, {8, 0}) && Close(circle.radius, 8));
+    Entity arc = Entity::Arc({0, 0}, 10, 0, kPi);
+    CHECK(DragGrip(arc, 3, {0, 10}, {0, 5}));  // flatter through the new middle
+    CHECK(Close(Polar(arc.p0, arc.radius, arc.startAngle), {10, 0}, 1e-9) || Close(Polar(arc.p0, arc.radius, arc.endAngle), {10, 0}, 1e-9));
+    CHECK(DistanceTo(arc, {0, 5}) < 1e-9);
+
+    Entity rect = Entity::Rectangle({0, 0}, {10, 10});
+    g.clear();
+    GripsOf(rect, g);
+    CHECK(g.size() == 8);
+    CHECK(DragGrip(rect, 4, {5, 0}, {5, -2}) && Close(rect.verts[0].p, {0, -2}) && Close(rect.verts[1].p, {10, -2}));
+    Entity slot = Entity::Polyline({{{0, 0}, 0}, {{10, 0}, 1}, {{10, 10}, 0}}, false);
+    CHECK(DragGrip(slot, 4, {15, 5}, {12, 5}) && slot.verts[1].bulge > 0 && slot.verts[1].bulge < 1);
+
+    Entity el = Entity::Ellipse({0, 0}, {10, 0}, 0.5);
+    CHECK(DragGrip(el, 3, {0, 5}, {0, 8}) && Close(el.radius, 0.8));
+    CHECK(DragGrip(el, 1, {10, 0}, {0, 16}) && Close(Length(el.p1), 16) && Close(el.radius, 0.5));
+
+    SelectQuery q;
+    q.type = (int)EntityType::Circle;
+    q.prop = QProp::Radius;
+    q.op = QOp::Equal;
+    q.value = 5;
+    CHECK(Matches(Entity::Circle({1, 1}, 5), q) && !Matches(Entity::Circle({1, 1}, 6), q) && !Matches(line, q));
+    q.op = QOp::Greater;
+    CHECK(Matches(Entity::Circle({1, 1}, 6), q));
+    q = SelectQuery{};
+    q.prop = QProp::Area;
+    q.op = QOp::Greater;
+    q.value = 100;
+    double area = 0;
+    const Entity slotClosed = Entity::Polyline({{{0, 0}, 0}, {{10, 0}, 1}, {{10, 10}, 0}, {{0, 10}, 0}}, true);
+    CHECK(AreaOf(slotClosed, area) && Close(area, 100 + 12.5 * kPi));
+    CHECK(Matches(slotClosed, q) && !Matches(Entity::Rectangle({0, 0}, {5, 5}), q) && !Matches(line, q));
+    CHECK(SameKind(Entity::Circle({0, 0}, 1), Entity::Circle({5, 5}, 9)) && !SameKind(line, circle));
+}
+
+void TestDrawCommandsB2() {
+    Document doc;
+    TestHost host;
+    Engine eng(doc, host);
+    Type(eng, {L"el", L"-10,0", L"10,0", L"5"});
+    CHECK(doc.Count() == 1 && doc.Entities().begin()->second.type == EntityType::Ellipse &&
+          Close(doc.Entities().begin()->second.radius, 0.5));
+    Type(eng, {L"el", L"c", L"0,0", L"0,20", L"4"});
+    CHECK(Close(Length(doc.Entities().rbegin()->second.p1), 20) && Close(doc.Entities().rbegin()->second.radius, 0.2));
+    Type(eng, {L"el", L"a", L"-10,0", L"10,0", L"5", L"0", L"90"});
+    const Entity& ea = doc.Entities().rbegin()->second;
+    CHECK(!ea.closed && Close(ea.startAngle, 0) && Close(ea.endAngle, kPi / 2));
+
+    Type(eng, {L"pol", L"6", L"0,0", L"i", L"10,0"});
+    const Entity& hex = doc.Entities().rbegin()->second;
+    CHECK(hex.verts.size() == 6 && Close(hex.verts[0].p, {10, 0}));
+    Type(eng, {L"pol", L"4", L"0,0", L"c", L"5"});  // circumscribed square of half-width 5
+    CHECK(Close(Bounds(doc.Entities().rbegin()->second).Width(), 10));
+    Type(eng, {L"pol", L"3", L"e", L"0,0", L"10,0"});
+    CHECK(Close(LengthOf(doc.Entities().rbegin()->second), 30));
+
+    Type(eng, {L"spl", L"0,0", L"10,10", L"20,0", L""});
+    CHECK(doc.Entities().rbegin()->second.type == EntityType::Spline && doc.Entities().rbegin()->second.verts.size() == 3);
+    const size_t before = doc.Count();
+    Type(eng, {L"po", L"1,1", L"2,2", L""});
+    CHECK(doc.Count() == before + 2);
+
+    // Select similar picks up every point.
+    eng.AddToSelection({doc.Entities().rbegin()->first});
+    Type(eng, {L"selectsimilar"});
+    CHECK(eng.Selection().size() == 2);
+    eng.ClearSelection();
+
+    // Grip editing: stretch an end point shared by two lines; Enter cycles to MOVE.
+    doc.Clear();
+    const uint64_t a = doc.Add(Entity::Line({0, 0}, {10, 0}));
+    const uint64_t b = doc.Add(Entity::Line({10, 0}, {10, 10}));
+    eng.AddToSelection({a, b});
+    eng.StartGripEdit(Grip{a, 1, {10, 0}});
+    CHECK(eng.Active());
+    Type(eng, {L"12,3"});
+    CHECK(Close(doc.Find(a)->p1, {12, 3}) && Close(doc.Find(b)->p0, {12, 3}) && !eng.Active());
+    eng.StartGripEdit(Grip{a, 0, {0, 0}});
+    Type(eng, {L"", L"5,0"});  // MOVE by (5,0)
+    CHECK(Close(doc.Find(a)->p0, {5, 0}) && Close(doc.Find(b)->p1, {15, 10}));
+    eng.StartGripEdit(Grip{a, 0, {5, 0}});
+    Type(eng, {L"", L"", L"c", L"90", L"180", L"x"});  // ROTATE copies
+    CHECK(doc.Count() == 6);
+    Type(eng, {L"u"});
+    CHECK(doc.Count() == 2);
+}
 }  // namespace
 
 int main() {
@@ -780,6 +944,9 @@ int main() {
     TestBreakJoinExplode();
     TestArraysAndTransforms();
     TestModifyCommands();
+    TestNewShapes();
+    TestGripsAndSelect();
+    TestDrawCommandsB2();
     std::printf("%d checks, %d failed\n", g_checks, g_failures);
     return g_failures;
 }

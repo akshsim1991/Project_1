@@ -866,6 +866,10 @@ const std::vector<CommandInfo>& AllCommands() {
         {L"CIRCLE", {L"C"}, L"Circle", L"Draw a circle (centre and radius, diameter, 2 or 3 points)"},
         {L"ARC", {L"A"}, L"Arc", L"Draw an arc (3 points, or centre, start and end)"},
         {L"RECTANG", {L"REC", L"RECTANGLE"}, L"Rectangle", L"Draw a rectangle from two corners or its size"},
+        {L"POLYGON", {L"POL"}, L"Polygon", L"Draw a regular polygon (inscribed, circumscribed or by an edge)"},
+        {L"ELLIPSE", {L"EL"}, L"Ellipse", L"Draw an ellipse or elliptical arc"},
+        {L"SPLINE", {L"SPL"}, L"Spline", L"Draw a smooth curve through points"},
+        {L"POINT", {L"PO"}, L"Point", L"Place points"},
         {L"MOVE", {L"M"}, L"Move", L"Move objects"},
         {L"COPY", {L"CO", L"CP"}, L"Copy", L"Copy objects, as many times as you like"},
         {L"ROTATE", {L"RO"}, L"Rotate", L"Rotate objects around a base point"},
@@ -891,6 +895,8 @@ const std::vector<CommandInfo>& AllCommands() {
         {L"UNDO", {L"U"}, L"Undo", L"Take back the last command"},
         {L"REDO", {}, L"Redo", L"Do again what Undo took back"},
         {L"SELECTALL", {L"ALL"}, L"Select all", L"Select every object"},
+        {L"SELECTSIMILAR", {}, L"Select similar", L"Select every object of the same kind as the selected ones"},
+        {L"QSELECT", {}, L"Quick select", L"Select objects by type and property (radius, length, area...)", true},
         {L"ZOOM", {L"Z"}, L"Zoom", L"Zoom to the extents, a window, a factor or the previous view"},
         {L"PAN", {L"P"}, L"Pan", L"Move the view by dragging"},
         {L"DIST", {L"DI"}, L"Distance", L"Measure the distance and angle between two points"},
@@ -916,6 +922,7 @@ const std::vector<CommandInfo>& AllCommands() {
 
 std::unique_ptr<Command> CreateCommand(const std::wstring& name) {
     if (auto cmd = CreateModifyCommand(name)) return cmd;
+    if (auto cmd = CreateDrawCommand(name)) return cmd;
     if (name == L"LINE") return std::make_unique<LineCmd>();
     if (name == L"PLINE") return std::make_unique<PlineCmd>();
     if (name == L"CIRCLE") return std::make_unique<CircleCmd>();

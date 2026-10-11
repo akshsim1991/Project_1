@@ -21,7 +21,7 @@
 #include <vector>
 
 #define APP_NAME L"Feather CAD"
-#define APP_VERSION L"1.1.0"
+#define APP_VERSION L"1.2.0"
 #define APP_AUTHOR L"Akshaya Simha"
 #define APP_COPYRIGHT L"\x00A9 2026 Akshaya Simha"
 #define APP_WINDOW_CLASS L"FeatherCadMain"
@@ -34,6 +34,7 @@ enum : UINT {
     WM_APP_CANVAS_STATE,               // canvas: cursor or selection changed (refresh bars)
     WM_APP_CANVAS_MENU,                // canvas: right-click (lParam = MAKELPARAM(screen x, y))
     WM_APP_COMMAND_KEY,                // command line: a key it does not use (wParam = VK)
+    WM_APP_COMMAND_TYPING,             // command line: the text being typed changed (lParam = std::wstring*)
 };
 
 // Command ids: menu items, toolbar buttons and accelerators. Items that
@@ -102,6 +103,17 @@ enum : int {
     ID_TOGGLE_SNAP,
     ID_TOGGLE_ORTHO,
     ID_TOGGLE_OSNAP,
+    ID_TOGGLE_POLAR,
+    ID_TOGGLE_OTRACK,
+    ID_TOGGLE_DYN,
+    ID_QSELECT,
+    ID_SELECT_SIMILAR,
+    ID_POLYGON,
+    ID_ELLIPSE,
+    ID_ELLIPSE_CENTRE,
+    ID_ELLIPSE_ARC,
+    ID_SPLINE,
+    ID_POINT,
     ID_OSNAP_SETTINGS,
     ID_DRAFTING_SETTINGS,
     ID_UNITS,

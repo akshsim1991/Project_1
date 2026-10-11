@@ -9,6 +9,7 @@
 #include "Engine.h"
 #include "Theme.h"
 #include "Util.h"
+#include "Document.h"
 
 namespace {
 const wchar_t kClass[] = L"FeatherCadCommandLine";
@@ -195,6 +196,12 @@ LRESULT CommandLine::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         case WM_LBUTTONDOWN:
             Focus();
             return 0;
+        case WM_COMMAND:
+            if ((HWND)lp == m_input && HIWORD(wp) == EN_CHANGE) {
+                const std::wstring text = InputText();
+                SendMessageW(GetParent(m_hwnd), WM_APP_COMMAND_TYPING, 0, (LPARAM)&text);
+            }
+            return 0;
         case WM_CTLCOLOREDIT:
         case WM_CTLCOLORSTATIC: {
             const Theme& th = CurrentTheme();
@@ -246,8 +253,20 @@ LRESULT CALLBACK CommandLine::EditProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
                     SendMessageW(hwnd, EM_SETSEL, 0x7fffffff, 0x7fffffff);
                     return 0;
                 case VK_TAB: {
+                    if (!self->m_idle) {
+                        // A length typed at a point prompt: Tab moves on to the
+                        // angle, as "@length<angle" (relative polar).
+                        std::wstring t = self->InputText();
+                        double v;
+                        if (!t.empty() && t[0] != L'@' && t.find(L'<') == std::wstring::npos &&
+                            ParseNumber(WideToUtf8(t), v)) {
+                            t = L"@" + t + L"<";
+                            SetWindowTextW(hwnd, t.c_str());
+                            SendMessageW(hwnd, EM_SETSEL, 0x7fffffff, 0x7fffffff);
+                        }
+                        return 0;
+                    }
                     // Complete a command name.
-                    if (!self->m_idle) return 0;
                     std::wstring t = self->InputText();
                     for (wchar_t& c : t) c = (wchar_t)towupper(c);
                     if (t.empty()) return 0;
@@ -275,6 +294,12 @@ LRESULT CALLBACK CommandLine::EditProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
             }
             break;
         }
+        case WM_SYSKEYDOWN:
+            if (wp == VK_F10) {  // F10 would open the window menu: polar tracking instead
+                SendMessageW(parent, WM_COMMAND, ID_TOGGLE_POLAR, 0);
+                return 0;
+            }
+            break;
         case WM_CHAR:
             // Space is Enter, as in other CAD programs. Tab and Enter are handled above.
             if (wp == L' ' || wp == L'\r' || wp == L'\t' || wp == 27) {

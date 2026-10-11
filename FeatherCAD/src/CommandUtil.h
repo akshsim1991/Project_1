@@ -73,3 +73,4 @@ struct StepLog {
 };
 
 std::unique_ptr<Command> CreateModifyCommand(const std::wstring& name);
+std::unique_ptr<Command> CreateDrawCommand(const std::wstring& name);

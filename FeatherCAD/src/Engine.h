@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "Document.h"
+#include "Grips.h"
 #include "Snap.h"
 
 struct Keyword {
@@ -63,6 +64,10 @@ struct Drafting {
     bool orthoOn = false;
     bool osnapOn = true;
     unsigned osnapModes = kSnapDefault;
+    bool polarOn = true;      // polar tracking (F10); ortho and polar exclude each other
+    double polarAngle = 15;   // degrees between tracking directions
+    bool otrackOn = true;     // object snap tracking (F11)
+    bool dynOn = true;        // input and prompt at the cursor (F12)
 };
 
 class EngineHost {
@@ -101,6 +106,8 @@ public:
 
     // ---- input --------------------------------------------------------------
     void Run(const std::wstring& name);   // start a command (menus, toolbar)
+    // A grip of the selection was clicked: edit with it (stretch, move...).
+    void StartGripEdit(const Grip& hot);
     void Text(const std::wstring& typed);  // Enter in the command line
     void Point(Vec2 p, bool shift = false);  // a click in the drawing (Shift held?)
     void Enter();                          // Enter / Space / right-click "Enter"
@@ -156,6 +163,8 @@ public:
     bool chamferByAngle = false, cornerTrim = true;
     double lastScale = 1, lastLengthen = 0;
     int lastColumns = 4, lastRows = 3, lastPolarCount = 6, lastPathCount = 5;
+    int lastSides = 4;
+    bool lastInscribed = true;
 
 private:
     bool ParsePoint(const std::wstring& text, Vec2& out) const;
@@ -200,6 +209,7 @@ public:
 };
 
 std::unique_ptr<Command> CreateCommand(const std::wstring& name);
+std::unique_ptr<Command> CreateGripEdit(const std::vector<uint64_t>& ids, const Grip& hot);
 
 // "12.50" with `precision` decimals; "-0.00" is shown as "0.00".
 std::wstring FormatDecimal(double v, int precision);

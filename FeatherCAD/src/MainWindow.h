@@ -69,6 +69,7 @@ private:
 
     void ApplyTheme(int mode);
     void ToggleDrafting(int id);
+    void QuickSelect();
 
     HWND m_hwnd = nullptr;
     bool m_ready = false;  // all child windows created

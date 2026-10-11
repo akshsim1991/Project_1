@@ -4,6 +4,7 @@
 #include <cstring>
 #include <iterator>
 #include <string_view>
+#include <algorithm>
 
 #include <commctrl.h>
 
@@ -101,6 +102,12 @@ INT_PTR CALLBACK DraftingProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
             SetDlgItemTextW(dlg, IDC_SNAP_SPACING, Utf8ToWide(FormatNumber(d->snapSpacing)).c_str());
             Check(dlg, IDC_ORTHO_ON, d->orthoOn);
             Check(dlg, IDC_OSNAP_ON, d->osnapOn);
+            Check(dlg, IDC_POLAR_ON, d->polarOn);
+            Check(dlg, IDC_OTRACK_ON, d->otrackOn);
+            Check(dlg, IDC_DYN_ON, d->dynOn);
+            for (const wchar_t* a : {L"5", L"10", L"15", L"18", L"22.5", L"30", L"45", L"90"})
+                SendDlgItemMessageW(dlg, IDC_POLAR_ANGLE, CB_ADDSTRING, 0, (LPARAM)a);
+            SetDlgItemTextW(dlg, IDC_POLAR_ANGLE, Utf8ToWide(FormatNumber(d->polarAngle)).c_str());
             for (int i = 0; i < kSnapModeCount; ++i) Check(dlg, IDC_OSNAP_FIRST + i, (d->osnapModes >> i) & 1);
             return TRUE;
         case WM_COMMAND:
@@ -118,6 +125,15 @@ INT_PTR CALLBACK DraftingProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
                     n.snapOn = Checked(dlg, IDC_SNAP_ON);
                     n.orthoOn = Checked(dlg, IDC_ORTHO_ON);
                     n.osnapOn = Checked(dlg, IDC_OSNAP_ON);
+                    n.polarOn = Checked(dlg, IDC_POLAR_ON);
+                    n.otrackOn = Checked(dlg, IDC_OTRACK_ON);
+                    n.dynOn = Checked(dlg, IDC_DYN_ON);
+                    if (!ReadPositive(dlg, IDC_POLAR_ANGLE, n.polarAngle)) return TRUE;
+                    if (n.polarAngle > 180) {
+                        MessageBoxW(dlg, L"The polar angle must be 180 degrees or less.", APP_NAME, MB_ICONWARNING);
+                        return TRUE;
+                    }
+                    if (n.orthoOn && n.polarOn) n.polarOn = false;  // ortho wins, as with F8
                     n.osnapModes = 0;
                     for (int i = 0; i < kSnapModeCount; ++i)
                         if (Checked(dlg, IDC_OSNAP_FIRST + i)) n.osnapModes |= 1u << i;
@@ -332,6 +348,64 @@ INT_PTR CALLBACK RecoverProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
     return FALSE;
 }
 
+// ---- quick select ---------------------------------------------------------------
+struct QSelectData {
+    SelectQuery* q;
+    QSelectMode* mode;
+};
+
+constexpr EntityType kQsTypes[] = {EntityType::Line,    EntityType::Circle,  EntityType::Arc,
+                                   EntityType::Polyline, EntityType::Ellipse, EntityType::Spline,
+                                   EntityType::Point,   EntityType::Array};
+
+INT_PTR CALLBACK QSelectProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
+    auto* d = (QSelectData*)GetWindowLongPtrW(dlg, DWLP_USER);
+    switch (msg) {
+        case WM_INITDIALOG: {
+            SetWindowLongPtrW(dlg, DWLP_USER, lp);
+            d = (QSelectData*)lp;
+            InitDialog(dlg);
+            SendDlgItemMessageW(dlg, IDC_QS_TYPE, CB_ADDSTRING, 0, (LPARAM)L"Any object");
+            for (EntityType t : kQsTypes) SendDlgItemMessageW(dlg, IDC_QS_TYPE, CB_ADDSTRING, 0, (LPARAM)TypeName(t));
+            int typeIndex = 0;
+            for (size_t i = 0; i < std::size(kQsTypes); ++i)
+                if ((int)kQsTypes[i] == d->q->type) typeIndex = (int)i + 1;
+            SendDlgItemMessageW(dlg, IDC_QS_TYPE, CB_SETCURSEL, typeIndex, 0);
+            for (int i = 0; i < kQPropCount; ++i)
+                SendDlgItemMessageW(dlg, IDC_QS_PROP, CB_ADDSTRING, 0, (LPARAM)QPropName((QProp)i));
+            SendDlgItemMessageW(dlg, IDC_QS_PROP, CB_SETCURSEL, (int)d->q->prop, 0);
+            for (const wchar_t* op : {L"= equal to", L"<> not equal to", L"> greater than", L"< less than"})
+                SendDlgItemMessageW(dlg, IDC_QS_OP, CB_ADDSTRING, 0, (LPARAM)op);
+            SendDlgItemMessageW(dlg, IDC_QS_OP, CB_SETCURSEL, (int)d->q->op, 0);
+            SetDlgItemTextW(dlg, IDC_QS_VALUE, Utf8ToWide(FormatNumber(d->q->value)).c_str());
+            CheckRadioButton(dlg, IDC_QS_REPLACE, IDC_QS_REMOVE,
+                             *d->mode == QSelectMode::Add ? IDC_QS_ADD : *d->mode == QSelectMode::Remove ? IDC_QS_REMOVE : IDC_QS_REPLACE);
+            return TRUE;
+        }
+        case WM_COMMAND:
+            if (LOWORD(wp) == IDOK) {
+                SelectQuery q;
+                const int t = (int)SendDlgItemMessageW(dlg, IDC_QS_TYPE, CB_GETCURSEL, 0, 0);
+                q.type = t <= 0 ? -1 : (int)kQsTypes[t - 1];
+                q.prop = (QProp)std::max(0, (int)SendDlgItemMessageW(dlg, IDC_QS_PROP, CB_GETCURSEL, 0, 0));
+                q.op = (QOp)std::max(0, (int)SendDlgItemMessageW(dlg, IDC_QS_OP, CB_GETCURSEL, 0, 0));
+                if (q.prop != QProp::Any && !ParseNumber(WideToUtf8(GetText(dlg, IDC_QS_VALUE)), q.value)) {
+                    MessageBoxW(dlg, L"Please enter a number (with a dot for decimals).", APP_NAME, MB_ICONWARNING);
+                    return TRUE;
+                }
+                *d->q = q;
+                *d->mode = Checked(dlg, IDC_QS_ADD) ? QSelectMode::Add
+                           : Checked(dlg, IDC_QS_REMOVE) ? QSelectMode::Remove
+                                                         : QSelectMode::Replace;
+                EndDialog(dlg, IDOK);
+            } else if (LOWORD(wp) == IDCANCEL) {
+                EndDialog(dlg, IDCANCEL);
+            }
+            return TRUE;
+    }
+    return FALSE;
+}
+
 INT_PTR CALLBACK AboutProc(HWND dlg, UINT msg, WPARAM wp, LPARAM) {
     switch (msg) {
         case WM_INITDIALOG: {
@@ -386,6 +460,11 @@ int RecoverDialog(HWND owner, const std::vector<HistoryDrawing>& drawings, bool 
     RecoverData d{&drawings, afterCrash};
     DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_RECOVER), owner, RecoverProc, (LPARAM)&d);
     return d.chosen;
+}
+
+bool QSelectDialog(HWND owner, SelectQuery& query, QSelectMode& mode) {
+    QSelectData d{&query, &mode};
+    return DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_QSELECT), owner, QSelectProc, (LPARAM)&d) == IDOK;
 }
 
 void AboutDialog(HWND owner) {

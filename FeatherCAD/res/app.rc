@@ -23,7 +23,7 @@ BEGIN
     PUSHBUTTON      "Cancel", IDCANCEL, 180, 96, 50, 14
 END
 
-IDD_DRAFTING DIALOGEX 0, 0, 280, 210
+IDD_DRAFTING DIALOGEX 0, 0, 280, 262
 STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "Drafting settings"
 FONT 9, "Segoe UI", 400, 0, 0x1
@@ -36,21 +36,47 @@ BEGIN
     LTEXT           "Spacing:", -1, 140, 39, 40, 10
     EDITTEXT        IDC_SNAP_SPACING, 184, 37, 78, 13, ES_AUTOHSCROLL | WS_TABSTOP
     AUTOCHECKBOX    "&Ortho: horizontal and vertical only (F8; Shift swaps it while held)", IDC_ORTHO_ON, 18, 56, 248, 12, WS_TABSTOP
-    GROUPBOX        "Object snaps", -1, 10, 78, 260, 106
-    AUTOCHECKBOX    "Object snaps &on (F3)", IDC_OSNAP_ON, 18, 92, 120, 12, WS_TABSTOP
-    AUTOCHECKBOX    "&Endpoint", IDC_OSNAP_FIRST + 0, 18, 110, 70, 12, WS_TABSTOP
-    AUTOCHECKBOX    "&Midpoint", IDC_OSNAP_FIRST + 1, 18, 124, 70, 12, WS_TABSTOP
-    AUTOCHECKBOX    "&Centre", IDC_OSNAP_FIRST + 2, 18, 138, 70, 12, WS_TABSTOP
-    AUTOCHECKBOX    "&Quadrant", IDC_OSNAP_FIRST + 3, 18, 152, 70, 12, WS_TABSTOP
-    AUTOCHECKBOX    "&Intersection", IDC_OSNAP_FIRST + 4, 140, 110, 80, 12, WS_TABSTOP
-    AUTOCHECKBOX    "&Perpendicular", IDC_OSNAP_FIRST + 5, 140, 124, 80, 12, WS_TABSTOP
-    AUTOCHECKBOX    "&Tangent", IDC_OSNAP_FIRST + 6, 140, 138, 80, 12, WS_TABSTOP
-    AUTOCHECKBOX    "&Nearest", IDC_OSNAP_FIRST + 7, 140, 152, 80, 12, WS_TABSTOP
-    PUSHBUTTON      "Select &all", IDC_OSNAP_ALL, 150, 90, 54, 14, WS_TABSTOP
-    PUSHBUTTON      "C&lear all", IDC_OSNAP_NONE, 208, 90, 54, 14, WS_TABSTOP
-    LTEXT           "At a point prompt, type END, MID, CEN, QUA, INT, PER, TAN or NEA for one point.", -1, 18, 168, 248, 10
-    DEFPUSHBUTTON   "OK", IDOK, 164, 190, 50, 14
-    PUSHBUTTON      "Cancel", IDCANCEL, 220, 190, 50, 14
+    GROUPBOX        "Tracking and input", -1, 10, 76, 260, 66
+    AUTOCHECKBOX    "&Polar tracking (F10), every", IDC_POLAR_ON, 18, 90, 120, 12, WS_TABSTOP
+    COMBOBOX        IDC_POLAR_ANGLE, 140, 88, 50, 120, CBS_DROPDOWN | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "degrees", -1, 194, 90, 40, 10
+    AUTOCHECKBOX    "Object snap trac&king (F11): rest on a snap point to line up with it", IDC_OTRACK_ON, 18, 106, 248, 12, WS_TABSTOP
+    AUTOCHECKBOX    "&Dynamic input (F12): prompt, input and sizes at the cursor", IDC_DYN_ON, 18, 122, 248, 12, WS_TABSTOP
+    GROUPBOX        "Object snaps", -1, 10, 146, 260, 88
+    AUTOCHECKBOX    "Object snaps o&n (F3)", IDC_OSNAP_ON, 18, 160, 120, 12, WS_TABSTOP
+    AUTOCHECKBOX    "&Endpoint", IDC_OSNAP_FIRST + 0, 18, 176, 70, 12, WS_TABSTOP
+    AUTOCHECKBOX    "&Midpoint", IDC_OSNAP_FIRST + 1, 18, 190, 70, 12, WS_TABSTOP
+    AUTOCHECKBOX    "&Centre", IDC_OSNAP_FIRST + 2, 18, 204, 70, 12, WS_TABSTOP
+    AUTOCHECKBOX    "&Quadrant", IDC_OSNAP_FIRST + 3, 18, 218, 70, 12, WS_TABSTOP
+    AUTOCHECKBOX    "&Intersection", IDC_OSNAP_FIRST + 4, 140, 176, 80, 12, WS_TABSTOP
+    AUTOCHECKBOX    "Perpendic&ular", IDC_OSNAP_FIRST + 5, 140, 190, 80, 12, WS_TABSTOP
+    AUTOCHECKBOX    "&Tangent", IDC_OSNAP_FIRST + 6, 140, 204, 80, 12, WS_TABSTOP
+    AUTOCHECKBOX    "Ne&arest", IDC_OSNAP_FIRST + 7, 140, 218, 80, 12, WS_TABSTOP
+    PUSHBUTTON      "Select a&ll", IDC_OSNAP_ALL, 150, 158, 54, 14, WS_TABSTOP
+    PUSHBUTTON      "C&lear all", IDC_OSNAP_NONE, 208, 158, 54, 14, WS_TABSTOP
+    DEFPUSHBUTTON   "OK", IDOK, 164, 242, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 220, 242, 50, 14
+END
+
+IDD_QSELECT DIALOGEX 0, 0, 260, 172
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Quick select"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "Object &type:", -1, 10, 12, 60, 10
+    COMBOBOX        IDC_QS_TYPE, 76, 10, 174, 140, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "&Property:", -1, 10, 30, 60, 10
+    COMBOBOX        IDC_QS_PROP, 76, 28, 174, 140, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "&Operator:", -1, 10, 48, 60, 10
+    COMBOBOX        IDC_QS_OP, 76, 46, 174, 100, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "&Value:", -1, 10, 66, 60, 10
+    EDITTEXT        IDC_QS_VALUE, 76, 64, 174, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    GROUPBOX        "Matching objects", -1, 10, 84, 240, 58
+    AUTORADIOBUTTON "&Replace the current selection", IDC_QS_REPLACE, 18, 96, 220, 12, WS_GROUP | WS_TABSTOP
+    AUTORADIOBUTTON "&Add to the current selection", IDC_QS_ADD, 18, 110, 220, 12
+    AUTORADIOBUTTON "Re&move from the current selection", IDC_QS_REMOVE, 18, 124, 220, 12
+    DEFPUSHBUTTON   "Select", IDOK, 144, 150, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 200, 150, 50, 14
 END
 
 IDD_OPTIONS DIALOGEX 0, 0, 260, 112
@@ -103,8 +129,8 @@ BEGIN
 END
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 1,1,0,0
- PRODUCTVERSION 1,1,0,0
+ FILEVERSION 1,2,0,0
+ PRODUCTVERSION 1,2,0,0
  FILEFLAGSMASK 0x3fL
  FILEFLAGS 0x0L
  FILEOS VOS_NT_WINDOWS32
@@ -117,12 +143,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "Akshaya Simha"
             VALUE "FileDescription", "Feather CAD"
-            VALUE "FileVersion", "1.1.0.0"
+            VALUE "FileVersion", "1.2.0.0"
             VALUE "InternalName", "FeatherCAD"
             VALUE "LegalCopyright", "\251 2026 Akshaya Simha"
             VALUE "OriginalFilename", "FeatherCAD.exe"
             VALUE "ProductName", "Feather CAD"
-            VALUE "ProductVersion", "1.1.0.0"
+            VALUE "ProductVersion", "1.2.0.0"
         END
     END
     BLOCK "VarFileInfo"

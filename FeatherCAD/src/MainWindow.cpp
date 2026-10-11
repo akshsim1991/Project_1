@@ -70,6 +70,14 @@ const IdCommand kIdCommands[] = {
     {ID_ARRAY_POLAR, L"ARRAYPOLAR", nullptr},
     {ID_ARRAY_PATH, L"ARRAYPATH", nullptr},
     {ID_ARRAY_EDIT, L"ARRAYEDIT", nullptr},
+    {ID_QSELECT, L"QSELECT", nullptr},
+    {ID_SELECT_SIMILAR, L"SELECTSIMILAR", nullptr},
+    {ID_POLYGON, L"POLYGON", nullptr},
+    {ID_ELLIPSE, L"ELLIPSE", nullptr},
+    {ID_ELLIPSE_CENTRE, L"ELLIPSE", L"C"},
+    {ID_ELLIPSE_ARC, L"ELLIPSE", L"A"},
+    {ID_SPLINE, L"SPLINE", nullptr},
+    {ID_POINT, L"POINT", nullptr},
     {ID_ZOOM_WINDOW, L"ZOOM", L"W"},
     {ID_PAN, L"PAN", nullptr},
     {ID_DIST, L"DIST", nullptr},
@@ -180,6 +188,9 @@ void MainWindow::CreateChildren() {
     m_tools.AddIconButton(ID_CIRCLE, kIconCircle, L"Circle (C)");
     m_tools.AddIconButton(ID_ARC, kIconArc, L"Arc (A)");
     m_tools.AddIconButton(ID_RECTANGLE, kIconRectangle, L"Rectangle (REC)");
+    m_tools.AddIconButton(ID_POLYGON, kIconPolygon, L"Polygon (POL)");
+    m_tools.AddIconButton(ID_ELLIPSE, kIconEllipse, L"Ellipse (EL)");
+    m_tools.AddIconButton(ID_SPLINE, kIconSpline, L"Spline (SPL)");
     m_tools.AddSeparator();
     m_tools.AddIconButton(ID_MOVE, kIconMove, L"Move (M)");
     m_tools.AddIconButton(ID_COPY, kIconCopy, L"Copy (CO)");
@@ -221,6 +232,9 @@ void MainWindow::CreateAccelerators() {
         {FVIRTKEY, VK_F7, ID_TOGGLE_GRID},
         {FVIRTKEY, VK_F8, ID_TOGGLE_ORTHO},
         {FVIRTKEY, VK_F9, ID_TOGGLE_SNAP},
+        {FVIRTKEY, VK_F10, ID_TOGGLE_POLAR},
+        {FVIRTKEY, VK_F11, ID_TOGGLE_OTRACK},
+        {FVIRTKEY, VK_F12, ID_TOGGLE_DYN},
         {FVIRTKEY | FALT, 'F', ID_MENU_FILE},
         {FVIRTKEY | FALT, 'E', ID_MENU_EDIT},
         {FVIRTKEY | FALT, 'V', ID_MENU_VIEW},
@@ -278,6 +292,7 @@ bool MainWindow::HostCommand(const std::wstring& name) {
     else if (name == L"ABOUT") AboutDialog(m_hwnd);
     else if (name == L"EXIT") PostMessageW(m_hwnd, WM_CLOSE, 0, 0);
     else if (name == L"OSNAP") OnCommand(ID_DRAFTING_SETTINGS);
+    else if (name == L"QSELECT") QuickSelect();
     else if (name == L"UNITS") {
         DrawingSettings s = m_doc.Settings();
         bool forNew = s.units == (Units)m_settings.newUnits && s.precision == m_settings.newPrecision;
@@ -325,6 +340,9 @@ void MainWindow::AfterInput() {
     m_tools.SetChecked(ID_CIRCLE, cmd == L"CIRCLE");
     m_tools.SetChecked(ID_ARC, cmd == L"ARC");
     m_tools.SetChecked(ID_RECTANGLE, cmd == L"RECTANG");
+    m_tools.SetChecked(ID_POLYGON, cmd == L"POLYGON");
+    m_tools.SetChecked(ID_ELLIPSE, cmd == L"ELLIPSE");
+    m_tools.SetChecked(ID_SPLINE, cmd == L"SPLINE");
     m_tools.SetChecked(ID_MOVE, cmd == L"MOVE");
     m_tools.SetChecked(ID_COPY, cmd == L"COPY");
     m_tools.SetChecked(ID_ROTATE, cmd == L"ROTATE");
@@ -357,7 +375,7 @@ void MainWindow::UpdateStatus() {
     if (m_engine.Active()) info = std::wstring(L"Running ") + m_engine.ActiveName() + (n ? L"  \x2022  " + info : L"");
     m_status.SetInfo(info);
     const Drafting& d = m_engine.Draft();
-    m_status.SetToggles(d.gridOn, d.snapOn, d.orthoOn, d.osnapOn);
+    m_status.SetToggles({d.gridOn, d.snapOn, d.orthoOn, d.polarOn, d.osnapOn, d.otrackOn, d.dynOn});
     m_status.SetUnits(UnitsSymbol(m_doc.Settings().units));
 }
 
@@ -380,11 +398,36 @@ void MainWindow::ToggleDrafting(int id) {
     switch (id) {
         case ID_TOGGLE_GRID: on = d.gridOn = !d.gridOn; name = L"Grid"; break;
         case ID_TOGGLE_SNAP: on = d.snapOn = !d.snapOn; name = L"Snap"; break;
-        case ID_TOGGLE_ORTHO: on = d.orthoOn = !d.orthoOn; name = L"Ortho"; break;
+        case ID_TOGGLE_ORTHO:
+            on = d.orthoOn = !d.orthoOn;
+            if (on) d.polarOn = false;  // one or the other, as in other CAD programs
+            name = L"Ortho";
+            break;
+        case ID_TOGGLE_POLAR:
+            on = d.polarOn = !d.polarOn;
+            if (on) d.orthoOn = false;
+            name = L"Polar";
+            break;
         case ID_TOGGLE_OSNAP: on = d.osnapOn = !d.osnapOn; name = L"Object snaps"; break;
+        case ID_TOGGLE_OTRACK: on = d.otrackOn = !d.otrackOn; name = L"Object snap tracking"; break;
+        case ID_TOGGLE_DYN: on = d.dynOn = !d.dynOn; name = L"Dynamic input"; break;
     }
     Message(std::wstring(L"<") + name + (on ? L" on>" : L" off>"));
     DraftingChanged();
+}
+
+void MainWindow::QuickSelect() {
+    static SelectQuery query;
+    static QSelectMode mode = QSelectMode::Replace;
+    if (!QSelectDialog(m_hwnd, query, mode)) return;
+    std::vector<uint64_t> ids;
+    for (const auto& kv : m_doc.Entities())
+        if (Matches(kv.second, query)) ids.push_back(kv.first);
+    if (mode == QSelectMode::Replace) m_engine.ClearSelection();
+    if (mode == QSelectMode::Remove) m_engine.RemoveFromSelection(ids);
+    else m_engine.AddToSelection(ids);
+    Message(std::to_wstring(ids.size()) + L" object(s) matched; " + std::to_wstring(m_engine.Selection().size()) +
+            L" selected.");
 }
 
 void MainWindow::OnCommand(int id) {
@@ -467,6 +510,9 @@ void MainWindow::OnCommand(int id) {
         case ID_TOGGLE_SNAP:
         case ID_TOGGLE_ORTHO:
         case ID_TOGGLE_OSNAP:
+        case ID_TOGGLE_POLAR:
+        case ID_TOGGLE_OTRACK:
+        case ID_TOGGLE_DYN:
             ToggleDrafting(id);
             break;
         case ID_DRAFTING_SETTINGS: {
@@ -531,6 +577,8 @@ HMENU MainWindow::BuildMenu(int menuId) {
                    m_doc.CanRedo());
             Separator(m);
             Append(m, ID_SELECT_ALL, L"Select &all\tCtrl+A");
+            Append(m, ID_QSELECT, L"&Quick select...");
+            Append(m, ID_SELECT_SIMILAR, L"Select si&milar", !m_engine.Selection().empty());
             Append(m, ID_ERASE, L"&Erase\tDelete");
             Separator(m);
             Append(m, ID_COMMAND_PALETTE, L"&Search commands...\tCtrl+K");
@@ -564,6 +612,16 @@ HMENU MainWindow::BuildMenu(int menuId) {
             Append(arc, ID_ARC_CENTRE, L"&Centre, start, end");
             Submenu(m, arc, L"&Arc");
             Append(m, ID_RECTANGLE, L"&Rectangle\tREC");
+            Append(m, ID_POLYGON, L"Pol&ygon\tPOL");
+            {
+                HMENU el = CreatePopupMenu();
+                Append(el, ID_ELLIPSE, L"&Axis, end\tEL");
+                Append(el, ID_ELLIPSE_CENTRE, L"&Centre");
+                Append(el, ID_ELLIPSE_ARC, L"Elliptical &arc");
+                Submenu(m, el, L"&Ellipse");
+            }
+            Append(m, ID_SPLINE, L"&Spline\tSPL");
+            Append(m, ID_POINT, L"P&oint\tPO");
             break;
         }
         case ID_MENU_MODIFY:
@@ -605,7 +663,10 @@ HMENU MainWindow::BuildMenu(int menuId) {
             Append(m, ID_TOGGLE_GRID, L"&Grid\tF7", true, d.gridOn);
             Append(m, ID_TOGGLE_SNAP, L"&Snap\tF9", true, d.snapOn);
             Append(m, ID_TOGGLE_ORTHO, L"&Ortho\tF8", true, d.orthoOn);
+            Append(m, ID_TOGGLE_POLAR, L"&Polar tracking\tF10", true, d.polarOn);
             Append(m, ID_TOGGLE_OSNAP, L"Object s&naps\tF3", true, d.osnapOn);
+            Append(m, ID_TOGGLE_OTRACK, L"Object snap &tracking\tF11", true, d.otrackOn);
+            Append(m, ID_TOGGLE_DYN, L"D&ynamic input\tF12", true, d.dynOn);
             Separator(m);
             Append(m, ID_DRAFTING_SETTINGS, L"&Drafting settings (grid, snaps)...");
             Append(m, ID_UNITS, L"&Units...");
@@ -667,6 +728,7 @@ void MainWindow::ShowContextMenu(int x, int y) {
             Append(m, ID_SCALE, L"&Scale");
             Append(m, ID_EXPLODE, L"Ex&plode");
             Append(m, ID_ERASE, L"&Erase\tDelete");
+            Append(m, ID_SELECT_SIMILAR, L"Select si&milar");
             Append(m, ID_ESCAPE, L"&Deselect all\tEsc");
         }
         Separator(m);
@@ -696,6 +758,9 @@ void MainWindow::ShowPalette() {
     list.push_back({ID_TOGGLE_SNAP, L"Snap on or off", L"F9", L"grid snap"});
     list.push_back({ID_TOGGLE_ORTHO, L"Ortho on or off", L"F8", L"horizontal vertical"});
     list.push_back({ID_TOGGLE_OSNAP, L"Object snaps on or off", L"F3", L"osnap endpoint midpoint"});
+    list.push_back({ID_TOGGLE_POLAR, L"Polar tracking on or off", L"F10", L"angle tracking"});
+    list.push_back({ID_TOGGLE_OTRACK, L"Object snap tracking on or off", L"F11", L"otrack align"});
+    list.push_back({ID_TOGGLE_DYN, L"Dynamic input on or off", L"F12", L"cursor tooltip dyn"});
     list.push_back({ID_DRAFTING_SETTINGS, L"Drafting settings", L"", L"grid snap spacing object snaps"});
     list.push_back({ID_AUTOSAVE_SETTINGS, L"Auto-save and versions", L"", L"options backup history"});
     list.push_back({ID_THEME_DARK, L"Dark theme", L"", L"colours night black"});
@@ -974,6 +1039,9 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
                 m_engine.SelectAll();
                 AfterInput();
             }
+            return 0;
+        case WM_APP_COMMAND_TYPING:
+            m_canvas.SetTypedText(*(const std::wstring*)lp);
             return 0;
         case WM_APP_CANVAS_STATE:
             UpdateStatus();

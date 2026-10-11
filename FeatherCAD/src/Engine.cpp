@@ -114,6 +114,16 @@ void Engine::Run(const std::wstring& name) {
     Start(*info);
 }
 
+void Engine::StartGripEdit(const Grip& hot) {
+    DeferredDelete guard{g_dead};
+    if (m_cmd || m_selection.empty()) return;
+    m_cmd = CreateGripEdit({m_selection.begin(), m_selection.end()}, hot);
+    m_cmdName = L"GRIP";
+    m_cmd->E = this;
+    m_prompt = Prompt{};
+    m_cmd->Start();
+}
+
 void Engine::Start(const CommandInfo& info) {
     m_lastCommand = info.name;
     if (info.name != L"UNDO" && info.name != L"REDO") {

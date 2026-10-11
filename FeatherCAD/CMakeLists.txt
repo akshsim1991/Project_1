@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(FeatherCAD VERSION 1.1.0 LANGUAGES CXX RC)
+project(FeatherCAD VERSION 1.2.0 LANGUAGES CXX RC)
 
 # Feather CAD: a lightweight 2D drafting program (Win32 + Direct2D, no
 # third-party libraries).
@@ -11,13 +11,17 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CORE_SOURCES
   src/Geometry.cpp
   src/Entity.cpp
+  src/Spline.cpp
   src/Curve.cpp
   src/Modify.cpp
+  src/Grips.cpp
+  src/Select.cpp
   src/Document.cpp
   src/Snap.cpp
   src/Engine.cpp
   src/Commands.cpp
   src/CommandsModify.cpp
+  src/CommandsDraw.cpp
 )
 
 add_executable(FeatherCAD WIN32

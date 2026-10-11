@@ -1,6 +1,8 @@
 // Icons.cpp - see Icons.h.
 #include "Icons.h"
 
+#include <cmath>
+
 #include "GdiPlusInc.h"
 
 using namespace Gdiplus;
@@ -172,6 +174,24 @@ void DrawCadIcon(HDC dc, int icon, const RECT& rc, COLORREF ink, COLORREF accent
                 for (int c = 0; c < 3; ++c) g.DrawRectangle(&pen, 2.5f + c * 5.5f, 5.0f + r * 6.0f, 4.0f, 4.0f);
             point(4.5f, 7.0f);
             break;
+        case kIconPolygon: {
+            PointF hex[6];
+            for (int i = 0; i < 6; ++i)
+                hex[i] = PointF(10 + 7.5f * std::cos(i * 3.14159265f / 3), 10 + 7.5f * std::sin(i * 3.14159265f / 3));
+            g.DrawPolygon(&pen, hex, 6);
+            point(10, 10);
+            break;
+        }
+        case kIconEllipse:
+            g.DrawEllipse(&pen, 2.0f, 5.5f, 16.0f, 9.0f);
+            point(10, 10);
+            break;
+        case kIconSpline: {
+            PointF pts[4] = {PointF(2.5f, 15), PointF(7, 4), PointF(13, 16), PointF(17.5f, 5)};
+            g.DrawCurve(&pen, pts, 4);
+            for (const PointF& p : pts) point(p.X, p.Y);
+            break;
+        }
         default:
             break;
     }

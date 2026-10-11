@@ -6,6 +6,7 @@
 
 #include <windowsx.h>
 
+#include "Spline.h"
 #include "Theme.h"
 #include "Util.h"
 
@@ -16,6 +17,9 @@ constexpr int kPickboxDip = 5;     // half size of the pick box
 constexpr int kApertureDip = 10;   // object snap search radius
 constexpr int kDragDip = 4;        // movement that turns a click into a drag
 constexpr double kSafeCoord = 1e6; // beyond this many pixels, clip before drawing
+constexpr int kTrackDip = 9;       // how near a tracking line pulls the cursor onto it
+constexpr UINT_PTR kDwellTimer = 7;  // resting on a snap point acquires it for tracking
+constexpr size_t kMaxGripObjects = 100;
 
 template <class T>
 void SafeRelease(T*& p) {
@@ -182,8 +186,15 @@ const wchar_t* Canvas::SnapLabel() const { return m_snapHit.found ? SnapName(m_s
 
 void Canvas::Notify() { SendMessageW(GetParent(m_hwnd), WM_APP_CANVAS_STATE, 0, 0); }
 
+void Canvas::SetTypedText(const std::wstring& text) {
+    if (text == m_typed) return;
+    m_typed = text;
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
 void Canvas::Refresh() {
     const Drafting& d = m_engine->Draft();
+    if (!m_engine->Active() || !d.otrackOn) m_acquired.clear();
     if (m_shownRevision != m_doc->Revision() || m_shownSelection != m_engine->SelectionRevision() ||
         m_shownGrid != d.gridOn || m_shownGridSpacing != d.gridSpacing)
         m_layerValid = false;
@@ -246,6 +257,10 @@ void Canvas::LoadColours() {
         m_labelText = Rgb(20, 20, 24);
         m_removeInk = Rgb(220, 30, 30);
     }
+    m_gripFill = Rgb(40, 110, 255);
+    m_gripHover = Rgb(255, 120, 150);
+    m_gripHot = Rgb(235, 40, 40);
+    m_trackInk = Rgb(60, 200, 110, 0.9f);
     m_windowFill = Rgb(60, 120, 255, 0.12f);
     m_windowEdge = Rgb(60, 120, 255, 0.9f);
     m_crossFill = Rgb(40, 190, 90, 0.12f);
@@ -350,6 +365,28 @@ ID2D1PathGeometry* Canvas::BuildGeometry(const std::vector<const Entity*>& entit
         switch (e->type) {
             case EntityType::Array:
                 break;
+            case EntityType::Point: {
+                const double d = Px(3) / m_scale;
+                line(e->p0 - Vec2{d, d}, e->p0 + Vec2{d, d});
+                line(e->p0 - Vec2{d, -d}, e->p0 + Vec2{d, -d});
+                break;
+            }
+            case EntityType::Ellipse:
+            case EntityType::Spline: {
+                std::vector<Vec2> pts;
+                if (e->type == EntityType::Ellipse) EllipsePoints(*e, pts);
+                else SplinePoints(*e, pts);
+                if (pts.size() < 2) break;
+                if (!safe.Contains(bounds)) {
+                    for (size_t i = 0; i + 1 < pts.size(); ++i)
+                        if (Box(pts[i], pts[i + 1]).Intersects(cull)) line(pts[i], pts[i + 1]);
+                    break;
+                }
+                sink->BeginFigure(ToScreen(pts[0]), D2D1_FIGURE_BEGIN_HOLLOW);
+                for (size_t i = 1; i < pts.size(); ++i) sink->AddLine(ToScreen(pts[i]));
+                sink->EndFigure(D2D1_FIGURE_END_OPEN);
+                break;
+            }
             case EntityType::Line:
                 line(e->p0, e->p1);
                 break;
@@ -613,6 +650,8 @@ void Canvas::RenderOverlay() {
         m_brush->SetColor(crossing ? m_crossEdge : m_windowEdge);
         rt->DrawRectangle(r, m_brush, 1.0f, crossing ? m_dashed : nullptr);
     }
+    DrawTracking(rt);
+    DrawGrips(rt);
     DrawSnapMarker(rt);
 
     // Crosshair (the Windows pointer is hidden over the drawing).
@@ -630,14 +669,22 @@ void Canvas::RenderOverlay() {
         }
         rt->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
-        // Tooltip: the snap found, and length and angle from the base point.
+        // Tooltip: the snap or tracking found; with dynamic input the prompt
+        // and what is being typed; length and angle from the base point.
         std::wstring tip;
-        if (m_snapHit.found) tip = SnapName(m_snapHit.mode);
-        const Prompt& pr = m_engine->CurrentPrompt();
-        if (wantsPoint && pr.hasBase && !Near(m_tracked, pr.base, 1e-12)) {
-            const Vec2 d = m_tracked - pr.base;
+        auto line = [&](const std::wstring& l) {
+            if (l.empty()) return;
             if (!tip.empty()) tip += L"\n";
-            tip += m_engine->Len(Length(d)) + L"  <  " + m_engine->Ang(NormalizeAngle(AngleOf(d))) + L"\x00B0";
+            tip += l;
+        };
+        if (!m_trackLabel.empty()) line(m_trackLabel);
+        else if (m_snapHit.found) line(SnapName(m_snapHit.mode));
+        const Prompt& pr = m_engine->CurrentPrompt();
+        if (m_engine->Draft().dynOn && m_engine->Active() && !pr.text.empty())
+            line(pr.text + (m_typed.empty() ? std::wstring() : L":  " + m_typed + L"_"));
+        if (wantsPoint && pr.hasBase && m_trackLabel.empty() && !Near(m_tracked, pr.base, 1e-12)) {
+            const Vec2 d = m_tracked - pr.base;
+            line(m_engine->Len(Length(d)) + L"  <  " + m_engine->Ang(NormalizeAngle(AngleOf(d))) + L"\x00B0");
         }
         if (!tip.empty()) DrawLabel(rt, tip, c.x + (float)Px(18), c.y + (float)Px(18));
     }
@@ -712,16 +759,22 @@ void Canvas::OnMouseMove(int x, int y, WPARAM keys) {
             m_snapHit = FindSnap(*m_doc, q);
         }
         Vec2 p = m_raw;
+        m_trackLines.clear();
+        m_trackLabel.clear();
+        const bool ortho = d.orthoOn != shift;  // Shift turns ortho on (or off) while it is held
         if (m_snapHit.found) {
             p = m_snapHit.point;
+            if (d.otrackOn) StartDwell(p);
         } else {
-            if (d.snapOn && d.snapSpacing > 0)
-                p = {std::round(p.x / d.snapSpacing) * d.snapSpacing, std::round(p.y / d.snapSpacing) * d.snapSpacing};
-            // Shift turns ortho on (or off) while it is held.
-            if ((d.orthoOn != shift) && pr.hasBase) {
-                const Vec2 delta = p - pr.base;
-                if (std::fabs(delta.x) >= std::fabs(delta.y)) p.y = pr.base.y;
-                else p.x = pr.base.x;
+            StopDwell();
+            if (!ResolveTracking(pr, d, p)) {
+                if (d.snapOn && d.snapSpacing > 0)
+                    p = {std::round(p.x / d.snapSpacing) * d.snapSpacing, std::round(p.y / d.snapSpacing) * d.snapSpacing};
+                if (ortho && pr.hasBase) {
+                    const Vec2 delta = p - pr.base;
+                    if (std::fabs(delta.x) >= std::fabs(delta.y)) p.y = pr.base.y;
+                    else p.x = pr.base.x;
+                }
             }
         }
         m_tracked = p;
@@ -729,7 +782,16 @@ void Canvas::OnMouseMove(int x, int y, WPARAM keys) {
     } else {
         m_tracked = m_raw;
         m_preview.Clear();
-        if (m_engine->WantsSelection() && !m_windowOn && !m_engine->PanMode() && !m_panning) m_hover = PickAt(m_raw);
+        m_trackLines.clear();
+        m_trackLabel.clear();
+        StopDwell();
+        m_hoverGrip = -1;
+        if (m_engine->WantsSelection() && !m_windowOn && !m_engine->PanMode() && !m_panning) {
+            UpdateGrips();
+            m_hoverGrip = GripAt(m_raw);
+            if (m_hoverGrip >= 0) m_tracked = m_grips[(size_t)m_hoverGrip].p;
+            else m_hover = PickAt(m_raw);
+        }
     }
     if (m_windowOn && (keys & MK_LBUTTON) &&
         (std::abs(x - m_windowStart.x) > Px(kDragDip) || std::abs(y - m_windowStart.y) > Px(kDragDip)))
@@ -772,6 +834,17 @@ void Canvas::OnLeftDown(int x, int y, WPARAM keys) {
     if (m_windowOn) {  // second click of a click-click window
         FinishWindow(x, y, shift);
         return;
+    }
+    if (!m_engine->Active()) {
+        UpdateGrips();
+        const int g = GripAt(ToWorld(x, y));
+        if (g >= 0) {  // a grip: edit with it
+            m_hotGripPos = m_grips[(size_t)g].p;
+            m_engine->StartGripEdit(m_grips[(size_t)g]);
+            Notify();
+            Refresh();
+            return;
+        }
     }
     const uint64_t id = PickAt(ToWorld(x, y));
     if (id) {
@@ -841,6 +914,21 @@ LRESULT Canvas::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             EndPaint(m_hwnd, &ps);
             return 0;
         }
+        case WM_TIMER:
+            if (wp == kDwellTimer) {
+                KillTimer(m_hwnd, kDwellTimer);
+                m_dwellOn = false;
+                if (m_snapHit.found && Near(m_snapHit.point, m_dwellPoint, 1e-9)) {
+                    // Rest on a point to acquire it for tracking; again to drop it.
+                    auto it = std::find_if(m_acquired.begin(), m_acquired.end(),
+                                           [&](Vec2 a) { return Near(a, m_dwellPoint, 1e-9); });
+                    if (it != m_acquired.end()) m_acquired.erase(it);
+                    else m_acquired.push_back(m_dwellPoint);
+                    if (m_acquired.size() > 7) m_acquired.erase(m_acquired.begin());
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                }
+            }
+            return 0;
         case WM_DISPLAYCHANGE:
             InvalidateRect(m_hwnd, nullptr, FALSE);
             return 0;
@@ -915,4 +1003,153 @@ LRESULT Canvas::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         }
     }
     return DefWindowProcW(m_hwnd, msg, wp, lp);
+}
+
+// ---------------------------------------------------------------------------
+// Grips
+// ---------------------------------------------------------------------------
+
+bool Canvas::GripsVisible() const {
+    const size_t n = m_engine->Selection().size();
+    if (n == 0 || n > kMaxGripObjects) return false;
+    return !m_engine->Active() || m_engine->ActiveName() == L"GRIP";
+}
+
+void Canvas::UpdateGrips() {
+    if (m_gripsDocRev == m_doc->Revision() && m_gripsSelRev == m_engine->SelectionRevision()) return;
+    m_gripsDocRev = m_doc->Revision();
+    m_gripsSelRev = m_engine->SelectionRevision();
+    m_grips.clear();
+    if (m_engine->Selection().size() > kMaxGripObjects) return;
+    for (uint64_t id : m_engine->Selection())
+        if (const Entity* e = m_doc->Find(id)) GripsOf(*e, m_grips);
+}
+
+int Canvas::GripAt(Vec2 w) const {
+    if (!GripsVisible()) return -1;
+    const double tol = Px(kPickboxDip + 1) / m_scale;
+    int best = -1;
+    double bestDist = tol;
+    for (size_t i = 0; i < m_grips.size(); ++i) {
+        const double d = std::max(std::fabs(m_grips[i].p.x - w.x), std::fabs(m_grips[i].p.y - w.y));
+        if (d <= bestDist) {
+            bestDist = d;
+            best = (int)i;
+        }
+    }
+    return best;
+}
+
+void Canvas::DrawGrips(ID2D1RenderTarget* rt) {
+    if (!GripsVisible()) return;
+    UpdateGrips();
+    const float h = (float)Px(4);
+    const bool editing = m_engine->ActiveName() == L"GRIP";
+    for (size_t i = 0; i < m_grips.size(); ++i) {
+        const D2D1_POINT_2F c = ToScreen(m_grips[i].p);
+        if (c.x < -h || c.y < -h || c.x > m_width + h || c.y > m_height + h) continue;
+        const D2D1_RECT_F r = D2D1::RectF(std::floor(c.x) - h + 0.5f, std::floor(c.y) - h + 0.5f,
+                                          std::floor(c.x) + h + 0.5f, std::floor(c.y) + h + 0.5f);
+        D2D1_COLOR_F fill = m_gripFill;
+        if (editing && Near(m_grips[i].p, m_hotGripPos, 1e-9)) fill = m_gripHot;
+        else if ((int)i == m_hoverGrip) fill = m_gripHover;
+        m_brush->SetColor(fill);
+        rt->FillRectangle(r, m_brush);
+        m_brush->SetColor(D2D1::ColorF(0, 0, 0, 0.55f));
+        rt->DrawRectangle(r, m_brush, 1.0f);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Polar tracking and object snap tracking
+// ---------------------------------------------------------------------------
+
+void Canvas::StartDwell(Vec2 p) {
+    if (m_dwellOn && Near(p, m_dwellPoint, 1e-9)) return;
+    m_dwellPoint = p;
+    m_dwellOn = true;
+    SetTimer(m_hwnd, kDwellTimer, 450, nullptr);
+}
+
+void Canvas::StopDwell() {
+    if (!m_dwellOn) return;
+    KillTimer(m_hwnd, kDwellTimer);
+    m_dwellOn = false;
+}
+
+bool Canvas::ResolveTracking(const Prompt& pr, const Drafting& d, Vec2& p) {
+    struct Cand {
+        TrackLine line;
+        double dist;
+    };
+    std::vector<Cand> cands;
+    const double tol = Px(kTrackDip) / m_scale;
+    const bool ortho = d.orthoOn != ((GetKeyState(VK_SHIFT) < 0));
+    std::vector<double> angles;
+    if (d.polarOn && !ortho && d.polarAngle > 0) {
+        const int n = std::min(720, (int)std::floor(360.0 / d.polarAngle + 1e-9));
+        for (int k = 0; k < n; ++k) angles.push_back(ToRadians(d.polarAngle * k));
+    }
+    auto consider = [&](Vec2 o, double ang, bool ray) {
+        const Vec2 dir{std::cos(ang), std::sin(ang)};
+        const Vec2 v = m_raw - o;
+        if (ray && Dot(v, dir) <= tol) return;
+        const double dist = std::fabs(Cross(dir, v));
+        if (dist <= tol) cands.push_back({{o, dir, ray}, dist});
+    };
+    if (pr.hasBase)
+        for (double a : angles) consider(pr.base, a, true);
+    if (d.otrackOn) {
+        std::vector<double> lineAngles;
+        for (double a : angles)
+            if (a < kPi - 1e-9) lineAngles.push_back(a);
+        if (lineAngles.empty()) lineAngles = {0, kPi / 2};
+        for (Vec2 a : m_acquired)
+            for (double ang : lineAngles) consider(a, ang, false);
+    }
+    if (cands.empty()) return false;
+    std::sort(cands.begin(), cands.end(), [](const Cand& a, const Cand& b) { return a.dist < b.dist; });
+    const TrackLine& first = cands[0].line;
+    p = first.origin + first.dir * Dot(m_raw - first.origin, first.dir);
+    m_trackLines = {first};
+    // Two tracking lines crossing near the cursor: their crossing point.
+    for (size_t i = 1; i < cands.size(); ++i) {
+        const TrackLine& second = cands[i].line;
+        const double den = Cross(first.dir, second.dir);
+        if (std::fabs(den) < 1e-9) continue;
+        const double t = Cross(second.origin - first.origin, second.dir) / den;
+        const Vec2 x = first.origin + first.dir * t;
+        if (Dist(x, m_raw) <= tol * 1.5) {
+            p = x;
+            m_trackLines.push_back(second);
+        }
+        break;
+    }
+    const TrackLine& shown = m_trackLines[0];
+    const Vec2 from = m_trackLines.size() > 1 || !shown.ray ? shown.origin : pr.base;
+    const Vec2 dv = p - from;
+    m_trackLabel = std::wstring(shown.ray ? L"Polar: " : L"Tracking: ") + m_engine->Len(Length(dv)) + L"  <  " +
+                   m_engine->Ang(NormalizeAngle(AngleOf(dv))) + L"\x00B0";
+    if (m_trackLines.size() > 1) m_trackLabel = L"Tracking crossing";
+    return true;
+}
+
+void Canvas::DrawTracking(ID2D1RenderTarget* rt) {
+    const float s = (float)Px(4);
+    m_brush->SetColor(m_trackInk);
+    // Acquired points: small crosses.
+    for (Vec2 a : m_acquired) {
+        const D2D1_POINT_2F c = ToScreen(a);
+        rt->DrawLine(D2D1::Point2F(c.x - s, c.y), D2D1::Point2F(c.x + s, c.y), m_brush, 1.5f);
+        rt->DrawLine(D2D1::Point2F(c.x, c.y - s), D2D1::Point2F(c.x, c.y + s), m_brush, 1.5f);
+    }
+    if (m_trackLines.empty() || !m_engine->WantsPoint()) return;
+    const double reach = (m_width + m_height) / m_scale * 2;
+    for (const TrackLine& l : m_trackLines) {
+        const Vec2 a = l.ray ? l.origin : l.origin - l.dir * reach;
+        const Vec2 b = l.origin + l.dir * reach;
+        Vec2 ca = a, cb = b;
+        if (!ClipSegment(ca, cb, ViewBox().Inflated(Px(2) / m_scale))) continue;
+        rt->DrawLine(ToScreen(ca), ToScreen(cb), m_brush, 1.0f, m_dashed);
+    }
 }

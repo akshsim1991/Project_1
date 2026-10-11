@@ -80,6 +80,9 @@ third-party libraries, comes as one small `.exe` and starts instantly.
 | F9            | Snap to the grid spacing |
 | F8, or Shift held | Ortho: horizontal and vertical only |
 | F3            | Object snaps |
+| F10           | Polar tracking |
+| F11           | Object snap tracking |
+| F12           | Dynamic input |
 
 - The object snaps are endpoint, midpoint, centre, quadrant, intersection,
   perpendicular, tangent and nearest. A marker and its name show where the
@@ -134,11 +137,54 @@ third-party libraries, comes as one small `.exe` and starts instantly.
 
 Arrays are saved in the `.fcad` file. They are exported to DXF as their separate copies.
 
+## Phase B2: faster editing and more shapes (version 1.2)
+
+**Grips**
+- Select objects (up to 100) to see their grips: end points, midpoints, centres, quadrants, vertices and fit points.
+- Click a grip to edit with it, without starting a command:
+
+| Grip | What dragging it does |
+|------|-----------------------|
+| Line end | Stretches the line |
+| Line middle | Moves the line |
+| Circle quadrant | Changes the radius |
+| Arc end or middle | Reshapes the arc through it |
+| Polyline segment middle | Moves a straight segment, or bends an arc segment |
+| Ellipse axis end | Changes that axis |
+
+- Grips that sit on the same point move together, so the shared ends of joined lines stay connected.
+- Press **Enter** to switch between STRETCH, MOVE, ROTATE, SCALE and MIRROR.
+- Options: **Base point**, **Copy** (keep the original and make several copies), **Undo** and **eXit**.
+
+**Tracking and input**
+
+| Feature | What it does |
+|---------|--------------|
+| Polar tracking (F10) | From the last point, the cursor is drawn onto rays every 15° (the step can be changed). A green dashed line and a tooltip (*Polar: 50.00 < 30°*) show it. Ortho and polar switch each other off. |
+| Object snap tracking (F11) | Rest the cursor on a snap point for half a second to pick it up (a small green cross); rest on it again to drop it. The cursor then lines up horizontally, vertically or at the polar angles with those points, and snaps to where two such lines cross. |
+| Dynamic input (F12) | The prompt and what you type show at the cursor, together with the length and angle from the last point. Type a length and press **Tab** to type the angle (it becomes `@length<angle`). |
+
+**New objects**
+
+| Command | Short name | What it draws |
+|---------|------------|---------------|
+| ELLIPSE | EL | An ellipse by its axis ends, by its centre, or an elliptical arc |
+| POLYGON | POL | A regular polygon, 3 to 1024 sides: inscribed or circumscribed about a circle, or by one edge |
+| SPLINE | SPL | A smooth curve through the points you click (Close and Undo options) |
+| POINT | PO | Point markers |
+
+- Ellipses can be trimmed and broken into elliptical arcs.
+- All the new objects move, rotate, scale, mirror and stretch, and have grips.
+- DXF export writes ellipses and splines as polylines that follow the curve, and points as POINT.
+
+**Selecting**
+- ★ **Quick select** (Edit menu): select by object type and property. The properties are length, radius, diameter, area, centre X/Y, number of vertices and closed. Compare with =, <>, > or <. The result replaces the selection, adds to it or is removed from it.
+- ★ **Select similar**: every object of the same kind as the selected ones.
+
 ## Coming in later phases
 
 | Phase | Contents |
 |-------|----------|
-| B2    | Grips, polar and object snap tracking, on-cursor input, ellipse, polygon, spline, Quick Select |
 | B3    | Layers, line types, properties panel, DXF import, match properties |
 | C     | Annotation: text, dimensions, hatching and blocks |
 | D     | Sheets, printing and PDF |
@@ -161,8 +207,9 @@ cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=cmake/mingw-w64-x86_64.cmake -DCMAKE_
 
 **Source layout**
 - The drawing model and the command engine have no Windows code:
-  `Geometry`, `Entity`, `Curve`, `Modify`, `Document`, `Snap`, `Engine`,
-  `Commands` and `CommandsModify`.
+  `Geometry`, `Entity`, `Spline`, `Curve`, `Modify`, `Grips`, `Select`,
+  `Document`, `Snap`, `Engine`, `Commands`, `CommandsModify` and
+  `CommandsDraw`.
 - The unit tests (`tests/CoreTests.cpp`) drive the engine by typed input
   alone.
 - The window side is `MainWindow`, `Canvas` (Direct2D), `CommandLine` and

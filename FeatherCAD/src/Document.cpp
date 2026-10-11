@@ -278,6 +278,9 @@ Box Document::Extents() const {
 //   array rect columns rows colx coly rowx rowy n      then n objects
 //   array polar cx cy count fill rotate n              (fill in degrees)
 //   array path count spacing align n                   then the path, then n objects
+//   ellipse cx cy axisx axisy ratio start end full      (start, end: parameters in degrees)
+//   spline closed n x y x y ...                         (fit points)
+//   point x y
 //   end
 //
 // Lines starting with # are comments. Unknown keywords are skipped, so a
@@ -311,6 +314,23 @@ void WriteEntity(const Entity& e, std::string& out) {
             for (const Vertex& v : e.verts) {
                 num(v.p.x); num(v.p.y); num(v.bulge);
             }
+            break;
+        case EntityType::Ellipse:
+            out += "ellipse";
+            num(e.p0.x); num(e.p0.y); num(e.p1.x); num(e.p1.y); num(e.radius);
+            num(ToDegrees(e.startAngle)); num(ToDegrees(e.endAngle)); num(e.closed ? 1 : 0);
+            break;
+        case EntityType::Spline:
+            out += "spline ";
+            out += e.closed ? "1 " : "0 ";
+            out += std::to_string(e.verts.size());
+            for (const Vertex& v : e.verts) {
+                num(v.p.x); num(v.p.y);
+            }
+            break;
+        case EntityType::Point:
+            out += "point";
+            num(e.p0.x); num(e.p0.y);
             break;
         case EntityType::Array: {
             const ArrayData& a = *e.array;
@@ -436,6 +456,20 @@ struct Reader {
             std::vector<Vertex> verts(n);
             for (size_t i = 0; i < n; ++i) verts[i] = {{v[2 + 3 * i], v[3 + 3 * i]}, v[4 + 3 * i]};
             out = Entity::Polyline(std::move(verts), v[0] != 0);
+        } else if (key == "ellipse") {
+            if (!need(8) || v[4] <= 0 || (v[2] == 0 && v[3] == 0)) return Fail(L"an ellipse needs a centre, an axis and a ratio");
+            out = v[7] != 0 ? Entity::Ellipse({v[0], v[1]}, {v[2], v[3]}, v[4])
+                            : Entity::EllipseArc({v[0], v[1]}, {v[2], v[3]}, v[4], ToRadians(v[5]), ToRadians(v[6]));
+        } else if (key == "spline") {
+            if (!need(2)) return Fail(L"a spline needs its flags and point count");
+            const size_t n = (size_t)v[1];
+            if (v[1] < 1 || v[1] > 1e7 || v.size() != 2 + 2 * n) return Fail(L"wrong number of spline points");
+            std::vector<Vec2> fit(n);
+            for (size_t i = 0; i < n; ++i) fit[i] = {v[2 + 2 * i], v[3 + 2 * i]};
+            out = Entity::Spline(fit, v[0] != 0);
+        } else if (key == "point") {
+            if (!need(2)) return Fail(L"a point needs 2 numbers");
+            out = Entity::Point({v[0], v[1]});
         } else {
             known = false;  // from a newer version
         }
@@ -631,6 +665,33 @@ std::string Document::ToDxf() const {
                 }
                 group(0, "SEQEND");
                 group(8, "0");
+                break;
+            case EntityType::Ellipse:
+            case EntityType::Spline: {
+                // DXF R12 has neither: a polyline that follows the curve.
+                std::vector<Vec2> pts;
+                if (e.type == EntityType::Ellipse) EllipsePoints(e, pts);
+                else SplinePoints(e, pts);
+                const bool closed = e.closed && pts.size() > 2;
+                if (closed) pts.pop_back();
+                group(0, "POLYLINE");
+                group(8, "0");
+                group(66, "1");
+                point(10, {0, 0});
+                group(70, closed ? "1" : "0");
+                for (Vec2 p : pts) {
+                    group(0, "VERTEX");
+                    group(8, "0");
+                    point(10, p);
+                }
+                group(0, "SEQEND");
+                group(8, "0");
+                break;
+            }
+            case EntityType::Point:
+                group(0, "POINT");
+                group(8, "0");
+                point(10, e.p0);
                 break;
             case EntityType::Array:
                 break;

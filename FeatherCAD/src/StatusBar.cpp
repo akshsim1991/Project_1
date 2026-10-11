@@ -18,7 +18,10 @@ StatusBar::StatusBar() {
         {ID_TOGGLE_GRID, ID_DRAFTING_SETTINGS, L"GRID", L"Grid (F7). Right-click for settings."},
         {ID_TOGGLE_SNAP, ID_DRAFTING_SETTINGS, L"SNAP", L"Snap to the grid spacing (F9). Right-click for settings."},
         {ID_TOGGLE_ORTHO, ID_DRAFTING_SETTINGS, L"ORTHO", L"Horizontal and vertical only (F8, or hold Shift)"},
+        {ID_TOGGLE_POLAR, ID_DRAFTING_SETTINGS, L"POLAR", L"Polar tracking at set angles (F10). Right-click for the angle."},
         {ID_TOGGLE_OSNAP, ID_OSNAP_SETTINGS, L"OSNAP", L"Object snaps (F3). Right-click to choose them."},
+        {ID_TOGGLE_OTRACK, ID_DRAFTING_SETTINGS, L"OTRACK", L"Object snap tracking (F11): rest on a snap point to line up with it"},
+        {ID_TOGGLE_DYN, ID_DRAFTING_SETTINGS, L"DYN", L"Dynamic input (F12): prompt, input and sizes at the cursor"},
         {ID_UNITS, ID_UNITS, L"mm", L"Drawing units and decimal places"},
     };
 }
@@ -85,10 +88,9 @@ void StatusBar::SetInfo(const std::wstring& text) {
     if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
-void StatusBar::SetToggles(bool grid, bool snap, bool ortho, bool osnap) {
-    const bool states[4] = {grid, snap, ortho, osnap};
+void StatusBar::SetToggles(const std::vector<bool>& states) {
     bool changed = false;
-    for (int i = 0; i < 4; ++i) {
+    for (size_t i = 0; i < states.size() && i + 1 < m_buttons.size(); ++i) {
         if (m_buttons[i].on != states[i]) changed = true;
         m_buttons[i].on = states[i];
     }
@@ -162,7 +164,7 @@ void StatusBar::Paint(HDC hdc) {
     SelectObject(mem, m_bold);
     for (size_t i = 0; i < m_buttons.size(); ++i) {
         const Button& b = m_buttons[i];
-        const bool isToggle = i < 4;
+        const bool isToggle = i + 1 < m_buttons.size();
         const bool on = isToggle && b.on;
         if (on || (int)i == m_hot) {
             HBRUSH fill = CreateSolidBrush(on ? th.barPressed : th.barHover);

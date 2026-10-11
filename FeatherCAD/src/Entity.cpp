@@ -5,6 +5,7 @@
 #include <functional>
 
 #include "Curve.h"
+#include "Spline.h"
 
 namespace {
 constexpr size_t kMaxArrayCopies = 100000;
@@ -69,6 +70,70 @@ Entity Entity::Array(ArrayData data) {
     return e;
 }
 
+Entity Entity::Ellipse(Vec2 centre, Vec2 majorAxis, double ratio) {
+    Entity e;
+    e.type = EntityType::Ellipse;
+    e.p0 = centre;
+    e.p1 = majorAxis;
+    e.radius = ratio;
+    e.startAngle = 0;
+    e.endAngle = 0;
+    e.closed = true;
+    return e;
+}
+
+Entity Entity::EllipseArc(Vec2 centre, Vec2 majorAxis, double ratio, double startParam, double endParam) {
+    Entity e = Ellipse(centre, majorAxis, ratio);
+    e.startAngle = NormalizeAngle(startParam);
+    e.endAngle = NormalizeAngle(endParam);
+    e.closed = false;
+    return e;
+}
+
+Entity Entity::Spline(const std::vector<Vec2>& fit, bool closed) {
+    Entity e;
+    e.type = EntityType::Spline;
+    for (Vec2 p : fit) e.verts.push_back({p, 0});
+    e.closed = closed;
+    return e;
+}
+
+Entity Entity::Point(Vec2 p) {
+    Entity e;
+    e.type = EntityType::Point;
+    e.p0 = p;
+    return e;
+}
+
+Entity Entity::RegularPolygon(Vec2 centre, Vec2 first, int sides) {
+    std::vector<Vertex> v;
+    sides = std::max(3, sides);
+    for (int i = 0; i < sides; ++i) v.push_back({RotateAround(first, centre, kTau * i / sides), 0});
+    return Polyline(std::move(v), true);
+}
+
+double EllipseSweep(const Entity& e) {
+    if (e.closed) return kTau;
+    const double s = SweepCCW(e.startAngle, e.endAngle);
+    return s <= 0 ? kTau : s;
+}
+
+void EllipsePoints(const Entity& e, std::vector<Vec2>& pts, std::vector<double>* params) {
+    const double sweep = EllipseSweep(e);
+    const int n = std::max(8, (int)std::ceil(256 * sweep / kTau));
+    for (int k = 0; k <= n; ++k) {
+        const double t = e.startAngle + sweep * k / n;
+        pts.push_back(EllipsePoint(e.p0, e.p1, e.radius, t));
+        if (params) params->push_back(t);
+    }
+}
+
+void SplinePoints(const Entity& e, std::vector<Vec2>& pts) {
+    std::vector<Vec2> fit;
+    for (const Vertex& v : e.verts) fit.push_back(v.p);
+    ::SplinePoints(fit, e.closed, 24, pts);
+}
+
 const wchar_t* TypeName(EntityType type) {
     switch (type) {
         case EntityType::Line: return L"Line";
@@ -76,6 +141,9 @@ const wchar_t* TypeName(EntityType type) {
         case EntityType::Arc: return L"Arc";
         case EntityType::Polyline: return L"Polyline";
         case EntityType::Array: return L"Array";
+        case EntityType::Ellipse: return L"Ellipse";
+        case EntityType::Spline: return L"Spline";
+        case EntityType::Point: return L"Point";
     }
     return L"Object";
 }
@@ -197,6 +265,18 @@ void Primitives(const Entity& e, std::vector<Prim>& out) {
             for (const Entity& c : copies) Primitives(c, out);
             break;
         }
+        case EntityType::Ellipse:
+        case EntityType::Spline: {
+            std::vector<Vec2> pts;
+            if (e.type == EntityType::Ellipse) EllipsePoints(e, pts);
+            else SplinePoints(e, pts);
+            for (size_t i = 0; i + 1 < pts.size(); ++i) out.push_back(Prim::Seg(pts[i], pts[i + 1]));
+            if (pts.size() == 1) out.push_back(Prim::Seg(pts[0], pts[0]));
+            break;
+        }
+        case EntityType::Point:
+            out.push_back(Prim::Seg(e.p0, e.p0));
+            break;
     }
 }
 
@@ -255,7 +335,7 @@ void Translate(Entity& e, Vec2 d) {
         return;
     }
     e.p0 += d;
-    e.p1 += d;
+    if (e.type != EntityType::Ellipse) e.p1 += d;  // an ellipse's p1 is a direction
     for (Vertex& v : e.verts) v.p += d;
 }
 
@@ -268,6 +348,12 @@ void Rotate(Entity& e, Vec2 centre, double angle) {
             a.columnStep = RotateAround(a.columnStep, {0, 0}, angle);
             a.rowStep = RotateAround(a.rowStep, {0, 0}, angle);
         });
+        return;
+    }
+    if (e.type == EntityType::Ellipse) {
+        // Parameters are measured from the major axis, which turns with it.
+        e.p0 = RotateAround(e.p0, centre, angle);
+        e.p1 = RotateAround(e.p1, {0, 0}, angle);
         return;
     }
     e.p0 = RotateAround(e.p0, centre, angle);
@@ -290,6 +376,11 @@ void Scale(Entity& e, Vec2 base, double f) {
         });
         return;
     }
+    if (e.type == EntityType::Ellipse) {
+        e.p0 = sp(e.p0);
+        e.p1 = e.p1 * f;  // the ratio stays
+        return;
+    }
     e.p0 = sp(e.p0);
     e.p1 = sp(e.p1);
     e.radius *= f;
@@ -310,6 +401,15 @@ void Mirror(Entity& e, Vec2 a, Vec2 b) {
         });
         return;
     }
+    if (e.type == EntityType::Ellipse) {
+        // The mirror image of parameter t is -t on the mirrored axis.
+        e.p0 = Reflect(e.p0, a, u);
+        e.p1 = ReflectVector(e.p1, u);
+        const double s = e.startAngle, t = e.endAngle;
+        e.startAngle = NormalizeAngle(-t);
+        e.endAngle = NormalizeAngle(-s);
+        return;
+    }
     e.p0 = Reflect(e.p0, a, u);
     e.p1 = Reflect(e.p1, a, u);
     if (e.type == EntityType::Arc) {
@@ -323,6 +423,10 @@ void Mirror(Entity& e, Vec2 a, Vec2 b) {
         v.bulge = -v.bulge;
     }
 }
+
+namespace {
+bool OnEllipse(const Entity& e, double t) { return e.closed || AngleInSweep(t, e.startAngle, EllipseSweep(e), 1e-12); }
+}  // namespace
 
 // ---------------------------------------------------------------------------
 // Snap points
@@ -353,6 +457,21 @@ void EndPoints(const Entity& e, std::vector<Vec2>& out) {
         case EntityType::Polyline:
             for (const Vertex& v : e.verts) out.push_back(v.p);
             break;
+        case EntityType::Ellipse:
+            if (!e.closed) {
+                out.push_back(EllipsePoint(e.p0, e.p1, e.radius, e.startAngle));
+                out.push_back(EllipsePoint(e.p0, e.p1, e.radius, e.endAngle));
+            }
+            break;
+        case EntityType::Spline:
+            if (!e.closed && !e.verts.empty()) {
+                out.push_back(e.verts.front().p);
+                out.push_back(e.verts.back().p);
+            }
+            break;
+        case EntityType::Point:
+            out.push_back(e.p0);
+            break;
         default:
             break;
     }
@@ -360,7 +479,11 @@ void EndPoints(const Entity& e, std::vector<Vec2>& out) {
 
 void MidPoints(const Entity& e, std::vector<Vec2>& out) {
     if (ForArrayCopies(e, out, MidPoints)) return;
-    if (e.type == EntityType::Circle) return;
+    if (e.type == EntityType::Circle || e.type == EntityType::Spline || e.type == EntityType::Point) return;
+    if (e.type == EntityType::Ellipse) {
+        if (!e.closed) out.push_back(EllipsePoint(e.p0, e.p1, e.radius, e.startAngle + EllipseSweep(e) / 2));
+        return;
+    }
     std::vector<Prim> prims;
     Primitives(e, prims);
     for (const Prim& p : prims) out.push_back(p.Mid());
@@ -368,7 +491,7 @@ void MidPoints(const Entity& e, std::vector<Vec2>& out) {
 
 void Centres(const Entity& e, std::vector<Vec2>& out) {
     if (ForArrayCopies(e, out, Centres)) return;
-    if (e.type == EntityType::Circle || e.type == EntityType::Arc) {
+    if (e.type == EntityType::Circle || e.type == EntityType::Arc || e.type == EntityType::Ellipse) {
         out.push_back(e.p0);
         return;
     }
@@ -382,6 +505,12 @@ void Centres(const Entity& e, std::vector<Vec2>& out) {
 
 void Quadrants(const Entity& e, std::vector<Vec2>& out) {
     if (ForArrayCopies(e, out, Quadrants)) return;
+    if (e.type == EntityType::Ellipse) {
+        for (int q = 0; q < 4; ++q)
+            if (OnEllipse(e, q * kPi / 2)) out.push_back(EllipsePoint(e.p0, e.p1, e.radius, q * kPi / 2));
+        return;
+    }
+    if (e.type == EntityType::Spline) return;
     std::vector<Prim> prims;
     Primitives(e, prims);
     for (const Prim& p : prims) {

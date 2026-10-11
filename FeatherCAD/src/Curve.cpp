@@ -47,11 +47,13 @@ Prim CurvePiece::ToPrim() const {
 
 bool IsCurve(const Entity& e) {
     return e.type == EntityType::Line || e.type == EntityType::Arc || e.type == EntityType::Circle ||
-           (e.type == EntityType::Polyline && e.verts.size() >= 2);
+           e.type == EntityType::Ellipse || (e.type == EntityType::Polyline && e.verts.size() >= 2) ||
+           (e.type == EntityType::Spline && e.verts.size() >= 2);
 }
 
 bool IsClosedCurve(const Entity& e) {
-    return e.type == EntityType::Circle || (e.type == EntityType::Polyline && e.closed && e.verts.size() >= 3);
+    return e.type == EntityType::Circle || (e.type == EntityType::Ellipse && e.closed) ||
+           ((e.type == EntityType::Polyline || e.type == EntityType::Spline) && e.closed && e.verts.size() >= 3);
 }
 
 std::vector<CurvePiece> CurvePieces(const Entity& e) {
@@ -104,7 +106,16 @@ std::vector<CurvePiece> CurvePieces(const Entity& e) {
             }
             break;
         }
+        case EntityType::Ellipse:
+        case EntityType::Spline: {
+            std::vector<Vec2> pts;
+            if (e.type == EntityType::Ellipse) EllipsePoints(e, pts);
+            else SplinePoints(e, pts);
+            for (size_t i = 0; i + 1 < pts.size(); ++i) line(pts[i], pts[i + 1]);
+            break;
+        }
         case EntityType::Array:
+        case EntityType::Point:
             break;
     }
     return out;
@@ -198,7 +209,29 @@ bool SubCurve(const Entity& e, double s0, double s1, Entity& out) {
             out.closed = false;
             return true;
         }
+        case EntityType::Ellipse: {
+            // Distances along the curve back to ellipse parameters.
+            std::vector<Vec2> pts;
+            std::vector<double> params;
+            EllipsePoints(e, pts, &params);
+            auto paramAt = [&](double s) {
+                for (size_t i = 0; i + 1 < pts.size(); ++i) {
+                    const double len = Dist(pts[i], pts[i + 1]);
+                    if (s <= len || i + 2 == pts.size()) {
+                        const double f = len > 0 ? std::clamp(s / len, 0.0, 1.0) : 0.0;
+                        return params[i] + (params[i + 1] - params[i]) * f;
+                    }
+                    s -= len;
+                }
+                return params.back();
+            };
+            out = Entity::EllipseArc(e.p0, e.p1, e.radius, paramAt(s0), paramAt(s1));
+            out.id = e.id;
+            return true;
+        }
         case EntityType::Array:
+        case EntityType::Spline:  // a part of a spline is not kept as a spline
+        case EntityType::Point:
             return false;
     }
     return false;

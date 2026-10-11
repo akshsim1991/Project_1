@@ -104,8 +104,9 @@ jobs:
       - name: Unit tests with address and undefined-behaviour sanitizers
         run: |
           g++ -std=c++17 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-sanitize-recover=all \
-            -Isrc tests/CoreTests.cpp src/Geometry.cpp src/Entity.cpp src/Curve.cpp src/Modify.cpp src/Document.cpp \
-            src/Snap.cpp src/Engine.cpp src/Commands.cpp src/CommandsModify.cpp -o coretests
+            -Isrc tests/CoreTests.cpp src/Geometry.cpp src/Entity.cpp src/Spline.cpp src/Curve.cpp src/Modify.cpp \
+            src/Grips.cpp src/Select.cpp src/Document.cpp src/Snap.cpp src/Engine.cpp src/Commands.cpp \
+            src/CommandsModify.cpp src/CommandsDraw.cpp -o coretests
           ./coretests
       - run: sudo apt-get update && sudo apt-get install -y g++-mingw-w64-x86-64
       - run: cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=cmake/mingw-w64-x86_64.cmake -DCMAKE_BUILD_TYPE=Release

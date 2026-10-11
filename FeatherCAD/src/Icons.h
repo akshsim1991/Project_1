@@ -25,6 +25,9 @@ enum CadIcon : int {
     kIconMirror,
     kIconScale,
     kIconArray,
+    kIconPolygon,
+    kIconEllipse,
+    kIconSpline,
 };
 
 // Draws `icon` centred in `rc` (a 20x20 DIP design) in `ink`, with key

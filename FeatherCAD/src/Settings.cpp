@@ -77,6 +77,11 @@ void Settings::Load() {
     d.orthoOn = ReadDword(key, L"OrthoOn", 0) != 0;
     d.osnapOn = ReadDword(key, L"OsnapOn", 1) != 0;
     d.osnapModes = ReadDword(key, L"OsnapModes", kSnapDefault) & kSnapAll;
+    d.polarOn = ReadDword(key, L"PolarOn", 1) != 0;
+    d.polarAngle = ReadDouble(key, L"PolarAngle", 15, 0.01, 180);
+    d.otrackOn = ReadDword(key, L"OtrackOn", 1) != 0;
+    d.dynOn = ReadDword(key, L"DynOn", 1) != 0;
+    if (d.orthoOn) d.polarOn = false;
     newUnits = std::clamp((int)ReadDword(key, L"NewUnits", 1), 0, 5);
     newPrecision = std::clamp((int)ReadDword(key, L"NewPrecision", 2), 0, 8);
     autosaveMinutes = std::clamp((int)ReadDword(key, L"AutosaveMinutes", 5), 0, 120);
@@ -101,6 +106,10 @@ void Settings::Save() const {
     WriteDword(key, L"OrthoOn", d.orthoOn);
     WriteDword(key, L"OsnapOn", d.osnapOn);
     WriteDword(key, L"OsnapModes", d.osnapModes);
+    WriteDword(key, L"PolarOn", d.polarOn);
+    WriteDouble(key, L"PolarAngle", d.polarAngle);
+    WriteDword(key, L"OtrackOn", d.otrackOn);
+    WriteDword(key, L"DynOn", d.dynOn);
     WriteDword(key, L"NewUnits", (DWORD)newUnits);
     WriteDword(key, L"NewPrecision", (DWORD)newPrecision);
     WriteDword(key, L"AutosaveMinutes", (DWORD)autosaveMinutes);

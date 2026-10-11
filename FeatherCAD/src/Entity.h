@@ -10,7 +10,7 @@
 
 #include "Geometry.h"
 
-enum class EntityType : uint8_t { Line, Circle, Arc, Polyline, Array };
+enum class EntityType : uint8_t { Line, Circle, Arc, Polyline, Array, Ellipse, Spline, Point };
 
 struct Vertex {
     Vec2 p;
@@ -22,12 +22,13 @@ struct ArrayData;
 struct Entity {
     uint64_t id = 0;  // set by the Document; also the drawing order
     EntityType type = EntityType::Line;
-    Vec2 p0, p1;                // line: start and end; circle and arc: p0 = centre
-    double radius = 0;          // circle and arc
-    double startAngle = 0;      // arc, counter-clockwise from start to end (radians)
-    double endAngle = 0;
-    std::vector<Vertex> verts;  // polyline
-    bool closed = false;        // polyline: the last vertex joins the first
+    Vec2 p0, p1;                // line: start and end; circle, arc, ellipse, point: p0 = centre / position
+                                // ellipse: p1 = major axis vector (from the centre)
+    double radius = 0;          // circle and arc; ellipse: minor / major axis ratio
+    double startAngle = 0;      // arc, counter-clockwise from start to end (radians);
+    double endAngle = 0;        // ellipse: start and end parameters
+    std::vector<Vertex> verts;  // polyline vertices; spline fit points (bulge unused)
+    bool closed = false;        // polyline and spline: back to the start; ellipse: full ellipse
     // Array: shared and never changed in place (a change makes a new copy),
     // so copies of an array entity (undo history) cost nothing.
     std::shared_ptr<const ArrayData> array;
@@ -38,6 +39,11 @@ struct Entity {
     static Entity Polyline(std::vector<Vertex> verts, bool closed);
     static Entity Rectangle(Vec2 corner1, Vec2 corner2);
     static Entity Array(ArrayData data);
+    static Entity Ellipse(Vec2 centre, Vec2 majorAxis, double ratio);  // full ellipse
+    static Entity EllipseArc(Vec2 centre, Vec2 majorAxis, double ratio, double startParam, double endParam);
+    static Entity Spline(const std::vector<Vec2>& fitPoints, bool closed);
+    static Entity Point(Vec2 p);
+    static Entity RegularPolygon(Vec2 centre, Vec2 firstVertex, int sides);
 };
 
 // An associative array: copies of the source objects laid out in a grid,
@@ -64,6 +70,12 @@ struct ArrayData {
 };
 
 const wchar_t* TypeName(EntityType type);
+
+// Points along an ellipse (with their parameters) and a spline, fine enough
+// to stand for the curve in hit tests, snaps and intersections.
+void EllipsePoints(const Entity& e, std::vector<Vec2>& pts, std::vector<double>* params = nullptr);
+void SplinePoints(const Entity& e, std::vector<Vec2>& pts);
+double EllipseSweep(const Entity& e);  // parameter range, 2pi for a full ellipse
 
 // The copies an array stands for (arrays inside arrays are expanded too).
 void ExpandArray(const Entity& e, std::vector<Entity>& out);

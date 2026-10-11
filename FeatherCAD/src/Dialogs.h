@@ -4,6 +4,7 @@
 #include "Document.h"
 #include "Engine.h"
 #include "History.h"
+#include "Select.h"
 
 // Units and precision. `forNew` (in/out): also use them for new drawings.
 bool UnitsDialog(HWND owner, DrawingSettings& s, bool& forNew);
@@ -16,3 +17,7 @@ int HistoryDialog(HWND owner, const std::wstring& drawingName, const std::vector
 // Lists drawings with auto-saved copies; returns the index to open, or -1.
 int RecoverDialog(HWND owner, const std::vector<HistoryDrawing>& drawings, bool afterCrash);
 void AboutDialog(HWND owner);
+
+// Quick select: how the matching objects change the selection.
+enum class QSelectMode { Replace, Add, Remove };
+bool QSelectDialog(HWND owner, SelectQuery& query, QSelectMode& mode);
