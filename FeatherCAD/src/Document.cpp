@@ -172,6 +172,18 @@ void Document::Replace(const Entity& e) {
     if (implicit) EndChange();
 }
 
+void Document::Restore(const Entity& e) {
+    if (e.id == 0) return;
+    const bool implicit = !m_open;
+    if (implicit) BeginChange(L"Change");
+    auto it = m_entities.find(e.id);
+    Record(e.id, it == m_entities.end() ? nullptr : &it->second, &e);
+    m_entities[e.id] = e;
+    if (e.id >= m_nextId) m_nextId = e.id + 1;
+    Touch();
+    if (implicit) EndChange();
+}
+
 void Document::ReplaceAll(std::vector<Entity> entities, const std::wstring& name) {
     BeginChange(name);
     std::vector<uint64_t> ids;
@@ -263,11 +275,174 @@ Box Document::Extents() const {
 //   circle cx cy r
 //   arc cx cy r start end              (degrees, counter-clockwise)
 //   pline closed n x y bulge x y bulge ...
+//   array rect columns rows colx coly rowx rowy n      then n objects
+//   array polar cx cy count fill rotate n              (fill in degrees)
+//   array path count spacing align n                   then the path, then n objects
 //   end
 //
 // Lines starting with # are comments. Unknown keywords are skipped, so a
 // later version can add objects without breaking older readers.
 // ---------------------------------------------------------------------------
+
+namespace {
+void WriteEntity(const Entity& e, std::string& out) {
+    auto num = [&](double v) {
+        out += ' ';
+        out += FormatNumber(v);
+    };
+    switch (e.type) {
+        case EntityType::Line:
+            out += "line";
+            num(e.p0.x); num(e.p0.y); num(e.p1.x); num(e.p1.y);
+            break;
+        case EntityType::Circle:
+            out += "circle";
+            num(e.p0.x); num(e.p0.y); num(e.radius);
+            break;
+        case EntityType::Arc:
+            out += "arc";
+            num(e.p0.x); num(e.p0.y); num(e.radius);
+            num(ToDegrees(e.startAngle)); num(ToDegrees(e.endAngle));
+            break;
+        case EntityType::Polyline:
+            out += "pline ";
+            out += e.closed ? "1 " : "0 ";
+            out += std::to_string(e.verts.size());
+            for (const Vertex& v : e.verts) {
+                num(v.p.x); num(v.p.y); num(v.bulge);
+            }
+            break;
+        case EntityType::Array: {
+            const ArrayData& a = *e.array;
+            if (a.kind == ArrayData::Rect) {
+                out += "array rect";
+                num(a.columns); num(a.rows);
+                num(a.columnStep.x); num(a.columnStep.y); num(a.rowStep.x); num(a.rowStep.y);
+            } else if (a.kind == ArrayData::Polar) {
+                out += "array polar";
+                num(a.centre.x); num(a.centre.y); num(a.count); num(ToDegrees(a.fillAngle)); num(a.rotateItems ? 1 : 0);
+            } else {
+                out += "array path";
+                num(a.count); num(a.spacing); num(a.align ? 1 : 0);
+            }
+            num((double)a.items.size());
+            out += '\n';
+            if (a.kind == ArrayData::Path) {
+                WriteEntity(a.path.empty() ? Entity::Line({0, 0}, {1, 0}) : a.path[0], out);
+                out += '\n';
+            }
+            for (size_t i = 0; i < a.items.size(); ++i) {
+                WriteEntity(a.items[i], out);
+                if (i + 1 < a.items.size()) out += '\n';
+            }
+            break;
+        }
+    }
+}
+
+struct Reader {
+    std::vector<std::string> lines;
+    size_t pos = 0;  // next line
+    std::wstring error;
+
+    bool Fail(const std::wstring& why) {
+        error = L"Line " + std::to_wstring(pos) + L": " + why;
+        return false;
+    }
+    // The next line that is not empty or a comment, split into words.
+    bool Next(std::vector<std::string>& w) {
+        while (pos < lines.size()) {
+            w = SplitWords(lines[pos++]);
+            if (!w.empty() && w[0][0] != '#') return true;
+        }
+        return false;
+    }
+    // Numbers from word `from` on; key=value attributes end the list.
+    bool Numbers(const std::vector<std::string>& w, size_t from, std::vector<double>& v) {
+        v.clear();
+        for (size_t i = from; i < w.size(); ++i) {
+            if (w[i].find('=') != std::string::npos) break;
+            double d;
+            if (!ParseNumber(w[i], d)) return Fail(L"bad number \"" + std::wstring(w[i].begin(), w[i].end()) + L"\"");
+            v.push_back(d);
+        }
+        return true;
+    }
+    // Reads one object from words `w` (more lines for arrays). `known` is
+    // false for keywords of later versions (skipped).
+    bool Object(const std::vector<std::string>& w, Entity& out, bool& known, int depth = 0) {
+        known = true;
+        const std::string& key = w[0];
+        std::vector<double> v;
+        if (key == "array") {
+            if (depth > 8) return Fail(L"arrays nested too deeply");
+            if (w.size() < 2 || !Numbers(w, 2, v)) return error.empty() ? Fail(L"an array needs its kind") : false;
+            ArrayData a;
+            size_t n = 0;
+            if (w[1] == "rect" && v.size() >= 7) {
+                a.kind = ArrayData::Rect;
+                a.columns = std::max(1, (int)v[0]);
+                a.rows = std::max(1, (int)v[1]);
+                a.columnStep = {v[2], v[3]};
+                a.rowStep = {v[4], v[5]};
+                n = (size_t)v[6];
+            } else if (w[1] == "polar" && v.size() >= 6) {
+                a.kind = ArrayData::Polar;
+                a.centre = {v[0], v[1]};
+                a.count = std::max(1, (int)v[2]);
+                a.fillAngle = ToRadians(v[3]);
+                a.rotateItems = v[4] != 0;
+                n = (size_t)v[5];
+            } else if (w[1] == "path" && v.size() >= 4) {
+                a.kind = ArrayData::Path;
+                a.count = std::max(1, (int)v[0]);
+                a.spacing = std::max(0.0, v[1]);
+                a.align = v[2] != 0;
+                n = (size_t)v[3];
+            } else {
+                return Fail(L"unknown or incomplete array");
+            }
+            if (n < 1 || n > 1000000 || a.columns > 100000 || a.rows > 100000 || a.count > 100000)
+                return Fail(L"wrong array size");
+            const size_t parts = n + (a.kind == ArrayData::Path ? 1 : 0);
+            for (size_t i = 0; i < parts; ++i) {
+                std::vector<std::string> iw;
+                if (!Next(iw)) return Fail(L"the array's objects are missing");
+                Entity item;
+                bool k;
+                if (!Object(iw, item, k, depth + 1)) return false;
+                if (!k) return Fail(L"unknown object inside an array");
+                if (a.kind == ArrayData::Path && i == 0) a.path.push_back(std::move(item));
+                else a.items.push_back(std::move(item));
+            }
+            out = Entity::Array(std::move(a));
+            return true;
+        }
+        if (!Numbers(w, 1, v)) return false;
+        auto need = [&](size_t k) { return v.size() >= k; };
+        if (key == "line") {
+            if (!need(4)) return Fail(L"a line needs 4 numbers");
+            out = Entity::Line({v[0], v[1]}, {v[2], v[3]});
+        } else if (key == "circle") {
+            if (!need(3) || v[2] <= 0) return Fail(L"a circle needs a centre and a positive radius");
+            out = Entity::Circle({v[0], v[1]}, v[2]);
+        } else if (key == "arc") {
+            if (!need(5) || v[2] <= 0) return Fail(L"an arc needs a centre, a positive radius and two angles");
+            out = Entity::Arc({v[0], v[1]}, v[2], ToRadians(v[3]), ToRadians(v[4]));
+        } else if (key == "pline") {
+            if (!need(2)) return Fail(L"a polyline needs its flags and vertex count");
+            const size_t n = (size_t)v[1];
+            if (v[1] < 1 || v[1] > 1e7 || v.size() != 2 + 3 * n) return Fail(L"wrong number of polyline vertices");
+            std::vector<Vertex> verts(n);
+            for (size_t i = 0; i < n; ++i) verts[i] = {{v[2 + 3 * i], v[3 + 3 * i]}, v[4 + 3 * i]};
+            out = Entity::Polyline(std::move(verts), v[0] != 0);
+        } else {
+            known = false;  // from a newer version
+        }
+        return true;
+    }
+};
+}  // namespace
 
 std::string Document::ToText() const {
     std::string out;
@@ -276,35 +451,8 @@ std::string Document::ToText() const {
     out += " " + std::to_string(kFormatVersion) + "\n";
     out += std::string("units ") + UnitsKey(m_settings.units) + "\n";
     out += "precision " + std::to_string(m_settings.precision) + "\n";
-    auto num = [&](double v) {
-        out += ' ';
-        out += FormatNumber(v);
-    };
     for (const auto& kv : m_entities) {
-        const Entity& e = kv.second;
-        switch (e.type) {
-            case EntityType::Line:
-                out += "line";
-                num(e.p0.x); num(e.p0.y); num(e.p1.x); num(e.p1.y);
-                break;
-            case EntityType::Circle:
-                out += "circle";
-                num(e.p0.x); num(e.p0.y); num(e.radius);
-                break;
-            case EntityType::Arc:
-                out += "arc";
-                num(e.p0.x); num(e.p0.y); num(e.radius);
-                num(ToDegrees(e.startAngle)); num(ToDegrees(e.endAngle));
-                break;
-            case EntityType::Polyline:
-                out += "pline ";
-                out += e.closed ? "1 " : "0 ";
-                out += std::to_string(e.verts.size());
-                for (const Vertex& v : e.verts) {
-                    num(v.p.x); num(v.p.y); num(v.bulge);
-                }
-                break;
-        }
+        WriteEntity(kv.second, out);
         out += '\n';
     }
     out += "end\n";
@@ -312,51 +460,30 @@ std::string Document::ToText() const {
 }
 
 bool Document::FromText(const std::string& text, std::wstring& error) {
-    std::istringstream in(text);
-    std::string line;
-    int lineNo = 0;
-    auto fail = [&](const std::wstring& why) {
-        error = L"Line " + std::to_wstring(lineNo) + L": " + why;
-        return false;
-    };
-    // Header.
-    while (std::getline(in, line)) {
-        ++lineNo;
-        auto w = SplitWords(line);
-        if (w.empty() || w[0][0] == '#') continue;
-        if (w[0] != kMagic) {
-            error = L"This is not a Feather CAD drawing.";
-            return false;
+    Reader r;
+    {
+        std::istringstream in(text);
+        std::string line;
+        while (std::getline(in, line)) {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            r.lines.push_back(std::move(line));
         }
-        // Newer versions are read as far as this one understands them.
-        break;
     }
-    if (lineNo == 0) {
+    std::vector<std::string> w;
+    if (!r.Next(w)) {
         error = L"The file is empty.";
         return false;
     }
-
+    if (w[0] != kMagic) {
+        error = L"This is not a Feather CAD drawing.";
+        return false;
+    }
+    // Newer versions are read as far as this one understands them.
     DrawingSettings settings;
     std::vector<Entity> ents;
     bool ended = false;
-    while (!ended && std::getline(in, line)) {
-        ++lineNo;
-        if (!line.empty() && line.back() == '\r') line.pop_back();
-        auto w = SplitWords(line);
-        if (w.empty() || w[0][0] == '#') continue;
+    while (!ended && r.Next(w)) {
         const std::string& key = w[0];
-        // Numbers after the keyword; key=value attributes are ignored here.
-        std::vector<double> v;
-        for (size_t i = 1; i < w.size(); ++i) {
-            if (w[i].find('=') != std::string::npos) break;
-            double d;
-            if (!ParseNumber(w[i], d)) {
-                if (key == "units") break;
-                return fail(L"bad number \"" + std::wstring(w[i].begin(), w[i].end()) + L"\"");
-            }
-            v.push_back(d);
-        }
-        auto need = [&](size_t n) { return v.size() >= n; };
         if (key == "end") {
             ended = true;
         } else if (key == "units") {
@@ -365,25 +492,21 @@ bool Document::FromText(const std::string& text, std::wstring& error) {
                                Units::Inches, Units::Feet})
                 if (u == UnitsKey(cand)) settings.units = cand;
         } else if (key == "precision") {
-            if (need(1)) settings.precision = std::clamp((int)v[0], 0, 8);
-        } else if (key == "line") {
-            if (!need(4)) return fail(L"a line needs 4 numbers");
-            ents.push_back(Entity::Line({v[0], v[1]}, {v[2], v[3]}));
-        } else if (key == "circle") {
-            if (!need(3) || v[2] <= 0) return fail(L"a circle needs a centre and a positive radius");
-            ents.push_back(Entity::Circle({v[0], v[1]}, v[2]));
-        } else if (key == "arc") {
-            if (!need(5) || v[2] <= 0) return fail(L"an arc needs a centre, a positive radius and two angles");
-            ents.push_back(Entity::Arc({v[0], v[1]}, v[2], ToRadians(v[3]), ToRadians(v[4])));
-        } else if (key == "pline") {
-            if (!need(2)) return fail(L"a polyline needs its flags and vertex count");
-            const size_t n = (size_t)v[1];
-            if (v[1] < 1 || v[1] > 1e7 || v.size() != 2 + 3 * n) return fail(L"wrong number of polyline vertices");
-            std::vector<Vertex> verts(n);
-            for (size_t i = 0; i < n; ++i) verts[i] = {{v[2 + 3 * i], v[3 + 3 * i]}, v[4 + 3 * i]};
-            ents.push_back(Entity::Polyline(std::move(verts), v[0] != 0));
+            std::vector<double> v;
+            if (!r.Numbers(w, 1, v)) {
+                error = r.error;
+                return false;
+            }
+            if (!v.empty()) settings.precision = std::clamp((int)v[0], 0, 8);
+        } else {
+            Entity e;
+            bool known = false;
+            if (!r.Object(w, e, known)) {
+                error = r.error;
+                return false;
+            }
+            if (known) ents.push_back(std::move(e));
         }
-        // Anything else: from a newer version, skipped.
     }
     if (!ended) {
         error = L"The file is incomplete (it may have been cut off while saving).";
@@ -469,8 +592,10 @@ std::string Document::ToDxf() const {
 
     group(0, "SECTION");
     group(2, "ENTITIES");
-    for (const auto& kv : m_entities) {
-        const Entity& e = kv.second;
+    // Arrays have no equivalent in DXF R12: their copies are written.
+    std::vector<Entity> flat;
+    for (const auto& kv : m_entities) ExpandArray(kv.second, flat);
+    for (const Entity& e : flat) {
         switch (e.type) {
             case EntityType::Line:
                 group(0, "LINE");
@@ -506,6 +631,8 @@ std::string Document::ToDxf() const {
                 }
                 group(0, "SEQEND");
                 group(8, "0");
+                break;
+            case EntityType::Array:
                 break;
         }
     }

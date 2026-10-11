@@ -7,6 +7,7 @@
 
 #include "Document.h"
 #include "Engine.h"
+#include "Modify.h"
 #include "Snap.h"
 
 namespace {
@@ -264,6 +265,7 @@ struct TestHost : EngineHost {
     std::wstring hostCommand;
     void Message(const std::wstring& l) override { lines.push_back(l); }
     Vec2 TrackedCursor() override { return cursor; }
+    double PickRadius() override { return 0.5; }
     bool HostCommand(const std::wstring& n) override { hostCommand = n; return true; }
     void ZoomExtents() override { ++extents; }
     void ZoomWindow(const Box&) override {}
@@ -399,6 +401,367 @@ void TestEngine() {
     CHECK(FormatDegrees(ToRadians(12.5), 4) == L"12.5");
     CHECK(FormatDegrees(ToRadians(90), 2) == L"90");
 }
+
+std::vector<Prim> PrimsOf(std::initializer_list<Entity> ents) {
+    std::vector<Prim> out;
+    for (const Entity& e : ents) Primitives(e, out);
+    return out;
+}
+
+void TestCurves() {
+    Entity pl = Entity::Polyline({{{0, 0}, 0}, {{10, 0}, 1}, {{10, 10}, 0}, {{0, 10}, 0}}, true);
+    CHECK(Close(CurveLength(pl), 30 + 5 * kPi));
+    CHECK(Close(CurvePoint(pl, 10 + 2.5 * kPi), {15, 5}));  // middle of the half circle
+    CHECK(Close(CurveParam(pl, {15.2, 5}), 10 + 2.5 * kPi, 1e-9));
+    Entity part;
+    CHECK(SubCurve(pl, 5, 10 + 5 * kPi + 5, part));  // across the arc
+    CHECK(part.verts.size() == 4 && Close(LengthOf(part), 10 + 5 * kPi));
+    CHECK(SubCurve(pl, 30 + 5 * kPi - 5, 5, part));  // closed: round through the start
+    CHECK(Close(LengthOf(part), 10) && Close(part.verts.front().p, {0, 5}));
+    // Half of the arc segment keeps its bulge proportion.
+    CHECK(SubCurve(pl, 10, 10 + 2.5 * kPi, part) && Close(part.verts[0].bulge, std::tan(kPi / 8)));
+
+    Entity line = Entity::Line({0, 0}, {10, 0});
+    CHECK(ChangeEnd(line, true, 5) && Close(line.p1, {15, 0}));
+    CHECK(ChangeEnd(line, false, -2) && Close(line.p0, {2, 0}));
+    CHECK(!ChangeEnd(line, true, -20));
+    Entity arc = Entity::Arc({0, 0}, 10, 0, kPi / 2);
+    CHECK(ChangeEnd(arc, true, 10 * kPi / 2) && Close(arc.endAngle, kPi));
+    Entity open = Entity::Polyline({{{0, 0}, 0}, {{10, 0}, 1}, {{10, 10}, 0}}, false);
+    CHECK(ChangeEnd(open, true, -5 * kPi / 2) && Close(open.verts[2].p, {15, 5}) && Close(open.verts[1].bulge, std::tan(kPi / 8)));
+}
+
+void TestTrimExtend() {
+    std::vector<Entity> out;
+    Entity removed;
+    const Entity a = Entity::Line({0, 0}, {10, 0});
+    CHECK(TrimAt(a, {8, 0}, PrimsOf({Entity::Line({5, -5}, {5, 5})}), out, &removed));
+    CHECK(out.size() == 1 && Close(out[0].p0, {0, 0}) && Close(out[0].p1, {5, 0}) && Close(removed.p0, {5, 0}));
+    CHECK(TrimAt(a, {5, 0}, PrimsOf({Entity::Line({3, -5}, {3, 5}), Entity::Line({7, -5}, {7, 5})}), out, nullptr));
+    CHECK(out.size() == 2 && Close(out[0].p1, {3, 0}) && Close(out[1].p0, {7, 0}));
+    CHECK(TrimAt(a, {5, 0}, {}, out, nullptr) && out.empty());  // nothing crosses: it goes
+
+    const Entity circle = Entity::Circle({0, 0}, 10);
+    CHECK(TrimAt(circle, {10, 0}, PrimsOf({Entity::Line({0, -20}, {0, 20})}), out, nullptr));
+    CHECK(out.size() == 1 && out[0].type == EntityType::Arc && Close(out[0].startAngle, kPi / 2) &&
+          Close(out[0].endAngle, 3 * kPi / 2));
+    CHECK(!TrimAt(circle, {10, 0}, PrimsOf({Entity::Line({10, -20}, {10, 20})}), out, nullptr));  // touches once
+
+    const Entity rect = Entity::Rectangle({0, 0}, {10, 10});
+    CHECK(TrimAt(rect, {10, 5}, PrimsOf({Entity::Line({5, -5}, {5, 15})}), out, nullptr));
+    CHECK(out.size() == 1 && !out[0].closed && Close(LengthOf(out[0]), 20));
+
+    Entity ext;
+    const auto wall = PrimsOf({Entity::Line({10, -5}, {10, 5}), Entity::Line({-3, -5}, {-3, 5})});
+    CHECK(ExtendAt(Entity::Line({0, 0}, {5, 0}), {4, 0}, wall, 100, ext) && Close(ext.p1, {10, 0}));
+    CHECK(ExtendAt(Entity::Line({0, 0}, {5, 0}), {1, 0}, wall, 100, ext) && Close(ext.p0, {-3, 0}));
+    CHECK(!ExtendAt(Entity::Line({0, 0}, {5, 0}), {4, 0}, PrimsOf({Entity::Line({3, -5}, {3, 5})}), 100, ext));
+    CHECK(ExtendAt(Entity::Arc({0, 0}, 10, 0, kPi / 2), {0.5, 10}, PrimsOf({Entity::Line({-5, -20}, {-5, 20})}), 100, ext) &&
+          Close(ext.endAngle, ToRadians(120)));
+}
+
+void TestOffset() {
+    Entity out;
+    CHECK(OffsetEntity(Entity::Line({0, 0}, {10, 0}), 2, out) && Close(out.p0, {0, 2}));
+    CHECK(OffsetSide(Entity::Line({0, 0}, {10, 0}), {5, 3}) == 1);
+    CHECK(OffsetEntity(Entity::Circle({0, 0}, 10), 3, out) && Close(out.radius, 7));
+    CHECK(OffsetEntity(Entity::Circle({0, 0}, 10), -3, out) && Close(out.radius, 13));
+    CHECK(!OffsetEntity(Entity::Circle({0, 0}, 10), 12, out));
+    const Entity rect = Entity::Rectangle({0, 0}, {10, 10});
+    CHECK(OffsetSide(rect, {5, 5}) == 1);
+    CHECK(OffsetEntity(rect, 1, out) && out.verts.size() == 4 && Close(LengthOf(out), 32) && Close(out.verts[0].p, {1, 1}));
+    CHECK(OffsetEntity(rect, -1, out) && Close(LengthOf(out), 48));
+    CHECK(!OffsetEntity(rect, 6, out));  // too far inside
+    const Entity slot = Entity::Polyline({{{0, 0}, 0}, {{10, 0}, 1}, {{10, 10}, 0}, {{0, 10}, 0}}, true);
+    CHECK(OffsetEntity(slot, 1, out) && Close(LengthOf(out), 26 + 4 * kPi, 1e-6));
+    // An open polyline with a corner: the outside corner is extended.
+    const Entity ell = Entity::Polyline({{{0, 0}, 0}, {{10, 0}, 0}, {{10, 10}, 0}}, false);
+    CHECK(OffsetEntity(ell, -1, out) && out.verts.size() == 3 && Close(out.verts[1].p, {11, -1}));
+}
+
+void TestFilletChamfer() {
+    CornerResult r;
+    std::wstring why;
+    const Entity l1 = Entity::Line({0, 0}, {10, 0}), l2 = Entity::Line({10, 0}, {10, 10});
+    CHECK(FilletObjects(l1, {5, 0}, l2, {10, 5}, 2, true, r, why));
+    CHECK(r.hasJoin && Close(r.join.p0, {8, 2}) && Close(r.join.radius, 2));
+    CHECK(Close(r.first.p0, {0, 0}) && Close(r.first.p1, {8, 0}) && Close(r.second.p0, {10, 2}));
+    // Radius 0 extends lines that stop short of each other.
+    CHECK(FilletObjects(Entity::Line({0, 0}, {8, 0}), {4, 0}, Entity::Line({10, 2}, {10, 10}), {10, 6}, 0, true, r, why));
+    CHECK(!r.hasJoin && Close(r.first.p1, {10, 0}) && Close(r.second.p0, {10, 0}));
+    // A line and a circle.
+    CHECK(FilletObjects(Entity::Line({-20, 8}, {20, 8}), {5, 8}, Entity::Circle({0, 0}, 5), {2, 4.58}, 2, true, r, why));
+    CHECK(Close(r.join.p0, {std::sqrt(13.0), 6}, 1e-9) && Close(r.first.p0, {std::sqrt(13.0), 8}, 1e-9) && !r.changeSecond);
+    CHECK(!FilletObjects(Entity::Line({0, 0}, {10, 0}), {5, 0}, Entity::Line({0, 1}, {10, 1}), {5, 1}, 0, true, r, why));
+
+    CHECK(ChamferLines(l1, {5, 0}, l2, {10, 5}, 2, 3, true, r, why));
+    CHECK(Close(r.first.p1, {8, 0}) && Close(r.second.p0, {10, 3}) && Close(r.join.p0, {8, 0}) && Close(r.join.p1, {10, 3}));
+    double d2 = 0;
+    CHECK(ChamferDistanceFromAngle(l1, {5, 0}, l2, {10, 5}, 2, kPi / 4, d2) && Close(d2, 2));
+
+    Entity rect = Entity::Rectangle({0, 0}, {10, 10});
+    CHECK(FilletPolyline(rect, 1) == 4 && rect.verts.size() == 8 && Close(LengthOf(rect), 32 + 2 * kPi));
+    rect = Entity::Rectangle({0, 0}, {10, 10});
+    CHECK(ChamferPolyline(rect, 1, 1) == 4 && Close(LengthOf(rect), 32 + 4 * std::sqrt(2.0)));
+    rect = Entity::Rectangle({0, 0}, {10, 10});
+    CHECK(FilletPolyline(rect, 6) == 2);  // only every other corner fits
+    rect = Entity::Rectangle({0, 0}, {10, 10});
+    const int v = SharedVertex(rect, {5, 0}, {10, 5});
+    CHECK(v == 1 && FilletPolyline(rect, 1, v) == 1 && rect.verts.size() == 5);
+}
+
+void TestBreakJoinExplode() {
+    std::vector<Entity> out;
+    std::wstring why;
+    const Entity line = Entity::Line({0, 0}, {10, 0});
+    CHECK(BreakCurve(line, 3, 6, out, why) && out.size() == 2 && Close(out[0].p1, {3, 0}) && Close(out[1].p0, {6, 0}));
+    CHECK(BreakCurve(line, 5, 5, out, why) && out.size() == 2);
+    CHECK(!BreakCurve(line, 0, 0, out, why));
+    CHECK(BreakCurve(Entity::Circle({0, 0}, 1), 0, kPi / 2, out, why) && out.size() == 1 && out[0].type == EntityType::Arc &&
+          Close(SweepCCW(out[0].startAngle, out[0].endAngle), 3 * kPi / 2));
+
+    auto groups = JoinObjects({Entity::Line({0, 0}, {5, 0}), Entity::Line({10, 0}, {5, 0})});
+    CHECK(groups.size() == 1 && groups[0].result.type == EntityType::Line && Close(LengthOf(groups[0].result), 10));
+    groups = JoinObjects({Entity::Line({0, 0}, {10, 0}), Entity::Line({10, 10}, {0, 10}), Entity::Line({10, 0}, {10, 10}),
+                          Entity::Line({0, 10}, {0, 0})});
+    CHECK(groups.size() == 1 && groups[0].result.closed && groups[0].result.verts.size() == 4 && groups[0].sources.size() == 4);
+    groups = JoinObjects({Entity::Arc({0, 0}, 5, 0, kPi), Entity::Arc({0, 0}, 5, kPi, 0)});
+    CHECK(groups.size() == 1 && groups[0].result.type == EntityType::Circle);
+    groups = JoinObjects({Entity::Arc({0, 0}, 5, 0, kPi / 2), Entity::Arc({0, 0}, 5, kPi / 2, kPi)});
+    CHECK(groups.size() == 1 && groups[0].result.type == EntityType::Arc);
+    groups = JoinObjects({Entity::Line({-5, -5}, {5, 0}), Entity::Arc({0, 0}, 5, 0, kPi / 2)});
+    CHECK(groups.size() == 1 && groups[0].result.type == EntityType::Polyline && groups[0].result.verts.size() == 3);
+    CHECK(JoinObjects({Entity::Line({0, 0}, {1, 0}), Entity::Line({2, 0}, {3, 0})}).empty());
+
+    out.clear();
+    CHECK(Explode(Entity::Polyline({{{0, 0}, 0}, {{10, 0}, 1}, {{10, 10}, 0}}, false), out) && out.size() == 2 &&
+          out[1].type == EntityType::Arc && Close(out[1].radius, 5));
+
+    Entity rect = Entity::Rectangle({0, 0}, {10, 10});
+    CHECK(StretchEntity(rect, Box({8, -1}, {12, 11}), {5, 0}) && Close(Bounds(rect).Width(), 15));
+    Entity ln = Entity::Line({0, 0}, {10, 0});
+    CHECK(!StretchEntity(ln, Box({3, -1}, {4, 1}), {5, 0}));
+}
+
+void TestArraysAndTransforms() {
+    ArrayData rect;
+    rect.kind = ArrayData::Rect;
+    rect.items = {Entity::Circle({0, 0}, 1)};
+    rect.columns = 3;
+    rect.rows = 2;
+    rect.columnStep = {5, 0};
+    rect.rowStep = {0, 5};
+    Entity ar = Entity::Array(rect);
+    std::vector<Entity> copies;
+    ExpandArray(ar, copies);
+    CHECK(copies.size() == 6);
+    Box b = Bounds(ar);
+    CHECK(Close(b.minX, -1) && Close(b.maxX, 11) && Close(b.maxY, 6));
+    Rotate(ar, {0, 0}, kPi / 2);  // the whole array turns
+    b = Bounds(ar);
+    CHECK(Close(b.minX, -6) && Close(b.maxY, 11));
+    CHECK(rect.columnStep.x == 5);  // the original data is unchanged
+
+    ArrayData polar;
+    polar.kind = ArrayData::Polar;
+    polar.items = {Entity::Line({5, 0}, {6, 0})};
+    polar.centre = {0, 0};
+    polar.count = 4;
+    copies.clear();
+    ExpandArray(Entity::Array(polar), copies);
+    CHECK(copies.size() == 4 && Close(copies[1].p0, {0, 5}) && Close(copies[3].p1, {0, -6}));
+    polar.fillAngle = kPi;  // half way round: ends included
+    copies.clear();
+    ExpandArray(Entity::Array(polar), copies);
+    CHECK(Close(copies[3].p0, {-5, 0}));
+
+    ArrayData path;
+    path.kind = ArrayData::Path;
+    path.items = {Entity::Circle({0, 0}, 1)};
+    path.path = {Entity::Line({0, 0}, {10, 0})};
+    path.count = 3;
+    copies.clear();
+    ExpandArray(Entity::Array(path), copies);
+    CHECK(copies.size() == 3 && Close(copies[2].p0, {10, 0}));
+
+    // Arrays survive a save and load, and are written to DXF as their copies.
+    Document doc;
+    doc.Add(Entity::Array(rect));
+    doc.Add(Entity::Array(polar));
+    doc.Add(Entity::Array(path));
+    const std::string text = doc.ToText();
+    Document back;
+    std::wstring err;
+    CHECK(back.FromText(text, err) && back.Count() == 3 && back.ToText() == text);
+    const std::string dxf = back.ToDxf();
+    size_t circles = 0;
+    for (size_t pos = 0; (pos = dxf.find("CIRCLE", pos)) != std::string::npos; ++pos) ++circles;
+    CHECK(circles == 6 + 3);
+
+    Entity arc = Entity::Arc({0, 0}, 1, 0, kPi / 2);
+    Mirror(arc, {0, 0}, {0, 1});
+    CHECK(Close(arc.startAngle, kPi / 2) && Close(arc.endAngle, kPi));
+    Entity pl = Entity::Polyline({{{0, 0}, 0.5}, {{10, 0}, 0}}, false);
+    Mirror(pl, {0, -5}, {1, -5});
+    CHECK(Close(pl.verts[0].p, {0, -10}) && pl.verts[0].bulge == -0.5);
+    Entity c = Entity::Circle({2, 0}, 1);
+    Scale(c, {0, 0}, 3);
+    CHECK(Close(c.p0, {6, 0}) && Close(c.radius, 3));
+}
+
+uint64_t AddTo(Document& d, Entity e) { return d.Add(std::move(e)); }
+
+void TestModifyCommands() {
+    Document doc;
+    TestHost host;
+    Engine eng(doc, host);
+
+    // TRIM: every object is an edge; picking removes the part between crossings.
+    uint64_t h = AddTo(doc, Entity::Line({0, 0}, {10, 0}));
+    AddTo(doc, Entity::Line({5, -5}, {5, 5}));
+    Type(eng, {L"tr", L"8,0", L""});
+    CHECK(Close(doc.Find(h)->p1, {5, 0}));
+    Type(eng, {L"u"});
+    CHECK(Close(doc.Find(h)->p1, {10, 0}));
+    // The command's own Undo option.
+    Type(eng, {L"tr", L"8,0", L"u"});
+    CHECK(Close(doc.Find(h)->p1, {10, 0}) && eng.Active());
+    eng.Cancel();
+    // Shift+click extends instead.
+    doc.Clear();
+    h = AddTo(doc, Entity::Line({0, 0}, {5, 0}));
+    AddTo(doc, Entity::Line({10, -5}, {10, 5}));
+    eng.Run(L"TRIM");
+    eng.Point({4, 0}, true);
+    eng.Enter();
+    CHECK(Close(doc.Find(h)->p1, {10, 0}));
+    // EXTEND, then Shift+click trims back.
+    doc.Clear();
+    h = AddTo(doc, Entity::Line({0, 0}, {5, 0}));
+    AddTo(doc, Entity::Line({10, -5}, {10, 5}));
+    AddTo(doc, Entity::Line({3, -5}, {3, 5}));
+    Type(eng, {L"ex", L"4.5,0"});
+    CHECK(Close(doc.Find(h)->p1, {10, 0}));
+    eng.Point({8, 0}, true);
+    eng.Enter();
+    CHECK(Close(doc.Find(h)->p1, {3, 0}));
+    // Trimming with chosen cutting edges only.
+    doc.Clear();
+    h = AddTo(doc, Entity::Line({0, 0}, {10, 0}));
+    const uint64_t e1 = AddTo(doc, Entity::Line({3, -5}, {3, 5}));
+    AddTo(doc, Entity::Line({7, -5}, {7, 5}));
+    Type(eng, {L"tr", L"t"});
+    eng.AddToSelection({e1});
+    Type(eng, {L"", L"8,0", L""});
+    CHECK(Close(doc.Find(h)->p1, {3, 0}));
+
+    // OFFSET by distance and through a point; several objects in one go.
+    doc.Clear();
+    h = AddTo(doc, Entity::Circle({0, 0}, 10));
+    Type(eng, {L"o", L"2", L"10,0", L"0,0", L"10,0", L"20,0", L""});
+    CHECK(doc.Count() == 3);
+    Type(eng, {L"o", L"t", L"10,0", L"0,3", L""});
+    CHECK(doc.Count() == 4 && Close(doc.Entities().rbegin()->second.radius, 3));
+
+    // FILLET two lines, CHAMFER two lines, FILLET a polyline.
+    doc.Clear();
+    const uint64_t a = AddTo(doc, Entity::Line({0, 0}, {10, 0}));
+    const uint64_t b = AddTo(doc, Entity::Line({10, 0}, {10, 10}));
+    Type(eng, {L"f", L"r", L"2", L"5,0", L"10,5"});
+    CHECK(!eng.Active() && doc.Count() == 3 && Close(doc.Find(a)->p1, {8, 0}) && Close(doc.Find(b)->p0, {10, 2}));
+    Type(eng, {L"u"});
+    CHECK(doc.Count() == 2 && Close(doc.Find(a)->p1, {10, 0}));
+    Type(eng, {L"cha", L"d", L"2", L"3", L"5,0", L"10,5"});
+    CHECK(doc.Count() == 3 && Close(doc.Find(b)->p0, {10, 3}));
+    doc.Clear();
+    h = AddTo(doc, Entity::Rectangle({0, 0}, {10, 10}));
+    Type(eng, {L"f", L"r", L"1", L"p", L"5,0"});
+    CHECK(doc.Find(h)->verts.size() == 8);
+    // Shift-select: a sharp corner whatever the radius.
+    doc.Clear();
+    const uint64_t c1 = AddTo(doc, Entity::Line({0, 0}, {8, 0}));
+    AddTo(doc, Entity::Line({10, 2}, {10, 10}));
+    Type(eng, {L"f", L"4,0"});
+    eng.Point({10, 6}, true);
+    CHECK(Close(doc.Find(c1)->p1, {10, 0}) && doc.Count() == 2);
+
+    // MIRROR keeping the source, SCALE by reference, STRETCH.
+    doc.Clear();
+    h = AddTo(doc, Entity::Line({1, 0}, {3, 0}));
+    eng.AddToSelection({h});
+    Type(eng, {L"mi", L"0,0", L"0,1", L""});
+    CHECK(doc.Count() == 2 && Close(doc.Entities().rbegin()->second.p0, {-1, 0}));
+    eng.AddToSelection({h});
+    Type(eng, {L"sc", L"1,0", L"r", L"2", L"6"});
+    CHECK(Close(doc.Find(h)->p1, {7, 0}));
+    doc.Clear();
+    h = AddTo(doc, Entity::Rectangle({0, 0}, {10, 10}));
+    Type(eng, {L"s", L"8,-1", L"12,11", L"0,0", L"5,0"});
+    CHECK(Close(Bounds(*doc.Find(h)).Width(), 15));
+
+    // BREAK between two points and at a point; JOIN; EXPLODE.
+    doc.Clear();
+    h = AddTo(doc, Entity::Line({0, 0}, {10, 0}));
+    Type(eng, {L"br", L"3,0", L"6,0"});
+    CHECK(doc.Count() == 2 && Close(doc.Find(h)->p1, {3, 0}));
+    Type(eng, {L"breakatpoint", L"1,0", L"1,0"});
+    CHECK(doc.Count() == 3);
+    eng.SelectAll();
+    Type(eng, {L"j"});
+    CHECK(doc.Count() == 2);  // 0-1-3 joined into one line; 6-10 stays apart
+    doc.Clear();
+    h = AddTo(doc, Entity::Rectangle({0, 0}, {10, 10}));
+    eng.AddToSelection({h});
+    Type(eng, {L"x"});
+    CHECK(doc.Count() == 4);
+
+    // LENGTHEN by delta and to a total.
+    doc.Clear();
+    h = AddTo(doc, Entity::Line({0, 0}, {10, 0}));
+    Type(eng, {L"len", L"de", L"5", L"9,0", L""});
+    CHECK(Close(doc.Find(h)->p1, {15, 0}));
+    Type(eng, {L"len", L"t", L"20", L"1,0", L""});
+    CHECK(Close(doc.Find(h)->p0, {-5, 0}));
+
+    // ARRAYS stay one object; ARRAYEDIT changes them; EXPLODE separates them.
+    doc.Clear();
+    h = AddTo(doc, Entity::Circle({0, 0}, 1));
+    eng.AddToSelection({h});
+    Type(eng, {L"arrayrect", L"3", L"2", L"5", L"5"});
+    CHECK(doc.Count() == 1 && doc.Entities().begin()->second.type == EntityType::Array);
+    const uint64_t arr = doc.Entities().begin()->first;
+    std::vector<Entity> copies;
+    ExpandArray(*doc.Find(arr), copies);
+    CHECK(copies.size() == 6);
+    Type(eng, {L"arrayedit", L"11,5", L"c", L"5", L"x"});
+    copies.clear();
+    ExpandArray(*doc.Find(arr), copies);
+    CHECK(copies.size() == 10);
+    eng.AddToSelection({arr});
+    Type(eng, {L"m", L"0,0", L"100,0"});  // moves as one object
+    CHECK(Close(Bounds(*doc.Find(arr)).minX, 99));
+    eng.AddToSelection({arr});
+    Type(eng, {L"x"});
+    CHECK(doc.Count() == 10);
+
+    doc.Clear();
+    h = AddTo(doc, Entity::Line({5, 0}, {6, 0}));
+    eng.AddToSelection({h});
+    Type(eng, {L"ar", L"po", L"0,0", L"8", L"", L""});
+    copies.clear();
+    ExpandArray(doc.Entities().begin()->second, copies);
+    CHECK(copies.size() == 8);
+
+    doc.Clear();
+    const uint64_t path = AddTo(doc, Entity::Line({0, 0}, {100, 0}));
+    h = AddTo(doc, Entity::Circle({0, 0}, 1));
+    eng.AddToSelection({h});
+    Type(eng, {L"arraypath", L"50,0", L"5", L"", L""});
+    CHECK(doc.Count() == 2 && doc.Find(path));
+    copies.clear();
+    ExpandArray(doc.Entities().rbegin()->second, copies);
+    CHECK(copies.size() == 5 && Close(copies[4].p0, {100, 0}));
+}
 }  // namespace
 
 int main() {
@@ -410,6 +773,13 @@ int main() {
     TestFiles();
     TestSnaps();
     TestEngine();
+    TestCurves();
+    TestTrimExtend();
+    TestOffset();
+    TestFilletChamfer();
+    TestBreakJoinExplode();
+    TestArraysAndTransforms();
+    TestModifyCommands();
     std::printf("%d checks, %d failed\n", g_checks, g_failures);
     return g_failures;
 }

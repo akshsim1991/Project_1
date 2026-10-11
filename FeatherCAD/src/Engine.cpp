@@ -160,10 +160,27 @@ void Engine::Accepted(Vec2 p) {
     m_cmd->OnPoint(p);
 }
 
-void Engine::Point(Vec2 p) {
+void Engine::Point(Vec2 p, bool shift) {
     DeferredDelete guard{g_dead};
     if (!m_cmd || m_selecting || !(m_prompt.accept & kAcceptPoint)) return;
+    m_lastShift = shift;
     Accepted(p);
+}
+
+uint64_t Engine::PickEntity(Vec2 p) const {
+    const double tol = m_host.PickRadius();
+    const Box box = Box(p, p).Inflated(tol);
+    double best = tol;
+    uint64_t id = 0;
+    for (const auto& kv : m_doc.Entities()) {
+        if (!Bounds(kv.second).Intersects(box)) continue;
+        const double d = DistanceTo(kv.second, p);
+        if (d <= best) {  // the later (top) object wins ties
+            best = d;
+            id = kv.first;
+        }
+    }
+    return id;
 }
 
 void Engine::Enter() {
@@ -294,6 +311,7 @@ void Engine::Text(const std::wstring& typedRaw) {
     }
     Vec2 p;
     if ((m_prompt.accept & kAcceptPoint) && ParsePoint(typed, p)) {
+        m_lastShift = false;
         Accepted(p);
         return;
     }

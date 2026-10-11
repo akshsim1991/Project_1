@@ -112,6 +112,66 @@ void DrawCadIcon(HDC dc, int icon, const RECT& rc, COLORREF ink, COLORREF accent
             arrowHead(3.5f, 10, -1, 0);
             arrowHead(16.5f, 10, 1, 0);
             break;
+        case kIconTrim: {
+            // A line cut back at a crossing edge; the removed part dashed.
+            g.DrawLine(&pen, 11.0f, 2.5f, 11.0f, 17.5f);
+            g.DrawLine(&pen, 2.5f, 10.0f, 11.0f, 10.0f);
+            Pen dash(C(accent), 1.5f);
+            const REAL pattern[] = {1.2f, 1.4f};
+            dash.SetDashPattern(pattern, 2);
+            g.DrawLine(&dash, 13.0f, 10.0f, 18.0f, 10.0f);
+            g.DrawLine(&dash, 14.0f, 6.5f, 18.0f, 6.5f);
+            g.DrawLine(&dash, 14.0f, 13.5f, 18.0f, 13.5f);
+            break;
+        }
+        case kIconExtend:
+            g.DrawLine(&pen, 17.0f, 2.5f, 17.0f, 17.5f);
+            g.DrawLine(&pen, 2.5f, 10.0f, 9.0f, 10.0f);
+            {
+                Pen dash(C(accent), 1.5f);
+                dash.SetDashStyle(DashStyleDash);
+                g.DrawLine(&dash, 9.0f, 10.0f, 15.0f, 10.0f);
+            }
+            arrowHead(16.5f, 10, 1, 0);
+            break;
+        case kIconOffset:
+            g.DrawArc(&pen, 2.5f, 6.5f, 15.0f, 15.0f, 200.0f, 140.0f);
+            {
+                Pen second(C(accent), 1.5f);
+                g.DrawArc(&second, 6.0f, 10.0f, 8.0f, 8.0f, 200.0f, 140.0f);
+            }
+            break;
+        case kIconFillet:
+            g.DrawLine(&pen, 3.0f, 17.0f, 3.0f, 10.0f);
+            g.DrawLine(&pen, 10.0f, 3.0f, 17.0f, 3.0f);
+            {
+                Pen arc(C(accent), 1.5f);
+                g.DrawArc(&arc, 3.0f, 3.0f, 14.0f, 14.0f, 180.0f, 90.0f);
+            }
+            break;
+        case kIconMirror: {
+            Pen dash(C(accent), 1.2f);
+            dash.SetDashStyle(DashStyleDash);
+            g.DrawLine(&dash, 10.0f, 2.0f, 10.0f, 18.0f);
+            PointF left[3] = {PointF(8, 4), PointF(8, 16), PointF(2.5f, 16)};
+            PointF right[3] = {PointF(12, 4), PointF(12, 16), PointF(17.5f, 16)};
+            g.DrawPolygon(&pen, left, 3);
+            g.DrawPolygon(&pen, right, 3);
+            break;
+        }
+        case kIconScale:
+            g.DrawRectangle(&pen, 2.5f, 9.5f, 7.0f, 7.0f);
+            {
+                Pen big(C(accent), 1.5f);
+                g.DrawRectangle(&big, 2.5f, 2.5f, 15.0f, 14.0f);
+            }
+            arrowHead(16.0f, 4.0f, 0.7f, -0.7f);
+            break;
+        case kIconArray:
+            for (int r = 0; r < 2; ++r)
+                for (int c = 0; c < 3; ++c) g.DrawRectangle(&pen, 2.5f + c * 5.5f, 5.0f + r * 6.0f, 4.0f, 4.0f);
+            point(4.5f, 7.0f);
+            break;
         default:
             break;
     }

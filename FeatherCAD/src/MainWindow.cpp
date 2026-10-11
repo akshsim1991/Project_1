@@ -53,6 +53,23 @@ const IdCommand kIdCommands[] = {
     {ID_MOVE, L"MOVE", nullptr},
     {ID_COPY, L"COPY", nullptr},
     {ID_ROTATE, L"ROTATE", nullptr},
+    {ID_MIRROR, L"MIRROR", nullptr},
+    {ID_SCALE, L"SCALE", nullptr},
+    {ID_STRETCH, L"STRETCH", nullptr},
+    {ID_TRIM, L"TRIM", nullptr},
+    {ID_EXTEND, L"EXTEND", nullptr},
+    {ID_OFFSET, L"OFFSET", nullptr},
+    {ID_FILLET, L"FILLET", nullptr},
+    {ID_CHAMFER, L"CHAMFER", nullptr},
+    {ID_LENGTHEN, L"LENGTHEN", nullptr},
+    {ID_BREAK, L"BREAK", nullptr},
+    {ID_BREAK_AT_POINT, L"BREAKATPOINT", nullptr},
+    {ID_JOIN, L"JOIN", nullptr},
+    {ID_EXPLODE, L"EXPLODE", nullptr},
+    {ID_ARRAY_RECT, L"ARRAYRECT", nullptr},
+    {ID_ARRAY_POLAR, L"ARRAYPOLAR", nullptr},
+    {ID_ARRAY_PATH, L"ARRAYPATH", nullptr},
+    {ID_ARRAY_EDIT, L"ARRAYEDIT", nullptr},
     {ID_ZOOM_WINDOW, L"ZOOM", L"W"},
     {ID_PAN, L"PAN", nullptr},
     {ID_DIST, L"DIST", nullptr},
@@ -167,7 +184,15 @@ void MainWindow::CreateChildren() {
     m_tools.AddIconButton(ID_MOVE, kIconMove, L"Move (M)");
     m_tools.AddIconButton(ID_COPY, kIconCopy, L"Copy (CO)");
     m_tools.AddIconButton(ID_ROTATE, kIconRotate, L"Rotate (RO)");
+    m_tools.AddIconButton(ID_MIRROR, kIconMirror, L"Mirror (MI)");
+    m_tools.AddIconButton(ID_SCALE, kIconScale, L"Scale (SC)");
     m_tools.AddIconButton(ID_ERASE, kIconErase, L"Erase (E or Delete)");
+    m_tools.AddSeparator();
+    m_tools.AddIconButton(ID_TRIM, kIconTrim, L"Trim (TR) - Shift+click extends");
+    m_tools.AddIconButton(ID_EXTEND, kIconExtend, L"Extend (EX) - Shift+click trims");
+    m_tools.AddIconButton(ID_OFFSET, kIconOffset, L"Offset (O)");
+    m_tools.AddIconButton(ID_FILLET, kIconFillet, L"Fillet (F)");
+    m_tools.AddIconButton(ID_ARRAY_RECT, kIconArray, L"Array (AR)");
     m_tools.AddSeparator();
     m_tools.AddIconButton(ID_ZOOM_EXTENTS, kIconZoomExtents, L"Zoom to the drawing (double-click the wheel)");
     m_tools.AddIconButton(ID_ZOOM_WINDOW, kIconZoomWindow, L"Zoom to a window");
@@ -230,6 +255,7 @@ void MainWindow::Layout() {
 
 void MainWindow::Message(const std::wstring& line) { m_cmdline.AddLine(line); }
 Vec2 MainWindow::TrackedCursor() { return m_canvas.TrackedCursor(); }
+double MainWindow::PickRadius() { return m_canvas.PickRadius(); }
 void MainWindow::ZoomExtents() { m_canvas.ZoomExtents(); }
 void MainWindow::ZoomWindow(const Box& box) { m_canvas.ZoomWindow(box); }
 void MainWindow::ZoomPrevious() { m_canvas.ZoomPrevious(); }
@@ -302,6 +328,13 @@ void MainWindow::AfterInput() {
     m_tools.SetChecked(ID_MOVE, cmd == L"MOVE");
     m_tools.SetChecked(ID_COPY, cmd == L"COPY");
     m_tools.SetChecked(ID_ROTATE, cmd == L"ROTATE");
+    m_tools.SetChecked(ID_MIRROR, cmd == L"MIRROR");
+    m_tools.SetChecked(ID_SCALE, cmd == L"SCALE");
+    m_tools.SetChecked(ID_TRIM, cmd == L"TRIM");
+    m_tools.SetChecked(ID_EXTEND, cmd == L"EXTEND");
+    m_tools.SetChecked(ID_OFFSET, cmd == L"OFFSET");
+    m_tools.SetChecked(ID_FILLET, cmd == L"FILLET");
+    m_tools.SetChecked(ID_ARRAY_RECT, cmd.compare(0, 5, L"ARRAY") == 0);
     m_tools.SetChecked(ID_ZOOM_WINDOW, cmd == L"ZOOM");
     m_tools.SetChecked(ID_DIST, cmd == L"DIST");
 }
@@ -537,6 +570,32 @@ HMENU MainWindow::BuildMenu(int menuId) {
             Append(m, ID_MOVE, L"&Move\tM");
             Append(m, ID_COPY, L"&Copy\tCO");
             Append(m, ID_ROTATE, L"&Rotate\tRO");
+            Append(m, ID_MIRROR, L"M&irror\tMI");
+            Append(m, ID_SCALE, L"&Scale\tSC");
+            Append(m, ID_STRETCH, L"Stretc&h\tS");
+            Separator(m);
+            Append(m, ID_TRIM, L"&Trim\tTR");
+            Append(m, ID_EXTEND, L"E&xtend\tEX");
+            Append(m, ID_OFFSET, L"&Offset\tO");
+            Append(m, ID_FILLET, L"&Fillet\tF");
+            Append(m, ID_CHAMFER, L"Cham&fer\tCHA");
+            Append(m, ID_LENGTHEN, L"&Lengthen\tLEN");
+            Separator(m);
+            Append(m, ID_BREAK, L"&Break\tBR");
+            Append(m, ID_BREAK_AT_POINT, L"Break at &point");
+            Append(m, ID_JOIN, L"&Join\tJ");
+            Append(m, ID_EXPLODE, L"Ex&plode\tX");
+            Separator(m);
+            {
+                HMENU arr = CreatePopupMenu();
+                Append(arr, ID_ARRAY_RECT, L"&Rectangular\tAR");
+                Append(arr, ID_ARRAY_POLAR, L"&Polar");
+                Append(arr, ID_ARRAY_PATH, L"P&ath");
+                Separator(arr);
+                Append(arr, ID_ARRAY_EDIT, L"&Edit array");
+                Submenu(m, arr, L"&Array");
+            }
+            Separator(m);
             Append(m, ID_ERASE, L"&Erase\tE");
             break;
         case ID_MENU_TOOLS:
@@ -604,6 +663,9 @@ void MainWindow::ShowContextMenu(int x, int y) {
             Append(m, ID_MOVE, L"&Move");
             Append(m, ID_COPY, L"C&opy");
             Append(m, ID_ROTATE, L"R&otate");
+            Append(m, ID_MIRROR, L"M&irror");
+            Append(m, ID_SCALE, L"&Scale");
+            Append(m, ID_EXPLODE, L"Ex&plode");
             Append(m, ID_ERASE, L"&Erase\tDelete");
             Append(m, ID_ESCAPE, L"&Deselect all\tEsc");
         }

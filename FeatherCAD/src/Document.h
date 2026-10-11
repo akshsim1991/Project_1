@@ -40,6 +40,9 @@ public:
     uint64_t Add(Entity e);
     void Erase(uint64_t id);
     void Replace(const Entity& e);  // same id, new geometry
+    // Puts back an object as it was (same id), whether it still exists or
+    // was erased: commands use it to take back one of their own steps.
+    void Restore(const Entity& e);
     // Replaces the whole drawing in one undo step (restoring a version).
     void ReplaceAll(std::vector<Entity> entities, const std::wstring& name);
 

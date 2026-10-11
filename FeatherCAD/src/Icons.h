@@ -18,6 +18,13 @@ enum CadIcon : int {
     kIconZoomExtents,
     kIconZoomWindow,
     kIconDistance,
+    kIconTrim,
+    kIconExtend,
+    kIconOffset,
+    kIconFillet,
+    kIconMirror,
+    kIconScale,
+    kIconArray,
 };
 
 // Draws `icon` centred in `rc` (a 20x20 DIP design) in `ink`, with key

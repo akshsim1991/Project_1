@@ -176,6 +176,8 @@ bool Canvas::CursorPoint(Vec2& p) const {
     return m_inside;
 }
 
+double Canvas::PickRadius() const { return Px(kPickboxDip) / m_scale; }
+
 const wchar_t* Canvas::SnapLabel() const { return m_snapHit.found ? SnapName(m_snapHit.mode) : nullptr; }
 
 void Canvas::Notify() { SendMessageW(GetParent(m_hwnd), WM_APP_CANVAS_STATE, 0, 0); }
@@ -227,6 +229,7 @@ void Canvas::LoadColours() {
         m_cross = Rgb(220, 225, 232, 0.55f);
         m_labelBg = Rgb(52, 58, 70, 0.95f);
         m_labelText = Rgb(236, 239, 244);
+        m_removeInk = Rgb(255, 90, 90);
     } else {
         m_bg = Rgb(255, 255, 255);
         m_fg = Rgb(20, 20, 24);
@@ -241,6 +244,7 @@ void Canvas::LoadColours() {
         m_cross = Rgb(40, 40, 48, 0.5f);
         m_labelBg = Rgb(250, 250, 252, 0.97f);
         m_labelText = Rgb(20, 20, 24);
+        m_removeInk = Rgb(220, 30, 30);
     }
     m_windowFill = Rgb(60, 120, 255, 0.12f);
     m_windowEdge = Rgb(60, 120, 255, 0.9f);
@@ -327,10 +331,25 @@ ID2D1PathGeometry* Canvas::BuildGeometry(const std::vector<const Entity*>& entit
         sink->EndFigure(p.FullCircle() ? D2D1_FIGURE_END_CLOSED : D2D1_FIGURE_END_OPEN);
     };
 
+    // Arrays are drawn as their copies.
+    std::vector<Entity> expanded;
+    std::vector<const Entity*> list;
+    list.reserve(entities.size());
     for (const Entity* e : entities) {
+        if (e->type != EntityType::Array) {
+            list.push_back(e);
+        } else if (Bounds(*e).Intersects(cull)) {
+            ExpandArray(*e, expanded);
+        }
+    }
+    for (const Entity& e : expanded) list.push_back(&e);
+
+    for (const Entity* e : list) {
         const Box bounds = Bounds(*e);
         if (!bounds.Intersects(cull)) continue;
         switch (e->type) {
+            case EntityType::Array:
+                break;
             case EntityType::Line:
                 line(e->p0, e->p1);
                 break;
@@ -558,12 +577,19 @@ void Canvas::RenderOverlay() {
     } else {
         rt->Clear(m_bg);
     }
-    const bool wantsPoint = m_engine->WantsPoint();
-    const bool selecting = m_engine->WantsSelection() && !m_engine->PanMode();
+    const bool picking = m_engine->WantsPoint() && m_engine->CurrentPrompt().pickObject;
+    const bool wantsPoint = m_engine->WantsPoint() && !picking;
+    const bool selecting = (m_engine->WantsSelection() || picking) && !m_engine->PanMode();
 
     // Highlight the object under the cursor.
     if (m_hover && selecting && !m_windowOn && !m_engine->Selection().count(m_hover)) {
         if (const Entity* e = m_doc->Find(m_hover)) DrawEntities(rt, {e}, m_fg, 2.6f, nullptr);
+    }
+    // What the command would take away (trim), in red and dashed.
+    if (!m_preview.removed.empty()) {
+        std::vector<const Entity*> ptrs;
+        for (const Entity& e : m_preview.removed) ptrs.push_back(&e);
+        DrawEntities(rt, ptrs, m_removeInk, 2.0f, m_dashed);
     }
     // What the command would create.
     if (!m_preview.entities.empty()) {
@@ -665,7 +691,12 @@ void Canvas::OnMouseMove(int x, int y, WPARAM keys) {
     m_snapHit = SnapResult{};
     m_hover = 0;
     const bool shift = (keys & MK_SHIFT) || (GetKeyState(VK_SHIFT) < 0);
-    if (m_engine->WantsPoint() && !m_panning) {
+    if (m_engine->WantsPoint() && m_engine->CurrentPrompt().pickObject && !m_panning) {
+        // Picking an object: the raw point, the object under it highlighted.
+        m_tracked = m_raw;
+        m_hover = PickAt(m_raw);
+        m_engine->GetPreview(m_raw, m_preview);
+    } else if (m_engine->WantsPoint() && !m_panning) {
         const Prompt& pr = m_engine->CurrentPrompt();
         const Drafting& d = m_engine->Draft();
         unsigned modes = m_engine->SnapOverride();
@@ -732,7 +763,7 @@ void Canvas::OnLeftDown(int x, int y, WPARAM keys) {
     }
     if (m_engine->WantsPoint()) {
         OnMouseMove(x, y, keys);
-        m_engine->Point(m_tracked);
+        m_engine->Point(m_tracked, shift);
         Notify();
         Refresh();
         return;

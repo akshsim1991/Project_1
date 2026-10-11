@@ -2,6 +2,27 @@
 #include "Entity.h"
 
 #include <algorithm>
+#include <functional>
+
+#include "Curve.h"
+
+namespace {
+constexpr size_t kMaxArrayCopies = 100000;
+
+Vec2 Reflect(Vec2 p, Vec2 a, Vec2 u) {  // u: unit direction of the mirror line
+    const Vec2 d = p - a;
+    return a + u * (2 * Dot(d, u)) - d;
+}
+Vec2 ReflectVector(Vec2 v, Vec2 u) { return u * (2 * Dot(v, u)) - v; }
+
+// Applies `fn` to a private copy of the array's data.
+template <class Fn>
+void EditArray(Entity& e, Fn fn) {
+    auto copy = std::make_shared<ArrayData>(*e.array);
+    fn(*copy);
+    e.array = std::move(copy);
+}
+}  // namespace
 
 Entity Entity::Line(Vec2 a, Vec2 b) {
     Entity e;
@@ -41,15 +62,105 @@ Entity Entity::Rectangle(Vec2 c1, Vec2 c2) {
     return Polyline({{{c1.x, c1.y}}, {{c2.x, c1.y}}, {{c2.x, c2.y}}, {{c1.x, c2.y}}}, true);
 }
 
+Entity Entity::Array(ArrayData data) {
+    Entity e;
+    e.type = EntityType::Array;
+    e.array = std::make_shared<const ArrayData>(std::move(data));
+    return e;
+}
+
 const wchar_t* TypeName(EntityType type) {
     switch (type) {
         case EntityType::Line: return L"Line";
         case EntityType::Circle: return L"Circle";
         case EntityType::Arc: return L"Arc";
         case EntityType::Polyline: return L"Polyline";
+        case EntityType::Array: return L"Array";
     }
     return L"Object";
 }
+
+// ---------------------------------------------------------------------------
+// Arrays
+// ---------------------------------------------------------------------------
+
+size_t ArrayCopyCount(const ArrayData& a) {
+    switch (a.kind) {
+        case ArrayData::Rect: return (size_t)std::max(1, a.columns) * (size_t)std::max(1, a.rows);
+        case ArrayData::Polar:
+        case ArrayData::Path: return (size_t)std::max(1, a.count);
+    }
+    return 1;
+}
+
+void ExpandArray(const Entity& e, std::vector<Entity>& out) {
+    if (e.type != EntityType::Array || !e.array) {
+        out.push_back(e);
+        return;
+    }
+    const ArrayData& a = *e.array;
+    auto place = [&](const std::function<void(Entity&)>& transform) {
+        for (const Entity& item : a.items) {
+            if (out.size() >= kMaxArrayCopies) return;
+            Entity c = item;
+            transform(c);
+            if (c.type == EntityType::Array) ExpandArray(c, out);
+            else out.push_back(std::move(c));
+        }
+    };
+    switch (a.kind) {
+        case ArrayData::Rect:
+            for (int r = 0; r < std::max(1, a.rows); ++r)
+                for (int c = 0; c < std::max(1, a.columns); ++c) {
+                    const Vec2 d = a.columnStep * c + a.rowStep * r;
+                    place([&](Entity& x) { Translate(x, d); });
+                }
+            break;
+        case ArrayData::Polar: {
+            const int n = std::max(1, a.count);
+            const bool full = std::fabs(a.fillAngle) >= kTau - 1e-9;
+            const double step = n == 1 ? 0 : full ? a.fillAngle / n : a.fillAngle / (n - 1);
+            Box box;
+            for (const Entity& item : a.items) box.Add(Bounds(item));
+            const Vec2 ref = box.Empty() ? a.centre : box.Center();
+            for (int k = 0; k < n; ++k) {
+                const double ang = step * k;
+                if (a.rotateItems) place([&](Entity& x) { Rotate(x, a.centre, ang); });
+                else place([&](Entity& x) { Translate(x, RotateAround(ref, a.centre, ang) - ref); });
+            }
+            break;
+        }
+        case ArrayData::Path: {
+            if (a.path.empty() || !IsCurve(a.path[0])) {
+                place([](Entity&) {});
+                break;
+            }
+            const Entity& path = a.path[0];
+            const double L = CurveLength(path);
+            const bool closed = IsClosedCurve(path);
+            const int n = std::max(1, a.count);
+            const double step = a.spacing > 0 ? a.spacing : closed ? L / n : (n > 1 ? L / (n - 1) : 0);
+            const Vec2 p0 = CurvePoint(path, 0);
+            const double t0 = AngleOf(CurveDirection(path, 0));
+            for (int k = 0; k < n; ++k) {
+                double s = step * k;
+                if (s > L * (1 + 1e-9)) break;
+                if (closed && L > 0) s = std::fmod(s, L);
+                const Vec2 pk = CurvePoint(path, s);
+                const double turn = AngleOf(CurveDirection(path, s)) - t0;
+                place([&](Entity& x) {
+                    Translate(x, pk - p0);
+                    if (a.align) Rotate(x, pk, turn);
+                });
+            }
+            break;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Geometry
+// ---------------------------------------------------------------------------
 
 size_t SegmentCount(const Entity& e) {
     if (e.type != EntityType::Polyline || e.verts.size() < 2) return 0;
@@ -78,6 +189,12 @@ void Primitives(const Entity& e, std::vector<Prim>& out) {
                 out.push_back(ArcFromBulge(v.p, w.p, v.bulge));
             }
             if (e.verts.size() == 1) out.push_back(Prim::Seg(e.verts[0].p, e.verts[0].p));
+            break;
+        }
+        case EntityType::Array: {
+            std::vector<Entity> copies;
+            ExpandArray(e, copies);
+            for (const Entity& c : copies) Primitives(c, out);
             break;
         }
     }
@@ -124,13 +241,35 @@ double LengthOf(const Entity& e) {
     return len;
 }
 
+// ---------------------------------------------------------------------------
+// Transformations
+// ---------------------------------------------------------------------------
+
 void Translate(Entity& e, Vec2 d) {
+    if (e.type == EntityType::Array) {
+        EditArray(e, [&](ArrayData& a) {
+            for (Entity& x : a.items) Translate(x, d);
+            for (Entity& x : a.path) Translate(x, d);
+            a.centre += d;
+        });
+        return;
+    }
     e.p0 += d;
     e.p1 += d;
     for (Vertex& v : e.verts) v.p += d;
 }
 
 void Rotate(Entity& e, Vec2 centre, double angle) {
+    if (e.type == EntityType::Array) {
+        EditArray(e, [&](ArrayData& a) {
+            for (Entity& x : a.items) Rotate(x, centre, angle);
+            for (Entity& x : a.path) Rotate(x, centre, angle);
+            a.centre = RotateAround(a.centre, centre, angle);
+            a.columnStep = RotateAround(a.columnStep, {0, 0}, angle);
+            a.rowStep = RotateAround(a.rowStep, {0, 0}, angle);
+        });
+        return;
+    }
     e.p0 = RotateAround(e.p0, centre, angle);
     e.p1 = RotateAround(e.p1, centre, angle);
     e.startAngle = NormalizeAngle(e.startAngle + angle);
@@ -138,7 +277,70 @@ void Rotate(Entity& e, Vec2 centre, double angle) {
     for (Vertex& v : e.verts) v.p = RotateAround(v.p, centre, angle);
 }
 
+void Scale(Entity& e, Vec2 base, double f) {
+    auto sp = [&](Vec2 p) { return base + (p - base) * f; };
+    if (e.type == EntityType::Array) {
+        EditArray(e, [&](ArrayData& a) {
+            for (Entity& x : a.items) Scale(x, base, f);
+            for (Entity& x : a.path) Scale(x, base, f);
+            a.centre = sp(a.centre);
+            a.columnStep = a.columnStep * f;
+            a.rowStep = a.rowStep * f;
+            a.spacing *= f;
+        });
+        return;
+    }
+    e.p0 = sp(e.p0);
+    e.p1 = sp(e.p1);
+    e.radius *= f;
+    for (Vertex& v : e.verts) v.p = sp(v.p);
+}
+
+void Mirror(Entity& e, Vec2 a, Vec2 b) {
+    const Vec2 u = Normalized(b - a);
+    const double phi = AngleOf(u);
+    if (e.type == EntityType::Array) {
+        EditArray(e, [&](ArrayData& d) {
+            for (Entity& x : d.items) Mirror(x, a, b);
+            for (Entity& x : d.path) Mirror(x, a, b);
+            d.centre = Reflect(d.centre, a, u);
+            d.columnStep = ReflectVector(d.columnStep, u);
+            d.rowStep = ReflectVector(d.rowStep, u);
+            d.fillAngle = -d.fillAngle;
+        });
+        return;
+    }
+    e.p0 = Reflect(e.p0, a, u);
+    e.p1 = Reflect(e.p1, a, u);
+    if (e.type == EntityType::Arc) {
+        // A mirror turns counter-clockwise into clockwise: swap the ends.
+        const double s = e.startAngle, t = e.endAngle;
+        e.startAngle = NormalizeAngle(2 * phi - t);
+        e.endAngle = NormalizeAngle(2 * phi - s);
+    }
+    for (Vertex& v : e.verts) {
+        v.p = Reflect(v.p, a, u);
+        v.bulge = -v.bulge;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Snap points
+// ---------------------------------------------------------------------------
+
+namespace {
+template <class Fn>
+bool ForArrayCopies(const Entity& e, std::vector<Vec2>& out, Fn fn) {
+    if (e.type != EntityType::Array) return false;
+    std::vector<Entity> copies;
+    ExpandArray(e, copies);
+    for (const Entity& c : copies) fn(c, out);
+    return true;
+}
+}  // namespace
+
 void EndPoints(const Entity& e, std::vector<Vec2>& out) {
+    if (ForArrayCopies(e, out, EndPoints)) return;
     switch (e.type) {
         case EntityType::Line:
             out.push_back(e.p0);
@@ -151,12 +353,13 @@ void EndPoints(const Entity& e, std::vector<Vec2>& out) {
         case EntityType::Polyline:
             for (const Vertex& v : e.verts) out.push_back(v.p);
             break;
-        case EntityType::Circle:
+        default:
             break;
     }
 }
 
 void MidPoints(const Entity& e, std::vector<Vec2>& out) {
+    if (ForArrayCopies(e, out, MidPoints)) return;
     if (e.type == EntityType::Circle) return;
     std::vector<Prim> prims;
     Primitives(e, prims);
@@ -164,6 +367,7 @@ void MidPoints(const Entity& e, std::vector<Vec2>& out) {
 }
 
 void Centres(const Entity& e, std::vector<Vec2>& out) {
+    if (ForArrayCopies(e, out, Centres)) return;
     if (e.type == EntityType::Circle || e.type == EntityType::Arc) {
         out.push_back(e.p0);
         return;
@@ -177,6 +381,7 @@ void Centres(const Entity& e, std::vector<Vec2>& out) {
 }
 
 void Quadrants(const Entity& e, std::vector<Vec2>& out) {
+    if (ForArrayCopies(e, out, Quadrants)) return;
     std::vector<Prim> prims;
     Primitives(e, prims);
     for (const Prim& p : prims) {

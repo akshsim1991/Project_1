@@ -8,7 +8,7 @@ Created by: Akshaya Simha. © 2026 Akshaya Simha.
 It is written in C++ with the Windows API and Direct2D. It uses no
 third-party libraries, comes as one small `.exe` and starts instantly.
 
-## Phase A (this version)
+## Phase A (version 1.0)
 
 **Workspace**
 - Menu strip, tool bar, drawing area, command line and status bar
@@ -111,11 +111,35 @@ third-party libraries, comes as one small `.exe` and starts instantly.
 - DIST: distance, angle and ΔX/ΔY between two points.
 - ID: the coordinates of a point.
 
+## Phase B1: editing (version 1.1)
+
+| Command | Short name | What it does |
+|---------|------------|--------------|
+| TRIM | TR | Click the part to cut away. It is removed between the nearest crossings, shown in red before you click. Every object is a cutting edge, or choose particular ones (T). Shift+click extends instead. Undo option. |
+| EXTEND | EX | Click near the end to lengthen; it grows to the next object in the way. Shift+click trims instead. |
+| OFFSET | O | A parallel copy at a distance, or through a point. Works on lines, arcs, circles and polylines; polyline corners are extended or cut back so they stay sharp. |
+| FILLET | F | Rounds the corner between lines, arcs and circles, picked near the parts to keep. Radius 0, or Shift+click, makes a sharp corner. Polyline option for all corners; Trim/No trim; Multiple. |
+| CHAMFER | CHA | Bevels the corner between two lines, by two distances or by a length and an angle. Polyline option. |
+| MIRROR | MI | Mirrors about a line, keeping or erasing the originals. |
+| SCALE | SC | Scales by a factor or by reference lengths, with a copy option. |
+| STRETCH | S | Moves the points inside a crossing window; objects completely inside move whole. |
+| BREAK | BR | Removes the part between two points. BREAKATPOINT splits an object in two. |
+| JOIN | J | Joins lines, arcs and polylines whose ends meet into one polyline. Straight runs become one line; arcs of one circle become one arc or a circle. |
+| EXPLODE | X | Splits polylines into lines and arcs, and arrays into separate copies. |
+| LENGTHEN | LEN | Changes length by a delta, a percentage or to a total length. Picking an object shows its length. |
+| ARRAY | AR | ★ Associative arrays: rectangular (rows and columns), polar (around a centre, items turned or not), path (along a curve, aligned or not). The array stays one object, so moving, rotating, scaling or mirroring it moves every copy. |
+| ARRAYEDIT | | Changes the counts, spacing, fill angle or alignment of an array; its Explode option makes the copies separate objects. |
+
+★ = usually a paid feature in other CAD programs.
+
+Arrays are saved in the `.fcad` file. They are exported to DXF as their separate copies.
+
 ## Coming in later phases
 
 | Phase | Contents |
 |-------|----------|
-| B     | Editing (trim, extend, offset, fillet and more), layers, DXF import |
+| B2    | Grips, polar and object snap tracking, on-cursor input, ellipse, polygon, spline, Quick Select |
+| B3    | Layers, line types, properties panel, DXF import, match properties |
 | C     | Annotation: text, dimensions, hatching and blocks |
 | D     | Sheets, printing and PDF |
 | E     | Engineering (constraints, GD&T, parts lists) |
@@ -137,7 +161,8 @@ cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=cmake/mingw-w64-x86_64.cmake -DCMAKE_
 
 **Source layout**
 - The drawing model and the command engine have no Windows code:
-  `Geometry`, `Entity`, `Document`, `Snap`, `Engine` and `Commands`.
+  `Geometry`, `Entity`, `Curve`, `Modify`, `Document`, `Snap`, `Engine`,
+  `Commands` and `CommandsModify`.
 - The unit tests (`tests/CoreTests.cpp`) drive the engine by typed input
   alone.
 - The window side is `MainWindow`, `Canvas` (Direct2D), `CommandLine` and

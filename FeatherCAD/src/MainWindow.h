@@ -25,6 +25,7 @@ public:
     // EngineHost
     void Message(const std::wstring& line) override;
     Vec2 TrackedCursor() override;
+    double PickRadius() override;
     bool HostCommand(const std::wstring& name) override;
     void ZoomExtents() override;
     void ZoomWindow(const Box& box) override;

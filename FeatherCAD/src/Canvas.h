@@ -40,6 +40,8 @@ public:
     // is over the drawing.
     bool CursorPoint(Vec2& p) const;
     Vec2 TrackedCursor() const { return m_tracked; }
+    // How far from an object a click still picks it (drawing units).
+    double PickRadius() const;
     // The snap found under the cursor (for the status bar), or nullptr.
     const wchar_t* SnapLabel() const;
 
@@ -95,7 +97,7 @@ private:
 
     // colours
     D2D1_COLOR_F m_bg, m_fg, m_gridMinor, m_gridMajor, m_axisX, m_axisY, m_select, m_previewInk, m_guide, m_snap,
-        m_cross, m_windowFill, m_windowEdge, m_crossFill, m_crossEdge, m_labelBg, m_labelText;
+        m_cross, m_windowFill, m_windowEdge, m_crossFill, m_crossEdge, m_labelBg, m_labelText, m_removeInk;
 
     // view: world point at the window centre and pixels per drawing unit
     Vec2 m_centre{150, 100};

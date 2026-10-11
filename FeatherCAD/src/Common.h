@@ -21,7 +21,7 @@
 #include <vector>
 
 #define APP_NAME L"Feather CAD"
-#define APP_VERSION L"1.0.1"
+#define APP_VERSION L"1.1.0"
 #define APP_AUTHOR L"Akshaya Simha"
 #define APP_COPYRIGHT L"\x00A9 2026 Akshaya Simha"
 #define APP_WINDOW_CLASS L"FeatherCadMain"
@@ -68,6 +68,23 @@ enum : int {
     ID_MOVE,
     ID_COPY,
     ID_ROTATE,
+    ID_MIRROR,
+    ID_SCALE,
+    ID_STRETCH,
+    ID_TRIM,
+    ID_EXTEND,
+    ID_OFFSET,
+    ID_FILLET,
+    ID_CHAMFER,
+    ID_LENGTHEN,
+    ID_BREAK,
+    ID_BREAK_AT_POINT,
+    ID_JOIN,
+    ID_EXPLODE,
+    ID_ARRAY_RECT,
+    ID_ARRAY_POLAR,
+    ID_ARRAY_PATH,
+    ID_ARRAY_EDIT,
     // View
     ID_ZOOM_EXTENTS,
     ID_ZOOM_WINDOW,

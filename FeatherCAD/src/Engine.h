@@ -38,6 +38,7 @@ struct Prompt {
     unsigned accept = 0;
     bool hasBase = false;  // rubber band origin: ortho and direct distances use it
     Vec2 base;
+    bool pickObject = false;  // the click picks an object (pick box, no object snaps)
     std::wstring FullText() const;  // "Specify next point or [Close/Undo] <10.00>:"
 };
 
@@ -45,7 +46,12 @@ struct Prompt {
 struct Preview {
     std::vector<Entity> entities;
     std::vector<std::pair<Vec2, Vec2>> guides;  // dashed helper lines
-    void Clear() { entities.clear(); guides.clear(); }
+    std::vector<Entity> removed;                // what would be taken away (trim)
+    void Clear() {
+        entities.clear();
+        guides.clear();
+        removed.clear();
+    }
 };
 
 // Grid, snap, ortho and object snap settings.
@@ -65,6 +71,8 @@ public:
     virtual void Message(const std::wstring& line) = 0;  // a line in the command history
     // Where the cursor is now (ortho applied): direct distances point that way.
     virtual Vec2 TrackedCursor() = 0;
+    // How far from an object a click still picks it, in drawing units.
+    virtual double PickRadius() = 0;
     // Commands the window handles itself (OPEN, SAVE, UNITS...). True if handled.
     virtual bool HostCommand(const std::wstring& name) = 0;
     virtual void ZoomExtents() = 0;
@@ -94,7 +102,7 @@ public:
     // ---- input --------------------------------------------------------------
     void Run(const std::wstring& name);   // start a command (menus, toolbar)
     void Text(const std::wstring& typed);  // Enter in the command line
-    void Point(Vec2 p);                    // a click in the drawing
+    void Point(Vec2 p, bool shift = false);  // a click in the drawing (Shift held?)
     void Enter();                          // Enter / Space / right-click "Enter"
     void Cancel();                         // Esc
     void Keyword(const std::wstring& key); // an option chosen from a menu
@@ -111,6 +119,9 @@ public:
     std::wstring LastCommand() const { return m_lastCommand; }
     const std::vector<std::wstring>& RecentCommands() const { return m_recent; }
     Vec2 LastPoint() const { return m_lastPoint; }
+    bool LastPointShift() const { return m_lastShift; }  // Shift was held for the last click
+    // The object under p (within the pick radius), the top one if several; 0 if none.
+    uint64_t PickEntity(Vec2 p) const;
 
     // One-shot object snap typed at a point prompt (END, MID...), or 0.
     unsigned SnapOverride() const { return m_snapOverride; }
@@ -140,6 +151,11 @@ public:
     void SetLastPoint(Vec2 p) { m_lastPoint = p; }
     // Remembered between commands, like other CAD programs do.
     double lastRadius = 0, lastRotation = 0, lastRectLength = 0, lastRectWidth = 0;
+    double lastOffset = -1;  // < 0: through a point
+    double lastFilletRadius = 0, lastChamfer1 = 0, lastChamfer2 = 0, lastChamferAngle = 0;
+    bool chamferByAngle = false, cornerTrim = true;
+    double lastScale = 1, lastLengthen = 0;
+    int lastColumns = 4, lastRows = 3, lastPolarCount = 6, lastPathCount = 5;
 
 private:
     bool ParsePoint(const std::wstring& text, Vec2& out) const;
@@ -158,6 +174,7 @@ private:
     std::wstring m_lastCommand;
     std::vector<std::wstring> m_recent;
     Vec2 m_lastPoint;
+    bool m_lastShift = false;
     unsigned m_snapOverride = 0;
     Drafting m_draft;
     std::set<uint64_t> m_selection;

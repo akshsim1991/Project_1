@@ -5,45 +5,10 @@
 #include <algorithm>
 #include <functional>
 
+#include "CommandUtil.h"
 #include "Engine.h"
 
 namespace {
-constexpr size_t kMaxPreview = 2000;  // objects shown while moving or rotating
-
-Prompt P(const wchar_t* text, unsigned accept, std::vector<Keyword> keywords = {}, std::wstring def = L"") {
-    Prompt p;
-    p.text = text;
-    p.accept = accept | (keywords.empty() ? 0u : (unsigned)kAcceptKeyword);
-    p.keywords = std::move(keywords);
-    p.defaultText = std::move(def);
-    return p;
-}
-
-Prompt From(Prompt p, Vec2 base) {
-    p.hasBase = true;
-    p.base = base;
-    return p;
-}
-
-std::vector<uint64_t> SelectionIds(Engine* E) { return {E->Selection().begin(), E->Selection().end()}; }
-
-void PreviewTransformed(Engine* E, const std::vector<uint64_t>& ids, Preview& out,
-                        const std::function<void(Entity&)>& transform) {
-    for (size_t i = 0; i < ids.size() && i < kMaxPreview; ++i) {
-        const Entity* e = E->Doc().Find(ids[i]);
-        if (!e) continue;
-        Entity copy = *e;
-        transform(copy);
-        out.entities.push_back(std::move(copy));
-    }
-}
-
-bool Positive(Engine* E, double v) {
-    if (v > 0) return true;
-    E->Msg(L"The value must be positive and not zero.");
-    return false;
-}
-
 // ---------------------------------------------------------------------------
 // LINE
 // ---------------------------------------------------------------------------
@@ -905,6 +870,24 @@ const std::vector<CommandInfo>& AllCommands() {
         {L"COPY", {L"CO", L"CP"}, L"Copy", L"Copy objects, as many times as you like"},
         {L"ROTATE", {L"RO"}, L"Rotate", L"Rotate objects around a base point"},
         {L"ERASE", {L"E", L"DELETE"}, L"Erase", L"Remove objects from the drawing"},
+        {L"TRIM", {L"TR"}, L"Trim", L"Cut objects back to where they cross others (Shift+click extends)"},
+        {L"EXTEND", {L"EX"}, L"Extend", L"Lengthen objects to meet others (Shift+click trims)"},
+        {L"OFFSET", {L"O"}, L"Offset", L"Parallel copy of a line, arc, circle or polyline at a distance"},
+        {L"FILLET", {L"F"}, L"Fillet", L"Round a corner with an arc (radius 0: sharp corner)"},
+        {L"CHAMFER", {L"CHA"}, L"Chamfer", L"Bevel a corner between two lines"},
+        {L"MIRROR", {L"MI"}, L"Mirror", L"Mirror objects about a line"},
+        {L"SCALE", {L"SC"}, L"Scale", L"Make objects bigger or smaller"},
+        {L"STRETCH", {L"S"}, L"Stretch", L"Move the points inside a crossing window"},
+        {L"BREAK", {L"BR"}, L"Break", L"Remove the part of an object between two points"},
+        {L"BREAKATPOINT", {}, L"Break at point", L"Split an object in two at a point"},
+        {L"JOIN", {L"J"}, L"Join", L"Join lines, arcs and polylines whose ends meet"},
+        {L"EXPLODE", {L"X"}, L"Explode", L"Split a polyline or array into separate objects"},
+        {L"LENGTHEN", {L"LEN"}, L"Lengthen", L"Change the length of lines and arcs"},
+        {L"ARRAY", {L"AR"}, L"Array", L"Copies in a grid, around a centre or along a path"},
+        {L"ARRAYRECT", {}, L"Rectangular array", L"Copies in rows and columns that stay linked"},
+        {L"ARRAYPOLAR", {}, L"Polar array", L"Copies around a centre that stay linked"},
+        {L"ARRAYPATH", {}, L"Path array", L"Copies along a curve that stay linked"},
+        {L"ARRAYEDIT", {}, L"Edit array", L"Change the count and spacing of an array"},
         {L"UNDO", {L"U"}, L"Undo", L"Take back the last command"},
         {L"REDO", {}, L"Redo", L"Do again what Undo took back"},
         {L"SELECTALL", {L"ALL"}, L"Select all", L"Select every object"},
@@ -932,6 +915,7 @@ const std::vector<CommandInfo>& AllCommands() {
 }
 
 std::unique_ptr<Command> CreateCommand(const std::wstring& name) {
+    if (auto cmd = CreateModifyCommand(name)) return cmd;
     if (name == L"LINE") return std::make_unique<LineCmd>();
     if (name == L"PLINE") return std::make_unique<PlineCmd>();
     if (name == L"CIRCLE") return std::make_unique<CircleCmd>();
