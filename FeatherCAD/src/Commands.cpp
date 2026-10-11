@@ -453,15 +453,15 @@ class MoveCopyCmd : public Command {
 
     void Apply(Vec2 d) {
         if (m_copy) {
-            std::vector<uint64_t> batch;
+            std::vector<Entity> copies;
             for (uint64_t id : m_ids) {
                 const Entity* e = E->Doc().Find(id);
                 if (!e) continue;
-                Entity c = *e;
-                Translate(c, d);
-                batch.push_back(E->Doc().Add(std::move(c)));
+                copies.push_back(*e);
+                Translate(copies.back(), d);
             }
-            m_batches.push_back(std::move(batch));
+            // Together, so copied dimensions stay attached to the copied objects.
+            m_batches.push_back(E->Doc().AddGroup(std::move(copies)));
         } else {
             for (uint64_t id : m_ids) {
                 const Entity* e = E->Doc().Find(id);
@@ -568,14 +568,16 @@ class RotateCmd : public Command {
     }
     void Apply(double angle) {
         E->lastRotation = NormalizeAngle(angle);
+        std::vector<Entity> copies;
         for (uint64_t id : m_ids) {
             const Entity* e = E->Doc().Find(id);
             if (!e) continue;
             Entity r = *e;
             Rotate(r, m_base, angle);
-            if (m_copy) E->Doc().Add(std::move(r));
+            if (m_copy) copies.push_back(std::move(r));
             else E->Doc().Replace(r);
         }
+        if (m_copy) E->Doc().AddGroup(std::move(copies));
         E->Msg(std::to_wstring(m_ids.size()) + L" object(s) rotated by " + E->Ang(NormalizeAngle(angle)) + L"\x00B0.");
         E->ClearSelection();
         E->Finish();
@@ -892,6 +894,20 @@ const std::vector<CommandInfo>& AllCommands() {
         {L"ARRAYPOLAR", {}, L"Polar array", L"Copies around a centre that stay linked"},
         {L"ARRAYPATH", {}, L"Path array", L"Copies along a curve that stay linked"},
         {L"ARRAYEDIT", {}, L"Edit array", L"Change the count and spacing of an array"},
+        {L"DIM", {L"SMARTDIM", L"SD"}, L"Smart dimension",
+         L"Click a line, circle, arc or two lines: the right dimension follows the cursor. Type a value to resize"},
+        {L"DIMLINEAR", {L"DLI"}, L"Linear dimension", L"Horizontal or vertical distance between two points"},
+        {L"DIMALIGNED", {L"DAL"}, L"Aligned dimension", L"Distance along the line between two points"},
+        {L"DIMRADIUS", {L"DRA"}, L"Radius dimension", L"Radius of an arc or circle"},
+        {L"DIMDIAMETER", {L"DDI"}, L"Diameter dimension", L"Diameter of a circle or arc"},
+        {L"DIMANGULAR", {L"DAN"}, L"Angular dimension", L"Angle between two lines, of an arc, or by three points"},
+        {L"DIMCONTINUE", {L"DCO"}, L"Continue dimension", L"Chain of dimensions from the last one"},
+        {L"DIMBASELINE", {L"DBA"}, L"Baseline dimension", L"Stack of dimensions from the same base line"},
+        {L"DIMEDIT", {L"DED"}, L"Edit dimension", L"New value (the geometry changes to it) or new text (double-click a dimension)"},
+        {L"DIMSTYLE", {L"D", L"DST"}, L"Dimension style", L"Text height, arrows and decimals of dimensions", true},
+        {L"COPYCLIP", {}, L"Copy to clipboard", L"Copy objects to paste them elsewhere, also into another drawing (Ctrl+C)"},
+        {L"CUTCLIP", {}, L"Cut to clipboard", L"Remove objects to paste them elsewhere (Ctrl+X)"},
+        {L"PASTECLIP", {}, L"Paste", L"Paste copied objects at a point (Ctrl+V)"},
         {L"UNDO", {L"U"}, L"Undo", L"Take back the last command"},
         {L"REDO", {}, L"Redo", L"Do again what Undo took back"},
         {L"SELECTALL", {L"ALL"}, L"Select all", L"Select every object"},
@@ -907,7 +923,9 @@ const std::vector<CommandInfo>& AllCommands() {
         {L"OSNAP", {L"OS"}, L"Object snaps", L"Choose the object snaps (F3 turns them on or off)", true},
         {L"UNITS", {L"UN"}, L"Units", L"Drawing units and decimal places", true},
         {L"NEW", {}, L"New drawing", L"Start a new drawing", true},
-        {L"OPEN", {}, L"Open", L"Open a Feather CAD drawing", true},
+        {L"OPEN", {}, L"Open", L"Open a Feather CAD drawing or a DXF file in a new tab", true},
+        {L"IMPORT", {L"DXFIN"}, L"Import DXF", L"Bring a DXF drawing's objects into this drawing", true},
+        {L"CLOSE", {}, L"Close drawing", L"Close this drawing's tab (Ctrl+W)", true},
         {L"SAVE", {L"QSAVE"}, L"Save", L"Save the drawing", true},
         {L"SAVEAS", {}, L"Save as", L"Save the drawing under a new name", true},
         {L"DXFOUT", {L"EXPORT"}, L"Export DXF", L"Save a copy for AutoCAD and other CAD programs", true},
@@ -923,6 +941,7 @@ const std::vector<CommandInfo>& AllCommands() {
 std::unique_ptr<Command> CreateCommand(const std::wstring& name) {
     if (auto cmd = CreateModifyCommand(name)) return cmd;
     if (auto cmd = CreateDrawCommand(name)) return cmd;
+    if (auto cmd = CreateDimCommand(name)) return cmd;
     if (name == L"LINE") return std::make_unique<LineCmd>();
     if (name == L"PLINE") return std::make_unique<PlineCmd>();
     if (name == L"CIRCLE") return std::make_unique<CircleCmd>();

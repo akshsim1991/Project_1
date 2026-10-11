@@ -116,6 +116,7 @@ std::vector<CurvePiece> CurvePieces(const Entity& e) {
         }
         case EntityType::Array:
         case EntityType::Point:
+        case EntityType::Dimension:
             break;
     }
     return out;
@@ -232,6 +233,7 @@ bool SubCurve(const Entity& e, double s0, double s1, Entity& out) {
         case EntityType::Array:
         case EntityType::Spline:  // a part of a spline is not kept as a spline
         case EntityType::Point:
+        case EntityType::Dimension:
             return false;
     }
     return false;

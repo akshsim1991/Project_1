@@ -356,7 +356,7 @@ struct QSelectData {
 
 constexpr EntityType kQsTypes[] = {EntityType::Line,    EntityType::Circle,  EntityType::Arc,
                                    EntityType::Polyline, EntityType::Ellipse, EntityType::Spline,
-                                   EntityType::Point,   EntityType::Array};
+                                   EntityType::Point,   EntityType::Array,   EntityType::Dimension};
 
 INT_PTR CALLBACK QSelectProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
     auto* d = (QSelectData*)GetWindowLongPtrW(dlg, DWLP_USER);
@@ -406,6 +406,126 @@ INT_PTR CALLBACK QSelectProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
     return FALSE;
 }
 
+
+// ---- dimension style and one dimension -------------------------------------------
+struct DimStyleData {
+    DimStyle* style;
+    bool* apply;
+};
+
+void SetNumber(HWND dlg, int id, double v) { SetDlgItemTextW(dlg, id, Utf8ToWide(FormatNumber(v)).c_str()); }
+
+bool ReadNonNegative(HWND dlg, int id, double& out) {
+    double v;
+    if (!ParseNumber(WideToUtf8(GetText(dlg, id)), v) || v < 0 || v > 1e9) {
+        MessageBoxW(dlg, L"Please enter a number of zero or more (with a dot for decimals).", APP_NAME, MB_ICONWARNING);
+        SetFocus(GetDlgItem(dlg, id));
+        SendDlgItemMessageW(dlg, id, EM_SETSEL, 0, -1);
+        return false;
+    }
+    out = v;
+    return true;
+}
+
+void FillDecimals(HWND dlg, int id, int current) {
+    for (int p = 0; p <= 8; ++p)
+        SendDlgItemMessageW(dlg, id, CB_ADDSTRING, 0, (LPARAM)FormatDecimal(0, p).c_str());
+    SendDlgItemMessageW(dlg, id, CB_SETCURSEL, std::clamp(current, 0, 8), 0);
+}
+
+INT_PTR CALLBACK DimStyleProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
+    auto* d = (DimStyleData*)GetWindowLongPtrW(dlg, DWLP_USER);
+    switch (msg) {
+        case WM_INITDIALOG: {
+            SetWindowLongPtrW(dlg, DWLP_USER, lp);
+            d = (DimStyleData*)lp;
+            InitDialog(dlg);
+            const DimStyle& s = *d->style;
+            SetNumber(dlg, IDC_DS_TEXT, s.textHeight);
+            SetNumber(dlg, IDC_DS_ARROW, s.arrowSize);
+            SetNumber(dlg, IDC_DS_EXTOFFSET, s.extOffset);
+            SetNumber(dlg, IDC_DS_EXTBEYOND, s.extBeyond);
+            SetNumber(dlg, IDC_DS_GAP, s.textGap);
+            FillDecimals(dlg, IDC_DS_DECIMALS, s.precision);
+            Check(dlg, IDC_DS_TRIM, s.trimZeros);
+            Check(dlg, IDC_DS_APPLY, *d->apply);
+            return TRUE;
+        }
+        case WM_COMMAND:
+            if (LOWORD(wp) == IDOK) {
+                DimStyle s = *d->style;
+                if (!ReadPositive(dlg, IDC_DS_TEXT, s.textHeight) || !ReadNonNegative(dlg, IDC_DS_ARROW, s.arrowSize) ||
+                    !ReadNonNegative(dlg, IDC_DS_EXTOFFSET, s.extOffset) ||
+                    !ReadNonNegative(dlg, IDC_DS_EXTBEYOND, s.extBeyond) || !ReadNonNegative(dlg, IDC_DS_GAP, s.textGap))
+                    return TRUE;
+                s.precision = std::max(0, (int)SendDlgItemMessageW(dlg, IDC_DS_DECIMALS, CB_GETCURSEL, 0, 0));
+                s.trimZeros = Checked(dlg, IDC_DS_TRIM);
+                *d->style = s;
+                *d->apply = Checked(dlg, IDC_DS_APPLY);
+                EndDialog(dlg, IDOK);
+            } else if (LOWORD(wp) == IDCANCEL) {
+                EndDialog(dlg, IDCANCEL);
+            }
+            return TRUE;
+    }
+    return FALSE;
+}
+
+struct DimEditData {
+    const DimData* dim;
+    bool attached;
+    DimEditResult* out;
+    std::wstring shown;  // the value as first shown
+};
+
+INT_PTR CALLBACK DimEditProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
+    auto* d = (DimEditData*)GetWindowLongPtrW(dlg, DWLP_USER);
+    switch (msg) {
+        case WM_INITDIALOG: {
+            SetWindowLongPtrW(dlg, DWLP_USER, lp);
+            d = (DimEditData*)lp;
+            InitDialog(dlg);
+            const DimData& dim = *d->dim;
+            const bool angle = dim.kind == DimData::Angular;
+            const double m = DimMeasure(dim);
+            DimStyle exact = dim.style;
+            exact.precision = 8;  // show the value as it is, not rounded
+            d->shown = DimNumber(angle ? ToDegrees(m) : m, exact);
+            std::wstring kind = std::wstring(DimKindName(dim.kind)) + L" dimension";
+            if (angle) kind += L" (degrees)";
+            SetDlgItemTextW(dlg, IDC_DE_KIND, kind.c_str());
+            SetDlgItemTextW(dlg, IDC_DE_VALUE, d->shown.c_str());
+            SetDlgItemTextW(dlg, IDC_DE_NOTE,
+                            d->attached ? L"It is attached to the drawing: a new value changes the objects to that size."
+                                        : L"It is not attached to any object, so its value cannot be changed here. "
+                                          L"Change its text instead.");
+            EnableWindow(GetDlgItem(dlg, IDC_DE_VALUE), d->attached);
+            SetDlgItemTextW(dlg, IDC_DE_TEXT, dim.text.c_str());
+            FillDecimals(dlg, IDC_DE_DECIMALS, dim.style.precision);
+            if (d->attached) {
+                SetFocus(GetDlgItem(dlg, IDC_DE_VALUE));
+                SendDlgItemMessageW(dlg, IDC_DE_VALUE, EM_SETSEL, 0, -1);
+                return FALSE;
+            }
+            return TRUE;
+        }
+        case WM_COMMAND:
+            if (LOWORD(wp) == IDOK) {
+                DimEditResult& r = *d->out;
+                const std::wstring typed = GetText(dlg, IDC_DE_VALUE);
+                r.valueChanged = d->attached && typed != d->shown;
+                if (r.valueChanged && !ReadPositive(dlg, IDC_DE_VALUE, r.value)) return TRUE;
+                r.text = GetText(dlg, IDC_DE_TEXT);
+                r.precision = std::max(0, (int)SendDlgItemMessageW(dlg, IDC_DE_DECIMALS, CB_GETCURSEL, 0, 0));
+                EndDialog(dlg, IDOK);
+            } else if (LOWORD(wp) == IDCANCEL) {
+                EndDialog(dlg, IDCANCEL);
+            }
+            return TRUE;
+    }
+    return FALSE;
+}
+
 INT_PTR CALLBACK AboutProc(HWND dlg, UINT msg, WPARAM wp, LPARAM) {
     switch (msg) {
         case WM_INITDIALOG: {
@@ -419,8 +539,8 @@ INT_PTR CALLBACK AboutProc(HWND dlg, UINT msg, WPARAM wp, LPARAM) {
                             L"A lightweight 2D drafting program for Windows, made for learning and "
                             L"academic use.\n\n"
                             L"Created by: " APP_AUTHOR L"\n" APP_COPYRIGHT L"\n\n"
-                            L"Drawings are saved as .fcad text files and can be exported as DXF for "
-                            L"other CAD programs.");
+                            L"Drawings are saved as .fcad text files. DXF drawings from other CAD "
+                            L"programs can be opened, and any drawing exported as DXF.");
             return TRUE;
         }
         case WM_COMMAND:
@@ -469,4 +589,16 @@ bool QSelectDialog(HWND owner, SelectQuery& query, QSelectMode& mode) {
 
 void AboutDialog(HWND owner) {
     DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_ABOUT), owner, AboutProc, 0);
+}
+
+bool DimStyleDialog(HWND owner, DimStyle& style, bool& applyExisting) {
+    DimStyleData d{&style, &applyExisting};
+    return DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_DIMSTYLE), owner, DimStyleProc,
+                           (LPARAM)&d) == IDOK;
+}
+
+bool DimEditDialog(HWND owner, const DimData& dim, bool attached, DimEditResult& out) {
+    DimEditData d{&dim, attached, &out, L""};
+    return DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_DIMEDIT), owner, DimEditProc, (LPARAM)&d) ==
+           IDOK;
 }

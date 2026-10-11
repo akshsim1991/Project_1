@@ -79,6 +79,47 @@ BEGIN
     PUSHBUTTON      "Cancel", IDCANCEL, 200, 150, 50, 14
 END
 
+IDD_DIMSTYLE DIALOGEX 0, 0, 250, 176
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Dimension style"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "&Text height:", -1, 10, 12, 130, 10
+    EDITTEXT        IDC_DS_TEXT, 160, 10, 80, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "&Arrow size:", -1, 10, 30, 130, 10
+    EDITTEXT        IDC_DS_ARROW, 160, 28, 80, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "Gap from the &object to extension lines:", -1, 10, 48, 145, 10
+    EDITTEXT        IDC_DS_EXTOFFSET, 160, 46, 80, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "Extension lines go &past the dimension line by:", -1, 10, 66, 148, 10
+    EDITTEXT        IDC_DS_EXTBEYOND, 160, 64, 80, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "&Gap between the text and its line:", -1, 10, 84, 145, 10
+    EDITTEXT        IDC_DS_GAP, 160, 82, 80, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "&Decimal places:", -1, 10, 102, 130, 10
+    COMBOBOX        IDC_DS_DECIMALS, 160, 100, 80, 120, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    AUTOCHECKBOX    "&Leave out trailing zeros (12.5 rather than 12.50)", IDC_DS_TRIM, 10, 120, 230, 12, WS_TABSTOP
+    AUTOCHECKBOX    "Also change the dimensions already in the drawing", IDC_DS_APPLY, 10, 136, 230, 12, WS_TABSTOP
+    DEFPUSHBUTTON   "OK", IDOK, 134, 156, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 190, 156, 50, 14
+END
+
+IDD_DIMEDIT DIALOGEX 0, 0, 260, 150
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Edit dimension"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "", IDC_DE_KIND, 10, 10, 240, 10
+    LTEXT           "&Value:", -1, 10, 28, 60, 10
+    EDITTEXT        IDC_DE_VALUE, 76, 26, 100, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "", IDC_DE_NOTE, 10, 44, 240, 20
+    LTEXT           "&Text:", -1, 10, 70, 60, 10
+    EDITTEXT        IDC_DE_TEXT, 76, 68, 174, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "Empty: the value. <> stands for the value, as in  <> TYP  or  4x <>.", -1, 10, 86, 240, 10
+    LTEXT           "&Decimal places:", -1, 10, 104, 60, 10
+    COMBOBOX        IDC_DE_DECIMALS, 76, 102, 100, 120, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    DEFPUSHBUTTON   "OK", IDOK, 144, 128, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 200, 128, 50, 14
+END
+
 IDD_OPTIONS DIALOGEX 0, 0, 260, 112
 STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "Auto-save and versions"
@@ -129,8 +170,8 @@ BEGIN
 END
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 1,2,0,0
- PRODUCTVERSION 1,2,0,0
+ FILEVERSION 1,3,0,0
+ PRODUCTVERSION 1,3,0,0
  FILEFLAGSMASK 0x3fL
  FILEFLAGS 0x0L
  FILEOS VOS_NT_WINDOWS32
@@ -143,12 +184,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "Akshaya Simha"
             VALUE "FileDescription", "Feather CAD"
-            VALUE "FileVersion", "1.2.0.0"
+            VALUE "FileVersion", "1.3.0.0"
             VALUE "InternalName", "FeatherCAD"
             VALUE "LegalCopyright", "\251 2026 Akshaya Simha"
             VALUE "OriginalFilename", "FeatherCAD.exe"
             VALUE "ProductName", "Feather CAD"
-            VALUE "ProductVersion", "1.2.0.0"
+            VALUE "ProductVersion", "1.3.0.0"
         END
     END
     BLOCK "VarFileInfo"

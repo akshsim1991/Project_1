@@ -45,10 +45,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int showCmd) {
     if (auto fn = (Fn)GetProcAddress(GetModuleHandleW(L"user32.dll"), "SetProcessDpiAwarenessContext"))
         fn((HANDLE)-4 /* DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 */);
 
-    std::wstring file;
+    std::vector<std::wstring> files;  // each opens in a tab of its own
     int argc = 0;
     wchar_t** argv = CommandLineToArgvW(GetCommandLineW(), &argc);
-    if (argv && argc > 1) file = argv[1];
+    for (int i = 1; argv && i < argc; ++i) files.push_back(argv[i]);
     if (argv) LocalFree(argv);
 
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
@@ -61,7 +61,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int showCmd) {
     int result = 0;
     {
         MainWindow window;
-        if (!window.Create(inst, showCmd, file)) {
+        if (!window.Create(inst, showCmd, files)) {
             MessageBoxW(nullptr, L"Feather CAD could not start (Direct2D is not available).", APP_NAME, MB_ICONERROR);
             result = 1;
         } else {

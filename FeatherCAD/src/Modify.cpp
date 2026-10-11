@@ -3,6 +3,8 @@
 
 #include <algorithm>
 
+#include "Dimension.h"
+
 namespace {
 double Eps(double scale) { return 1e-9 * std::max(1.0, scale); }
 
@@ -812,6 +814,8 @@ bool StretchEntity(Entity& e, const Box& w, Vec2 d) {
                 }
             return moved;
         }
+        case EntityType::Dimension:
+            return DimStretch(e, w, d);
         case EntityType::Array:
         case EntityType::Point:
             return false;

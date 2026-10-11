@@ -14,6 +14,7 @@ public:
     ~CommandLine();
     bool Create(HWND parent);
     HWND Hwnd() const { return m_hwnd; }
+    HWND Input() const { return m_input; }  // the edit box
     int Height() const;
 
     void AddLine(const std::wstring& text);

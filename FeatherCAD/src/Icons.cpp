@@ -192,6 +192,19 @@ void DrawCadIcon(HDC dc, int icon, const RECT& rc, COLORREF ink, COLORREF accent
             for (const PointF& p : pts) point(p.X, p.Y);
             break;
         }
+        case kIconDimension:
+            g.DrawLine(&pen, 3.0f, 17.0f, 3.0f, 6.0f);
+            g.DrawLine(&pen, 17.0f, 17.0f, 17.0f, 6.0f);
+            g.DrawLine(&pen, 3.0f, 9.0f, 17.0f, 9.0f);
+            arrowHead(3, 9, -1, 0);
+            arrowHead(17, 9, 1, 0);
+            {
+                Pen text(C(accent), 1.5f);
+                g.DrawLine(&text, 7.5f, 4.5f, 12.5f, 4.5f);
+            }
+            point(3, 17);
+            point(17, 17);
+            break;
         default:
             break;
     }

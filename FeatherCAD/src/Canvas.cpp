@@ -6,6 +6,7 @@
 
 #include <windowsx.h>
 
+#include "Dimension.h"
 #include "Spline.h"
 #include "Theme.h"
 #include "Util.h"
@@ -20,6 +21,7 @@ constexpr double kSafeCoord = 1e6; // beyond this many pixels, clip before drawi
 constexpr int kTrackDip = 9;       // how near a tracking line pulls the cursor onto it
 constexpr UINT_PTR kDwellTimer = 7;  // resting on a snap point acquires it for tracking
 constexpr size_t kMaxGripObjects = 100;
+constexpr float kDimFontPx = 100;   // dimension text is laid out this size, then scaled
 
 template <class T>
 void SafeRelease(T*& p) {
@@ -58,6 +60,7 @@ Canvas::~Canvas() {
     ReleaseTarget();
     SafeRelease(m_dashed);
     SafeRelease(m_textFormat);
+    SafeRelease(m_dimFormat);
     SafeRelease(m_dwrite);
     SafeRelease(m_factory);
 }
@@ -74,6 +77,9 @@ bool Canvas::Create(HWND parent, Engine* engine, Document* doc) {
         D2D1::StrokeStyleProperties(D2D1_CAP_STYLE_FLAT, D2D1_CAP_STYLE_FLAT, D2D1_CAP_STYLE_FLAT,
                                     D2D1_LINE_JOIN_MITER, 10.0f, D2D1_DASH_STYLE_CUSTOM, 0.0f),
         dashes, 2, &m_dashed);
+    m_dwrite->CreateTextFormat(L"Arial", nullptr, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
+                               DWRITE_FONT_STRETCH_NORMAL, kDimFontPx, L"", &m_dimFormat);
+    if (m_dimFormat) m_dimFormat->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
 
     static bool registered = false;
     if (!registered) {
@@ -90,6 +96,46 @@ bool Canvas::Create(HWND parent, Engine* engine, Document* doc) {
     OnDpiChanged();
     LoadColours();
     return true;
+}
+
+void Canvas::SetDrawing(Engine* engine, Document* doc) {
+    m_engine = engine;
+    m_doc = doc;
+    // Nothing shown or cached belongs to the new drawing.
+    m_layerValid = false;
+    m_shownRevision = m_shownSelection = 0;
+    m_gripsDocRev = m_gripsSelRev = 0;
+    m_grips.clear();
+    m_hoverGrip = -1;
+    m_hover = 0;
+    m_snapHit = SnapResult{};
+    m_preview.Clear();
+    m_trackLines.clear();
+    m_trackLabel.clear();
+    m_acquired.clear();
+    StopDwell();
+    if (m_windowOn) {
+        m_windowOn = false;
+        if (GetCapture() == m_hwnd) ReleaseCapture();
+    }
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+Canvas::View Canvas::GetView() const { return {m_centre, m_scale, m_previous, true}; }
+
+void Canvas::SetView(const View& v) {
+    if (!v.set) {
+        m_previous.clear();
+        ZoomExtents();
+        m_previous.clear();
+        return;
+    }
+    m_centre = v.centre;
+    m_scale = v.scale;
+    m_previous = v.previous;
+    m_layerValid = false;
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+    Notify();
 }
 
 // ---------------------------------------------------------------------------
@@ -390,6 +436,16 @@ ID2D1PathGeometry* Canvas::BuildGeometry(const std::vector<const Entity*>& entit
             case EntityType::Line:
                 line(e->p0, e->p1);
                 break;
+            case EntityType::Dimension: {
+                if (!e->dim) break;
+                DimGraphics g;
+                DimLayout(*e->dim, g);
+                for (const Prim& p : g.lines) {
+                    if (p.kind == Prim::Segment) line(p.a, p.b);
+                    else arc(p);
+                }
+                break;
+            }
             case EntityType::Circle:
             case EntityType::Arc:
                 prims.clear();
@@ -442,9 +498,66 @@ void Canvas::DrawEntities(ID2D1RenderTarget* rt, const std::vector<const Entity*
     rt->CreateSolidColorBrush(color, &brush);
     if (brush) {
         rt->DrawGeometry(geo, brush, width, style);
+        DrawDimensionParts(rt, ents, brush);
         brush->Release();
     }
     geo->Release();
+}
+
+void Canvas::DrawDimensionParts(ID2D1RenderTarget* rt, const std::vector<const Entity*>& ents, ID2D1Brush* brush) {
+    std::vector<const Entity*> dims;
+    const Box cull = ViewBox().Inflated(Px(4) / m_scale);
+    for (const Entity* e : ents)
+        if (e->type == EntityType::Dimension && e->dim && Bounds(*e).Intersects(cull)) dims.push_back(e);
+    if (dims.empty()) return;
+    // Filled arrows, all in one geometry.
+    ID2D1PathGeometry* geo = nullptr;
+    ID2D1GeometrySink* sink = nullptr;
+    if (SUCCEEDED(m_factory->CreatePathGeometry(&geo)) && SUCCEEDED(geo->Open(&sink))) {
+        sink->SetFillMode(D2D1_FILL_MODE_WINDING);
+        for (const Entity* e : dims) {
+            DimGraphics g;
+            DimLayout(*e->dim, g);
+            for (const auto& a : g.arrows) {
+                sink->BeginFigure(ToScreen(a[0]), D2D1_FIGURE_BEGIN_FILLED);
+                sink->AddLine(ToScreen(a[1]));
+                sink->AddLine(ToScreen(a[2]));
+                sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+            }
+        }
+        sink->Close();
+        sink->Release();
+        rt->FillGeometry(geo, brush);
+    }
+    SafeRelease(geo);
+    // Text: laid out once at a fixed size, then scaled and turned into place.
+    if (!m_dimFormat) return;
+    D2D1_MATRIX_3X2_F saved;
+    rt->GetTransform(&saved);
+    for (const Entity* e : dims) {
+        DimGraphics g;
+        DimLayout(*e->dim, g);
+        const double px = g.textHeight * m_scale;
+        if (g.text.empty() || px < 2.5 || px > 5000) continue;  // too small to read, or absurdly big
+        IDWriteTextLayout* layout = nullptr;
+        if (FAILED(m_dwrite->CreateTextLayout(g.text.c_str(), (UINT32)g.text.size(), m_dimFormat, 100000, 1000, &layout)))
+            continue;
+        DWRITE_TEXT_METRICS tm{};
+        layout->GetMetrics(&tm);
+        DWRITE_LINE_METRICS lm{};
+        UINT32 lines = 0;
+        layout->GetLineMetrics(&lm, 1, &lines);
+        const float k = (float)(FontSizeForHeight(g.textHeight) * m_scale / kDimFontPx);
+        // The middle of the capitals sits on the text position.
+        const float capMiddle = lm.baseline - (float)(0.716 * kDimFontPx / 2);
+        const D2D1_POINT_2F at = ToScreen(g.textPos);
+        rt->SetTransform(D2D1::Matrix3x2F::Scale(k, k) *
+                         D2D1::Matrix3x2F::Rotation((float)-ToDegrees(g.textAngle)) *
+                         D2D1::Matrix3x2F::Translation(at.x, at.y) * saved);
+        rt->DrawTextLayout(D2D1::Point2F(-tm.width / 2 - tm.left, -capMiddle), layout, brush);
+        layout->Release();
+    }
+    rt->SetTransform(saved);
 }
 
 void Canvas::DrawGrid(ID2D1RenderTarget* rt) {
@@ -951,8 +1064,26 @@ LRESULT Canvas::Handle(UINT msg, WPARAM wp, LPARAM lp) {
                 Notify();
             }
             return 0;
+        case WM_LBUTTONDBLCLK: {
+            // Double-clicking a dimension edits it.
+            const int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
+            if (!m_engine->Active() || m_engine->ActiveName() == L"GRIP") {
+                const uint64_t id = PickAt(ToWorld(x, y));
+                const Entity* e = id ? m_doc->Find(id) : nullptr;
+                if (e && e->type == EntityType::Dimension) {
+                    if (m_engine->Active()) m_engine->Cancel();
+                    if (m_windowOn) {
+                        m_windowOn = false;
+                        if (GetCapture() == m_hwnd) ReleaseCapture();
+                    }
+                    SendMessageW(GetParent(m_hwnd), WM_APP_CANVAS_EDIT, 0, (LPARAM)&id);
+                    return 0;
+                }
+            }
+            OnLeftDown(x, y, wp);
+            return 0;
+        }
         case WM_LBUTTONDOWN:
-        case WM_LBUTTONDBLCLK:
             OnLeftDown(GET_X_LPARAM(lp), GET_Y_LPARAM(lp), wp);
             return 0;
         case WM_LBUTTONUP:

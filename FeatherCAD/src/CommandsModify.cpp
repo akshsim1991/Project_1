@@ -17,7 +17,7 @@ bool IsOpenCurve(const Entity& e) { return IsCurve(e) && !IsClosedCurve(e); }
 std::vector<Prim> Edges(Engine* E, uint64_t except, const std::vector<uint64_t>& only, const Box* near) {
     std::vector<Prim> prims;
     auto add = [&](const Entity& e) {
-        if (e.id == except) return;
+        if (e.id == except || e.type == EntityType::Dimension) return;
         if (near && !Bounds(e).Intersects(*near)) return;
         Primitives(e, prims);
     };
@@ -479,18 +479,16 @@ class MirrorCmd : public Command {
 
     void Apply(bool eraseSource) {
         E->Doc().BeginChange(L"Mirror");
+        std::vector<Entity> copies;
         for (uint64_t id : m_ids) {
             const Entity* e = E->Doc().Find(id);
             if (!e) continue;
             Entity m = *e;
             Mirror(m, m_a, m_b);
-            if (eraseSource) {
-                E->Doc().Replace(m);
-            } else {
-                m.id = 0;
-                E->Doc().Add(m);
-            }
+            if (eraseSource) E->Doc().Replace(m);
+            else copies.push_back(std::move(m));
         }
+        if (!eraseSource) E->Doc().AddGroup(std::move(copies));
         E->Msg(std::to_wstring(m_ids.size()) + L" object(s) mirrored.");
         E->ClearSelection();
         E->Finish();
@@ -556,18 +554,16 @@ class ScaleCmd : public Command {
         }
         E->lastScale = f;
         E->Doc().BeginChange(L"Scale");
+        std::vector<Entity> copies;
         for (uint64_t id : m_ids) {
             const Entity* e = E->Doc().Find(id);
             if (!e) continue;
             Entity s = *e;
             Scale(s, m_base, f);
-            if (m_copy) {
-                s.id = 0;
-                E->Doc().Add(s);
-            } else {
-                E->Doc().Replace(s);
-            }
+            if (m_copy) copies.push_back(std::move(s));
+            else E->Doc().Replace(s);
         }
+        if (m_copy) E->Doc().AddGroup(std::move(copies));
         E->Msg(std::to_wstring(m_ids.size()) + L" object(s) scaled by " + FormatDecimal(f, 4) + L".");
         E->ClearSelection();
         E->Finish();
@@ -1053,7 +1049,15 @@ public:
         E->AskSelection();
     }
     void OnSelected() override {
-        m_ids = SelectionIds(E);
+        m_ids.clear();
+        for (uint64_t id : SelectionIds(E)) {
+            const Entity* e = E->Doc().Find(id);
+            if (e && e->type != EntityType::Dimension) m_ids.push_back(id);  // dimensions are not arrayed
+        }
+        if (m_ids.empty()) {
+            E->Msg(L"Dimensions cannot be put in an array. Select other objects.");
+            return E->Finish();
+        }
         m_box = BoundsOf(E, m_ids);
         Begin();
     }

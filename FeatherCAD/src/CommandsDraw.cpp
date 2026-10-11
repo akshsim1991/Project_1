@@ -406,10 +406,7 @@ class GripEditCmd : public Command {
         }
         if (m_copy) {
             StepLog::Step& step = m_log.Begin();
-            for (Entity& x : edited) {
-                x.id = 0;
-                step.added.push_back(E->Doc().Add(x));
-            }
+            step.added = E->Doc().AddGroup(std::move(edited));
             AskMode();
             return;
         }

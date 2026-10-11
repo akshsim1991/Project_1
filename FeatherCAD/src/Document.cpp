@@ -4,7 +4,10 @@
 #include <algorithm>
 #include <charconv>
 #include <cstring>
+#include <set>
 #include <sstream>
+
+#include "DxfImport.h"
 
 namespace {
 constexpr size_t kMaxUndo = 1000;
@@ -75,6 +78,65 @@ std::string FormatNumber(double v) {
     return std::string(buf, res.ptr);
 }
 
+std::string TextToUtf8(const std::wstring& w) {
+    std::string out;
+    for (size_t i = 0; i < w.size(); ++i) {
+        uint32_t c = (uint32_t)w[i];
+        if (c >= 0xD800 && c <= 0xDBFF && i + 1 < w.size() && (uint32_t)w[i + 1] >= 0xDC00 &&
+            (uint32_t)w[i + 1] <= 0xDFFF) {
+            c = 0x10000 + ((c - 0xD800) << 10) + ((uint32_t)w[i + 1] - 0xDC00);
+            ++i;
+        }
+        if (c < 0x80) {
+            out += (char)c;
+        } else if (c < 0x800) {
+            out += (char)(0xC0 | (c >> 6));
+            out += (char)(0x80 | (c & 0x3F));
+        } else if (c < 0x10000) {
+            out += (char)(0xE0 | (c >> 12));
+            out += (char)(0x80 | ((c >> 6) & 0x3F));
+            out += (char)(0x80 | (c & 0x3F));
+        } else {
+            out += (char)(0xF0 | (c >> 18));
+            out += (char)(0x80 | ((c >> 12) & 0x3F));
+            out += (char)(0x80 | ((c >> 6) & 0x3F));
+            out += (char)(0x80 | (c & 0x3F));
+        }
+    }
+    return out;
+}
+
+std::wstring TextFromUtf8(const std::string& s) {
+    std::wstring out;
+    for (size_t i = 0; i < s.size();) {
+        const unsigned char b = (unsigned char)s[i];
+        uint32_t c;
+        int more;
+        if (b < 0x80) c = b, more = 0;
+        else if ((b & 0xE0) == 0xC0) c = b & 0x1F, more = 1;
+        else if ((b & 0xF0) == 0xE0) c = b & 0x0F, more = 2;
+        else if ((b & 0xF8) == 0xF0) c = b & 0x07, more = 3;
+        else c = b, more = 0;  // not UTF-8: taken as Latin-1
+        bool ok = true;
+        for (int k = 1; k <= more; ++k)
+            if (i + k >= s.size() || ((unsigned char)s[i + k] & 0xC0) != 0x80) ok = false;
+        if (!ok) {
+            c = b;
+            more = 0;
+        }
+        for (int k = 1; k <= more; ++k) c = (c << 6) | ((unsigned char)s[i + k] & 0x3F);
+        i += 1 + more;
+        if (c >= 0x10000) {
+            c -= 0x10000;
+            out += (wchar_t)(0xD800 + (c >> 10));
+            out += (wchar_t)(0xDC00 + (c & 0x3FF));
+        } else {
+            out += (wchar_t)c;
+        }
+    }
+    return out;
+}
+
 bool ParseNumber(const std::string& s, double& v) {
     const char* b = s.data();
     const char* e = b + s.size();
@@ -100,6 +162,7 @@ void Document::BeginChange(const std::wstring& name) {
 
 void Document::EndChange() {
     if (!m_open) return;
+    UpdateDimensions();
     Step step = std::move(*m_open);
     m_open.reset();
     m_openIndex.clear();
@@ -190,8 +253,73 @@ void Document::ReplaceAll(std::vector<Entity> entities, const std::wstring& name
     ids.reserve(m_entities.size());
     for (const auto& kv : m_entities) ids.push_back(kv.first);
     for (uint64_t id : ids) Erase(id);
-    for (Entity& e : entities) Add(std::move(e));
+    AddGroup(std::move(entities));
     EndChange();
+}
+
+std::vector<uint64_t> Document::AddGroup(std::vector<Entity> entities) {
+    const bool implicit = !m_open;
+    if (implicit) BeginChange(L"Add");
+    std::vector<uint64_t> ids(entities.size(), 0);
+    std::map<uint64_t, uint64_t> idMap;
+    // Objects first, then the dimensions, pointed at the new objects.
+    for (size_t i = 0; i < entities.size(); ++i) {
+        if (entities[i].type == EntityType::Dimension) continue;
+        const uint64_t old = entities[i].id;
+        ids[i] = Add(std::move(entities[i]));
+        if (old) idMap[old] = ids[i];
+    }
+    for (size_t i = 0; i < entities.size(); ++i) {
+        if (entities[i].type != EntityType::Dimension) continue;
+        Entity& e = entities[i];
+        if (e.dim) {
+            DimData d = *e.dim;
+            for (DimRef& r : d.refs) {
+                auto it = idMap.find(r.id);
+                r.id = it == idMap.end() ? 0 : it->second;  // outside the group: not attached
+            }
+            e.dim = std::make_shared<const DimData>(std::move(d));
+        }
+        ids[i] = Add(std::move(e));
+    }
+    if (implicit) EndChange();
+    return ids;
+}
+
+void Document::UpdateDimensions() {
+    if (!m_open || m_open->changes.empty()) return;
+    std::set<uint64_t> changed, touchedDims;
+    bool anyDims = false;
+    for (const Change& c : m_open->changes) {
+        const std::optional<Entity>& x = c.after ? c.after : c.before;
+        if (x && x->type == EntityType::Dimension) {
+            if (c.after) touchedDims.insert(c.id);
+        } else {
+            changed.insert(c.id);
+        }
+    }
+    for (const auto& kv : m_entities)
+        if (kv.second.type == EntityType::Dimension) anyDims = true;
+    if (!anyDims) return;
+    std::vector<Entity> updates;
+    for (const auto& kv : m_entities) {
+        const Entity& e = kv.second;
+        if (!HasRefs(e)) continue;
+        Entity copy = e;
+        bool mod = false;
+        bool depends = false;
+        for (const DimRef& r : e.dim->refs)
+            if (r.id && changed.count(r.id)) depends = true;
+        if (depends) {
+            // Its objects changed: it follows them (also when it was moved with them).
+            mod = FollowRefs(*this, copy);
+        } else if (touchedDims.count(kv.first)) {
+            // Moved or edited on its own: still on its objects, or no longer attached.
+            mod = CheckRefs(*this, copy);
+        }
+        if (mod) updates.push_back(std::move(copy));
+    }
+    for (const Entity& e : updates) Replace(e);
 }
 
 void Document::Apply(const Step& step, bool forward) {
@@ -237,7 +365,7 @@ void Document::MarkSaved() {
 }
 
 void Document::SetSettings(const DrawingSettings& s) {
-    if (s.units == m_settings.units && s.precision == m_settings.precision) return;
+    if (s.units == m_settings.units && s.precision == m_settings.precision && s.dimStyle == m_settings.dimStyle) return;
     m_settings = s;
     m_settings.precision = std::clamp(m_settings.precision, 0, 8);
     m_settingsChanged = true;
@@ -281,6 +409,12 @@ Box Document::Extents() const {
 //   ellipse cx cy axisx axisy ratio start end full      (start, end: parameters in degrees)
 //   spline closed n x y x y ...                         (fit points)
 //   point x y
+//   dimstyle text arrow extoffset extbeyond gap decimals trimzeros
+//   dim kind x0 y0 x1 y1 x2 y2 x3 y3 locx locy angle rays text arrow extoffset
+//       extbeyond gap decimals trimzeros obj0 grip0 obj1 grip1 obj2 grip2 obj3 grip3 [text=...]
+//       kind: linear, aligned, radius, diameter or angular; angle in degrees;
+//       objN: the object a point is attached to, counted from 1 in this
+//       file (0: none); text: UTF-8 with %XX for spaces and symbols
 //   end
 //
 // Lines starting with # are comments. Unknown keywords are skipped, so a
@@ -288,7 +422,45 @@ Box Document::Extents() const {
 // ---------------------------------------------------------------------------
 
 namespace {
-void WriteEntity(const Entity& e, std::string& out) {
+const char* const kDimKinds[] = {"linear", "aligned", "radius", "diameter", "angular"};
+
+std::string EncodeWord(const std::wstring& w) {
+    static const char hex[] = "0123456789ABCDEF";
+    std::string out;
+    for (unsigned char c : TextToUtf8(w)) {
+        if (c <= 0x20 || c == '%' || c == '=' || c == '#' || c >= 0x7F) {
+            out += '%';
+            out += hex[c >> 4];
+            out += hex[c & 15];
+        } else {
+            out += (char)c;
+        }
+    }
+    return out;
+}
+
+std::wstring DecodeWord(const std::string& s) {
+    std::string bytes;
+    auto hexv = [](char c) {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        return -1;
+    };
+    for (size_t i = 0; i < s.size(); ++i) {
+        if (s[i] == '%' && i + 2 < s.size() && hexv(s[i + 1]) >= 0 && hexv(s[i + 2]) >= 0) {
+            bytes += (char)(hexv(s[i + 1]) * 16 + hexv(s[i + 2]));
+            i += 2;
+        } else {
+            bytes += s[i];
+        }
+    }
+    return TextFromUtf8(bytes);
+}
+
+using Ordinals = std::map<uint64_t, size_t>;
+
+void WriteEntity(const Entity& e, std::string& out, const Ordinals* ordinals = nullptr) {
     auto num = [&](double v) {
         out += ' ';
         out += FormatNumber(v);
@@ -332,6 +504,29 @@ void WriteEntity(const Entity& e, std::string& out) {
             out += "point";
             num(e.p0.x); num(e.p0.y);
             break;
+        case EntityType::Dimension: {
+            const DimData& d = *e.dim;
+            out += "dim ";
+            out += kDimKinds[d.kind];
+            for (Vec2 p : d.pts) {
+                num(p.x); num(p.y);
+            }
+            num(d.loc.x); num(d.loc.y); num(ToDegrees(d.angle)); num(d.rays ? 1 : 0);
+            const DimStyle& st = d.style;
+            num(st.textHeight); num(st.arrowSize); num(st.extOffset); num(st.extBeyond); num(st.textGap);
+            num(st.precision); num(st.trimZeros ? 1 : 0);
+            for (const DimRef& r : d.refs) {
+                size_t ord = 0;
+                if (r.id && ordinals) {
+                    auto it = ordinals->find(r.id);
+                    if (it != ordinals->end()) ord = it->second;
+                }
+                num((double)ord);
+                num(ord ? r.grip : 0);
+            }
+            if (!d.text.empty()) out += " text=" + EncodeWord(d.text);
+            break;
+        }
         case EntityType::Array: {
             const ArrayData& a = *e.array;
             if (a.kind == ArrayData::Rect) {
@@ -438,6 +633,41 @@ struct Reader {
             out = Entity::Array(std::move(a));
             return true;
         }
+        if (key == "dim") {
+            // The kind is a word: the numbers start after it.
+            if (w.size() < 2 || !Numbers(w, 2, v)) return error.empty() ? Fail(L"a dimension needs its kind") : false;
+            if (v.size() < 27) return Fail(L"a dimension needs 27 numbers");
+            DimData d;
+            bool kindOk = false;
+            for (int k = 0; k < 5; ++k)
+                if (w[1] == kDimKinds[k]) d.kind = (DimData::Kind)k, kindOk = true;
+            if (!kindOk) {
+                known = false;  // a kind from a newer version
+                return true;
+            }
+            for (size_t i = 0; i < 4; ++i) d.pts[i] = {v[2 * i], v[2 * i + 1]};
+            d.loc = {v[8], v[9]};
+            d.angle = ToRadians(v[10]);
+            d.rays = v[11] != 0;
+            d.style.textHeight = v[12] > 0 ? v[12] : 3.5;
+            d.style.arrowSize = std::max(0.0, v[13]);
+            d.style.extOffset = std::max(0.0, v[14]);
+            d.style.extBeyond = std::max(0.0, v[15]);
+            d.style.textGap = std::max(0.0, v[16]);
+            d.style.precision = std::clamp((int)v[17], 0, 8);
+            d.style.trimZeros = v[18] != 0;
+            for (size_t i = 0; i < 4; ++i) {
+                // The object's place in the file for now; Document::FromText makes it an id.
+                d.refs[i].id = v[19 + 2 * i] >= 1 ? (uint64_t)v[19 + 2 * i] : 0;
+                d.refs[i].grip = (int)v[20 + 2 * i];
+            }
+            for (const std::string& word : w)
+                if (word.compare(0, 5, "text=") == 0) d.text = DecodeWord(word.substr(5));
+            if (depth > 0)
+                for (DimRef& r : d.refs) r = {};
+            out = MakeDimension(std::move(d));
+            return true;
+        }
         if (!Numbers(w, 1, v)) return false;
         auto need = [&](size_t k) { return v.size() >= k; };
         if (key == "line") {
@@ -485,12 +715,41 @@ std::string Document::ToText() const {
     out += " " + std::to_string(kFormatVersion) + "\n";
     out += std::string("units ") + UnitsKey(m_settings.units) + "\n";
     out += "precision " + std::to_string(m_settings.precision) + "\n";
+    const DimStyle& st = m_settings.dimStyle;
+    out += "dimstyle " + FormatNumber(st.textHeight) + " " + FormatNumber(st.arrowSize) + " " +
+           FormatNumber(st.extOffset) + " " + FormatNumber(st.extBeyond) + " " + FormatNumber(st.textGap) + " " +
+           std::to_string(st.precision) + " " + (st.trimZeros ? "1" : "0") + "\n";
+    Ordinals ordinals;
+    size_t ord = 0;
+    for (const auto& kv : m_entities) ordinals[kv.first] = ++ord;
     for (const auto& kv : m_entities) {
-        WriteEntity(kv.second, out);
+        WriteEntity(kv.second, out, &ordinals);
         out += '\n';
     }
     out += "end\n";
     return out;
+}
+
+std::string Document::ObjectsToText(const std::vector<Entity>& entities) {
+    std::string out = std::string(kMagic) + " " + std::to_string(kFormatVersion) + "\n";
+    Ordinals ordinals;
+    size_t ord = 0;
+    for (const Entity& e : entities) ordinals[e.id] = ++ord;
+    for (const Entity& e : entities) {
+        WriteEntity(e, out, &ordinals);
+        out += '\n';
+    }
+    out += "end\n";
+    return out;
+}
+
+bool Document::ObjectsFromText(const std::string& text, std::vector<Entity>& out) {
+    Document d;
+    std::wstring error;
+    if (!d.FromText(text, error)) return false;
+    out.clear();
+    for (const auto& kv : d.Entities()) out.push_back(kv.second);  // ids 1..n, refs among them
+    return true;
 }
 
 bool Document::FromText(const std::string& text, std::wstring& error) {
@@ -515,6 +774,7 @@ bool Document::FromText(const std::string& text, std::wstring& error) {
     // Newer versions are read as far as this one understands them.
     DrawingSettings settings;
     std::vector<Entity> ents;
+    std::vector<long long> ordinalToIndex;
     bool ended = false;
     while (!ended && r.Next(w)) {
         const std::string& key = w[0];
@@ -532,6 +792,22 @@ bool Document::FromText(const std::string& text, std::wstring& error) {
                 return false;
             }
             if (!v.empty()) settings.precision = std::clamp((int)v[0], 0, 8);
+        } else if (key == "dimstyle") {
+            std::vector<double> v;
+            if (!r.Numbers(w, 1, v)) {
+                error = r.error;
+                return false;
+            }
+            if (v.size() >= 7) {
+                DimStyle& st = settings.dimStyle;
+                st.textHeight = v[0] > 0 ? v[0] : st.textHeight;
+                st.arrowSize = std::max(0.0, v[1]);
+                st.extOffset = std::max(0.0, v[2]);
+                st.extBeyond = std::max(0.0, v[3]);
+                st.textGap = std::max(0.0, v[4]);
+                st.precision = std::clamp((int)v[5], 0, 8);
+                st.trimZeros = v[6] != 0;
+            }
         } else {
             Entity e;
             bool known = false;
@@ -539,12 +815,28 @@ bool Document::FromText(const std::string& text, std::wstring& error) {
                 error = r.error;
                 return false;
             }
+            // Dimensions name objects by their place in the file (unknown ones count too).
+            ordinalToIndex.push_back(known ? (long long)ents.size() : -1);
             if (known) ents.push_back(std::move(e));
         }
     }
     if (!ended) {
         error = L"The file is incomplete (it may have been cut off while saving).";
         return false;
+    }
+    // Objects get the ids 1, 2, 3... in file order: dimensions point at them.
+    for (Entity& e : ents) {
+        if (e.type != EntityType::Dimension || !e.dim) continue;
+        DimData d = *e.dim;
+        for (DimRef& ref : d.refs) {
+            const uint64_t ord = ref.id;
+            ref.id = 0;
+            if (ord >= 1 && ord <= ordinalToIndex.size() && ordinalToIndex[ord - 1] >= 0) {
+                const size_t idx = (size_t)ordinalToIndex[ord - 1];
+                if (ents[idx].type != EntityType::Dimension) ref.id = idx + 1;
+            }
+        }
+        e.dim = std::make_shared<const DimData>(std::move(d));
     }
     Clear();
     m_settings = settings;
@@ -560,6 +852,24 @@ bool Document::FromText(const std::string& text, std::wstring& error) {
 // DXF (release 12, AC1009): HEADER, TABLES (line type and layer 0) and
 // ENTITIES. Polylines become POLYLINE/VERTEX/SEQEND with bulges.
 // ---------------------------------------------------------------------------
+
+bool Document::FromDxf(const std::string& text, std::wstring& error, std::wstring& notes) {
+    DxfResult r;
+    if (!ReadDxf(text, r, error)) return false;
+    DrawingSettings settings = m_settings;
+    if (r.hasUnits) settings.units = r.units;
+    if (r.hasDimStyle) settings.dimStyle = r.dimStyle;
+    Clear();
+    m_settings = settings;
+    m_settings.precision = std::clamp(m_settings.precision, 0, 8);
+    for (Entity& e : r.entities) {
+        e.id = m_nextId++;
+        m_entities[e.id] = std::move(e);
+    }
+    notes = r.Notes();
+    Touch();
+    return true;
+}
 
 std::string Document::ToDxf() const {
     std::string out;
@@ -608,6 +918,20 @@ std::string Document::ToDxf() const {
     group(72, "65");
     group(73, "0");
     group(40, "0.0");
+    group(0, "ENDTAB");
+    group(0, "TABLE");
+    group(2, "STYLE");
+    group(70, "1");
+    group(0, "STYLE");
+    group(2, "STANDARD");
+    group(70, "0");
+    group(40, "0.0");
+    group(41, "1.0");
+    group(50, "0.0");
+    group(71, "0");
+    group(42, "2.5");
+    group(3, "txt");
+    group(4, "");
     group(0, "ENDTAB");
     group(0, "TABLE");
     group(2, "LAYER");
@@ -693,6 +1017,55 @@ std::string Document::ToDxf() const {
                 group(8, "0");
                 point(10, e.p0);
                 break;
+            case EntityType::Dimension: {
+                // Written as what it looks like: lines, arcs, filled arrows and text.
+                if (!e.dim) break;
+                DimGraphics g;
+                DimLayout(*e.dim, g);
+                for (const Prim& p : g.lines) {
+                    if (p.kind == Prim::Segment) {
+                        group(0, "LINE");
+                        group(8, "0");
+                        point(10, p.a);
+                        point(11, p.b);
+                    } else {
+                        group(0, "ARC");
+                        group(8, "0");
+                        point(10, p.c);
+                        num(40, p.r);
+                        num(50, ToDegrees(NormalizeAngle(p.start)));
+                        num(51, ToDegrees(NormalizeAngle(p.start + p.sweep)));
+                    }
+                }
+                for (const auto& a : g.arrows) {
+                    group(0, "SOLID");
+                    group(8, "0");
+                    point(10, a[0]);
+                    point(11, a[1]);
+                    point(12, a[2]);
+                    point(13, a[2]);
+                }
+                std::string t;
+                for (wchar_t c : g.text) {
+                    if (c == L'\x2300' || c == L'\x00D8') t += "%%c";
+                    else if (c == L'\x00B0') t += "%%d";
+                    else if (c == L'\x00B1') t += "%%p";
+                    else if (c >= 32 && c < 127) t += (char)c;
+                    else t += '?';
+                }
+                if (!t.empty()) {
+                    group(0, "TEXT");
+                    group(8, "0");
+                    point(10, g.textPos);
+                    num(40, g.textHeight);
+                    group(1, t);
+                    num(50, ToDegrees(g.textAngle));
+                    group(72, "1");
+                    point(11, g.textPos);
+                    group(73, "2");
+                }
+                break;
+            }
             case EntityType::Array:
                 break;
         }

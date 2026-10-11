@@ -21,3 +21,15 @@ void AboutDialog(HWND owner);
 // Quick select: how the matching objects change the selection.
 enum class QSelectMode { Replace, Add, Remove };
 bool QSelectDialog(HWND owner, SelectQuery& query, QSelectMode& mode);
+
+// Dimension style. `applyExisting`: also change the dimensions already drawn.
+bool DimStyleDialog(HWND owner, DimStyle& style, bool& applyExisting);
+// One dimension: its value (when attached, the geometry changes to it),
+// its text and its decimal places. `value` is in degrees for angles.
+struct DimEditResult {
+    bool valueChanged = false;
+    double value = 0;
+    std::wstring text;
+    int precision = 2;
+};
+bool DimEditDialog(HWND owner, const DimData& d, bool attached, DimEditResult& out);

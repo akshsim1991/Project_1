@@ -29,7 +29,7 @@ jobs:
       - name: Unit tests
         run: build\Release\CoreTests.exe
 
-      - name: Start-up test (opens the window, draws, undoes and closes)
+      - name: Start-up test (opens the window, draws, dimensions, opens and closes a tab, undoes and closes)
         shell: pwsh
         run: |
           Add-Type -AssemblyName System.Windows.Forms, System.Drawing
@@ -51,15 +51,16 @@ jobs:
           $shell = New-Object -ComObject WScript.Shell
           $null = $shell.AppActivate($p.Id)
           Start-Sleep -Milliseconds 500
-          foreach ($k in @("rec{ENTER}", "0,0{ENTER}", "200,120{ENTER}", "c{ENTER}", "100,60{ENTER}", "40{ENTER}")) {
+          foreach ($k in @("rec{ENTER}", "0,0{ENTER}", "200,120{ENTER}", "c{ENTER}", "100,60{ENTER}", "40{ENTER}",
+                       "dli{ENTER}", "0,0{ENTER}", "200,0{ENTER}", "100,-20{ENTER}", "^n", "l{ENTER}", "{ESC}", "^w")) {
             [System.Windows.Forms.SendKeys]::SendWait($k); Start-Sleep -Milliseconds 300
           }
           Start-Sleep -Seconds 1
           Shot "smoke.png"
           if (Test-Path $crash) { Get-Content $crash; $p.Kill(); exit 1 }
           if ($p.HasExited) { Write-Host "Feather CAD stopped while drawing (code $($p.ExitCode))"; exit 1 }
-          # Undo both objects, so closing does not ask to save.
-          foreach ($k in @("u{ENTER}", "u{ENTER}")) { [System.Windows.Forms.SendKeys]::SendWait($k); Start-Sleep -Milliseconds 300 }
+          # Undo the three objects, so closing does not ask to save.
+          foreach ($k in @("u{ENTER}", "u{ENTER}", "u{ENTER}")) { [System.Windows.Forms.SendKeys]::SendWait($k); Start-Sleep -Milliseconds 300 }
           $null = $p.CloseMainWindow()
           if (-not $p.WaitForExit(15000)) { Write-Host "Feather CAD did not close"; Shot "smoke-close.png"; $p.Kill(); exit 1 }
           Write-Host "Closed normally, exit code $($p.ExitCode)"
@@ -105,8 +106,8 @@ jobs:
         run: |
           g++ -std=c++17 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-sanitize-recover=all \
             -Isrc tests/CoreTests.cpp src/Geometry.cpp src/Entity.cpp src/Spline.cpp src/Curve.cpp src/Modify.cpp \
-            src/Grips.cpp src/Select.cpp src/Document.cpp src/Snap.cpp src/Engine.cpp src/Commands.cpp \
-            src/CommandsModify.cpp src/CommandsDraw.cpp -o coretests
+            src/Grips.cpp src/Select.cpp src/Dimension.cpp src/Document.cpp src/DxfImport.cpp src/Snap.cpp src/Engine.cpp \
+            src/Commands.cpp src/CommandsModify.cpp src/CommandsDraw.cpp src/CommandsDim.cpp -o coretests
           ./coretests
       - run: sudo apt-get update && sudo apt-get install -y g++-mingw-w64-x86-64
       - run: cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=cmake/mingw-w64-x86_64.cmake -DCMAKE_BUILD_TYPE=Release

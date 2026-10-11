@@ -1,6 +1,7 @@
 // Grips.cpp - see Grips.h.
 #include "Grips.h"
 
+#include "Dimension.h"
 #include "Spline.h"
 
 namespace {
@@ -76,6 +77,12 @@ void GripsOf(const Entity& e, std::vector<Grip>& out) {
         case EntityType::Array:
             add(0, Bounds(e).Center());
             break;
+        case EntityType::Dimension: {
+            std::vector<std::pair<int, Vec2>> g;
+            DimGrips(e, g);
+            for (const auto& x : g) add(x.first, x.second);
+            break;
+        }
     }
 }
 
@@ -149,6 +156,8 @@ bool DragGrip(Entity& e, int index, Vec2 from, Vec2 to) {
         case EntityType::Array:
             Translate(e, d);
             return true;
+        case EntityType::Dimension:
+            return DragDimGrip(e, index, from, to);
     }
     return false;
 }

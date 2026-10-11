@@ -1,8 +1,11 @@
 // MainWindow.h - the Feather CAD window: menu strip, tool bar, drawing
-// canvas, command line and status bar. It owns the drawing and the command
-// engine, and handles what the engine leaves to the window (files,
-// dialogs, zooming).
+// tabs, drawing canvas, command line and status bar. Each open drawing
+// (one per tab) has its own document, command engine, undo history,
+// auto-save history and view; the window handles what the engines leave
+// to it (files, dialogs, zooming, the clipboard).
 #pragma once
+#include <memory>
+
 #include "Canvas.h"
 #include "CommandLine.h"
 #include "CommandPalette.h"
@@ -12,13 +15,14 @@
 #include "History.h"
 #include "Settings.h"
 #include "StatusBar.h"
+#include "TabBar.h"
 #include "Toolbar.h"
 
 class MainWindow : public EngineHost {
 public:
     MainWindow();
     ~MainWindow() override;
-    bool Create(HINSTANCE inst, int showCmd, const std::wstring& file);
+    bool Create(HINSTANCE inst, int showCmd, const std::vector<std::wstring>& files);
     HWND Hwnd() const { return m_hwnd; }
     HACCEL Accelerators() const { return m_accel; }
 
@@ -32,8 +36,25 @@ public:
     void ZoomPrevious() override;
     void ZoomFactor(double factor) override;
     void DraftingChanged() override;
+    void SetClipboard(const std::string& text) override;
+    bool GetClipboard(std::string& text) override;
 
 private:
+    // One open drawing.
+    struct Drawing {
+        explicit Drawing(EngineHost& host) : engine(doc, host) {}
+        Document doc;
+        Engine engine;
+        History history;
+        std::wstring path;           // empty: never saved
+        std::wstring suggestedPath;  // for Save of a recovered or imported drawing
+        std::wstring untitledName;
+        uint64_t autosavedRevision = 0;
+        unsigned long long lastAutosave = 0;
+        Canvas::View view;
+        bool Pristine() const { return path.empty() && doc.Count() == 0 && !doc.CanUndo() && !doc.Modified(); }
+    };
+
     static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
     LRESULT Handle(UINT msg, WPARAM wp, LPARAM lp);
     void CreateChildren();
@@ -46,6 +67,18 @@ private:
     void UpdatePrompt();
     void UpdateStatus();
     void UpdateTitle();
+    void UpdateTabs();
+
+    // drawings
+    Drawing& Cur() const { return *m_drawings[m_active]; }
+    Document& Doc() const { return Cur().doc; }
+    Engine& Eng() const { return Cur().engine; }
+    std::unique_ptr<Drawing> MakeDrawing();
+    // Puts a drawing in a tab of its own (or in place of an empty, unused one) and shows it.
+    void AddDrawing(std::unique_ptr<Drawing> d);
+    void SwitchTo(size_t index);
+    bool CloseDrawing(size_t index);
+    int FindOpen(const std::wstring& path) const;
 
     // menus
     HMENU BuildMenu(int menuId);
@@ -55,17 +88,24 @@ private:
     void ShowTips();
 
     // files
-    std::wstring DrawingName() const;
-    bool ConfirmDiscard();
+    std::wstring DrawingName(const Drawing& d) const;
+    std::wstring DrawingName() const { return DrawingName(Cur()); }
+    bool ConfirmDiscard(size_t index);
     void NewDrawing();
     void OpenDialog();
     bool OpenFile(const std::wstring& path);
     bool Save(bool saveAs);
     bool SaveTo(const std::wstring& path);
     void ExportDxf();
+    void ImportDxf();
     void ShowHistory();
     void Recover(bool afterCrash);
     void Autosave();
+
+    // dimensions and the clipboard
+    void EditDimension(uint64_t id);
+    void DimensionStyle();
+    void ClipboardCommand(int id);
 
     void ApplyTheme(int mode);
     void ToggleDrafting(int id);
@@ -76,20 +116,15 @@ private:
     HACCEL m_accel = nullptr;
     int m_dpi = 96;
     Settings m_settings;
-    Document m_doc;
-    Engine m_engine;
+    std::vector<std::unique_ptr<Drawing>> m_drawings;
+    size_t m_active = 0;
     Canvas m_canvas;
     CommandLine m_cmdline;
     StatusBar m_status;
     Toolbar m_menuBar, m_tools;
+    TabBar m_tabs;
     CommandPalette m_palette;
-    History m_history;
-
-    std::wstring m_path;           // empty: never saved
-    std::wstring m_suggestedPath;  // for Save of a recovered drawing
-    std::wstring m_untitledName = L"Drawing1";
-    int m_untitledCount = 1;
-    uint64_t m_autosavedRevision = 0;
-    ULONGLONG m_lastAutosave = 0;
+    int m_untitledCount = 0;
     std::wstring m_shownTitle;
+    UINT m_clipFormat = 0;
 };

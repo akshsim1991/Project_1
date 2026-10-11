@@ -1,6 +1,6 @@
 // Entity.h - the drawing objects: lines, circles, arcs, polylines
 // (rectangles are closed polylines, as in other CAD programs) and
-// associative arrays. Every entity can be broken into Prims (segments and
+// associative arrays and dimensions. Every entity can be broken into Prims (segments and
 // arcs) for hit testing, snapping and intersections.
 #pragma once
 #include <cstdint>
@@ -10,7 +10,7 @@
 
 #include "Geometry.h"
 
-enum class EntityType : uint8_t { Line, Circle, Arc, Polyline, Array, Ellipse, Spline, Point };
+enum class EntityType : uint8_t { Line, Circle, Arc, Polyline, Array, Ellipse, Spline, Point, Dimension };
 
 struct Vertex {
     Vec2 p;
@@ -18,6 +18,7 @@ struct Vertex {
 };
 
 struct ArrayData;
+struct DimData;  // Dimension.h
 
 struct Entity {
     uint64_t id = 0;  // set by the Document; also the drawing order
@@ -32,6 +33,7 @@ struct Entity {
     // Array: shared and never changed in place (a change makes a new copy),
     // so copies of an array entity (undo history) cost nothing.
     std::shared_ptr<const ArrayData> array;
+    std::shared_ptr<const DimData> dim;  // Dimension: shared the same way
 
     static Entity Line(Vec2 a, Vec2 b);
     static Entity Circle(Vec2 centre, double r);

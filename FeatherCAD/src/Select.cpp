@@ -67,7 +67,8 @@ bool PropertyOf(const Entity& e, QProp prop, double& value) {
             value = 0;
             return true;
         case QProp::Length:
-            if (e.type == EntityType::Point || e.type == EntityType::Array) return false;
+            if (e.type == EntityType::Point || e.type == EntityType::Array || e.type == EntityType::Dimension)
+                return false;
             value = IsCurve(e) ? CurveLength(e) : LengthOf(e);
             return true;
         case QProp::Radius:

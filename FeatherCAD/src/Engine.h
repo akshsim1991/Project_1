@@ -85,6 +85,16 @@ public:
     virtual void ZoomPrevious() = 0;
     virtual void ZoomFactor(double factor) = 0;
     virtual void DraftingChanged() = 0;  // status bar toggles
+    // The clipboard, for copy and paste between drawings (the program uses
+    // the Windows clipboard; the tests this one).
+    virtual void SetClipboard(const std::string& text) { m_clip = text; }
+    virtual bool GetClipboard(std::string& text) {
+        text = m_clip;
+        return !text.empty();
+    }
+
+private:
+    std::string m_clip;
 };
 
 struct CommandInfo {
@@ -165,6 +175,7 @@ public:
     int lastColumns = 4, lastRows = 3, lastPolarCount = 6, lastPathCount = 5;
     int lastSides = 4;
     bool lastInscribed = true;
+    uint64_t lastDim = 0;  // the last linear or aligned dimension (DIMCONTINUE, DIMBASELINE)
 
 private:
     bool ParsePoint(const std::wstring& text, Vec2& out) const;

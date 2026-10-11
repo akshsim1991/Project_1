@@ -24,6 +24,8 @@ struct Vec2 {
     Vec2 operator-() const { return {-x, -y}; }
     Vec2& operator+=(Vec2 o) { x += o.x; y += o.y; return *this; }
     Vec2& operator-=(Vec2 o) { x -= o.x; y -= o.y; return *this; }
+    bool operator==(Vec2 o) const { return x == o.x && y == o.y; }  // exactly the same
+    bool operator!=(Vec2 o) const { return !(*this == o); }
 };
 
 inline double Dot(Vec2 a, Vec2 b) { return a.x * b.x + a.y * b.y; }

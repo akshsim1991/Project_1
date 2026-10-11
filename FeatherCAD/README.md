@@ -181,12 +181,45 @@ Arrays are saved in the `.fcad` file. They are exported to DXF as their separate
 - ★ **Quick select** (Edit menu): select by object type and property. The properties are length, radius, diameter, area, centre X/Y, number of vertices and closed. Compare with =, <>, > or <. The result replaces the selection, adds to it or is removed from it.
 - ★ **Select similar**: every object of the same kind as the selected ones.
 
+## Version 1.3: dimensions, drawing tabs and DXF import
+
+**Dimensions**
+
+| Command | Short name | What it does |
+|---------|------------|--------------|
+| DIM | SD | ★ **Smart dimension.** Click a line, circle or arc and the right dimension follows the cursor. A line gives its length: horizontal above or below it, vertical beside it, aligned along a slanted line. A circle gives its diameter, an arc its radius (R and D switch). Click a second line instead of a place for the angle between them. P dimensions between two points, A starts an angle. It keeps going until Enter. |
+| DIMLINEAR | DLI | Horizontal or vertical distance between two points (Enter: pick a line) |
+| DIMALIGNED | DAL | Distance along the line between two points |
+| DIMRADIUS / DIMDIAMETER | DRA / DDI | Radius or diameter of an arc, circle or polyline arc |
+| DIMANGULAR | DAN | Angle between two lines, of an arc, or by a vertex and two points (Enter) |
+| DIMCONTINUE | DCO | A chain of dimensions, each from the end of the last |
+| DIMBASELINE | DBA | A stack of dimensions, all from the same first point |
+| DIMEDIT | DED | A new value or new text for a dimension |
+| DIMSTYLE | D | Text height, arrow size, extension lines, decimal places and trailing zeros |
+
+- ★ **Driving dimensions.** While placing a dimension, type a number and the object becomes that size. Double-click a dimension (or use DIMEDIT) to give it a new value later. For a length, the part of the shape beyond the middle moves, so a rectangle stays a rectangle and a rounded corner keeps its shape. For a radius or diameter, the circle or arc changes size. For an angle, the second line turns about the corner.
+- ★ **Associative dimensions.** A dimension remembers which ends, vertices or circles it measures. Stretch, move, trim or turn them and the dimension follows. A dimension moved on its own stops following.
+- Dimensions are objects like the others: select, move, copy, rotate, mirror, scale, stretch and erase them. Their grips move the measured points and the text. Copies made together with their objects stay attached to the copies.
+- The double-click dialog also changes a dimension's text and decimal places. `<>` in the text stands for the value, as in `<> TYP` or `4x <>`.
+
+**Drawing tabs**
+- Every drawing opens in a tab of its own, with a * when it has unsaved changes. Ctrl+N or the + button starts a new one, Ctrl+Tab and Ctrl+Shift+Tab switch, Ctrl+W (or the tab's ×, or a middle click) closes.
+- Each drawing keeps its own view, undo history, auto-saved versions and selection. Closing the program asks about every drawing with unsaved changes.
+- Copy and paste between drawings: Ctrl+C, Ctrl+X, Ctrl+V. Dimensions pasted with their objects stay attached.
+
+**DXF import**
+- File > Open (or drag and drop) opens `.dxf` files from AutoCAD, LibreCAD, DraftSight, QCAD, Inkscape and others, of any release (ASCII DXF), in a new tab. Saving asks for a `.fcad` name.
+- File > Import DXF brings a DXF drawing's objects into the current drawing.
+- Brought in: lines, circles, arcs, polylines (with arcs), ellipses, splines, points, solids, leaders and dimensions (as real dimensions). Blocks come in as their objects, placed, scaled and turned as inserted (also rows and columns of them). Units and the dimension style come from the file. Paper space is left out.
+- Not brought in yet: text and hatching (Phase C). The command line says how many were left out.
+- Export DXF writes dimensions as what they look like: lines, filled arrows and text.
+
 ## Coming in later phases
 
 | Phase | Contents |
 |-------|----------|
-| B3    | Layers, line types, properties panel, DXF import, match properties |
-| C     | Annotation: text, dimensions, hatching and blocks |
+| B3    | Layers, line types, properties panel, match properties |
+| C     | Annotation: text, leaders, hatching and blocks |
 | D     | Sheets, printing and PDF |
 | E     | Engineering (constraints, GD&T, parts lists) |
 | F     | Professional extras |
@@ -208,9 +241,9 @@ cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=cmake/mingw-w64-x86_64.cmake -DCMAKE_
 **Source layout**
 - The drawing model and the command engine have no Windows code:
   `Geometry`, `Entity`, `Spline`, `Curve`, `Modify`, `Grips`, `Select`,
-  `Document`, `Snap`, `Engine`, `Commands`, `CommandsModify` and
-  `CommandsDraw`.
+  `Dimension`, `Document`, `DxfImport`, `Snap`, `Engine`, `Commands`,
+  `CommandsModify`, `CommandsDraw` and `CommandsDim`.
 - The unit tests (`tests/CoreTests.cpp`) drive the engine by typed input
   alone.
-- The window side is `MainWindow`, `Canvas` (Direct2D), `CommandLine` and
-  `StatusBar`.
+- The window side is `MainWindow`, `Canvas` (Direct2D), `TabBar`,
+  `CommandLine` and `StatusBar`.

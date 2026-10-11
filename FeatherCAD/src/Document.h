@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include "Dimension.h"
 #include "Entity.h"
 
 enum class Units : uint8_t { Unitless, Millimetres, Centimetres, Metres, Inches, Feet };
@@ -21,6 +22,7 @@ const wchar_t* UnitsSymbol(Units u);  // "mm"
 struct DrawingSettings {
     Units units = Units::Millimetres;
     int precision = 2;  // decimal places shown for lengths and coordinates
+    DimStyle dimStyle;  // for new dimensions
 };
 
 class Document {
@@ -45,6 +47,10 @@ public:
     void Restore(const Entity& e);
     // Replaces the whole drawing in one undo step (restoring a version).
     void ReplaceAll(std::vector<Entity> entities, const std::wstring& name);
+    // Adds objects together, keeping the dimensions among them attached to
+    // the new copies (their ids in `entities` are the old ones). Returns the
+    // new ids, in order.
+    std::vector<uint64_t> AddGroup(std::vector<Entity> entities);
 
     bool CanUndo() const { return !m_undo.empty(); }
     bool CanRedo() const { return !m_redo.empty(); }
@@ -73,6 +79,12 @@ public:
     bool FromText(const std::string& text, std::wstring& error);
     // AutoCAD DXF, release 12 (read by every CAD program).
     std::string ToDxf() const;
+    // Opens a DXF drawing (any release, ASCII) in place of this one. What
+    // could not be brought in is listed in `notes`.
+    bool FromDxf(const std::string& text, std::wstring& error, std::wstring& notes);
+    // Objects as text, and back (copy and paste between drawings).
+    static std::string ObjectsToText(const std::vector<Entity>& entities);
+    static bool ObjectsFromText(const std::string& text, std::vector<Entity>& out);
 
     // Undo step serials, for tests.
     size_t UndoDepth() const { return m_undo.size(); }
@@ -88,6 +100,8 @@ private:
         uint64_t serial = 0;
     };
     void Record(uint64_t id, const Entity* before, const Entity* after);
+    // Dimensions follow the objects they are attached to (before a step is kept).
+    void UpdateDimensions();
     void Apply(const Step& step, bool forward);
     void Touch() { ++m_revision; }
 
@@ -104,6 +118,10 @@ private:
     mutable Box m_extents;
     DrawingSettings m_settings;
 };
+
+// UTF-8 text (without Windows), for files.
+std::string TextToUtf8(const std::wstring& w);
+std::wstring TextFromUtf8(const std::string& s);
 
 // Locale-independent number text: shortest form that reads back exactly.
 std::string FormatNumber(double v);

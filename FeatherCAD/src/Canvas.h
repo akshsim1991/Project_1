@@ -22,6 +22,18 @@ public:
     bool Create(HWND parent, Engine* engine, Document* doc);
     HWND Hwnd() const { return m_hwnd; }
 
+    // ---- drawings (tabs) -------------------------------------------------------
+    // Shows another drawing: its engine and document.
+    void SetDrawing(Engine* engine, Document* doc);
+    struct View {
+        Vec2 centre;
+        double scale = 1;
+        std::vector<std::pair<Vec2, double>> previous;
+        bool set = false;  // false: never shown (zoom to its extents)
+    };
+    View GetView() const;
+    void SetView(const View& v);
+
     // ---- view ---------------------------------------------------------------
     void ZoomExtents();
     void ZoomWindow(const Box& box, bool remember = true);
@@ -68,6 +80,8 @@ private:
     ID2D1PathGeometry* BuildGeometry(const std::vector<const Entity*>& entities);
     void DrawEntities(ID2D1RenderTarget* rt, const std::vector<const Entity*>& ents, D2D1_COLOR_F color,
                       float width, ID2D1StrokeStyle* style);
+    // Arrows and text of the dimensions among `ents`.
+    void DrawDimensionParts(ID2D1RenderTarget* rt, const std::vector<const Entity*>& ents, ID2D1Brush* brush);
     void DrawSnapMarker(ID2D1RenderTarget* rt);
     void DrawLabel(ID2D1RenderTarget* rt, const std::wstring& text, float x, float y);
     void LoadColours();
@@ -101,6 +115,7 @@ private:
     ID2D1Factory* m_factory = nullptr;
     IDWriteFactory* m_dwrite = nullptr;
     IDWriteTextFormat* m_textFormat = nullptr;
+    IDWriteTextFormat* m_dimFormat = nullptr;  // dimension text, drawn scaled
     ID2D1HwndRenderTarget* m_target = nullptr;
     ID2D1BitmapRenderTarget* m_layer = nullptr;
     ID2D1SolidColorBrush* m_brush = nullptr;

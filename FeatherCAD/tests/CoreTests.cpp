@@ -5,7 +5,9 @@
 #include <cstdio>
 #include <string>
 
+#include "Dimension.h"
 #include "Document.h"
+#include "DxfImport.h"
 #include "Engine.h"
 #include "Grips.h"
 #include "Modify.h"
@@ -926,9 +928,588 @@ void TestDrawCommandsB2() {
     Type(eng, {L"u"});
     CHECK(doc.Count() == 2);
 }
+
+// ---------------------------------------------------------------------------
+// Version 1.3: dimensions, DXF import, clipboard
+// ---------------------------------------------------------------------------
+
+const DimData& DimOf(const Document& doc, uint64_t id) { return *doc.Find(id)->dim; }
+
+DimData Aligned(Vec2 a, Vec2 b, Vec2 loc) {
+    DimData d;
+    d.kind = DimData::Aligned;
+    d.pts[0] = a;
+    d.pts[1] = b;
+    d.loc = loc;
+    return d;
+}
+
+void TestDimensionValues() {
+    DimData d = Aligned({0, 0}, {30, 40}, {0, 10});
+    CHECK(Close(DimMeasure(d), 50) && DimValueText(d) == L"50");
+    d.kind = DimData::Linear;
+    d.angle = 0;
+    CHECK(Close(DimMeasure(d), 30));
+    d.angle = kPi / 2;
+    CHECK(Close(DimMeasure(d), 40));
+    DimStyle st;
+    CHECK(DimNumber(12.5, st) == L"12.5" && DimNumber(40, st) == L"40" && DimNumber(-0.001, st) == L"0");
+    st.trimZeros = false;
+    CHECK(DimNumber(40, st) == L"40.00");
+    d.text = L"<> TYP";
+    CHECK(DimDisplayText(d) == L"40 TYP");
+    d.text = L"SEE NOTE";
+    CHECK(DimDisplayText(d) == L"SEE NOTE");
+
+    DimData r;
+    r.kind = DimData::Radius;
+    r.pts[0] = {0, 0};
+    r.pts[1] = {10, 0};
+    r.loc = {20, 5};
+    CHECK(DimValueText(r) == L"R10");
+    r.kind = DimData::Diameter;
+    CHECK(DimValueText(r) == L"\x00D8" L"20");
+
+    DimData a;
+    a.kind = DimData::Angular;
+    a.pts = {Vec2{0, 0}, Vec2{10, 0}, Vec2{0, 0}, Vec2{10, 10}};
+    a.loc = {5, 2};
+    CHECK(Close(ToDegrees(DimMeasure(a)), 45, 1e-9) && DimValueText(a) == L"45\x00B0");
+    a.loc = {-5, 2};
+    CHECK(Close(ToDegrees(DimMeasure(a)), 135, 1e-9));
+    a.loc = {-5, -1};
+    CHECK(Close(ToDegrees(DimMeasure(a)), 45, 1e-9));
+    a.rays = true;  // three points: the rays to (10,0) and (10,10)
+    a.loc = {5, 2};
+    CHECK(Close(ToDegrees(DimMeasure(a)), 45, 1e-9));
+    a.loc = {-5, -1};
+    CHECK(Close(ToDegrees(DimMeasure(a)), 315, 1e-9));
+    // Lines that do not meet: the angle between them, at their crossing.
+    a.rays = false;
+    a.pts = {Vec2{10, 0}, Vec2{20, 0}, Vec2{0, 10}, Vec2{0, 20}};
+    a.loc = {5, 5};
+    CHECK(Close(ToDegrees(DimMeasure(a)), 90, 1e-9));
+}
+
+void TestDimensionLayout() {
+    DimData d = Aligned({0, 0}, {100, 0}, {50, 20});
+    DimGraphics g;
+    DimLayout(d, g);
+    CHECK(g.arrows.size() == 2 && g.lines.size() == 3);
+    bool dimLine = false, ext0 = false;
+    for (const Prim& p : g.lines) {
+        if (Close(p.a, {0, 20}) && Close(p.b, {100, 20})) dimLine = true;
+        if (Close(p.a, {0, d.style.extOffset}) && Close(p.b, {0, 20 + d.style.extBeyond})) ext0 = true;
+    }
+    CHECK(dimLine && ext0);
+    CHECK(Close(g.textPos, {50, 20 + d.style.textGap + d.style.textHeight / 2}) && Close(g.textAngle, 0));
+    CHECK(Close(g.arrows[0][0], {0, 20}) && Close(g.arrows[1][0], {100, 20}));
+    CHECK(g.textWidth > 0 && g.textWidth < 10);
+    // Below the line, text still reads left to right; vertical text reads upwards.
+    d.loc = {50, -20};
+    DimLayout(d, g);
+    CHECK(Close(g.textAngle, 0) && g.textPos.y > -20);
+    d = Aligned({0, 0}, {0, 100}, {-20, 50});
+    DimLayout(d, g);
+    CHECK(Close(g.textAngle, kPi / 2) && g.textPos.x < -20);
+    // Too short for the arrows inside: they go outside.
+    d = Aligned({0, 0}, {4, 0}, {2, 10});
+    DimLayout(d, g);
+    CHECK(Close(g.arrows[0][0], {0, 10}) && g.arrows[0][1].x < 0);
+
+    // As an entity: picked by its text, inside a window by its text too.
+    Entity e = MakeDimension(Aligned({0, 0}, {100, 0}, {50, 20}));
+    DimLayout(*e.dim, g);
+    CHECK(Close(DistanceTo(e, g.textPos), 0) && Close(DistanceTo(e, {50, 20}), 0));
+    CHECK(Bounds(e).Contains(g.textPos + Vec2{0, d.style.textHeight / 2}));
+    CHECK(TouchesBox(e, Box({49, 22}, {51, 23})));
+    CHECK(e.type == EntityType::Dimension && std::wstring(TypeName(e.type)) == L"Dimension");
+    // Transformations keep the value (scale changes it).
+    Entity m = e;
+    Rotate(m, {0, 0}, kPi / 2);
+    CHECK(Close(DimMeasure(*m.dim), 100) && Close(m.dim->pts[1], {0, 100}));
+    Mirror(m, {0, 0}, {1, 0});
+    CHECK(Close(m.dim->pts[1], {0, -100}));
+    Scale(m, {0, 0}, 0.5);
+    CHECK(Close(DimMeasure(*m.dim), 50));
+    // Grips: the two points and the text.
+    std::vector<Grip> grips;
+    GripsOf(e, grips);
+    CHECK(grips.size() == 3);
+    Entity dragged = e;
+    CHECK(DragGrip(dragged, 1, {100, 0}, {80, 0}) && Close(DimMeasure(*dragged.dim), 80));
+    CHECK(DragGrip(dragged, 2, grips[2].p, grips[2].p + Vec2{0, 10}) && Close(dragged.dim->loc.y, 30));
+}
+
+void TestDimensionAssociativity() {
+    Document doc;
+    const uint64_t line = doc.Add(Entity::Line({0, 0}, {100, 0}));
+    DimData d = Aligned({0, 0}, {100, 0}, {50, 20});
+    d.refs[0] = {line, 0};
+    d.refs[1] = {line, 1};
+    const uint64_t dim = doc.Add(MakeDimension(d));
+    CHECK(HasRefs(*doc.Find(dim)));
+
+    // Stretching the line: the dimension follows.
+    Entity l = *doc.Find(line);
+    l.p1 = {120, 0};
+    doc.Replace(l);
+    CHECK(Close(DimMeasure(DimOf(doc, dim)), 120) && Close(DimOf(doc, dim).loc.y, 20));
+    // Moving the line: the dimension moves with it.
+    l = *doc.Find(line);
+    Translate(l, {0, 10});
+    doc.Replace(l);
+    CHECK(Close(DimOf(doc, dim).pts[0], {0, 10}) && Close(DimOf(doc, dim).loc.y, 30));
+    // Turning it: an aligned dimension turns too, at the same distance.
+    l = *doc.Find(line);
+    Rotate(l, {0, 10}, kPi / 2);
+    doc.Replace(l);
+    CHECK(Close(DimOf(doc, dim).pts[1], {0, 130}) && Close(DimOf(doc, dim).loc.x, -20, 1e-9));
+    doc.Undo();
+    doc.Undo();
+    doc.Undo();
+    CHECK(Close(DimMeasure(DimOf(doc, dim)), 100) && Close(DimOf(doc, dim).loc, {50, 20}));
+    // Moved on its own: no longer attached (and undo attaches it again).
+    Entity de = *doc.Find(dim);
+    Translate(de, {0, 50});
+    doc.Replace(de);
+    CHECK(!HasRefs(*doc.Find(dim)));
+    doc.Undo();
+    CHECK(HasRefs(*doc.Find(dim)));
+    // Moved together with the line: still attached.
+    doc.BeginChange(L"Move both");
+    for (uint64_t id : {line, dim}) {
+        Entity x = *doc.Find(id);
+        Translate(x, {5, 5});
+        doc.Replace(x);
+    }
+    doc.EndChange();
+    CHECK(HasRefs(*doc.Find(dim)) && Close(DimOf(doc, dim).pts[0], {5, 5}));
+    // Its own text grip moved: still attached.
+    de = *doc.Find(dim);
+    CHECK(DragGrip(de, 2, {0, 0}, {0, 3}));
+    doc.Replace(de);
+    CHECK(HasRefs(*doc.Find(dim)));
+
+    // Saved and opened again: still attached.
+    Document copy;
+    std::wstring err;
+    CHECK(copy.FromText(doc.ToText(), err));
+    uint64_t cl = 0, cd = 0;
+    for (const auto& kv : copy.Entities()) (kv.second.type == EntityType::Dimension ? cd : cl) = kv.first;
+    CHECK(cd && cl && copy.Find(cd)->dim->refs[0].id == cl && copy.Find(cd)->dim->refs[1].grip == 1);
+    Entity cline = *copy.Find(cl);
+    cline.p0 = cline.p0 - Vec2{10, 0};
+    copy.Replace(cline);
+    CHECK(Close(DimMeasure(*copy.Find(cd)->dim), 110));
+    CHECK(copy.Settings().dimStyle == doc.Settings().dimStyle);
+
+    // Text with spaces and symbols survives the file.
+    de = *doc.Find(dim);
+    DimData dd = *de.dim;
+    dd.text = L"<> \x2300 ±0.1 = 100%";
+    de.dim = std::make_shared<const DimData>(dd);
+    doc.Replace(de);
+    CHECK(copy.FromText(doc.ToText(), err));
+    for (const auto& kv : copy.Entities())
+        if (kv.second.type == EntityType::Dimension) CHECK(kv.second.dim->text == dd.text);
+
+    // Copies made together stay attached to each other.
+    const std::vector<uint64_t> ids = doc.AddGroup({*doc.Find(line), *doc.Find(dim)});
+    CHECK(ids.size() == 2 && doc.Find(ids[1])->dim->refs[0].id == ids[0]);
+    // A dimension copied alone is not attached to anything.
+    const std::vector<uint64_t> lone = doc.AddGroup({*doc.Find(dim)});
+    CHECK(!HasRefs(*doc.Find(lone[0])));
+
+    // The object erased: the dimension stays, not attached.
+    doc.Erase(line);
+    CHECK(doc.Find(dim) && !HasRefs(*doc.Find(dim)));
+
+    // A circle's radius dimension follows the circle.
+    const uint64_t c = doc.Add(Entity::Circle({0, 0}, 10));
+    DimData r;
+    r.kind = DimData::Radius;
+    r.pts[0] = {0, 0};
+    r.pts[1] = {10, 0};
+    r.loc = {15, 0};
+    r.refs[0] = {c, -1};
+    const uint64_t rd = doc.Add(MakeDimension(r));
+    Entity ce = *doc.Find(c);
+    ce.radius = 20;
+    Translate(ce, {1, 1});
+    doc.Replace(ce);
+    CHECK(Close(DimMeasure(DimOf(doc, rd)), 20) && Close(DimOf(doc, rd).pts[0], {1, 1}) &&
+          Close(Dist(DimOf(doc, rd).loc, {1, 1}), 25));
+
+    // An angle follows its lines.
+    const uint64_t la = doc.Add(Entity::Line({0, 0}, {10, 0}));
+    const uint64_t lb = doc.Add(Entity::Line({0, 0}, {10, 10}));
+    DimData a;
+    a.kind = DimData::Angular;
+    a.pts = {Vec2{0, 0}, Vec2{10, 0}, Vec2{0, 0}, Vec2{10, 10}};
+    a.refs = {DimRef{la, 0}, DimRef{la, 1}, DimRef{lb, 0}, DimRef{lb, 1}};
+    a.loc = {8, 3};
+    const uint64_t ad = doc.Add(MakeDimension(a));
+    Entity lbe = *doc.Find(lb);
+    lbe.p1 = {0, 10};
+    doc.Replace(lbe);
+    CHECK(Close(ToDegrees(DimMeasure(DimOf(doc, ad))), 90, 1e-9));
+}
+
+void TestDrivingDimensions() {
+    std::wstring why;
+    // A rectangle (polyline) made wider by its width dimension stays a rectangle.
+    Document doc;
+    const uint64_t rect = doc.Add(Entity::Rectangle({0, 0}, {100, 50}));
+    DimData d = Aligned({0, 0}, {100, 0}, {50, -15});
+    d.kind = DimData::Linear;
+    d.refs[0] = {rect, 0};
+    d.refs[1] = {rect, 1};
+    const uint64_t dim = doc.Add(MakeDimension(d));
+    doc.BeginChange(L"Value");
+    CHECK(DriveDimension(doc, dim, 120, why));
+    doc.EndChange();
+    const Entity& r = *doc.Find(rect);
+    CHECK(Close(r.verts[1].p, {120, 0}) && Close(r.verts[2].p, {120, 50}) && Close(r.verts[3].p, {0, 50}));
+    CHECK(Close(DimMeasure(DimOf(doc, dim)), 120));
+    doc.Undo();
+    CHECK(Close(doc.Find(rect)->verts[1].p, {100, 0}) && Close(DimMeasure(DimOf(doc, dim)), 100));
+
+    // Four lines: the right side moves, the top and bottom stretch.
+    Document lines;
+    const uint64_t b = lines.Add(Entity::Line({0, 0}, {100, 0}));
+    const uint64_t rt = lines.Add(Entity::Line({100, 0}, {100, 50}));
+    const uint64_t t = lines.Add(Entity::Line({100, 50}, {0, 50}));
+    const uint64_t lf = lines.Add(Entity::Line({0, 50}, {0, 0}));
+    const uint64_t hole = lines.Add(Entity::Circle({80, 25}, 5));  // not connected: stays
+    d.refs[0] = {b, 0};
+    d.refs[1] = {b, 1};
+    const uint64_t ld = lines.Add(MakeDimension(d));
+    // Its height, from the left side.
+    DimData h = Aligned({0, 0}, {0, 50}, {-15, 25});
+    h.kind = DimData::Linear;
+    h.angle = kPi / 2;
+    h.refs[0] = {lf, 1};
+    h.refs[1] = {lf, 0};
+    const uint64_t hd = lines.Add(MakeDimension(h));
+    lines.BeginChange(L"Value");
+    CHECK(DriveDimension(lines, ld, 80, why));
+    lines.EndChange();
+    CHECK(Close(lines.Find(rt)->p0, {80, 0}) && Close(lines.Find(rt)->p1, {80, 50}));
+    CHECK(Close(lines.Find(t)->p0, {80, 50}) && Close(lines.Find(t)->p1, {0, 50}));
+    CHECK(Close(lines.Find(lf)->p0, {0, 50}) && Close(lines.Find(hole)->p0, {80, 25}));
+    lines.BeginChange(L"Value");
+    CHECK(DriveDimension(lines, hd, 30, why));
+    lines.EndChange();
+    CHECK(Close(lines.Find(t)->p0, {80, 30}) && Close(lines.Find(rt)->p1, {80, 30}) && Close(lines.Find(b)->p1, {80, 0}));
+    CHECK(Close(DimMeasure(DimOf(lines, hd)), 30) && Close(DimMeasure(DimOf(lines, ld)), 80));
+
+    // Radius and diameter.
+    const uint64_t c = doc.Add(Entity::Circle({0, 0}, 10));
+    DimData rd;
+    rd.kind = DimData::Diameter;
+    rd.pts[0] = {0, 0};
+    rd.pts[1] = {10, 0};
+    rd.loc = {20, 0};
+    rd.refs[0] = {c, -1};
+    const uint64_t cd = doc.Add(MakeDimension(rd));
+    doc.BeginChange(L"Value");
+    CHECK(DriveDimension(doc, cd, 30, why));
+    doc.EndChange();
+    CHECK(Close(doc.Find(c)->radius, 15) && Close(DimMeasure(DimOf(doc, cd)), 30));
+    // A polyline arc segment keeps its ends.
+    const uint64_t pl = doc.Add(Entity::Polyline({{{0, 0}, 1}, {{20, 0}, 0}}, false));  // a half circle, radius 10
+    DimData pr;
+    pr.kind = DimData::Radius;
+    const Prim arc = ArcFromBulge({0, 0}, {20, 0}, 1);
+    pr.pts[0] = arc.c;
+    pr.pts[1] = arc.c + Vec2{0, -10};
+    pr.loc = {10, -20};
+    pr.refs[0] = {pl, -1};
+    const uint64_t prd = doc.Add(MakeDimension(pr));
+    doc.BeginChange(L"Value");
+    CHECK(!DriveDimension(doc, prd, 5, why) && !why.empty());  // smaller than half the chord
+    CHECK(DriveDimension(doc, prd, 20, why));
+    doc.EndChange();
+    const Prim now = ArcFromBulge(doc.Find(pl)->verts[0].p, doc.Find(pl)->verts[1].p, doc.Find(pl)->verts[0].bulge);
+    CHECK(Close(now.r, 20, 1e-9) && Close(doc.Find(pl)->verts[1].p, {20, 0}) && Close(DimMeasure(DimOf(doc, prd)), 20, 1e-9));
+
+    // An angle: the second line turns about the corner.
+    const uint64_t la = doc.Add(Entity::Line({0, 0}, {10, 0}));
+    const uint64_t lb = doc.Add(Entity::Line({0, 0}, {10, 10}));
+    DimData a;
+    a.kind = DimData::Angular;
+    a.pts = {Vec2{0, 0}, Vec2{10, 0}, Vec2{0, 0}, Vec2{10, 10}};
+    a.refs = {DimRef{la, 0}, DimRef{la, 1}, DimRef{lb, 0}, DimRef{lb, 1}};
+    a.loc = {8, 3};
+    const uint64_t ad = doc.Add(MakeDimension(a));
+    doc.BeginChange(L"Value");
+    CHECK(DriveDimension(doc, ad, ToRadians(60), why));
+    doc.EndChange();
+    CHECK(Close(doc.Find(lb)->p1, Polar({0, 0}, std::sqrt(200.0), ToRadians(60)), 1e-9) &&
+          Close(doc.Find(la)->p1, {10, 0}));
+    CHECK(Close(ToDegrees(DimMeasure(DimOf(doc, ad))), 60, 1e-9));
+    doc.BeginChange(L"Value");
+    CHECK(!DriveDimension(doc, ad, ToRadians(200), why));
+    doc.EndChange();
+    // An arc's angle: its end moves round.
+    const uint64_t arcId = doc.Add(Entity::Arc({50, 50}, 10, 0, kPi / 2));
+    DimData aa;
+    aa.kind = DimData::Angular;
+    aa.rays = true;
+    aa.pts = {Vec2{50, 50}, Vec2{60, 50}, Vec2{50, 50}, Vec2{50, 60}};
+    aa.refs = {DimRef{arcId, 0}, DimRef{arcId, 1}, DimRef{arcId, 0}, DimRef{arcId, 2}};
+    aa.loc = {58, 58};
+    const uint64_t aad = doc.Add(MakeDimension(aa));
+    doc.BeginChange(L"Value");
+    CHECK(DriveDimension(doc, aad, ToRadians(120), why));
+    doc.EndChange();
+    CHECK(Close(doc.Find(arcId)->endAngle, ToRadians(120), 1e-9) && Close(ToDegrees(DimMeasure(DimOf(doc, aad))), 120, 1e-9));
+    // Not attached: nothing to change.
+    const uint64_t free = doc.Add(MakeDimension(Aligned({0, 100}, {10, 100}, {5, 110})));
+    doc.BeginChange(L"Value");
+    CHECK(!DriveDimension(doc, free, 20, why) && !why.empty());
+    doc.EndChange();
+}
+
+Vec2 DimLayoutText(const DimData& d) {
+    DimGraphics g;
+    DimLayout(d, g);
+    return g.textPos;
+}
+
+void TestDimensionCommands() {
+    Document doc;
+    TestHost host;
+    Engine eng(doc, host);
+    const uint64_t line = doc.Add(Entity::Line({0, 0}, {100, 0}));
+    const auto lastDim = [&]() -> const DimData& { return *Last(doc).dim; };
+
+    // Smart: click the line, then where the dimension goes.
+    Type(eng, {L"dim"});
+    eng.Point({50, 0});
+    CHECK(eng.Active() && eng.CurrentPrompt().pickObject);
+    eng.Point({50, 20});
+    CHECK(doc.Count() == 2 && Last(doc).type == EntityType::Dimension);
+    CHECK(lastDim().kind == DimData::Linear && Close(DimMeasure(lastDim()), 100) && lastDim().refs[1].id == line);
+    // Still running: type a value while placing to make the line that long.
+    eng.Point({50, 0});
+    host.cursor = {50, -20};
+    Type(eng, {L"80"});
+    CHECK(Close(doc.Find(line)->p1, {80, 0}) && Close(DimMeasure(lastDim()), 80));
+    CHECK(doc.Count() == 3 && Close(DimMeasure(*doc.Find(line + 1)->dim), 80));  // the first one followed
+    Type(eng, {L""});
+    CHECK(!eng.Active());
+    doc.Undo();
+    CHECK(Close(doc.Find(line)->p1, {100, 0}) && doc.Count() == 2);
+
+    // A slanted line: beside it the dimension is aligned, above it horizontal.
+    const uint64_t slant = doc.Add(Entity::Line({0, 100}, {30, 140}));
+    Type(eng, {L"dim"});
+    eng.Point({15, 120});
+    eng.Point({0, 130});  // beside the middle of the line
+    CHECK(lastDim().kind == DimData::Aligned && Close(DimMeasure(lastDim()), 50));
+    eng.Point({15, 120});
+    eng.Point({15, 160});  // above: horizontal
+    CHECK(lastDim().kind == DimData::Linear && Close(DimMeasure(lastDim()), 30));
+    eng.Point({15, 120});
+    Type(eng, {L"v"});
+    eng.Point({15, 160});
+    CHECK(Close(DimMeasure(lastDim()), 40));
+    // A second line clicked instead of a place: the angle between them.
+    const uint64_t up = doc.Add(Entity::Line({0, 100}, {0, 200}));
+    eng.Point({15, 120});
+    eng.Point({0, 180});
+    CHECK(eng.Active() && eng.CurrentPrompt().text.find(L"arc") != std::wstring::npos);
+    eng.Point({3, 110});
+    CHECK(lastDim().kind == DimData::Angular && Close(ToDegrees(DimMeasure(lastDim())), 90 - ToDegrees(std::atan2(40, 30)), 1e-9));
+    // A circle gives a diameter, an arc a radius; R switches.
+    const uint64_t circle = doc.Add(Entity::Circle({200, 0}, 10));
+    eng.Point({210, 0});
+    eng.Point({230, 10});
+    CHECK(lastDim().kind == DimData::Diameter && Close(DimMeasure(lastDim()), 20) && lastDim().refs[0].id == circle);
+    eng.Point({210, 0});
+    Type(eng, {L"r", L"7.5"});  // radius 7.5
+    CHECK(Close(doc.Find(circle)->radius, 7.5) && lastDim().kind == DimData::Radius);
+    // Text instead of the value.
+    eng.Point({50, 0});
+    Type(eng, {L"t", L"<> TYP"});
+    eng.Point({50, 30});
+    CHECK(DimDisplayText(lastDim()) == L"100 TYP");
+    Type(eng, {L""});
+    CHECK(!eng.Active());
+    (void)slant;
+    (void)up;
+
+    // DIMLINEAR by points; DIMCONTINUE and DIMBASELINE from it.
+    Document d2;
+    Engine e2(d2, host);
+    const uint64_t base = d2.Add(Entity::Line({0, 0}, {100, 0}));
+    Type(e2, {L"dli", L"0,0", L"40,0", L"20,-10"});
+    CHECK(!e2.Active() && d2.Count() == 2);
+    const DimData first = *Last(d2).dim;
+    CHECK(first.kind == DimData::Linear && Close(DimMeasure(first), 40) && first.refs[0].id == base);
+    CHECK(first.refs[1].id == 0);  // (40,0) is not a grip of the line
+    Type(e2, {L"dco", L"70,0", L"100,0", L""});
+    CHECK(d2.Count() == 4 && Close(DimMeasure(*Last(d2).dim), 30) && Close(Last(d2).dim->pts[0], {70, 0}));
+    CHECK(Last(d2).dim->refs[1].id == base && Close(Last(d2).dim->loc.y, -10));
+    Type(e2, {L"dba", L"s"});
+    e2.Point({20, -10});  // pick the first one
+    Type(e2, {L"100,0", L""});
+    CHECK(d2.Count() == 5 && Close(DimMeasure(*Last(d2).dim), 100) && Last(d2).dim->loc.y < -10);
+    // DIMEDIT: a new value moves the line's end.
+    const uint64_t last = Last(d2).id;
+    e2.AddToSelection({last});
+    Type(e2, {L"dimedit", L"120"});
+    CHECK(Close(d2.Find(base)->p1, {120, 0}) && Close(DimMeasure(*d2.Find(last)->dim), 120));
+    e2.ClearSelection();
+    Type(e2, {L"dimedit"});
+    e2.Point(DimLayoutText(*d2.Find(last)->dim));
+    Type(e2, {L"t", L"OVERALL"});
+    CHECK(d2.Find(last)->dim->text == L"OVERALL");
+    // DIMRADIUS on an arc, DIMANGULAR by three points.
+    const uint64_t arc = d2.Add(Entity::Arc({0, 50}, 10, 0, kPi));
+    Type(e2, {L"dra"});
+    e2.Point({0, 60});
+    e2.Point({5, 70});
+    CHECK(Close(DimMeasure(*Last(d2).dim), 10) && Last(d2).dim->refs[0].id == arc);
+    Type(e2, {L"dan", L"", L"0,0", L"10,0", L"0,10"});
+    e2.Point({3, 3});
+    CHECK(Close(ToDegrees(DimMeasure(*Last(d2).dim)), 90, 1e-9) && Last(d2).dim->rays);
+    Type(e2, {L"dan"});
+    e2.Point({10, 50});  // the arc: its angle
+    e2.Point({0, 70});
+    CHECK(Close(ToDegrees(DimMeasure(*Last(d2).dim)), 180, 1e-9));
+
+    // COPY keeps copied dimensions attached to the copied line.
+    e2.ClearSelection();
+    e2.AddToSelection({base, last});
+    Type(e2, {L"co", L"0,0", L"0,100", L""});
+    const Entity& copiedDim = Last(d2);
+    CHECK(copiedDim.type == EntityType::Dimension && copiedDim.dim->refs[1].id != base && copiedDim.dim->refs[1].id != 0);
+    CHECK(Close(d2.Find(copiedDim.dim->refs[1].id)->p1, {120, 100}));
+
+    // Copy and paste into another drawing.
+    e2.ClearSelection();
+    e2.AddToSelection({base, last});
+    Type(e2, {L"copyclip"});
+    Document d3;
+    Engine e3(d3, host);
+    Type(e3, {L"pasteclip", L"1000,1000"});
+    CHECK(d3.Count() == 2 && e3.Selection().size() == 2);
+    uint64_t pl = 0, pd = 0;
+    for (const auto& kv : d3.Entities()) (kv.second.type == EntityType::Dimension ? pd : pl) = kv.first;
+    CHECK(pd && pl && d3.Find(pd)->dim->refs[1].id == pl && Close(d3.Find(pl)->p1 - d3.Find(pl)->p0, {120, 0}));
+    Type(e2, {L"cutclip"});
+    CHECK(!d2.Find(base) && !e2.Active());
+    Type(e2, {L"pasteclip", L"0,0"});
+    CHECK(d2.Count() >= 2 && e2.Selection().size() == 2);
+}
+
+std::string Dxf(std::initializer_list<std::pair<int, const char*>> groups) {
+    std::string s;
+    for (const auto& g : groups) s += std::to_string(g.first) + "\n" + g.second + "\n";
+    return s;
+}
+
+void TestDxfImport() {
+    std::wstring err, notes;
+    // What Feather CAD writes comes back.
+    Document doc;
+    doc.Add(Entity::Line({0, 0}, {10, 5}));
+    doc.Add(Entity::Circle({5, 5}, 2));
+    doc.Add(Entity::Arc({0, 0}, 3, 0.5, 2));
+    doc.Add(Entity::Polyline({{{0, 0}, 0.5}, {{10, 0}, 0}, {{10, 10}, 0}}, true));
+    doc.Add(Entity::Point({7, 7}));
+    doc.Add(MakeDimension(Aligned({0, 0}, {10, 0}, {5, 5})));
+    DrawingSettings ds;
+    ds.units = Units::Inches;
+    doc.SetSettings(ds);
+    Document back;
+    CHECK(back.FromDxf(doc.ToDxf(), err, notes));
+    CHECK(back.Settings().units == Units::Inches);
+    int lines = 0, circles = 0, arcs = 0, plines = 0, points = 0;
+    for (const auto& kv : back.Entities()) {
+        const Entity& e = kv.second;
+        if (e.type == EntityType::Line) ++lines;
+        if (e.type == EntityType::Circle) circles += Close(e.p0, {5, 5}) && Close(e.radius, 2);
+        if (e.type == EntityType::Arc) arcs += Close(e.startAngle, 0.5) && Close(e.endAngle, 2);
+        if (e.type == EntityType::Polyline) ++plines;
+        if (e.type == EntityType::Point) ++points;
+    }
+    CHECK(lines >= 4 && circles == 1 && arcs == 1 && plines >= 3 && points == 1);  // + the dimension's lines and arrows
+    CHECK(notes.find(L"TEXT") != std::wstring::npos);
+
+    // A file as other programs write it.
+    const std::string text = Dxf({
+        {0, "SECTION"}, {2, "HEADER"}, {9, "$ACADVER"}, {1, "AC1015"}, {9, "$INSUNITS"}, {70, "4"},
+        {9, "$DIMTXT"}, {40, "2.5"}, {9, "$DIMSCALE"}, {40, "2"}, {9, "$DIMZIN"}, {70, "0"}, {0, "ENDSEC"},
+        {0, "SECTION"}, {2, "BLOCKS"},
+        {0, "BLOCK"}, {8, "0"}, {2, "BOLT"}, {70, "0"}, {10, "1"}, {20, "0"}, {30, "0"},
+        {0, "CIRCLE"}, {8, "0"}, {10, "1"}, {20, "0"}, {40, "1"},
+        {0, "LINE"}, {8, "0"}, {10, "1"}, {20, "0"}, {11, "3"}, {21, "0"},
+        {0, "ENDBLK"}, {8, "0"},
+        {0, "ENDSEC"},
+        {0, "SECTION"}, {2, "ENTITIES"},
+        {0, "LWPOLYLINE"}, {8, "0"}, {90, "4"}, {70, "1"},
+        {10, "0"}, {20, "0"}, {10, "10"}, {20, "0"}, {42, "1"}, {10, "10"}, {20, "10"}, {10, "0"}, {20, "10"},
+        {0, "ELLIPSE"}, {8, "0"}, {10, "50"}, {20, "50"}, {11, "20"}, {21, "0"}, {40, "0.5"}, {41, "0"}, {42, "6.283185307179586"},
+        {0, "SPLINE"}, {8, "0"}, {70, "8"}, {71, "3"}, {72, "8"}, {73, "4"}, {74, "0"},
+        {40, "0"}, {40, "0"}, {40, "0"}, {40, "0"}, {40, "1"}, {40, "1"}, {40, "1"}, {40, "1"},
+        {10, "0"}, {20, "0"}, {10, "10"}, {20, "20"}, {10, "20"}, {20, "-20"}, {10, "30"}, {20, "0"},
+        {0, "INSERT"}, {8, "0"}, {2, "BOLT"}, {10, "100"}, {20, "100"}, {41, "2"}, {42, "2"}, {50, "90"},
+        {0, "INSERT"}, {8, "0"}, {2, "BOLT"}, {10, "0"}, {20, "200"}, {70, "3"}, {44, "10"},
+        {0, "INSERT"}, {8, "0"}, {2, "BOLT"}, {10, "0"}, {20, "300"}, {41, "2"}, {42, "1"},
+        {0, "ARC"}, {8, "0"}, {10, "5"}, {20, "0"}, {40, "2"}, {50, "0"}, {51, "90"}, {210, "0"}, {220, "0"}, {230, "-1"},
+        {0, "DIMENSION"}, {8, "0"}, {2, "*D1"}, {10, "30"}, {20, "50"}, {11, "15"}, {21, "52"}, {70, "33"}, {1, ""},
+        {13, "0"}, {23, "0"}, {14, "30"}, {24, "40"},
+        {0, "DIMENSION"}, {8, "0"}, {10, "0"}, {20, "0"}, {11, "20"}, {21, "5"}, {70, "4"}, {1, "%%c<>"}, {15, "10"}, {25, "0"},
+        {0, "TEXT"}, {8, "0"}, {10, "0"}, {20, "0"}, {40, "2"}, {1, "HELLO"},
+        {0, "LINE"}, {8, "0"}, {67, "1"}, {10, "0"}, {20, "0"}, {11, "1"}, {21, "1"},
+        {0, "ENDSEC"}, {0, "EOF"}});
+    Document d;
+    CHECK(d.FromDxf(text, err, notes));
+    CHECK(d.Settings().units == Units::Millimetres && Close(d.Settings().dimStyle.textHeight, 5) &&
+          !d.Settings().dimStyle.trimZeros);
+    CHECK(notes.find(L"1 TEXT") != std::wstring::npos);
+    std::vector<const Entity*> byType[9];
+    for (const auto& kv : d.Entities()) byType[(int)kv.second.type].push_back(&kv.second);
+    const auto& pls = byType[(int)EntityType::Polyline];
+    CHECK(pls.size() == 2);  // the LWPOLYLINE and the spline
+    CHECK(pls[0]->closed && pls[0]->verts.size() == 4 && Close(pls[0]->verts[1].bulge, 1));
+    CHECK(Close(pls[1]->verts.front().p, {0, 0}) && Close(pls[1]->verts.back().p, {30, 0}) && !pls[1]->closed);
+    const auto& els = byType[(int)EntityType::Ellipse];
+    CHECK(els.size() == 2 && Close(els[0]->p0, {50, 50}) && Close(Length(els[0]->p1), 20) && Close(els[0]->radius, 0.5));
+    // The stretched insert: a circle becomes an ellipse.
+    CHECK(Close(els[1]->p0, {0, 300}) && Close(Length(els[1]->p1), 2) && Close(els[1]->radius, 0.5));
+    const auto& cs = byType[(int)EntityType::Circle];
+    CHECK(cs.size() == 4);  // 1 turned and scaled, 3 in a row
+    CHECK(Close(cs[0]->p0, {100, 100}) && Close(cs[0]->radius, 2));
+    CHECK(Close(cs[1]->p0, {0, 200}) && Close(cs[2]->p0, {10, 200}) && Close(cs[3]->p0, {20, 200}));
+    // The line of the turned insert: from (100,100) up 4.
+    bool turned = false;
+    for (const Entity* e : byType[(int)EntityType::Line]) turned |= Close(e->p0, {100, 100}) && Close(e->p1, {100, 104});
+    CHECK(turned);
+    // The arc seen from below is mirrored.
+    const auto& as = byType[(int)EntityType::Arc];
+    CHECK(as.size() == 1 && Close(as[0]->p0, {-5, 0}) && Close(as[0]->startAngle, kPi / 2) && Close(as[0]->endAngle, kPi));
+    // Dimensions come in as dimensions.
+    const auto& ds2 = byType[(int)EntityType::Dimension];
+    CHECK(ds2.size() == 2);
+    CHECK(ds2[0]->dim->kind == DimData::Aligned && Close(DimMeasure(*ds2[0]->dim), 50) && ds2[0]->dim->text.empty());
+    CHECK(ds2[1]->dim->kind == DimData::Radius && DimDisplayText(*ds2[1]->dim) == L"\x00D8" L"R10.00");
+    // Paper space is left out: the block's line, five times.
+    CHECK(byType[(int)EntityType::Line].size() == 5);
+
+    Document bad;
+    CHECK(!bad.FromDxf("AutoCAD Binary DXF\r\n\x1a", err, notes) && err.find(L"binary") != std::wstring::npos);
+    CHECK(!bad.FromDxf("hello\nworld\n", err, notes));
+    CHECK(!bad.FromDxf(Dxf({{0, "SECTION"}, {2, "HEADER"}, {0, "ENDSEC"}, {0, "EOF"}}), err, notes));
+}
 }  // namespace
 
 int main() {
+    std::setvbuf(stdout, nullptr, _IONBF, 0);  // failures show even if a later check crashes
     TestAngles();
     TestIntersections();
     TestArcs();
@@ -947,6 +1528,12 @@ int main() {
     TestNewShapes();
     TestGripsAndSelect();
     TestDrawCommandsB2();
+    TestDimensionValues();
+    TestDimensionLayout();
+    TestDimensionAssociativity();
+    TestDrivingDimensions();
+    TestDimensionCommands();
+    TestDxfImport();
     std::printf("%d checks, %d failed\n", g_checks, g_failures);
     return g_failures;
 }

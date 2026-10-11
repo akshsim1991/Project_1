@@ -5,6 +5,7 @@
 #include <functional>
 
 #include "Curve.h"
+#include "Dimension.h"
 #include "Spline.h"
 
 namespace {
@@ -144,6 +145,7 @@ const wchar_t* TypeName(EntityType type) {
         case EntityType::Ellipse: return L"Ellipse";
         case EntityType::Spline: return L"Spline";
         case EntityType::Point: return L"Point";
+        case EntityType::Dimension: return L"Dimension";
     }
     return L"Object";
 }
@@ -277,6 +279,9 @@ void Primitives(const Entity& e, std::vector<Prim>& out) {
         case EntityType::Point:
             out.push_back(Prim::Seg(e.p0, e.p0));
             break;
+        case EntityType::Dimension:
+            DimPrimitives(e, out);
+            break;
     }
 }
 
@@ -288,6 +293,7 @@ Box Bounds(const Entity& e) {
         return box;
     }
     if (e.type == EntityType::Line) return Box(e.p0, e.p1);
+    if (e.type == EntityType::Dimension) return DimBounds(e);
     std::vector<Prim> prims;
     Primitives(e, prims);
     for (const Prim& p : prims) box.Add(p.Bounds());
@@ -295,6 +301,7 @@ Box Bounds(const Entity& e) {
 }
 
 double DistanceTo(const Entity& e, Vec2 p) {
+    if (e.type == EntityType::Dimension) return DimDistance(e, p);
     std::vector<Prim> prims;
     Primitives(e, prims);
     double best = std::numeric_limits<double>::infinity();
@@ -306,6 +313,7 @@ bool InsideBox(const Entity& e, const Box& box) { return box.Contains(Bounds(e))
 
 bool TouchesBox(const Entity& e, const Box& box) {
     if (!Bounds(e).Intersects(box)) return false;
+    if (e.type == EntityType::Dimension) return DimTouchesBox(e, box);
     std::vector<Prim> prims;
     Primitives(e, prims);
     for (const Prim& p : prims)
@@ -314,6 +322,7 @@ bool TouchesBox(const Entity& e, const Box& box) {
 }
 
 double LengthOf(const Entity& e) {
+    if (e.type == EntityType::Dimension) return 0;
     std::vector<Prim> prims;
     Primitives(e, prims);
     double len = 0;
@@ -326,6 +335,10 @@ double LengthOf(const Entity& e) {
 // ---------------------------------------------------------------------------
 
 void Translate(Entity& e, Vec2 d) {
+    if (e.type == EntityType::Dimension) {
+        DimMap(e, [&](Vec2 p) { return p + d; }, [](Vec2 v) { return v; });
+        return;
+    }
     if (e.type == EntityType::Array) {
         EditArray(e, [&](ArrayData& a) {
             for (Entity& x : a.items) Translate(x, d);
@@ -340,6 +353,11 @@ void Translate(Entity& e, Vec2 d) {
 }
 
 void Rotate(Entity& e, Vec2 centre, double angle) {
+    if (e.type == EntityType::Dimension) {
+        DimMap(e, [&](Vec2 p) { return RotateAround(p, centre, angle); },
+               [&](Vec2 v) { return RotateAround(v, {0, 0}, angle); });
+        return;
+    }
     if (e.type == EntityType::Array) {
         EditArray(e, [&](ArrayData& a) {
             for (Entity& x : a.items) Rotate(x, centre, angle);
@@ -365,6 +383,10 @@ void Rotate(Entity& e, Vec2 centre, double angle) {
 
 void Scale(Entity& e, Vec2 base, double f) {
     auto sp = [&](Vec2 p) { return base + (p - base) * f; };
+    if (e.type == EntityType::Dimension) {
+        DimMap(e, sp, [](Vec2 v) { return v; });
+        return;
+    }
     if (e.type == EntityType::Array) {
         EditArray(e, [&](ArrayData& a) {
             for (Entity& x : a.items) Scale(x, base, f);
@@ -390,6 +412,10 @@ void Scale(Entity& e, Vec2 base, double f) {
 void Mirror(Entity& e, Vec2 a, Vec2 b) {
     const Vec2 u = Normalized(b - a);
     const double phi = AngleOf(u);
+    if (e.type == EntityType::Dimension) {
+        DimMap(e, [&](Vec2 p) { return Reflect(p, a, u); }, [&](Vec2 v) { return ReflectVector(v, u); });
+        return;
+    }
     if (e.type == EntityType::Array) {
         EditArray(e, [&](ArrayData& d) {
             for (Entity& x : d.items) Mirror(x, a, b);
@@ -479,7 +505,9 @@ void EndPoints(const Entity& e, std::vector<Vec2>& out) {
 
 void MidPoints(const Entity& e, std::vector<Vec2>& out) {
     if (ForArrayCopies(e, out, MidPoints)) return;
-    if (e.type == EntityType::Circle || e.type == EntityType::Spline || e.type == EntityType::Point) return;
+    if (e.type == EntityType::Circle || e.type == EntityType::Spline || e.type == EntityType::Point ||
+        e.type == EntityType::Dimension)
+        return;
     if (e.type == EntityType::Ellipse) {
         if (!e.closed) out.push_back(EllipsePoint(e.p0, e.p1, e.radius, e.startAngle + EllipseSweep(e) / 2));
         return;
@@ -510,7 +538,7 @@ void Quadrants(const Entity& e, std::vector<Vec2>& out) {
             if (OnEllipse(e, q * kPi / 2)) out.push_back(EllipsePoint(e.p0, e.p1, e.radius, q * kPi / 2));
         return;
     }
-    if (e.type == EntityType::Spline) return;
+    if (e.type == EntityType::Spline || e.type == EntityType::Dimension) return;
     std::vector<Prim> prims;
     Primitives(e, prims);
     for (const Prim& p : prims) {
