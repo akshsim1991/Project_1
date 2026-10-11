@@ -788,7 +788,8 @@ LRESULT Canvas::Handle(UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
         case WM_SIZE: {
             const int w = std::max(1, (int)LOWORD(lp)), h = std::max(1, (int)HIWORD(lp));
-            const bool first = m_width <= 1;
+            // The first size with real area (not the empty one at creation).
+            const bool first = (m_width <= 1 || m_height <= 1) && LOWORD(lp) > 1 && HIWORD(lp) > 1;
             m_width = w;
             m_height = h;
             if (m_target) {

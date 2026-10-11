@@ -13,6 +13,16 @@ namespace {
 const wchar_t kClass[] = L"FeatherCadStatusBar";
 }
 
+StatusBar::StatusBar() {
+    m_buttons = {
+        {ID_TOGGLE_GRID, ID_DRAFTING_SETTINGS, L"GRID", L"Grid (F7). Right-click for settings."},
+        {ID_TOGGLE_SNAP, ID_DRAFTING_SETTINGS, L"SNAP", L"Snap to the grid spacing (F9). Right-click for settings."},
+        {ID_TOGGLE_ORTHO, ID_DRAFTING_SETTINGS, L"ORTHO", L"Horizontal and vertical only (F8, or hold Shift)"},
+        {ID_TOGGLE_OSNAP, ID_OSNAP_SETTINGS, L"OSNAP", L"Object snaps (F3). Right-click to choose them."},
+        {ID_UNITS, ID_UNITS, L"mm", L"Drawing units and decimal places"},
+    };
+}
+
 StatusBar::~StatusBar() {
     if (m_font) DeleteObject(m_font);
     if (m_bold) DeleteObject(m_bold);
@@ -28,13 +38,6 @@ bool StatusBar::Create(HWND parent) {
         wc.lpszClassName = kClass;
         registered = RegisterClassExW(&wc) != 0;
     }
-    m_buttons = {
-        {ID_TOGGLE_GRID, ID_DRAFTING_SETTINGS, L"GRID", L"Grid (F7). Right-click for settings."},
-        {ID_TOGGLE_SNAP, ID_DRAFTING_SETTINGS, L"SNAP", L"Snap to the grid spacing (F9). Right-click for settings."},
-        {ID_TOGGLE_ORTHO, ID_DRAFTING_SETTINGS, L"ORTHO", L"Horizontal and vertical only (F8, or hold Shift)"},
-        {ID_TOGGLE_OSNAP, ID_OSNAP_SETTINGS, L"OSNAP", L"Object snaps (F3). Right-click to choose them."},
-        {ID_UNITS, ID_UNITS, L"mm", L"Drawing units and decimal places"},
-    };
     m_hwnd = CreateWindowExW(0, kClass, L"", WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, parent, nullptr,
                              GetModuleHandleW(nullptr), this);
     if (!m_hwnd) return false;
@@ -73,13 +76,13 @@ void StatusBar::OnThemeChanged() { InvalidateRect(m_hwnd, nullptr, TRUE); }
 void StatusBar::SetCoordinates(const std::wstring& text) {
     if (text == m_coords) return;
     m_coords = text;
-    InvalidateRect(m_hwnd, nullptr, FALSE);
+    if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
 void StatusBar::SetInfo(const std::wstring& text) {
     if (text == m_info) return;
     m_info = text;
-    InvalidateRect(m_hwnd, nullptr, FALSE);
+    if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
 void StatusBar::SetToggles(bool grid, bool snap, bool ortho, bool osnap) {
@@ -89,7 +92,7 @@ void StatusBar::SetToggles(bool grid, bool snap, bool ortho, bool osnap) {
         if (m_buttons[i].on != states[i]) changed = true;
         m_buttons[i].on = states[i];
     }
-    if (changed) InvalidateRect(m_hwnd, nullptr, FALSE);
+    if (changed && m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
 void StatusBar::SetUnits(const std::wstring& text) {

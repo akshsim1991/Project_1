@@ -70,6 +70,7 @@ private:
     void ToggleDrafting(int id);
 
     HWND m_hwnd = nullptr;
+    bool m_ready = false;  // all child windows created
     HACCEL m_accel = nullptr;
     int m_dpi = 96;
     Settings m_settings;

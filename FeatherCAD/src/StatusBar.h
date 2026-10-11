@@ -7,6 +7,7 @@
 
 class StatusBar {
 public:
+    StatusBar();
     ~StatusBar();
     bool Create(HWND parent);
     HWND Hwnd() const { return m_hwnd; }

@@ -29,6 +29,49 @@ jobs:
       - name: Unit tests
         run: build\Release\CoreTests.exe
 
+      - name: Start-up test (opens the window, draws, undoes and closes)
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          $crash = "$env:LOCALAPPDATA\FeatherCAD\crash.txt"
+          Remove-Item $crash -ErrorAction SilentlyContinue
+          $p = Start-Process -FilePath build\Release\FeatherCAD.exe -PassThru
+          Start-Sleep -Seconds 8
+          function Shot($name) {
+            $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+            $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+            [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+            $bmp.Save("$PWD\$name")
+          }
+          if (Test-Path $crash) { Get-Content $crash; Shot "smoke-crash.png"; $p.Kill(); exit 1 }
+          if ($p.HasExited) { Write-Host "Feather CAD exited at start-up with code $($p.ExitCode)"; exit 1 }
+          $p.Refresh()
+          if ($p.MainWindowHandle -eq 0) { Write-Host "No window appeared"; Shot "smoke-nowindow.png"; $p.Kill(); exit 1 }
+          Write-Host "Window: $($p.MainWindowTitle)"
+          $shell = New-Object -ComObject WScript.Shell
+          $null = $shell.AppActivate($p.Id)
+          Start-Sleep -Milliseconds 500
+          foreach ($k in @("rec{ENTER}", "0,0{ENTER}", "200,120{ENTER}", "c{ENTER}", "100,60{ENTER}", "40{ENTER}")) {
+            [System.Windows.Forms.SendKeys]::SendWait($k); Start-Sleep -Milliseconds 300
+          }
+          Start-Sleep -Seconds 1
+          Shot "smoke.png"
+          if (Test-Path $crash) { Get-Content $crash; $p.Kill(); exit 1 }
+          if ($p.HasExited) { Write-Host "Feather CAD stopped while drawing (code $($p.ExitCode))"; exit 1 }
+          # Undo both objects, so closing does not ask to save.
+          foreach ($k in @("u{ENTER}", "u{ENTER}")) { [System.Windows.Forms.SendKeys]::SendWait($k); Start-Sleep -Milliseconds 300 }
+          $null = $p.CloseMainWindow()
+          if (-not $p.WaitForExit(15000)) { Write-Host "Feather CAD did not close"; Shot "smoke-close.png"; $p.Kill(); exit 1 }
+          Write-Host "Closed normally, exit code $($p.ExitCode)"
+          if ($p.ExitCode -ne 0) { exit 1 }
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: FeatherCAD-startup-screenshots
+          path: FeatherCAD/smoke*.png
+          if-no-files-found: ignore
+
       - name: Package portable folder
         run: cmake --install build --config Release --prefix dist
 

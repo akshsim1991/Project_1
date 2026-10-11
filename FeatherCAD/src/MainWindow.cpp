@@ -176,6 +176,7 @@ void MainWindow::CreateChildren() {
     m_canvas.Create(m_hwnd, &m_engine, &m_doc);
     m_cmdline.Create(m_hwnd);
     m_status.Create(m_hwnd);
+    m_ready = true;  // children may notify from now on
     Layout();
 }
 
@@ -207,7 +208,7 @@ void MainWindow::CreateAccelerators() {
 }
 
 void MainWindow::Layout() {
-    if (!m_hwnd || !m_canvas.Hwnd()) return;
+    if (!m_hwnd || !m_ready) return;
     RECT rc;
     GetClientRect(m_hwnd, &rc);
     const int menuH = m_menuBar.Height(), toolH = m_tools.Height();
@@ -285,6 +286,7 @@ void MainWindow::FocusCommandLine() {
 }
 
 void MainWindow::AfterInput() {
+    if (!m_ready) return;
     m_canvas.Refresh();
     UpdatePrompt();
     UpdateStatus();
@@ -305,11 +307,13 @@ void MainWindow::AfterInput() {
 }
 
 void MainWindow::UpdatePrompt() {
+    if (!m_ready) return;
     if (m_engine.Active()) m_cmdline.SetPrompt(m_engine.CurrentPrompt().FullText(), false);
     else m_cmdline.SetPrompt(L"Command:", true);
 }
 
 void MainWindow::UpdateStatus() {
+    if (!m_ready) return;
     Vec2 p;
     const bool inside = m_canvas.CursorPoint(p);
     m_status.SetCoordinates(inside ? m_engine.Len(p.x) + L",  " + m_engine.Len(p.y) : L"");
