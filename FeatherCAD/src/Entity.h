@@ -27,7 +27,9 @@ struct Entity {
                                 // ellipse: p1 = major axis vector (from the centre)
     double radius = 0;          // circle and arc; ellipse: minor / major axis ratio
     double startAngle = 0;      // arc, counter-clockwise from start to end (radians);
-    double endAngle = 0;        // ellipse: start and end parameters
+    double endAngle = 0;        // ellipse: start and end parameters; spline: the part kept
+                                // after a trim or break, as fractions of its length (endAngle 0:
+                                // all of it; endAngle < startAngle: across the start of a closed one)
     std::vector<Vertex> verts;  // polyline vertices; spline fit points (bulge unused)
     bool closed = false;        // polyline and spline: back to the start; ellipse: full ellipse
     // Array: shared and never changed in place (a change makes a new copy),
@@ -78,6 +80,7 @@ const wchar_t* TypeName(EntityType type);
 void EllipsePoints(const Entity& e, std::vector<Vec2>& pts, std::vector<double>* params = nullptr);
 void SplinePoints(const Entity& e, std::vector<Vec2>& pts);
 double EllipseSweep(const Entity& e);  // parameter range, 2pi for a full ellipse
+bool SplineTrimmed(const Entity& e);   // only a part of the spline is kept
 
 // The copies an array stands for (arrays inside arrays are expanded too).
 void ExpandArray(const Entity& e, std::vector<Entity>& out);

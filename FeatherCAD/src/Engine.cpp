@@ -202,6 +202,7 @@ void Engine::Enter() {
     if (m_selecting) {
         m_selecting = false;
         if (m_selection.empty()) {
+            if (m_cmd->OnNothingSelected()) return;
             m_host.Message(L"Nothing selected.");
             Finish();
             return;

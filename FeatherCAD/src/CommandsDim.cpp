@@ -112,7 +112,7 @@ class DimCmd : public Command {
     const DimMode m_start;  // the command it was started as
     DimMode m_mode;
     enum Step { PickObj, First, Second, Place, SecondLine, Vertex3, End1, End2, TextEntry } m_step = PickObj;
-    enum Orient { Auto, Horizontal, Vertical, AlignedO } m_orient = Auto;
+    enum Orient { Auto, Horizontal, Vertical, AlignedO, Fixed } m_orient = Auto;  // Fixed: as m_d is
     DimData m_d;
     bool m_fromLine = false;  // smart: a picked line (a second one makes an angle)
     Picked m_line;
@@ -193,7 +193,7 @@ class DimCmd : public Command {
     DimData Shaped(Vec2 c) const {
         DimData d = m_d;
         d.loc = c;
-        if (LinearFamily()) {
+        if (LinearFamily() && m_orient != Fixed) {
             const Orient o = m_orient == Auto ? AutoOrient(c) : m_orient;
             if (o == AlignedO && !Near(d.pts[0], d.pts[1], 1e-12)) {
                 d.kind = DimData::Aligned;
@@ -274,6 +274,30 @@ class DimCmd : public Command {
     bool Parallel(Vec2 a, Vec2 b, Vec2 c, Vec2 d) const {
         const Vec2 u = b - a, v = d - c;
         return std::fabs(Cross(u, v)) <= 1e-9 * Length(u) * Length(v);
+    }
+    // Distance between two parallel lines: measured across them, from an end
+    // of each (so it stays attached to both).
+    void Across(const Picked& first, const Picked& second) {
+        const Vec2 along = Normalized(first.b - first.a);
+        const Vec2 ends1[2] = {first.a, first.b}, ends2[2] = {second.a, second.b};
+        const DimRef refs1[2] = {first.ra, first.rb}, refs2[2] = {second.ra, second.rb};
+        int bi = 0, bj = 0;
+        double best = std::numeric_limits<double>::infinity();
+        for (int i = 0; i < 2; ++i)
+            for (int j = 0; j < 2; ++j) {
+                const double off = std::fabs(Dot(ends2[j] - ends1[i], along));
+                if (off < best - 1e-12) best = off, bi = i, bj = j;
+            }
+        m_d.kind = DimData::Linear;
+        m_d.angle = NormalizeAngle(AngleOf(Perp(along)));
+        m_d.pts[0] = ends1[bi];
+        m_d.pts[1] = ends2[bj];
+        m_d.refs[0] = refs1[bi];
+        m_d.refs[1] = refs2[bj];
+        m_orient = Fixed;
+        m_fromLine = false;
+        E->Msg(L"Distance between the parallel lines: " + E->Len(DimMeasure(m_d)) + L".");
+        AskPlace();
     }
     void TwoLines(const Picked& first, const Picked& second) {
         m_d = DimData{};
@@ -377,13 +401,22 @@ public:
                 AskPlace();
                 return;
             case Place: {
-                // Smart: a second line clicked instead of a place makes an angle.
-                if (m_start == DimMode::Smart && m_fromLine) {
+                // A second line clicked instead of a place: the distance across
+                // to it when parallel, the angle between them otherwise (smart).
+                if (m_fromLine) {
                     const Picked k = PickFor(E, p);
                     const bool same = k.kind == Picked::Segment && Near(k.a, m_line.a, 1e-9) && Near(k.b, m_line.b, 1e-9);
-                    if (k.kind == Picked::Segment && !same && !Parallel(m_line.a, m_line.b, k.a, k.b)) {
-                        TwoLines(m_line, k);
-                        return;
+                    if (k.kind == Picked::Segment && !same) {
+                        const bool parallel = Parallel(m_line.a, m_line.b, k.a, k.b);
+                        const double gap = std::fabs(Cross(Normalized(m_line.b - m_line.a), k.a - m_line.a));
+                        if (parallel && gap > 1e-9) {
+                            Across(m_line, k);
+                            return;
+                        }
+                        if (!parallel && m_start == DimMode::Smart) {
+                            TwoLines(m_line, k);
+                            return;
+                        }
                     }
                 }
                 PlaceAt(p);

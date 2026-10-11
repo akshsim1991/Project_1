@@ -129,10 +129,48 @@ void EllipsePoints(const Entity& e, std::vector<Vec2>& pts, std::vector<double>*
     }
 }
 
+bool SplineTrimmed(const Entity& e) { return e.type == EntityType::Spline && e.endAngle > 0; }
+
+namespace {
+// The part of a chain of points from fraction f0 to f1 of its length.
+void ChainPart(const std::vector<Vec2>& pts, double f0, double f1, std::vector<Vec2>& out) {
+    double total = 0;
+    for (size_t i = 0; i + 1 < pts.size(); ++i) total += Dist(pts[i], pts[i + 1]);
+    const double s0 = std::clamp(f0, 0.0, 1.0) * total, s1 = std::clamp(f1, 0.0, 1.0) * total;
+    double at = 0;
+    for (size_t i = 0; i + 1 < pts.size(); ++i) {
+        const double len = Dist(pts[i], pts[i + 1]);
+        const double a = at, b = at + len;
+        at = b;
+        if (b < s0 || a > s1 || len <= 0) continue;
+        if (out.empty()) out.push_back(Lerp(pts[i], pts[i + 1], std::clamp((s0 - a) / len, 0.0, 1.0)));
+        if (b <= s1) out.push_back(pts[i + 1]);
+        else {
+            out.push_back(Lerp(pts[i], pts[i + 1], std::clamp((s1 - a) / len, 0.0, 1.0)));
+            break;
+        }
+    }
+}
+}  // namespace
+
 void SplinePoints(const Entity& e, std::vector<Vec2>& pts) {
     std::vector<Vec2> fit;
     for (const Vertex& v : e.verts) fit.push_back(v.p);
-    ::SplinePoints(fit, e.closed, 24, pts);
+    if (!SplineTrimmed(e)) {
+        ::SplinePoints(fit, e.closed, 24, pts);
+        return;
+    }
+    std::vector<Vec2> all;
+    ::SplinePoints(fit, e.closed, 24, all);
+    pts.clear();
+    if (e.endAngle >= e.startAngle) {
+        ChainPart(all, e.startAngle, e.endAngle, pts);
+    } else {  // across the start of a closed spline
+        ChainPart(all, e.startAngle, 1, pts);
+        std::vector<Vec2> rest;
+        ChainPart(all, 0, e.endAngle, rest);
+        pts.insert(pts.end(), rest.begin() + (rest.empty() ? 0 : 1), rest.end());
+    }
 }
 
 const wchar_t* TypeName(EntityType type) {
@@ -374,6 +412,10 @@ void Rotate(Entity& e, Vec2 centre, double angle) {
         e.p1 = RotateAround(e.p1, {0, 0}, angle);
         return;
     }
+    if (e.type == EntityType::Spline) {  // its angles are the kept part, not angles
+        for (Vertex& v : e.verts) v.p = RotateAround(v.p, centre, angle);
+        return;
+    }
     e.p0 = RotateAround(e.p0, centre, angle);
     e.p1 = RotateAround(e.p1, centre, angle);
     e.startAngle = NormalizeAngle(e.startAngle + angle);
@@ -490,7 +532,14 @@ void EndPoints(const Entity& e, std::vector<Vec2>& out) {
             }
             break;
         case EntityType::Spline:
-            if (!e.closed && !e.verts.empty()) {
+            if (SplineTrimmed(e)) {
+                std::vector<Vec2> pts;
+                SplinePoints(e, pts);
+                if (pts.size() >= 2) {
+                    out.push_back(pts.front());
+                    out.push_back(pts.back());
+                }
+            } else if (!e.closed && !e.verts.empty()) {
                 out.push_back(e.verts.front().p);
                 out.push_back(e.verts.back().p);
             }

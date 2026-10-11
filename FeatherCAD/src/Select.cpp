@@ -48,7 +48,7 @@ bool AreaOf(const Entity& e, double& area) {
             return true;
         }
         case EntityType::Spline: {
-            if (!e.closed) return false;
+            if (!e.closed || SplineTrimmed(e)) return false;
             std::vector<Vec2> pts;
             SplinePoints(e, pts);
             double a = 0;

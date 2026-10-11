@@ -1506,6 +1506,231 @@ void TestDxfImport() {
     CHECK(!bad.FromDxf("hello\nworld\n", err, notes));
     CHECK(!bad.FromDxf(Dxf({{0, "SECTION"}, {2, "HEADER"}, {0, "ENDSEC"}, {0, "EOF"}}), err, notes));
 }
+
+// ---------------------------------------------------------------------------
+// Version 1.3.1: fillet, tangents, parallel distance and older gaps
+// ---------------------------------------------------------------------------
+
+bool Said(const TestHost& h, const wchar_t* part) {
+    for (const std::wstring& l : h.lines)
+        if (l.find(part) != std::wstring::npos) return true;
+    return false;
+}
+
+size_t CountType(const Document& d, EntityType t) {
+    size_t n = 0;
+    for (const auto& kv : d.Entities()) n += kv.second.type == t;
+    return n;
+}
+
+void TestFillet131() {
+    {  // the radius typed at the first prompt
+        Document doc;
+        TestHost host;
+        Engine eng(doc, host);
+        const uint64_t a = doc.Add(Entity::Line({0, 0}, {100, 0}));
+        const uint64_t b = doc.Add(Entity::Line({100, 0}, {100, 50}));
+        Type(eng, {L"f"});
+        CHECK(Said(host, L"radius is 0"));
+        eng.Point({50, 0});
+        eng.Point({100, 25});
+        CHECK(Said(host, L"already meet in a sharp corner") && doc.Count() == 2 && eng.Active());
+        Type(eng, {L"10"});
+        CHECK(eng.CurrentPrompt().text.find(L"radius 10") != std::wstring::npos);
+        eng.Point({50, 0});
+        eng.Point({100, 25});
+        CHECK(!eng.Active() && doc.Count() == 3 && Close(doc.Find(a)->p1, {90, 0}) && Close(doc.Find(b)->p0, {100, 10}));
+    }
+    {  // the end segment of a polyline and a separate line
+        Document doc;
+        TestHost host;
+        Engine eng(doc, host);
+        const uint64_t pl = doc.Add(Entity::Polyline({{{0, 50}, 0}, {{0, 0}, 0}, {{100, 0}, 0}}, false));
+        const uint64_t ln = doc.Add(Entity::Line({100, 0}, {100, 50}));
+        Type(eng, {L"f", L"10"});
+        eng.Point({50, 0});
+        eng.Point({100, 25});
+        CHECK(Close(doc.Find(pl)->verts[2].p, {90, 0}) && Close(doc.Find(pl)->verts[1].p, {0, 0}));
+        CHECK(Close(doc.Find(ln)->p0, {100, 10}) && CountType(doc, EntityType::Arc) == 1);
+        // Chamfer too, the other way round (line first).
+        doc.Undo();
+        Type(eng, {L"cha", L"5"});
+        eng.Point({100, 25});
+        eng.Point({50, 0});
+        CHECK(Close(doc.Find(pl)->verts[2].p, {95, 0}) && Close(doc.Find(ln)->p0, {100, 5}) &&
+              CountType(doc, EntityType::Line) == 2);
+    }
+    {  // a rectangle's edge and a line: the rectangle stays whole
+        Document doc;
+        TestHost host;
+        Engine eng(doc, host);
+        const uint64_t rect = doc.Add(Entity::Rectangle({0, 0}, {100, 50}));
+        const uint64_t ln = doc.Add(Entity::Line({120, -10}, {120, 60}));
+        const Entity before = *doc.Find(rect);
+        Type(eng, {L"f", L"5"});
+        eng.Point({50, 0});
+        eng.Point({120, 30});
+        CHECK(Said(host, L"polyline was left whole") && doc.Find(rect)->verts.size() == before.verts.size());
+        CHECK(Close(doc.Find(rect)->verts[1].p, {100, 0}) && CountType(doc, EntityType::Arc) == 1);
+        CHECK(Close(doc.Find(ln)->p0, {120, 5}));
+    }
+}
+
+void TestRenumberedVertices() {
+    // A dimension on a rectangle's side; a corner is then filleted, so the
+    // polyline gets new vertices: the dimension stays where it was.
+    Document doc;
+    const uint64_t rect = doc.Add(Entity::Rectangle({0, 0}, {100, 50}));
+    DimData d = Aligned({100, 0}, {100, 50}, {120, 25});
+    d.kind = DimData::Linear;
+    d.angle = kPi / 2;
+    d.refs[0] = {rect, 1};
+    d.refs[1] = {rect, 2};
+    const uint64_t dim = doc.Add(MakeDimension(d));
+    Entity r = *doc.Find(rect);
+    CHECK(FilletPolyline(r, 10, 1) == 1);
+    doc.Replace(r);
+    const DimData& now = *doc.Find(dim)->dim;
+    CHECK(Close(now.pts[0], {100, 0}) && Close(now.pts[1], {100, 50}) && Close(DimMeasure(now), 50));
+    CHECK(now.refs[0].id == 0 && now.refs[1].id == rect && Close(doc.Find(rect)->verts[(size_t)now.refs[1].grip].p, {100, 50}));
+    // It still follows the corner it is attached to.
+    Entity r2 = *doc.Find(rect);
+    r2.verts[(size_t)now.refs[1].grip].p = {100, 60};
+    doc.Replace(r2);
+    CHECK(Close(DimMeasure(*doc.Find(dim)->dim), 60));
+}
+
+void TestTangents131() {
+    Document doc;
+    TestHost host;
+    Engine eng(doc, host);
+    doc.Add(Entity::Circle({0, 0}, 10));
+    doc.Add(Entity::Circle({50, 0}, 5));
+    Type(eng, {L"tanline"});
+    eng.Point({0, 10});
+    eng.Point({50, 5});
+    const Entity& t = Last(doc);
+    CHECK(t.type == EntityType::Line && Close(Dist(t.p0, {0, 0}), 10) && Close(Dist(t.p1, {50, 0}), 5));
+    CHECK(Close(Dot(t.p1 - t.p0, t.p0), 0, 1e-9) && t.p0.y > 0 && t.p1.y > 0);
+    // Crossing between them: picked on opposite sides.
+    Type(eng, {L"tl"});
+    eng.Point({0, 10});
+    eng.Point({50, -5});
+    const Entity& x = Last(doc);
+    CHECK(Close(Dist(x.p0, {0, 0}), 10) && Close(Dist(x.p1, {50, 0}), 5) && x.p0.y > 0 && x.p1.y < 0);
+    CHECK(TangentLines({0, 0}, 10, {50, 0}, 5).size() == 4 && TangentLines({0, 0}, 10, {2, 0}, 5).empty());
+
+    // A circle tangent to two lines with a radius.
+    Document d2;
+    Engine e2(d2, host);
+    d2.Add(Entity::Line({0, 0}, {100, 0}));
+    d2.Add(Entity::Line({0, 0}, {0, 100}));
+    Type(e2, {L"c", L"t"});
+    e2.Point({50, 0});
+    e2.Point({0, 50});
+    Type(e2, {L"10"});
+    CHECK(Last(d2).type == EntityType::Circle && Close(Last(d2).p0, {10, 10}) && Close(Last(d2).radius, 10));
+    // ...and to a line and a circle.
+    d2.Add(Entity::Circle({50, 18}, 10));
+    Type(e2, {L"c", L"t"});
+    e2.Point({60, 0});
+    e2.Point(Polar({50, 18}, 10, -kPi / 4));
+    Type(e2, {L"5"});
+    CHECK(Close(Last(d2).p0.y, 5) && Close(Dist(Last(d2).p0, {50, 18}), 15) && Last(d2).p0.x > 50);
+
+    // Distance between parallel lines: a dimension across them, attached to both.
+    Document d3;
+    Engine e3(d3, host);
+    const uint64_t a = d3.Add(Entity::Line({0, 0}, {100, 0}));
+    const uint64_t b = d3.Add(Entity::Line({10, 30}, {80, 30}));
+    Type(e3, {L"dim"});
+    e3.Point({50, 0});
+    e3.Point({40, 30});
+    CHECK(Said(host, L"parallel lines: 30"));
+    e3.Point({-20, 15});
+    const DimData& d = *Last(d3).dim;
+    CHECK(Last(d3).type == EntityType::Dimension && Close(DimMeasure(d), 30) && d.refs[0].id == a && d.refs[1].id == b);
+    Type(e3, {L""});
+    Entity bl = *d3.Find(b);
+    Translate(bl, {0, 10});
+    d3.Replace(bl);
+    CHECK(Close(DimMeasure(*Last(d3).dim), 40));
+}
+
+void TestOlderGaps131() {
+    TestHost host;
+    {  // TRIM: choosing cutting edges and pressing Enter with none: every object again
+        Document doc;
+        Engine eng(doc, host);
+        doc.Add(Entity::Line({0, 0}, {10, 0}));
+        Type(eng, {L"tr", L"t", L""});
+        CHECK(eng.Active() && eng.ActiveName() == L"TRIM" && Said(host, L"every object is a cutting edge"));
+        Type(eng, {L""});
+    }
+    {  // LENGTHEN Dynamic: the end follows the point
+        Document doc;
+        Engine eng(doc, host);
+        const uint64_t l = doc.Add(Entity::Line({0, 0}, {10, 0}));
+        const uint64_t arc = doc.Add(Entity::Arc({0, 50}, 10, 0, kPi / 2));
+        Type(eng, {L"len", L"dy"});
+        eng.Point({9, 0});
+        Type(eng, {L"15,3"});
+        CHECK(Close(doc.Find(l)->p1, {15, 0}) && Close(doc.Find(l)->p0, {0, 0}));
+        eng.Point(Polar({0, 50}, 10, ToRadians(80)));
+        Type(eng, {L"-10,50"});  // round to 180 degrees
+        CHECK(Close(doc.Find(arc)->endAngle, kPi, 1e-9) && Close(doc.Find(arc)->startAngle, 0));
+        Type(eng, {L""});
+    }
+    {  // splines: trimmed, saved, turned
+        Document doc;
+        Engine eng(doc, host);
+        const uint64_t sp = doc.Add(Entity::Spline({{0, 0}, {10, 10}, {20, 0}, {30, 10}}, false));
+        doc.Add(Entity::Line({15, -20}, {15, 30}));
+        std::vector<Vec2> pts;
+        SplinePoints(*doc.Find(sp), pts);
+        const double before = CurveLength(*doc.Find(sp));
+        Type(eng, {L"tr"});
+        eng.Point(pts[pts.size() * 5 / 6]);  // the part to the right of the line
+        Type(eng, {L""});
+        const Entity& t = *doc.Find(sp);
+        CHECK(SplineTrimmed(t) && t.verts.size() == 4 && CurveLength(t) < before);
+        std::vector<Vec2> ends;
+        EndPoints(t, ends);
+        CHECK(ends.size() == 2 && Close(ends[0], {0, 0}) && Close(ends[1].x, 15, 1e-6));
+        Document copy;
+        std::wstring err;
+        CHECK(copy.FromText(doc.ToText(), err));
+        CHECK(Close(CurveLength(copy.Find(1)->type == EntityType::Spline ? *copy.Find(1) : *copy.Find(2)), CurveLength(t), 1e-9));
+        Entity r = t;
+        Rotate(r, {0, 0}, kPi / 2);
+        CHECK(Close(CurveLength(r), CurveLength(t), 1e-9) && r.startAngle == t.startAngle && r.endAngle == t.endAngle);
+        // BREAK the rest of it in two.
+        std::vector<Entity> parts;
+        std::wstring why;
+        CHECK(BreakCurve(t, CurveLength(t) / 2, CurveLength(t) / 2, parts, why) && parts.size() == 2);
+        CHECK(Close(CurveLength(parts[0]) + CurveLength(parts[1]), CurveLength(t), 1e-6));
+        // A closed spline, cut across its start.
+        Entity ring = Entity::Spline({{0, 0}, {10, -5}, {20, 0}, {10, 10}}, true);
+        Entity part;
+        const double L = CurveLength(ring);
+        CHECK(SubCurve(ring, L * 0.8, L * 0.2, part) && SplineTrimmed(part) && !IsClosedCurve(part));
+        CHECK(Close(CurveLength(part), L * 0.4, L * 1e-3));
+    }
+    {  // offsets of ellipses and splines
+        Entity el = Entity::Ellipse({0, 0}, {20, 0}, 0.5), out;
+        CHECK(OffsetEntity(el, -2, out) && out.type == EntityType::Spline && out.closed);
+        CHECK(Close(out.verts[0].p, {22, 0}, 1e-9));
+        bool near = true;
+        for (const Vertex& v : out.verts) near &= std::fabs(DistanceTo(el, v.p) - 2) < 0.05;
+        CHECK(near);
+        CHECK(!OffsetEntity(el, 15, out));  // folds over inside
+        Entity sp = Entity::Spline({{0, 0}, {10, 10}, {20, 0}, {30, 10}}, false);
+        CHECK(OffsetEntity(sp, 1, out) && !out.closed);
+        near = true;
+        for (const Vertex& v : out.verts) near &= std::fabs(DistanceTo(sp, v.p) - 1) < 0.05;
+        CHECK(near && OffsetSide(sp, out.verts[2].p) == 1);
+    }
+}
 }  // namespace
 
 int main() {
@@ -1534,6 +1759,10 @@ int main() {
     TestDrivingDimensions();
     TestDimensionCommands();
     TestDxfImport();
+    TestFillet131();
+    TestRenumberedVertices();
+    TestTangents131();
+    TestOlderGaps131();
     std::printf("%d checks, %d failed\n", g_checks, g_failures);
     return g_failures;
 }

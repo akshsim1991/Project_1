@@ -45,6 +45,11 @@ bool ChamferLines(const Entity& a, Vec2 pickA, const Entity& b, Vec2 pickB, doub
 // from the first line.
 bool ChamferDistanceFromAngle(const Entity& a, Vec2 pickA, const Entity& b, Vec2 pickB, double d1, double angle,
                               double& d2);
+// A straight polyline segment picked near p, as a line (seg: its index).
+bool SegmentAsLine(const Entity& pl, Vec2 p, Entity& line, size_t& seg);
+// Puts a trimmed or extended segment back into its polyline. Only the free
+// ends of an open polyline can move; false if an inner vertex would have to.
+bool PutSegmentBack(const Entity& pl, size_t seg, const Entity& line, Entity& out);
 // Every corner of a polyline between two straight segments; returns how
 // many were done. `onlyVertex` >= 0 limits it to that vertex.
 int FilletPolyline(Entity& pl, double r, int onlyVertex = -1);
@@ -52,6 +57,11 @@ int ChamferPolyline(Entity& pl, double d1, double d2, int onlyVertex = -1);
 // The polyline vertex between the two segments nearest to the picks, if
 // they are next to each other; -1 otherwise.
 int SharedVertex(const Entity& pl, Vec2 pickA, Vec2 pickB);
+
+// ---- tangents -----------------------------------------------------------------
+// The straight lines touching two circles (up to four: two outside, two
+// crossing between them), as their touching points.
+std::vector<std::pair<Vec2, Vec2>> TangentLines(Vec2 c1, double r1, Vec2 c2, double r2);
 
 // ---- break, join, explode, stretch ----------------------------------------------
 // Removes the part between distances s1 and s2 along the curve (s1 == s2

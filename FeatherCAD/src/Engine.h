@@ -211,6 +211,8 @@ public:
     virtual void OnKeyword(const std::wstring&) {}
     virtual void OnEnter() { E->Finish(); }
     virtual void OnSelected() {}
+    // Enter while selecting with nothing selected: true if the command goes on.
+    virtual bool OnNothingSelected() { return false; }
     // Typed text the command reads itself (before the usual parsing). True if used.
     virtual bool OnText(const std::wstring&) { return false; }
     virtual void OnCancel() {}  // before the engine ends the command

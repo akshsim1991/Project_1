@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(FeatherCAD VERSION 1.3.0 LANGUAGES CXX RC)
+project(FeatherCAD VERSION 1.3.1 LANGUAGES CXX RC)
 
 # Feather CAD: a lightweight 2D drafting program (Win32 + Direct2D, no
 # third-party libraries).

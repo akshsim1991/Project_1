@@ -125,6 +125,10 @@ bool FollowRefs(const Document& doc, Entity& dim);
 // points (it was moved or edited on its own). True if any was dropped.
 bool CheckRefs(const Document& doc, Entity& dim);
 bool HasRefs(const Entity& dim);
+// A polyline or spline the dimension is attached to gained or lost vertices
+// (`before` is how it was): its refs find their points again by place, or
+// are dropped when the point is gone. True if any ref changed.
+bool RenumberRefs(Entity& dim, const Entity& before, const Entity& after);
 // Copies of objects and their dimensions: refs to objects in `idMap` are
 // pointed at the copies.
 void RemapRefs(Entity& e, const std::map<uint64_t, uint64_t>& idMap);

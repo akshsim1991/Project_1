@@ -301,21 +301,33 @@ void Document::UpdateDimensions() {
     for (const auto& kv : m_entities)
         if (kv.second.type == EntityType::Dimension) anyDims = true;
     if (!anyDims) return;
+    // Polylines and splines that gained or lost vertices: their grips are numbered anew.
+    std::map<uint64_t, const Change*> renumbered;
+    for (const Change& c : m_open->changes)
+        if (c.before && c.after && (c.after->type == EntityType::Polyline || c.after->type == EntityType::Spline) &&
+            c.before->verts.size() != c.after->verts.size())
+            renumbered[c.id] = &c;
     std::vector<Entity> updates;
     for (const auto& kv : m_entities) {
         const Entity& e = kv.second;
         if (!HasRefs(e)) continue;
         Entity copy = e;
         bool mod = false;
+        std::set<uint64_t> done;
+        for (const DimRef& r : e.dim->refs) {
+            auto it = renumbered.find(r.id);
+            if (r.id && it != renumbered.end() && done.insert(r.id).second)
+                mod |= RenumberRefs(copy, *it->second->before, *it->second->after);
+        }
         bool depends = false;
         for (const DimRef& r : e.dim->refs)
             if (r.id && changed.count(r.id)) depends = true;
         if (depends) {
             // Its objects changed: it follows them (also when it was moved with them).
-            mod = FollowRefs(*this, copy);
+            mod |= FollowRefs(*this, copy);
         } else if (touchedDims.count(kv.first)) {
             // Moved or edited on its own: still on its objects, or no longer attached.
-            mod = CheckRefs(*this, copy);
+            mod |= CheckRefs(*this, copy);
         }
         if (mod) updates.push_back(std::move(copy));
     }
@@ -407,7 +419,8 @@ Box Document::Extents() const {
 //   array polar cx cy count fill rotate n              (fill in degrees)
 //   array path count spacing align n                   then the path, then n objects
 //   ellipse cx cy axisx axisy ratio start end full      (start, end: parameters in degrees)
-//   spline closed n x y x y ...                         (fit points)
+//   spline closed n x y x y ... [part=from,to]          (fit points; the part kept after a
+//                                                       trim, as fractions of its length)
 //   point x y
 //   dimstyle text arrow extoffset extbeyond gap decimals trimzeros
 //   dim kind x0 y0 x1 y1 x2 y2 x3 y3 locx locy angle rays text arrow extoffset
@@ -499,6 +512,7 @@ void WriteEntity(const Entity& e, std::string& out, const Ordinals* ordinals = n
             for (const Vertex& v : e.verts) {
                 num(v.p.x); num(v.p.y);
             }
+            if (SplineTrimmed(e)) out += " part=" + FormatNumber(e.startAngle) + "," + FormatNumber(e.endAngle);
             break;
         case EntityType::Point:
             out += "point";
@@ -697,6 +711,17 @@ struct Reader {
             std::vector<Vec2> fit(n);
             for (size_t i = 0; i < n; ++i) fit[i] = {v[2 + 2 * i], v[3 + 2 * i]};
             out = Entity::Spline(fit, v[0] != 0);
+            // part=from,to: only that part is kept (fractions of its length)
+            for (const std::string& word : w) {
+                if (word.compare(0, 5, "part=") != 0) continue;
+                const size_t comma = word.find(',');
+                double f0, f1;
+                if (comma != std::string::npos && ParseNumber(word.substr(5, comma - 5), f0) &&
+                    ParseNumber(word.substr(comma + 1), f1) && f1 > 0) {
+                    out.startAngle = std::clamp(f0, 0.0, 1.0);
+                    out.endAngle = std::clamp(f1, 0.0, 1.0);
+                }
+            }
         } else if (key == "point") {
             if (!need(2)) return Fail(L"a point needs 2 numbers");
             out = Entity::Point({v[0], v[1]});

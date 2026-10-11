@@ -1,5 +1,6 @@
 // StatusBar.h - the bar at the bottom: cursor coordinates on the left,
-// drafting toggles (GRID, SNAP, ORTHO, POLAR, OSNAP, OTRACK, DYN) and the units on the right.
+// drafting toggles (GRID, SNAP, ORTHO, POLAR, OSNAP with its E, M, I and C
+// snaps, OTRACK, DYN) and the units on the right.
 // Clicking a toggle sends WM_COMMAND with its id; right-clicking one opens
 // its settings.
 #pragma once
@@ -15,7 +16,7 @@ public:
 
     void SetCoordinates(const std::wstring& text);
     void SetInfo(const std::wstring& text);  // middle: selection count, snap...
-    // GRID, SNAP, ORTHO, POLAR, OSNAP, OTRACK, DYN
+    // GRID, SNAP, ORTHO, POLAR, OSNAP, E, M, I, C, OTRACK, DYN
     void SetToggles(const std::vector<bool>& states);
     void SetUnits(const std::wstring& text);
     void OnThemeChanged();

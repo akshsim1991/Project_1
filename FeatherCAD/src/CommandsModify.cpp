@@ -129,6 +129,12 @@ public:
         E->Msg(std::to_wstring(m_edges.size()) + (m_extend ? L" boundary edge(s)." : L" cutting edge(s)."));
         AskPick();
     }
+    bool OnNothingSelected() override {
+        m_edges.clear();
+        E->Msg(m_extend ? L"No edges chosen: every object is a boundary." : L"No edges chosen: every object is a cutting edge.");
+        AskPick();
+        return true;
+    }
     void GetPreview(Vec2 c, Preview& out) override {
         if (const uint64_t id = E->PickEntity(c)) Apply(id, c, m_extend, &out);
     }
@@ -237,23 +243,47 @@ public:
 // ---------------------------------------------------------------------------
 // FILLET and CHAMFER
 // ---------------------------------------------------------------------------
+bool SameShape(const Entity& a, const Entity& b) {
+    if (a.type != b.type) return false;
+    const double tol = 1e-9 * (1 + Length(a.p0) + Length(a.p1));
+    if (a.type == EntityType::Polyline) {
+        if (a.verts.size() != b.verts.size()) return false;
+        for (size_t i = 0; i < a.verts.size(); ++i)
+            if (!Near(a.verts[i].p, b.verts[i].p, tol) || a.verts[i].bulge != b.verts[i].bulge) return false;
+        return true;
+    }
+    return Near(a.p0, b.p0, tol) && Near(a.p1, b.p1, tol) && std::fabs(a.radius - b.radius) <= tol &&
+           std::fabs(a.startAngle - b.startAngle) <= 1e-12 && std::fabs(a.endAngle - b.endAngle) <= 1e-12;
+}
+
 class CornerCmd : public Command {
     bool m_chamfer;
+    bool m_keptWhole = false;  // a polyline could not be cut back (its corner is inside it)
     enum Step { First, Second, Radius, Dist1, Dist2, AngleLength, AngleAngle, Poly, TrimMode } m_step = First;
     uint64_t m_first = 0;
     Vec2 m_p1;
     bool m_multiple = false;
     StepLog m_log;
 
+    // The first pick also takes a number: the radius (or both chamfer distances).
     void AskFirst() {
-        if (m_chamfer)
-            E->Ask(Pick(L"Select first line", kAcceptEmpty,
+        if (m_chamfer) {
+            const std::wstring now = E->chamferByAngle ? E->Len(E->lastChamfer1) + L" at " + E->Ang(E->lastChamferAngle) + L"\x00B0"
+                                                       : E->Len(E->lastChamfer1) + L" x " + E->Len(E->lastChamfer2);
+            const std::wstring text = L"Select first line (chamfer " + now + L"; type a number to change it)";
+            E->Ask(Pick(text.c_str(), kAcceptEmpty | kAcceptNumber,
                         {{L"U", L"Undo"}, {L"P", L"Polyline"}, {L"D", L"Distance"}, {L"A", L"Angle"}, {L"T", L"Trim"},
                          {L"M", L"Multiple"}}));
-        else
-            E->Ask(Pick(L"Select first object", kAcceptEmpty,
+        } else {
+            const std::wstring text = L"Select first object (radius " + E->Len(E->lastFilletRadius) +
+                                      L"; type a number to change it)";
+            E->Ask(Pick(text.c_str(), kAcceptEmpty | kAcceptNumber,
                         {{L"U", L"Undo"}, {L"P", L"Polyline"}, {L"R", L"Radius"}, {L"T", L"Trim"}, {L"M", L"Multiple"}}));
+        }
         m_step = First;
+    }
+    bool Zero() const {
+        return m_chamfer ? !E->chamferByAngle && E->lastChamfer1 == 0 && E->lastChamfer2 == 0 : E->lastFilletRadius == 0;
     }
     void Settings() {
         const std::wstring mode = E->cornerTrim ? L"TRIM" : L"NOTRIM";
@@ -267,20 +297,50 @@ class CornerCmd : public Command {
         } else {
             E->Msg(L"Current settings: Mode = " + mode + L", Radius = " + E->Len(E->lastFilletRadius));
         }
+        if (Zero())
+            E->Msg(m_chamfer ? L"The distances are 0, which makes a sharp corner. Type a distance (for example 5) to bevel."
+                             : L"The radius is 0, which makes a sharp corner. Type a radius (for example 5) to round it.");
     }
     // The corner for the second pick; zero = Shift held (sharp corner).
     bool Corner(uint64_t second, Vec2 p2, bool zero, CornerResult& res, std::wstring& why) {
-        const Entity* a = E->Doc().Find(m_first);
-        const Entity* b = E->Doc().Find(second);
-        if (!a || !b) return false;
-        if (!m_chamfer) return FilletObjects(*a, m_p1, *b, p2, zero ? 0 : E->lastFilletRadius, E->cornerTrim, res, why);
-        double d1 = zero ? 0 : E->lastChamfer1, d2 = zero ? 0 : E->lastChamfer2;
-        if (!zero && E->chamferByAngle &&
-            !ChamferDistanceFromAngle(*a, m_p1, *b, p2, E->lastChamfer1, E->lastChamferAngle, d2)) {
-            why = L"That angle does not fit between these lines.";
+        const Entity* pa = E->Doc().Find(m_first);
+        const Entity* pb = E->Doc().Find(second);
+        if (!pa || !pb) return false;
+        // A polyline's segment takes part as a line, and is put back afterwards.
+        Entity a = *pa, b = *pb;
+        size_t segA = 0, segB = 0;
+        const bool polyA = pa->type == EntityType::Polyline, polyB = pb->type == EntityType::Polyline;
+        if ((polyA && !SegmentAsLine(*pa, m_p1, a, segA)) || (polyB && !SegmentAsLine(*pb, p2, b, segB))) {
+            why = L"Pick a straight segment of the polyline (or explode it).";
             return false;
         }
-        return ChamferLines(*a, m_p1, *b, p2, d1, d2, E->cornerTrim, res, why);
+        bool ok;
+        if (!m_chamfer) {
+            ok = FilletObjects(a, m_p1, b, p2, zero ? 0 : E->lastFilletRadius, E->cornerTrim, res, why);
+        } else {
+            double d1 = zero ? 0 : E->lastChamfer1, d2 = zero ? 0 : E->lastChamfer2;
+            if (!zero && E->chamferByAngle &&
+                !ChamferDistanceFromAngle(a, m_p1, b, p2, E->lastChamfer1, E->lastChamferAngle, d2)) {
+                why = L"That angle does not fit between these lines.";
+                return false;
+            }
+            ok = ChamferLines(a, m_p1, b, p2, d1, d2, E->cornerTrim, res, why);
+        }
+        if (!ok) return false;
+        m_keptWhole = false;
+        if (polyA && res.changeFirst) {
+            Entity pl;
+            if (PutSegmentBack(*pa, segA, res.first, pl)) res.first = pl;
+            else res.changeFirst = false, m_keptWhole = true;
+        }
+        if (polyB && res.changeSecond) {
+            Entity pl;
+            if (PutSegmentBack(*pb, segB, res.second, pl)) res.second = pl;
+            else res.changeSecond = false, m_keptWhole = true;
+        }
+        if (res.changeFirst && SameShape(res.first, *pa)) res.changeFirst = false;
+        if (res.changeSecond && SameShape(res.second, *pb)) res.changeSecond = false;
+        return true;
     }
     bool CutPolyline(Entity& pl, int vertex, bool zero) {
         if (m_chamfer) {
@@ -366,6 +426,18 @@ public:
             AskFirst();
             return;
         }
+        if (!res.changeFirst && !res.changeSecond && !res.hasJoin) {
+            E->Msg(Zero() || zero ? (m_chamfer ? L"Those already meet in a sharp corner. The chamfer distances are 0: type a "
+                                                 L"distance (for example 5), then pick the lines again."
+                                               : L"Those already meet in a sharp corner. The radius is 0: type a radius "
+                                                 L"(for example 5), then pick the objects again.")
+                                  : L"Nothing to change there.");
+            AskFirst();
+            return;
+        }
+        if (m_keptWhole)
+            E->Msg(L"The polyline was left whole (the corner is inside it, so it could not be cut back). "
+                   L"Explode it first to trim it too.");
         StepLog::Step& step = m_log.Begin();
         if (res.changeFirst) {
             step.before.push_back(*E->Doc().Find(m_first));
@@ -414,6 +486,14 @@ public:
             return;
         }
         switch (m_step) {
+            case First:  // typed at the first pick: the radius, or both chamfer distances
+                if (m_chamfer) {
+                    E->lastChamfer1 = E->lastChamfer2 = v;
+                    E->chamferByAngle = false;
+                } else {
+                    E->lastFilletRadius = v;
+                }
+                break;
             case Radius:
                 E->lastFilletRadius = v;
                 break;
@@ -875,15 +955,42 @@ public:
 // LENGTHEN
 // ---------------------------------------------------------------------------
 class LengthenCmd : public Command {
-    enum Mode { Delta, Percent, Total } m_mode = Delta;
-    enum Step { Measure, Value, Change } m_step = Measure;
+    enum Mode { Delta, Percent, Total, Dynamic } m_mode = Delta;
+    enum Step { Measure, Value, Change, DynPick, DynEnd } m_step = Measure;
     double m_value = 0;
     StepLog m_log;
+    uint64_t m_dynId = 0;
+    bool m_dynAtEnd = true;
 
     void AskMeasure() {
         E->Ask(Pick(L"Select an object to measure", kAcceptEmpty,
-                    {{L"DE", L"DElta"}, {L"P", L"Percent"}, {L"T", L"Total"}}, L"DElta"));
+                    {{L"DE", L"DElta"}, {L"P", L"Percent"}, {L"T", L"Total"}, {L"DY", L"DYnamic"}}, L"DElta"));
         m_step = Measure;
+    }
+    void AskDynPick() {
+        E->Ask(Pick(L"Select an object near the end to drag", kAcceptEmpty, {{L"U", L"Undo"}}));
+        m_step = DynPick;
+    }
+    // Dynamic: the end follows the point c along the line or round the arc.
+    bool Dragged(Vec2 c, Entity& out) const {
+        const Entity* e = E->Doc().Find(m_dynId);
+        if (!e) return false;
+        const std::vector<CurvePiece> pieces = CurvePieces(*e);
+        if (pieces.empty()) return false;
+        const CurvePiece& pc = m_dynAtEnd ? pieces.back() : pieces.front();
+        const Vec2 end = m_dynAtEnd ? pc.b : pc.a;
+        double delta;
+        if (!pc.arc) {
+            const Vec2 out_ = m_dynAtEnd ? pc.Direction(pc.len) : -pc.Direction(0);
+            delta = Dot(c - end, out_);
+        } else {
+            // Round the circle, in the direction the end moves outwards.
+            const double a = std::remainder(AngleOf(c - pc.c) - AngleOf(end - pc.c), kTau);
+            const double outward = (pc.sweep > 0) == m_dynAtEnd ? 1 : -1;
+            delta = pc.r * a * outward;
+        }
+        out = *e;
+        return std::fabs(delta) > 1e-12 && ChangeEnd(out, m_dynAtEnd, delta);
     }
     void AskChange() {
         E->Ask(Pick(L"Select an object to change", kAcceptEmpty, {{L"U", L"Undo"}}));
@@ -912,9 +1019,33 @@ public:
         AskMeasure();
     }
     void OnPoint(Vec2 p) override {
+        if (m_step == DynEnd) {
+            Entity out;
+            if (!Dragged(p, out)) {
+                E->Msg(L"That would shorten it to nothing.");
+                return;
+            }
+            m_log.Begin().before.push_back(*E->Doc().Find(m_dynId));
+            E->Doc().Replace(out);
+            AskDynPick();
+            return;
+        }
         const uint64_t id = E->PickEntity(p);
         if (!id) {
             E->Msg(L"No object there.");
+            return;
+        }
+        if (m_step == DynPick) {
+            const Entity* e = E->Doc().Find(id);
+            if (!e || !IsOpenCurve(*e)) {
+                E->Msg(L"Pick a line, an arc or an open polyline.");
+                return;
+            }
+            m_dynId = id;
+            m_dynAtEnd = CurveParam(*e, p) > CurveLength(*e) / 2;
+            const Vec2 end = CurvePoint(*e, m_dynAtEnd ? CurveLength(*e) : 0);
+            E->Ask(From(P(L"Specify new end point", kAcceptPoint), end));
+            m_step = DynEnd;
             return;
         }
         if (m_step == Measure) {
@@ -947,6 +1078,11 @@ public:
             if (!m_log.Undo(E->Doc())) E->Msg(L"Nothing to undo.");
             return;
         }
+        if (k == L"DY") {
+            m_mode = Dynamic;
+            AskDynPick();
+            return;
+        }
         m_mode = k == L"P" ? Percent : k == L"T" ? Total : Delta;
         if (m_mode == Delta)
             E->Ask(P(L"Enter delta length (negative shortens)", kAcceptNumber | kAcceptEmpty, {}, E->Len(E->lastLengthen)));
@@ -969,6 +1105,11 @@ public:
         else E->Finish();
     }
     void GetPreview(Vec2 c, Preview& out) override {
+        if (m_step == DynEnd) {
+            Entity e;
+            if (Dragged(c, e)) out.entities.push_back(e);
+            return;
+        }
         if (m_step != Change) return;
         Entity e;
         std::wstring why;

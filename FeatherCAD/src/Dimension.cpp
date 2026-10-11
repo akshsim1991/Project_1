@@ -651,6 +651,58 @@ bool HasRefs(const Entity& e) {
     return false;
 }
 
+bool RenumberRefs(Entity& dim, const Entity& before, const Entity& after) {
+    if (!HasRefs(dim) || before.id != after.id) return false;
+    DimData d = *dim.dim;
+    bool changed = false;
+    std::vector<Grip> oldGrips, newGrips;
+    GripsOf(before, oldGrips);
+    GripsOf(after, newGrips);
+    for (DimRef& r : d.refs) {
+        if (r.id != after.id) continue;
+        if (r.grip >= 0) {
+            const Grip* old = nullptr;
+            for (const Grip& g : oldGrips)
+                if (g.index == r.grip) old = &g;
+            int found = -1;
+            if (old)
+                for (const Grip& g : newGrips)
+                    if (Near(g.p, old->p, Tol(old->p))) {
+                        found = g.index;
+                        break;
+                    }
+            if (found != r.grip) {
+                if (found >= 0) r.grip = found;
+                else r = {};
+                changed = true;
+            }
+        } else if (before.type == EntityType::Polyline) {
+            // An arc segment: the segment of the same circle now.
+            const size_t seg = (size_t)(-(r.grip + 1));
+            int found = 0;  // 0: not found (arc refs are negative)
+            if (seg < SegmentCount(before) && before.verts[seg].bulge != 0) {
+                const Prim a = ArcFromBulge(before.verts[seg].p, before.verts[(seg + 1) % before.verts.size()].p,
+                                            before.verts[seg].bulge);
+                for (size_t i = 0; i < SegmentCount(after) && found == 0; ++i) {
+                    if (after.verts[i].bulge == 0) continue;
+                    const Prim b = ArcFromBulge(after.verts[i].p, after.verts[(i + 1) % after.verts.size()].p,
+                                                after.verts[i].bulge);
+                    if (Near(a.c, b.c, Tol(a.c)) && std::fabs(a.r - b.r) <= Tol(a.c)) found = -1 - (int)i;
+                }
+            }
+            if (found == 0) {
+                r = {};
+                changed = true;
+            } else if (found != r.grip) {
+                r.grip = found;
+                changed = true;
+            }
+        }
+    }
+    if (changed) SetData(dim, d);
+    return changed;
+}
+
 bool FollowRefs(const Document& doc, Entity& dim) {
     if (!HasRefs(dim)) return false;
     DimData d = *dim.dim;

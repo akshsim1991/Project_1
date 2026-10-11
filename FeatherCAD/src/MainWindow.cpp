@@ -101,6 +101,8 @@ const IdCommand kIdCommands[] = {
     {ID_DIM_BASELINE, L"DIMBASELINE", nullptr},
     {ID_DIM_EDIT, L"DIMEDIT", nullptr},
     {ID_DIM_STYLE, L"DIMSTYLE", nullptr},
+    {ID_TANLINE, L"TANLINE", nullptr},
+    {ID_CIRCLE_TTR, L"CIRCLE", L"T"},
 };
 
 const unsigned kSnapBits[] = {kSnapEndpoint, kSnapMidpoint, kSnapCentre, kSnapQuadrant,
@@ -419,7 +421,10 @@ void MainWindow::UpdateStatus() {
     if (Eng().Active()) info = std::wstring(L"Running ") + Eng().ActiveName() + (n ? L"  \x2022  " + info : L"");
     m_status.SetInfo(info);
     const Drafting& d = Eng().Draft();
-    m_status.SetToggles({d.gridOn, d.snapOn, d.orthoOn, d.polarOn, d.osnapOn, d.otrackOn, d.dynOn});
+    // The E, M, I and C snaps light up while object snaps are on.
+    auto mode = [&](unsigned bit) { return d.osnapOn && (d.osnapModes & bit) != 0; };
+    m_status.SetToggles({d.gridOn, d.snapOn, d.orthoOn, d.polarOn, d.osnapOn, mode(kSnapEndpoint), mode(kSnapMidpoint),
+                         mode(kSnapIntersection), mode(kSnapCentre), d.otrackOn, d.dynOn});
     m_status.SetUnits(UnitsSymbol(Doc().Settings().units));
 }
 
@@ -524,6 +529,22 @@ void MainWindow::OnCommand(int id) {
     if (id >= ID_CTX_RECENT_CMD && id < ID_CTX_RECENT_CMD + 10) {
         const size_t i = (size_t)(id - ID_CTX_RECENT_CMD);
         if (i < Eng().RecentCommands().size()) Run(Eng().RecentCommands()[i]);
+        return;
+    }
+    if (id >= ID_SNAPMODE_FIRST && id < ID_SNAPMODE_FIRST + kSnapModeCount) {
+        // A status bar snap letter: that snap on or off (and object snaps on).
+        Drafting& d = Eng().Draft();
+        const unsigned bit = kSnapBits[id - ID_SNAPMODE_FIRST];
+        const bool on = !(d.osnapOn && (d.osnapModes & bit));
+        if (on) {
+            d.osnapModes |= bit;
+            d.osnapOn = true;
+        } else {
+            d.osnapModes &= ~bit;
+        }
+        Message(std::wstring(L"<") + SnapName(bit) + (on ? L" snap on>" : L" snap off>"));
+        DraftingChanged();
+        FocusCommandLine();
         return;
     }
     if (id >= ID_OSNAP_FIRST && id < ID_OSNAP_FIRST + kSnapModeCount) {
@@ -686,10 +707,12 @@ HMENU MainWindow::BuildMenu(int menuId) {
         case ID_MENU_DRAW: {
             Append(m, ID_LINE, L"&Line\tL");
             Append(m, ID_PLINE, L"&Polyline\tPL");
+            Append(m, ID_TANLINE, L"&Tangent line (two circles)\tTL");
             HMENU circle = CreatePopupMenu();
             Append(circle, ID_CIRCLE, L"&Centre, radius\tC");
             Append(circle, ID_CIRCLE_2P, L"&2 points");
             Append(circle, ID_CIRCLE_3P, L"&3 points");
+            Append(circle, ID_CIRCLE_TTR, L"&Tangent, tangent, radius");
             Submenu(m, circle, L"&Circle");
             HMENU arc = CreatePopupMenu();
             Append(arc, ID_ARC, L"&3 points\tA");
@@ -875,6 +898,7 @@ void MainWindow::ShowPalette() {
     list.push_back({ID_THEME_SYSTEM, L"Follow the Windows theme", L"", L"colours system"});
     list.push_back({ID_CIRCLE_2P, L"Circle from 2 points", L"", L"diameter"});
     list.push_back({ID_CIRCLE_3P, L"Circle through 3 points", L"", L""});
+    list.push_back({ID_CIRCLE_TTR, L"Circle tangent to two objects with a radius", L"C, T", L"ttr tangent tangent radius"});
     list.push_back({ID_ARC_CENTRE, L"Arc from centre, start and end", L"", L""});
     list.push_back({ID_NEXT_DRAWING, L"Next drawing (tab)", L"Ctrl+Tab", L"switch tab"});
     list.push_back({ID_PREV_DRAWING, L"Previous drawing (tab)", L"Ctrl+Shift+Tab", L"switch tab"});

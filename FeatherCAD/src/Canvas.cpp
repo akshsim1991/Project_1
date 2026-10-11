@@ -1196,6 +1196,7 @@ void Canvas::DrawGrips(ID2D1RenderTarget* rt) {
 // ---------------------------------------------------------------------------
 
 void Canvas::StartDwell(Vec2 p) {
+    if (!m_typed.empty()) return;  // not while a value is being typed
     if (m_dwellOn && Near(p, m_dwellPoint, 1e-9)) return;
     m_dwellPoint = p;
     m_dwellOn = true;

@@ -214,6 +214,22 @@ Arrays are saved in the `.fcad` file. They are exported to DXF as their separate
 - Not brought in yet: text and hatching (Phase C). The command line says how many were left out.
 - Export DXF writes dimensions as what they look like: lines, filled arrows and text.
 
+## Version 1.3.1: fixes and smaller additions
+
+| What | How it works now |
+|------|------------------|
+| Fillet radius | The first prompt shows the radius and takes a number: type `5` and pick two objects. With radius 0 a message says why nothing changed (the corner is already sharp). Chamfer works the same way (a number sets both distances). |
+| Fillet and Chamfer with polylines | A polyline's straight segment can be filleted or chamfered with a separate line, arc or circle. An end segment of an open polyline is cut back or extended; a closed polyline (a rectangle) is left whole and the other object is trimmed. |
+| Tangent line (TANLINE, TL) | A line touching two circles or arcs. Click near where it should touch each: picks on the same side give an outside tangent, on opposite sides one crossing between them. |
+| Circle tangent, tangent, radius | CIRCLE, then T: pick two lines, circles or arcs and type the radius. |
+| Distance between parallel edges | In DIM (and DLI, DAL after picking a line), click a parallel line instead of a place: the dimension measures straight across and stays attached to both lines. |
+| Snap letters | The status bar has **E** (endpoint), **M** (midpoint), **I** (intersection) and **C** (centre) next to OSNAP: click one to turn that snap on or off. Right-click for all the snaps. |
+| Splines | Trim, break and offset work on splines. A trimmed spline keeps its fit points and remembers the part kept, so it can still be reshaped with its grips. |
+| Ellipses | Offset works on ellipses and elliptical arcs (the offset is a spline, as in other CAD programs). |
+| Lengthen | New option DYnamic: pick near an end and drag it along the line or round the arc. |
+| Trim and Extend | Choosing edges (T or B) and pressing Enter without any: every object is an edge again. |
+| Object snap tracking | No longer picks up points while a value is being typed. |
+
 ## Coming in later phases
 
 | Phase | Contents |

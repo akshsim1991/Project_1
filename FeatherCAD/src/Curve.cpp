@@ -53,7 +53,8 @@ bool IsCurve(const Entity& e) {
 
 bool IsClosedCurve(const Entity& e) {
     return e.type == EntityType::Circle || (e.type == EntityType::Ellipse && e.closed) ||
-           ((e.type == EntityType::Polyline || e.type == EntityType::Spline) && e.closed && e.verts.size() >= 3);
+           ((e.type == EntityType::Polyline || e.type == EntityType::Spline) && e.closed && e.verts.size() >= 3 &&
+            !SplineTrimmed(e));
 }
 
 std::vector<CurvePiece> CurvePieces(const Entity& e) {
@@ -230,8 +231,31 @@ bool SubCurve(const Entity& e, double s0, double s1, Entity& out) {
             out.id = e.id;
             return true;
         }
+        case EntityType::Spline: {
+            // The spline keeps its fit points; it remembers which part is kept,
+            // as fractions of the whole curve's length.
+            std::vector<Vec2> all;
+            {
+                Entity whole = e;
+                whole.startAngle = whole.endAngle = 0;
+                SplinePoints(whole, all);
+            }
+            double full = 0;
+            for (size_t i = 0; i + 1 < all.size(); ++i) full += Dist(all[i], all[i + 1]);
+            if (full <= 0) return false;
+            const double from = SplineTrimmed(e) ? e.startAngle : 0.0;
+            auto frac = [&](double s) {
+                double f = from + s / full;
+                if (f > 1 + 1e-12) f -= 1;  // past the start of a closed spline
+                return std::clamp(f, 0.0, 1.0);
+            };
+            double f0 = frac(s0), f1 = frac(s1);
+            if (f1 <= 1e-15) f1 = 1;  // the very end, not "all of it"
+            out.startAngle = f0;
+            out.endAngle = f1;
+            return true;
+        }
         case EntityType::Array:
-        case EntityType::Spline:  // a part of a spline is not kept as a spline
         case EntityType::Point:
         case EntityType::Dimension:
             return false;

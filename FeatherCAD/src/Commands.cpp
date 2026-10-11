@@ -7,6 +7,7 @@
 
 #include "CommandUtil.h"
 #include "Engine.h"
+#include "Modify.h"
 
 namespace {
 // ---------------------------------------------------------------------------
@@ -65,6 +66,95 @@ public:
     }
     void GetPreview(Vec2 c, Preview& out) override {
         if (m_have) out.entities.push_back(Entity::Line(m_last, c));
+    }
+};
+
+// ---------------------------------------------------------------------------
+// The line, circle or arc picked near p for a tangent (a polyline's segment
+// as a line or an arc). False if there is none.
+// ---------------------------------------------------------------------------
+bool TangentObject(Engine* E, Vec2 p, Entity& out) {
+    const uint64_t id = E->PickEntity(p);
+    const Entity* e = id ? E->Doc().Find(id) : nullptr;
+    if (!e) return false;
+    if (e->type == EntityType::Line || e->type == EntityType::Circle || e->type == EntityType::Arc) {
+        out = *e;
+        return true;
+    }
+    if (e->type != EntityType::Polyline) return false;
+    size_t seg;
+    if (SegmentAsLine(*e, p, out, seg)) return true;
+    std::vector<Prim> prims;
+    Primitives(*e, prims);
+    for (const Prim& pr : prims) {
+        if (pr.kind != Prim::Arc || Distance(pr, p) > E->Host().PickRadius()) continue;
+        out = Entity::Arc(pr.c, pr.r, pr.start, pr.start + pr.sweep);
+        return true;
+    }
+    return false;
+}
+
+// ---------------------------------------------------------------------------
+// TANLINE: the line touching two circles or arcs
+// ---------------------------------------------------------------------------
+class TanLineCmd : public Command {
+    Entity m_first;
+    Vec2 m_p1;
+    bool m_have = false;
+
+    static bool OnCurve(const Entity& e, Vec2 p) {
+        if (e.type == EntityType::Circle) return true;
+        double sweep = SweepCCW(e.startAngle, e.endAngle);
+        if (sweep <= 0) sweep = kTau;
+        return AngleInSweep(NormalizeAngle(AngleOf(p - e.p0)), e.startAngle, sweep, 1e-9);
+    }
+    // Of the (up to four) tangent lines, the one touching nearest to the picks.
+    bool Best(const Entity& second, Vec2 p2, Entity& line) const {
+        bool found = false;
+        double best = 0;
+        for (const auto& t : TangentLines(m_first.p0, m_first.radius, second.p0, second.radius)) {
+            if (!OnCurve(m_first, t.first) || !OnCurve(second, t.second)) continue;
+            const double score = Dist(t.first, m_p1) + Dist(t.second, p2);
+            if (!found || score < best) {
+                found = true;
+                best = score;
+                line = Entity::Line(t.first, t.second);
+            }
+        }
+        return found;
+    }
+    static bool Round(const Entity& e) { return e.type == EntityType::Circle || e.type == EntityType::Arc; }
+
+public:
+    void Start() override {
+        E->Doc().BeginChange(L"Tangent line");
+        E->Ask(Pick(L"Select first circle or arc, near where the line should touch it"));
+    }
+    void OnPoint(Vec2 p) override {
+        Entity e;
+        if (!TangentObject(E, p, e) || !Round(e)) {
+            E->Msg(L"Pick a circle or an arc.");
+            return;
+        }
+        if (!m_have) {
+            m_first = e;
+            m_p1 = p;
+            m_have = true;
+            E->Ask(Pick(L"Select second circle or arc, near where the line should touch it"));
+            return;
+        }
+        Entity line;
+        if (!Best(e, p, line)) {
+            E->Msg(L"No straight line touches both there (one may be inside the other).");
+            return;
+        }
+        E->Doc().Add(line);
+        E->Msg(L"Tangent line, length " + E->Len(Dist(line.p0, line.p1)) + L".");
+        E->Finish();
+    }
+    void GetPreview(Vec2 c, Preview& out) override {
+        Entity e, line;
+        if (m_have && TangentObject(E, c, e) && Round(e) && Best(e, c, line)) out.entities.push_back(line);
     }
 };
 
@@ -153,9 +243,19 @@ public:
 // CIRCLE: centre and radius / diameter, 3 points, 2 points
 // ---------------------------------------------------------------------------
 class CircleCmd : public Command {
-    enum Mode { Centre, Radius, Diameter, ThreeP, TwoP } m_mode = Centre;
+    enum Mode { Centre, Radius, Diameter, ThreeP, TwoP, TanFirst, TanSecond, TanRadius } m_mode = Centre;
     std::vector<Vec2> m_pts;
     Vec2 m_centre;
+    Entity m_tan[2];  // tangent, tangent, radius: the two objects
+
+    // The circle of radius r touching both objects, nearest to where they were picked.
+    bool Tangent(double r, Vec2 pick2, const Entity& second, Entity& out) const {
+        CornerResult res;
+        std::wstring why;
+        if (!FilletObjects(m_tan[0], m_pts[0], second, pick2, r, false, res, why) || !res.hasJoin) return false;
+        out = Entity::Circle(res.join.p0, r);
+        return true;
+    }
 
     void AskRadius() {
         const double r = E->lastRadius;
@@ -172,10 +272,14 @@ class CircleCmd : public Command {
 public:
     void Start() override {
         E->Doc().BeginChange(L"Circle");
-        E->Ask(P(L"Specify center point for circle", kAcceptPoint, {{L"3P", L"3P"}, {L"2P", L"2P"}}));
+        E->Ask(P(L"Specify center point for circle", kAcceptPoint,
+                 {{L"3P", L"3P"}, {L"2P", L"2P"}, {L"T", L"Ttr (tangent tangent radius)"}}));
     }
     void OnKeyword(const std::wstring& k) override {
-        if (k == L"3P") {
+        if (k == L"T") {
+            m_mode = TanFirst;
+            E->Ask(Pick(L"Select a line, circle or arc for the first tangent, near where the circle should touch it"));
+        } else if (k == L"3P") {
             m_mode = ThreeP;
             E->Ask(P(L"Specify first point on circle", kAcceptPoint));
         } else if (k == L"2P") {
@@ -191,6 +295,28 @@ public:
     }
     void OnPoint(Vec2 p) override {
         switch (m_mode) {
+            case TanFirst:
+            case TanSecond: {
+                Entity e;
+                if (!TangentObject(E, p, e)) {
+                    E->Msg(L"Pick a line, circle or arc.");
+                    return;
+                }
+                m_pts.push_back(p);
+                m_tan[m_mode == TanFirst ? 0 : 1] = e;
+                if (m_mode == TanFirst) {
+                    m_mode = TanSecond;
+                    E->Ask(Pick(L"Select a line, circle or arc for the second tangent"));
+                } else {
+                    m_mode = TanRadius;
+                    const double r = E->lastRadius;
+                    E->Ask(P(L"Specify radius of circle", kAcceptNumber | (r > 0 ? (unsigned)kAcceptEmpty : 0u), {},
+                             r > 0 ? E->Len(r) : L""));
+                }
+                return;
+            }
+            case TanRadius:
+                return;
             case Centre:
                 m_centre = p;
                 m_mode = Radius;
@@ -234,14 +360,28 @@ public:
     }
     void OnNumber(double v) override {
         if (!Positive(E, v)) return;
+        if (m_mode == TanRadius) {
+            Entity c;
+            if (!Tangent(v, m_pts[1], m_tan[1], c)) {
+                E->Msg(L"No circle of that radius touches both. Try another radius.");
+                return;
+            }
+            Make(c.p0, v);
+            return;
+        }
         if (m_mode == Radius) Make(m_centre, v);
         else if (m_mode == Diameter) Make(m_centre, v / 2);
     }
     void OnEnter() override {
+        if (m_mode == TanRadius && E->lastRadius > 0) return OnNumber(E->lastRadius);
         if ((m_mode == Radius || m_mode == Diameter) && E->lastRadius > 0) Make(m_centre, E->lastRadius);
         else E->Finish();
     }
     void GetPreview(Vec2 c, Preview& out) override {
+        if (m_mode == TanSecond && E->lastRadius > 0) {
+            Entity second, circle;
+            if (TangentObject(E, c, second) && Tangent(E->lastRadius, c, second, circle)) out.entities.push_back(circle);
+        }
         if (m_mode == Radius && Dist(m_centre, c) > 0) out.entities.push_back(Entity::Circle(m_centre, Dist(m_centre, c)));
         if (m_mode == Diameter && Dist(m_centre, c) > 0)
             out.entities.push_back(Entity::Circle(m_centre, Dist(m_centre, c) / 2));
@@ -865,7 +1005,9 @@ const std::vector<CommandInfo>& AllCommands() {
     static const std::vector<CommandInfo> list = {
         {L"LINE", {L"L"}, L"Line", L"Draw straight line segments"},
         {L"PLINE", {L"PL"}, L"Polyline", L"Draw connected lines and arcs as one object"},
-        {L"CIRCLE", {L"C"}, L"Circle", L"Draw a circle (centre and radius, diameter, 2 or 3 points)"},
+        {L"TANLINE", {L"TL"}, L"Tangent line", L"A line touching two circles or arcs (click near where it should touch)"},
+        {L"CIRCLE", {L"C"}, L"Circle",
+         L"Draw a circle (centre and radius, diameter, 2 or 3 points, or tangent to two objects with a radius)"},
         {L"ARC", {L"A"}, L"Arc", L"Draw an arc (3 points, or centre, start and end)"},
         {L"RECTANG", {L"REC", L"RECTANGLE"}, L"Rectangle", L"Draw a rectangle from two corners or its size"},
         {L"POLYGON", {L"POL"}, L"Polygon", L"Draw a regular polygon (inscribed, circumscribed or by an edge)"},
@@ -944,6 +1086,7 @@ std::unique_ptr<Command> CreateCommand(const std::wstring& name) {
     if (auto cmd = CreateDimCommand(name)) return cmd;
     if (name == L"LINE") return std::make_unique<LineCmd>();
     if (name == L"PLINE") return std::make_unique<PlineCmd>();
+    if (name == L"TANLINE") return std::make_unique<TanLineCmd>();
     if (name == L"CIRCLE") return std::make_unique<CircleCmd>();
     if (name == L"ARC") return std::make_unique<ArcCmd>();
     if (name == L"RECTANG") return std::make_unique<RectCmd>();

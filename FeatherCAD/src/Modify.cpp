@@ -248,11 +248,50 @@ int OffsetSide(const Entity& e, Vec2 p) {
     return (piece.sweep > 0) == inside ? 1 : -1;
 }
 
+namespace {
+// Ellipses and splines: a spline through points offset from the curve.
+bool OffsetSampled(const Entity& e, double d, Entity& out) {
+    std::vector<Vec2> pts;
+    if (e.type == EntityType::Ellipse) EllipsePoints(e, pts);
+    else SplinePoints(e, pts);
+    const bool closed = IsClosedCurve(e);
+    if (closed && pts.size() > 2 && Near(pts.front(), pts.back(), 1e-9)) pts.pop_back();
+    const size_t n = pts.size();
+    if (n < 2) return false;
+    // About 72 points round an ellipse; four per span of a spline.
+    const size_t want = e.type == EntityType::Ellipse ? (size_t)std::max(8.0, 72 * EllipseSweep(e) / kTau)
+                                                      : std::max<size_t>(8, e.verts.size() * 4);
+    const size_t step = std::max<size_t>(1, n / want);
+    std::vector<size_t> idx;
+    for (size_t i = 0; i < n; i += step) idx.push_back(i);
+    if (!closed && idx.back() != n - 1) {
+        if (n - 1 - idx.back() < step / 2 && idx.size() > 1) idx.back() = n - 1;
+        else idx.push_back(n - 1);
+    }
+    std::vector<Vec2> fit, orig;
+    for (size_t i : idx) {
+        const Vec2 prev = closed ? pts[(i + n - 1) % n] : pts[i == 0 ? 0 : i - 1];
+        const Vec2 next = closed ? pts[(i + 1) % n] : pts[std::min(i + 1, n - 1)];
+        if (Near(prev, next, 1e-15)) return false;
+        fit.push_back(pts[i] + Perp(Normalized(next - prev)) * d);
+        orig.push_back(pts[i]);
+    }
+    // Too far inside a tight bend, the offset folds over itself.
+    for (size_t i = 0; i + 1 < fit.size(); ++i)
+        if (Dot(fit[i + 1] - fit[i], orig[i + 1] - orig[i]) <= 0) return false;
+    out = Entity::Spline(fit, closed);
+    return true;
+}
+}  // namespace
+
 bool OffsetEntity(const Entity& e, double d, Entity& out) {
     const double eps = 1e-9;
     out = e;
     out.id = 0;
     switch (e.type) {
+        case EntityType::Ellipse:
+        case EntityType::Spline:
+            return OffsetSampled(e, d, out);
         case EntityType::Line: {
             const Vec2 n = Perp(Normalized(e.p1 - e.p0)) * d;
             Translate(out, n);
@@ -821,4 +860,64 @@ bool StretchEntity(Entity& e, const Box& w, Vec2 d) {
             return false;
     }
     return false;
+}
+
+// ---------------------------------------------------------------------------
+// Polyline segments in fillet, chamfer and tangent circles
+// ---------------------------------------------------------------------------
+
+// A straight polyline segment picked near p, as a line (seg: its index).
+bool SegmentAsLine(const Entity& pl, Vec2 p, Entity& line, size_t& seg) {
+    std::vector<Prim> prims;
+    Primitives(pl, prims);
+    if (prims.empty()) return false;
+    size_t best = 0;
+    for (size_t i = 1; i < prims.size(); ++i)
+        if (Distance(prims[i], p) < Distance(prims[best], p)) best = i;
+    if (prims[best].kind != Prim::Segment || pl.verts[best].bulge != 0) return false;
+    seg = best;
+    line = Entity::Line(pl.verts[best].p, pl.verts[(best + 1) % pl.verts.size()].p);
+    return true;
+}
+
+// Puts a trimmed or extended segment back into its polyline. Only the free
+// ends of an open polyline can move; false if an inner vertex would have to.
+bool PutSegmentBack(const Entity& pl, size_t seg, const Entity& line, Entity& out) {
+    out = pl;
+    const size_t n = pl.verts.size(), i = seg, j = (seg + 1) % n;
+    const Vec2 s = pl.verts[i].p, t = pl.verts[j].p;
+    Vec2 ns = line.p0, nt = line.p1;
+    if (Dist(ns, s) + Dist(nt, t) > Dist(nt, s) + Dist(ns, t)) std::swap(ns, nt);
+    const double tol = 1e-9 * (1 + Length(s) + Length(t));
+    auto freeEnd = [&](size_t k) { return !pl.closed && (k == 0 || k == n - 1); };
+    if (!Near(ns, s, tol) && !freeEnd(i)) return false;
+    if (!Near(nt, t, tol) && !freeEnd(j)) return false;
+    out.verts[i].p = ns;
+    out.verts[j].p = nt;
+    return true;
+}
+
+
+std::vector<std::pair<Vec2, Vec2>> TangentLines(Vec2 c1, double r1, Vec2 c2, double r2) {
+    std::vector<std::pair<Vec2, Vec2>> out;
+    const Vec2 d = c2 - c1;
+    const double D2 = Dot(d, d);
+    if (D2 <= 1e-24) return out;  // concentric: no common tangent
+    // Lines n.x + c = 0 (|n| = 1) at distance r1 from c1 and s*r2 from c2.
+    for (int s : {1, -1}) {
+        const double rr = s * r2 - r1;
+        const double h2 = D2 - rr * rr;
+        if (h2 < -1e-12 * D2) continue;
+        const double h = std::sqrt(std::max(0.0, h2));
+        for (int k : {1, -1}) {
+            const Vec2 n = (d * rr + Perp(d) * (k * h)) / D2;
+            const Vec2 t1 = c1 - n * r1, t2 = c2 - n * (s * r2);
+            if (Near(t1, t2, 1e-12)) continue;
+            bool dup = false;
+            for (const auto& o : out) dup |= Near(o.first, t1, 1e-12) && Near(o.second, t2, 1e-12);
+            if (!dup) out.push_back({t1, t2});
+            if (h == 0) break;
+        }
+    }
+    return out;
 }
