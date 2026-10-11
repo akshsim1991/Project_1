@@ -26,6 +26,7 @@ StatusBar::StatusBar() {
         {ID_SNAPMODE_FIRST + 2, ID_OSNAP_SETTINGS, L"C", L"Centre snap on or off. Right-click for all the snaps."},
         {ID_TOGGLE_OTRACK, ID_DRAFTING_SETTINGS, L"OTRACK", L"Object snap tracking (F11): rest on a snap point to line up with it"},
         {ID_TOGGLE_DYN, ID_DRAFTING_SETTINGS, L"DYN", L"Dynamic input (F12): prompt, input and sizes at the cursor"},
+        {ID_TOGGLE_LWT, ID_PROPERTIES, L"LWT", L"Show line weights. Right-click for the Properties panel."},
         {ID_UNITS, ID_UNITS, L"mm", L"Drawing units and decimal places"},
     };
 }

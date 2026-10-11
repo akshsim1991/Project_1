@@ -11,6 +11,8 @@
 #include "Dialogs.h"
 #include "Dimension.h"
 #include "DxfImport.h"
+#include "Curve.h"
+#include "Select.h"
 #include "Icons.h"
 #include "Theme.h"
 #include "Util.h"
@@ -103,6 +105,12 @@ const IdCommand kIdCommands[] = {
     {ID_DIM_STYLE, L"DIMSTYLE", nullptr},
     {ID_TANLINE, L"TANLINE", nullptr},
     {ID_CIRCLE_TTR, L"CIRCLE", L"T"},
+    {ID_LAYERS, L"LAYER", nullptr},
+    {ID_PROPERTIES, L"PROPERTIES", nullptr},
+    {ID_MATCHPROP, L"MATCHPROP", nullptr},
+    {ID_CONSTRUCTION, L"CONSTRUCTION", nullptr},
+    {ID_ORIGIN, L"ORIGIN", nullptr},
+    {ID_LTSCALE, L"LTSCALE", nullptr},
 };
 
 const unsigned kSnapBits[] = {kSnapEndpoint, kSnapMidpoint, kSnapCentre, kSnapQuadrant,
@@ -182,6 +190,7 @@ void MainWindow::CreateChildren() {
     m_menuBar.AddTextButton(ID_MENU_DRAW, L"Draw", nullptr, 50);
     m_menuBar.AddTextButton(ID_MENU_MODIFY, L"Modify", nullptr, 60);
     m_menuBar.AddTextButton(ID_MENU_DIMENSION, L"Dimension", nullptr, 78);
+    m_menuBar.AddTextButton(ID_MENU_FORMAT, L"Format", nullptr, 58);
     m_menuBar.AddTextButton(ID_MENU_TOOLS, L"Tools", nullptr, 50);
     m_menuBar.AddTextButton(ID_MENU_HELP, L"Help", nullptr, 48);
     m_menuBar.AddSpacer();
@@ -221,12 +230,20 @@ void MainWindow::CreateChildren() {
     m_tools.AddIconButton(ID_DIM_SMART, kIconDimension,
                           L"Smart dimension (DIM): click a line, circle, arc or two lines. Double-click a dimension to edit it");
     m_tools.AddSeparator();
+    // The current layer (or the selected objects' layer).
+    m_layerCombo = CreateWindowExW(0, L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | WS_VSCROLL | CBS_DROPDOWNLIST, 0, 0, 0,
+                                   Dpi(400, m_dpi), m_hwnd, (HMENU)(INT_PTR)ID_LAYER_COMBO, GetModuleHandleW(nullptr), nullptr);
+    m_tools.AddChild(m_layerCombo, 150);
+    m_tools.AddIconButton(ID_LAYERS, kIconLayers, L"Layers (LA): on/off, freeze, lock, colour, line type, layer states");
+    m_tools.AddSeparator();
     m_tools.AddIconButton(ID_ZOOM_EXTENTS, kIconZoomExtents, L"Zoom to the drawing (double-click the wheel)");
     m_tools.AddIconButton(ID_ZOOM_WINDOW, kIconZoomWindow, L"Zoom to a window");
     m_tools.AddIconButton(ID_DIST, kIconDistance, L"Measure a distance (DI)");
 
     m_tabs.Create(m_hwnd, m_hwnd);
     m_canvas.Create(m_hwnd, &Eng(), &Doc());
+    m_props.Create(m_hwnd);
+    ShowWindow(m_props.Hwnd(), m_settings.propertiesOn ? SW_SHOW : SW_HIDE);
     m_cmdline.Create(m_hwnd);
     m_status.Create(m_hwnd);
     m_ready = true;  // children may notify from now on
@@ -243,6 +260,7 @@ void MainWindow::CreateAccelerators() {
         {FVIRTKEY | FCONTROL, 'Y', ID_REDO},
         {FVIRTKEY | FCONTROL | FSHIFT, 'Z', ID_REDO},
         {FVIRTKEY | FCONTROL, 'K', ID_COMMAND_PALETTE},
+        {FVIRTKEY | FCONTROL, '1', ID_PROPERTIES},
         {FVIRTKEY | FCONTROL, 'C', ID_COPYCLIP},
         {FVIRTKEY | FCONTROL, 'X', ID_CUTCLIP},
         {FVIRTKEY | FCONTROL, 'V', ID_PASTECLIP},
@@ -267,6 +285,7 @@ void MainWindow::CreateAccelerators() {
         {FVIRTKEY | FALT, 'D', ID_MENU_DRAW},
         {FVIRTKEY | FALT, 'M', ID_MENU_MODIFY},
         {FVIRTKEY | FALT, 'N', ID_MENU_DIMENSION},
+        {FVIRTKEY | FALT, 'O', ID_MENU_FORMAT},
         {FVIRTKEY | FALT, 'T', ID_MENU_TOOLS},
         {FVIRTKEY | FALT, 'H', ID_MENU_HELP},
     };
@@ -279,13 +298,15 @@ void MainWindow::Layout() {
     GetClientRect(m_hwnd, &rc);
     const int menuH = m_menuBar.Height(), toolH = m_tools.Height(), tabH = m_tabs.Height();
     const int statusH = m_status.Height(), cmdH = m_cmdline.Height();
-    HDWP dwp = BeginDeferWindowPos(6);
+    HDWP dwp = BeginDeferWindowPos(7);
     dwp = DeferWindowPos(dwp, m_menuBar.Hwnd(), nullptr, 0, 0, rc.right, menuH, SWP_NOZORDER);
     dwp = DeferWindowPos(dwp, m_tools.Hwnd(), nullptr, 0, menuH, rc.right, toolH, SWP_NOZORDER);
     dwp = DeferWindowPos(dwp, m_tabs.Hwnd(), nullptr, 0, menuH + toolH, rc.right, tabH, SWP_NOZORDER);
     const int canvasTop = menuH + toolH + tabH;
     const int canvasH = std::max(10, (int)rc.bottom - canvasTop - cmdH - statusH);
-    dwp = DeferWindowPos(dwp, m_canvas.Hwnd(), nullptr, 0, canvasTop, rc.right, canvasH, SWP_NOZORDER);
+    const int panelW = m_settings.propertiesOn ? std::min(m_props.Width(), (int)rc.right / 2) : 0;
+    dwp = DeferWindowPos(dwp, m_canvas.Hwnd(), nullptr, 0, canvasTop, rc.right - panelW, canvasH, SWP_NOZORDER);
+    dwp = DeferWindowPos(dwp, m_props.Hwnd(), nullptr, rc.right - panelW, canvasTop, panelW, canvasH, SWP_NOZORDER);
     dwp = DeferWindowPos(dwp, m_cmdline.Hwnd(), nullptr, 0, canvasTop + canvasH, rc.right, cmdH, SWP_NOZORDER);
     dwp = DeferWindowPos(dwp, m_status.Hwnd(), nullptr, 0, rc.bottom - statusH, rc.right, statusH, SWP_NOZORDER);
     EndDeferWindowPos(dwp);
@@ -324,6 +345,13 @@ bool MainWindow::HostCommand(const std::wstring& name) {
     else if (name == L"IMPORT") ImportDxf();
     else if (name == L"CLOSE") CloseDrawing(m_active);
     else if (name == L"DIMSTYLE") DimensionStyle();
+    else if (name == L"LAYER") ShowLayers();
+    else if (name == L"PROPERTIES") {
+        m_settings.propertiesOn = !m_settings.propertiesOn;
+        ShowWindow(m_props.Hwnd(), m_settings.propertiesOn ? SW_SHOW : SW_HIDE);
+        Layout();
+        UpdateProperties(true);
+    }
     else if (name == L"UNITS") {
         DrawingSettings s = Doc().Settings();
         bool forNew = s.units == (Units)m_settings.newUnits && s.precision == m_settings.newPrecision;
@@ -388,6 +416,8 @@ void MainWindow::AfterInput() {
     m_tools.SetChecked(ID_DIST, cmd == L"DIST");
     m_tools.SetChecked(ID_DIM_SMART, cmd.compare(0, 3, L"DIM") == 0);
     UpdateTabs();
+    UpdateLayerCombo();
+    UpdateProperties();
 }
 
 void MainWindow::UpdateTabs() {
@@ -413,7 +443,8 @@ void MainWindow::UpdateStatus() {
     if (!m_ready) return;
     Vec2 p;
     const bool inside = m_canvas.CursorPoint(p);
-    m_status.SetCoordinates(inside ? Eng().Len(p.x) + L",  " + Eng().Len(p.y) : L"");
+    const Vec2 o = Doc().Settings().origin;  // shown from the grid origin
+    m_status.SetCoordinates(inside ? Eng().Len(p.x - o.x) + L",  " + Eng().Len(p.y - o.y) : L"");
     std::wstring info;
     const size_t n = Eng().Selection().size();
     if (n) info = std::to_wstring(n) + (n == 1 ? L" object selected" : L" objects selected");
@@ -424,7 +455,7 @@ void MainWindow::UpdateStatus() {
     // The E, M, I and C snaps light up while object snaps are on.
     auto mode = [&](unsigned bit) { return d.osnapOn && (d.osnapModes & bit) != 0; };
     m_status.SetToggles({d.gridOn, d.snapOn, d.orthoOn, d.polarOn, d.osnapOn, mode(kSnapEndpoint), mode(kSnapMidpoint),
-                         mode(kSnapIntersection), mode(kSnapCentre), d.otrackOn, d.dynOn});
+                         mode(kSnapIntersection), mode(kSnapCentre), d.otrackOn, d.dynOn, d.lwDisplay});
     m_status.SetUnits(UnitsSymbol(Doc().Settings().units));
 }
 
@@ -460,6 +491,7 @@ void MainWindow::ToggleDrafting(int id) {
         case ID_TOGGLE_OSNAP: on = d.osnapOn = !d.osnapOn; name = L"Object snaps"; break;
         case ID_TOGGLE_OTRACK: on = d.otrackOn = !d.otrackOn; name = L"Object snap tracking"; break;
         case ID_TOGGLE_DYN: on = d.dynOn = !d.dynOn; name = L"Dynamic input"; break;
+        case ID_TOGGLE_LWT: on = d.lwDisplay = !d.lwDisplay; name = L"Line weights"; break;
     }
     Message(std::wstring(L"<") + name + (on ? L" on>" : L" off>"));
     DraftingChanged();
@@ -609,6 +641,7 @@ void MainWindow::OnCommand(int id) {
         case ID_TOGGLE_POLAR:
         case ID_TOGGLE_OTRACK:
         case ID_TOGGLE_DYN:
+        case ID_TOGGLE_LWT:
             ToggleDrafting(id);
             break;
         case ID_DRAFTING_SETTINGS: {
@@ -777,6 +810,19 @@ HMENU MainWindow::BuildMenu(int menuId) {
             Separator(m);
             Append(m, ID_DIM_EDIT, L"&Edit dimension (or double-click it)\tDED");
             Append(m, ID_DIM_STYLE, L"Dimension st&yle...\tD");
+            break;
+        case ID_MENU_FORMAT:
+            Append(m, ID_LAYERS, L"&Layers...\tLA");
+            Append(m, ID_PROPERTIES, L"&Properties panel\tCtrl+1", true, m_settings.propertiesOn);
+            Append(m, ID_MATCHPROP, L"&Match properties\tMA");
+            Separator(m);
+            Append(m, ID_CONSTRUCTION, L"&Construction geometry on/off\tCONS");
+            Append(m, ID_LTSCALE, L"Line type &scale...\tLTS");
+            Append(m, ID_TOGGLE_LWT, L"Show line &weights\tLWT", true, d.lwDisplay);
+            Separator(m);
+            Append(m, ID_ORIGIN, L"Grid &origin...\tORIGIN");
+            Append(m, ID_DIM_STYLE, L"&Dimension style...\tD");
+            Append(m, ID_UNITS, L"&Units...");
             break;
         case ID_MENU_TOOLS:
             Append(m, ID_DIST, L"Measure &distance\tDI");
@@ -1394,6 +1440,430 @@ bool MainWindow::GetClipboard(std::string& text) {
     return !text.empty();
 }
 
+
+// ---------------------------------------------------------------------------
+// Layers and the Properties panel
+// ---------------------------------------------------------------------------
+
+void MainWindow::ShowLayers() {
+    Eng().Cancel();
+    LayerDialog(m_hwnd, Doc(), [this] {
+        Eng().PruneSelection();
+        AfterInput();
+        UpdateWindow(m_canvas.Hwnd());
+    });
+    AfterInput();
+}
+
+void MainWindow::ChangeSelected(const wchar_t* stepName, const std::function<void(Entity&)>& change) {
+    const std::vector<uint64_t> ids(Eng().Selection().begin(), Eng().Selection().end());
+    if (ids.empty()) return;
+    Doc().BeginChange(stepName);
+    for (uint64_t id : ids) {
+        const Entity* e = Doc().Find(id);
+        if (!e) continue;
+        Entity x = *e;
+        change(x);
+        Doc().Replace(x);
+    }
+    Doc().EndChange();
+}
+
+void MainWindow::UpdateLayerCombo() {
+    if (!m_layerCombo) return;
+    std::vector<std::wstring> names;
+    for (const Layer& l : Doc().Layers()) names.push_back(l.name);
+    if (names != m_comboLayers) {
+        m_comboLayers = names;
+        SendMessageW(m_layerCombo, CB_RESETCONTENT, 0, 0);
+        for (const std::wstring& n : names) SendMessageW(m_layerCombo, CB_ADDSTRING, 0, (LPARAM)n.c_str());
+    }
+    // The selected objects' layer when they share one, else the current layer.
+    int show = Doc().Current().layer;
+    if (!Eng().Selection().empty()) {
+        int common = -2;
+        for (uint64_t id : Eng().Selection())
+            if (const Entity* e = Doc().Find(id)) common = common == -2 ? e->layer : (common == e->layer ? common : -1);
+        show = common;
+    }
+    int index = -1;
+    for (size_t i = 0; i < Doc().Layers().size(); ++i)
+        if (Doc().Layers()[i].id == show) index = (int)i;
+    if ((int)SendMessageW(m_layerCombo, CB_GETCURSEL, 0, 0) != index)
+        SendMessageW(m_layerCombo, CB_SETCURSEL, (WPARAM)index, 0);
+}
+
+namespace {
+bool ReadNumber(const std::wstring& text, double& v) { return ParseNumber(WideToUtf8(text), v) && std::isfinite(v); }
+
+// Choices for colour, line type and line weight, with "by layer" and "by block" first.
+std::vector<int32_t> ColorChoices() {
+    std::vector<int32_t> c = {kByLayer, kByBlock};
+    for (int i = 1; i <= 9; ++i) c.push_back(i);
+    return c;
+}
+std::vector<int> LineTypeChoices() {
+    std::vector<int> c = {kLtByLayer, kLtByBlock};
+    for (size_t i = 0; i < LineTypes().size(); ++i) c.push_back((int)i);
+    return c;
+}
+std::vector<int> WeightChoices() {
+    std::vector<int> c = {kLwByLayer, kLwByBlock, kLwDefault};
+    for (int w : LineWeights()) c.push_back(w);
+    return c;
+}
+}  // namespace
+
+void MainWindow::UpdateProperties(bool force) {
+    if (!m_ready || !m_settings.propertiesOn) return;
+    const PropsKey key{m_active, Doc().Revision(), Eng().SelectionRevision()};
+    if (!force && (key == m_propsShown || m_props.Editing())) return;
+    m_propsShown = key;
+    using Row = PropertiesPanel::Row;
+    std::vector<Row> rows;
+    const auto refresh = [this] { PostMessageW(m_hwnd, WM_APP_PROPERTIES, 0, 0); };
+    const Vec2 org = Doc().Settings().origin;
+
+    std::vector<const Entity*> sel;
+    for (uint64_t id : Eng().Selection())
+        if (const Entity* e = Doc().Find(id)) sel.push_back(e);
+
+    // The style rows: of the selection, or for new objects.
+    int layer = Doc().Current().layer;
+    int32_t color = Doc().Current().color;
+    int lt = Doc().Current().linetype, lw = Doc().Current().lineweight;
+    double lts = Doc().Current().ltscale;
+    bool sameLayer = true, sameColor = true, sameLt = true, sameLw = true, sameLts = true, allCons = true;
+    if (!sel.empty()) {
+        layer = sel[0]->layer, color = sel[0]->color, lt = sel[0]->linetype, lw = sel[0]->lineweight, lts = sel[0]->ltscale;
+        for (const Entity* e : sel) {
+            sameLayer &= e->layer == layer;
+            sameColor &= e->color == color;
+            sameLt &= e->linetype == lt;
+            sameLw &= e->lineweight == lw;
+            sameLts &= e->ltscale == lts;
+            allCons &= e->construction;
+        }
+    }
+    const bool forNew = sel.empty();
+    auto setStyle = [this, forNew, refresh](const wchar_t* step, const std::function<void(Entity&)>& onObject,
+                                            const std::function<void(CurrentStyle&)>& onCurrent) {
+        if (forNew) {
+            CurrentStyle c = Doc().Current();
+            onCurrent(c);
+            Doc().SetCurrent(c);
+        } else {
+            ChangeSelected(step, onObject);
+        }
+        AfterInput();
+        refresh();
+    };
+
+    std::wstring title;
+    if (forNew) {
+        title = L"No selection: for new objects";
+    } else if (sel.size() == 1) {
+        title = TypeName(sel[0]->type);
+    } else {
+        std::map<std::wstring, int> counts;
+        for (const Entity* e : sel) ++counts[TypeName(e->type)];
+        title = std::to_wstring(sel.size()) + L" objects (";
+        bool first = true;
+        for (const auto& kv : counts) {
+            title += (first ? L"" : L", ") + std::to_wstring(kv.second) + L" " + kv.first;
+            first = false;
+        }
+        title += L")";
+    }
+
+    {
+        Row r;
+        r.kind = Row::Choice;
+        r.label = L"Layer";
+        for (const Layer& l : Doc().Layers()) {
+            r.choices.push_back(l.name);
+            if (sameLayer && l.id == layer) r.choice = (int)r.choices.size() - 1;
+        }
+        r.apply = [this, setStyle](const Row& e) {
+            if (e.choice < 0 || (size_t)e.choice >= Doc().Layers().size()) return;
+            const int id = Doc().Layers()[(size_t)e.choice].id;
+            setStyle(L"Change layer", [id](Entity& x) { x.layer = id; }, [id](CurrentStyle& c) { c.layer = id; });
+        };
+        rows.push_back(r);
+    }
+    {
+        Row r;
+        r.kind = Row::Choice;
+        r.label = L"Colour";
+        const std::vector<int32_t> list = ColorChoices();
+        for (int32_t c : list) {
+            r.choices.push_back(ColorName(c));
+            if (sameColor && c == color) r.choice = (int)r.choices.size() - 1;
+        }
+        // A colour not in the list (a true colour) is shown too.
+        if (sameColor && r.choice < 0) {
+            r.choices.push_back(ColorName(color));
+            r.choice = (int)r.choices.size() - 1;
+        }
+        r.choices.push_back(L"Other colour...");
+        r.apply = [this, setStyle, list, color](const Row& e) {
+            int32_t c;
+            if (e.choice == (int)e.choices.size() - 1) {  // Other...
+                c = color;
+                if (!PickColor(m_hwnd, c, true)) {
+                    PostMessageW(m_hwnd, WM_APP_PROPERTIES, 0, 0);
+                    return;
+                }
+            } else if (e.choice >= 0 && (size_t)e.choice < list.size()) {
+                c = list[(size_t)e.choice];
+            } else {
+                return;
+            }
+            setStyle(L"Change colour", [c](Entity& x) { x.color = c; }, [c](CurrentStyle& s) { s.color = c; });
+        };
+        rows.push_back(r);
+    }
+    {
+        Row r;
+        r.kind = Row::Choice;
+        r.label = L"Line type";
+        const std::vector<int> list = LineTypeChoices();
+        for (int v : list) {
+            r.choices.push_back(LineTypeName(v));
+            if (sameLt && v == lt) r.choice = (int)r.choices.size() - 1;
+        }
+        r.apply = [setStyle, list](const Row& e) {
+            if (e.choice < 0) return;
+            const int v = list[(size_t)e.choice];
+            setStyle(L"Change line type", [v](Entity& x) { x.linetype = (int16_t)v; }, [v](CurrentStyle& s) { s.linetype = v; });
+        };
+        rows.push_back(r);
+    }
+    {
+        Row r;
+        r.kind = Row::Text;
+        r.label = L"Line type scale";
+        r.value = sameLts ? FormatDecimal(lts, 3) : L"";
+        r.apply = [this, setStyle](const Row& e) {
+            double v;
+            if (!ReadNumber(e.value, v) || v <= 0) {
+                Message(L"The line type scale must be a positive number.");
+                PostMessageW(m_hwnd, WM_APP_PROPERTIES, 0, 0);
+                return;
+            }
+            setStyle(L"Change line type scale", [v](Entity& x) { x.ltscale = (float)v; }, [v](CurrentStyle& s) { s.ltscale = v; });
+        };
+        rows.push_back(r);
+    }
+    {
+        Row r;
+        r.kind = Row::Choice;
+        r.label = L"Line weight";
+        const std::vector<int> list = WeightChoices();
+        for (int v : list) {
+            r.choices.push_back(LineWeightName(v));
+            if (sameLw && v == lw) r.choice = (int)r.choices.size() - 1;
+        }
+        r.apply = [setStyle, list](const Row& e) {
+            if (e.choice < 0) return;
+            const int v = list[(size_t)e.choice];
+            setStyle(L"Change line weight", [v](Entity& x) { x.lineweight = (int16_t)v; }, [v](CurrentStyle& s) { s.lineweight = v; });
+        };
+        rows.push_back(r);
+    }
+    if (!forNew) {
+        Row r;
+        r.kind = Row::Check;
+        r.label = L"Construction geometry";
+        r.checked = allCons;
+        r.apply = [this, refresh](const Row& e) {
+            const bool on = e.checked;
+            ChangeSelected(L"Construction", [on](Entity& x) { x.construction = on; });
+            AfterInput();
+            refresh();
+        };
+        rows.push_back(r);
+    }
+
+    // The shape of one object, to read and change.
+    if (sel.size() == 1) {
+        const Entity& e = *sel[0];
+        const uint64_t id = e.id;
+        Row h;
+        h.heading = true;
+        h.label = L"Geometry";
+        rows.push_back(h);
+        auto info = [&](const wchar_t* label, const std::wstring& value) {
+            Row r;
+            r.label = label;
+            r.value = value;
+            rows.push_back(r);
+        };
+        // A number that changes the object through `set` (false: not possible).
+        auto number = [&](const wchar_t* label, double value, std::function<bool(Entity&, double)> set) {
+            Row r;
+            r.kind = Row::Text;
+            r.label = label;
+            r.value = Eng().Len(value);
+            r.apply = [this, id, set, refresh](const Row& edited) {
+                double v;
+                const Entity* cur = Doc().Find(id);
+                if (!cur) return;
+                Entity x = *cur;
+                if (!ReadNumber(edited.value, v) || !set(x, v)) {
+                    Message(L"That value cannot be used here.");
+                } else {
+                    Doc().BeginChange(L"Properties");
+                    Doc().Replace(x);
+                    Doc().EndChange();
+                }
+                AfterInput();
+                refresh();
+            };
+            rows.push_back(r);
+        };
+        auto pointRows = [&](const wchar_t* lx, const wchar_t* ly, Vec2 p, std::function<void(Entity&, Vec2)> set) {
+            number(lx, p.x - org.x, [org, p, set](Entity& x, double v) { set(x, {v + org.x, p.y}); return true; });
+            number(ly, p.y - org.y, [org, p, set](Entity& x, double v) { set(x, {p.x, v + org.y}); return true; });
+        };
+        switch (e.type) {
+            case EntityType::Line: {
+                pointRows(L"Start X", L"Start Y", e.p0, [](Entity& x, Vec2 p) { x.p0 = p; });
+                pointRows(L"End X", L"End Y", e.p1, [](Entity& x, Vec2 p) { x.p1 = p; });
+                number(L"Length", Dist(e.p0, e.p1), [](Entity& x, double v) {
+                    if (v <= 0) return false;
+                    x.p1 = x.p0 + Normalized(x.p1 - x.p0) * v;
+                    return true;
+                });
+                number(L"Angle", ToDegrees(NormalizeAngle(AngleOf(e.p1 - e.p0))), [](Entity& x, double v) {
+                    x.p1 = Polar(x.p0, Dist(x.p0, x.p1), ToRadians(v));
+                    return true;
+                });
+                break;
+            }
+            case EntityType::Circle:
+            case EntityType::Arc: {
+                pointRows(L"Centre X", L"Centre Y", e.p0, [](Entity& x, Vec2 p) { x.p0 = p; });
+                number(L"Radius", e.radius, [](Entity& x, double v) { return v > 0 ? (x.radius = v, true) : false; });
+                number(L"Diameter", 2 * e.radius, [](Entity& x, double v) { return v > 0 ? (x.radius = v / 2, true) : false; });
+                if (e.type == EntityType::Arc) {
+                    number(L"Start angle", ToDegrees(e.startAngle), [](Entity& x, double v) {
+                        x.startAngle = NormalizeAngle(ToRadians(v));
+                        return true;
+                    });
+                    number(L"End angle", ToDegrees(e.endAngle), [](Entity& x, double v) {
+                        x.endAngle = NormalizeAngle(ToRadians(v));
+                        return true;
+                    });
+                    info(L"Arc length", Eng().Len(CurveLength(e)));
+                } else {
+                    info(L"Circumference", Eng().Len(kTau * e.radius));
+                    info(L"Area", Eng().Len(kPi * e.radius * e.radius));
+                }
+                break;
+            }
+            case EntityType::Polyline: {
+                info(L"Vertices", std::to_wstring(e.verts.size()));
+                info(L"Length", Eng().Len(CurveLength(e)));
+                double area;
+                if (AreaOf(e, area)) info(L"Area", Eng().Len(area));
+                Row r;
+                r.kind = Row::Check;
+                r.label = L"Closed";
+                r.checked = e.closed;
+                r.apply = [this, id, refresh](const Row& edited) {
+                    if (const Entity* cur = Doc().Find(id)) {
+                        Entity x = *cur;
+                        x.closed = edited.checked;
+                        Doc().BeginChange(L"Properties");
+                        Doc().Replace(x);
+                        Doc().EndChange();
+                    }
+                    AfterInput();
+                    refresh();
+                };
+                rows.push_back(r);
+                break;
+            }
+            case EntityType::Ellipse: {
+                pointRows(L"Centre X", L"Centre Y", e.p0, [](Entity& x, Vec2 p) { x.p0 = p; });
+                number(L"Major radius", Length(e.p1), [](Entity& x, double v) {
+                    if (v <= 0) return false;
+                    const double minor = Length(x.p1) * x.radius;
+                    x.p1 = Normalized(x.p1) * v;
+                    x.radius = minor / v;
+                    return x.radius <= 1;
+                });
+                number(L"Minor radius", Length(e.p1) * e.radius, [](Entity& x, double v) {
+                    if (v <= 0 || v > Length(x.p1)) return false;
+                    x.radius = v / Length(x.p1);
+                    return true;
+                });
+                info(L"Rotation", Eng().Ang(NormalizeAngle(AngleOf(e.p1))) + L"\x00B0");
+                break;
+            }
+            case EntityType::Spline:
+                info(L"Fit points", std::to_wstring(e.verts.size()));
+                info(L"Length", Eng().Len(CurveLength(e)));
+                break;
+            case EntityType::Point:
+                pointRows(L"X", L"Y", e.p0, [](Entity& x, Vec2 p) { x.p0 = p; });
+                break;
+            case EntityType::Dimension: {
+                if (!e.dim) break;
+                const DimData& d = *e.dim;
+                info(L"Kind", DimKindName(d.kind));
+                info(L"Measured", DimValueText(d));
+                info(L"Attached", HasRefs(e) ? L"Yes (follows the objects)" : L"No");
+                auto dimEdit = [&](const wchar_t* label, const std::wstring& value, std::function<bool(DimData&, const std::wstring&)> set) {
+                    Row r;
+                    r.kind = Row::Text;
+                    r.label = label;
+                    r.value = value;
+                    r.apply = [this, id, set, refresh](const Row& edited) {
+                        if (const Entity* cur = Doc().Find(id)) {
+                            Entity x = *cur;
+                            DimData nd = *x.dim;
+                            if (set(nd, edited.value)) {
+                                x.dim = std::make_shared<const DimData>(std::move(nd));
+                                Doc().BeginChange(L"Dimension");
+                                Doc().Replace(x);
+                                Doc().EndChange();
+                            } else {
+                                Message(L"That value cannot be used here.");
+                            }
+                        }
+                        AfterInput();
+                        refresh();
+                    };
+                    rows.push_back(r);
+                };
+                dimEdit(L"Text", d.text, [](DimData& nd, const std::wstring& t) { nd.text = t; return true; });
+                dimEdit(L"Text height", Eng().Len(d.style.textHeight), [](DimData& nd, const std::wstring& t) {
+                    double v;
+                    return ReadNumber(t, v) && v > 0 && (nd.style.textHeight = v, true);
+                });
+                dimEdit(L"Arrow size", Eng().Len(d.style.arrowSize), [](DimData& nd, const std::wstring& t) {
+                    double v;
+                    return ReadNumber(t, v) && v >= 0 && (nd.style.arrowSize = v, true);
+                });
+                dimEdit(L"Decimal places", std::to_wstring(d.style.precision), [](DimData& nd, const std::wstring& t) {
+                    double v;
+                    return ReadNumber(t, v) && v >= 0 && v <= 8 && (nd.style.precision = (int)v, true);
+                });
+                break;
+            }
+            case EntityType::Array:
+                info(L"Kind", e.array && e.array->kind == ArrayData::Rect    ? L"Rectangular"
+                              : e.array && e.array->kind == ArrayData::Polar ? L"Polar"
+                                                                             : L"Path");
+                info(L"Copies", e.array ? std::to_wstring(ArrayCopyCount(*e.array)) : L"");
+                break;
+        }
+    }
+    m_props.SetContent(title, std::move(rows));
+}
+
 void MainWindow::ApplyTheme(int mode) {
     m_settings.themeMode = mode;
     ReloadTheme((ThemeMode)mode);
@@ -1401,6 +1871,7 @@ void MainWindow::ApplyTheme(int mode) {
     m_menuBar.OnThemeChanged();
     m_tools.OnThemeChanged();
     m_tabs.OnThemeChanged();
+    m_props.OnThemeChanged();
     m_cmdline.OnThemeChanged();
     m_status.OnThemeChanged();
     m_canvas.OnThemeChanged();
@@ -1436,7 +1907,28 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         case WM_ERASEBKGND:
             return 1;
         case WM_COMMAND:
+            if (LOWORD(wp) == ID_LAYER_COMBO) {
+                if (HIWORD(wp) == CBN_SELCHANGE) {
+                    const int i = (int)SendMessageW(m_layerCombo, CB_GETCURSEL, 0, 0);
+                    if (i >= 0 && (size_t)i < Doc().Layers().size()) {
+                        const int id = Doc().Layers()[(size_t)i].id;
+                        if (!Eng().Selection().empty() && !Eng().Active()) {
+                            ChangeSelected(L"Change layer", [&](Entity& e) { e.layer = id; });
+                        } else {
+                            CurrentStyle c = Doc().Current();
+                            c.layer = id;
+                            Doc().SetCurrent(c);
+                        }
+                    }
+                    AfterInput();
+                    FocusCommandLine();
+                }
+                return 0;
+            }
             OnCommand(LOWORD(wp));
+            return 0;
+        case WM_APP_PROPERTIES:
+            UpdateProperties(true);
             return 0;
         case WM_APP_COMMAND_TEXT:
             Eng().Text(*(const std::wstring*)lp);
@@ -1489,6 +1981,7 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             m_menuBar.OnDpiChanged();
             m_tools.OnDpiChanged();
             m_tabs.OnDpiChanged();
+            m_props.OnDpiChanged();
             m_cmdline.OnDpiChanged();
             m_status.OnDpiChanged();
             m_canvas.OnDpiChanged();

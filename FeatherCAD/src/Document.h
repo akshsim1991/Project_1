@@ -13,6 +13,7 @@
 
 #include "Dimension.h"
 #include "Entity.h"
+#include "Style.h"
 
 enum class Units : uint8_t { Unitless, Millimetres, Centimetres, Metres, Inches, Feet };
 
@@ -23,11 +24,30 @@ struct DrawingSettings {
     Units units = Units::Millimetres;
     int precision = 2;  // decimal places shown for lengths and coordinates
     DimStyle dimStyle;  // for new dimensions
+    double ltscale = 1;  // all line type patterns are this many times larger
+    Vec2 origin;         // grid origin: coordinates are typed and shown from here
+    bool operator==(const DrawingSettings& o) const {
+        return units == o.units && precision == o.precision && dimStyle == o.dimStyle && ltscale == o.ltscale &&
+               origin == o.origin;
+    }
+};
+
+// How an object is drawn, with "by layer" and "by block" worked out.
+struct Look {
+    uint32_t rgb = 0;
+    bool foreground = false;  // colour 7: black or white, whichever shows
+    int linetype = 0;
+    int lineweight = kDefaultLineWeight;  // hundredths of a millimetre
+    double ltscale = 1;
+    bool construction = false;
+    bool locked = false;
 };
 
 class Document {
 public:
     using Map = std::map<uint64_t, Entity>;  // keyed by id: id order = drawing order
+
+    Document();  // an empty drawing with layer "0"
 
     const Map& Entities() const { return m_entities; }
     const Entity* Find(uint64_t id) const;
@@ -72,6 +92,26 @@ public:
     void Clear();  // empty drawing, no history
     Box Extents() const;
 
+    // ---- layers and styles --------------------------------------------------
+    const std::vector<Layer>& Layers() const { return m_layers; }
+    const Layer* FindLayer(int id) const;
+    const Layer* LayerByName(const std::wstring& name) const;  // not case sensitive
+    // Layer changes are undo steps of their own (or part of the open one).
+    int AddLayer(Layer layer);  // a new id; the name is made unique
+    void UpdateLayer(const Layer& layer);
+    bool DeleteLayer(int id, std::wstring& why);  // not "0", not current, not used
+    const CurrentStyle& Current() const { return m_current; }
+    void SetCurrent(const CurrentStyle& c);
+    const std::vector<LayerState>& LayerStates() const { return m_states; }
+    void SaveLayerState(const std::wstring& name);
+    bool RestoreLayerState(const std::wstring& name);
+    void DeleteLayerState(const std::wstring& name);
+    bool Visible(const Entity& e) const;   // its layer is on and not frozen
+    bool Editable(const Entity& e) const;  // visible and its layer not locked
+    // `block`: the block reference the object is drawn in, for "by block".
+    Look LookOf(const Entity& e, const Entity* block = nullptr) const;
+    size_t LayerUse(int id) const;  // objects on it
+
     // ---- files ------------------------------------------------------------
     std::string ToText() const;  // Feather CAD drawing (.fcad, UTF-8 text)
     // Replaces the drawing (and clears the history). On failure the
@@ -83,8 +123,11 @@ public:
     // could not be brought in is listed in `notes`.
     bool FromDxf(const std::string& text, std::wstring& error, std::wstring& notes);
     // Objects as text, and back (copy and paste between drawings).
-    static std::string ObjectsToText(const std::vector<Entity>& entities);
-    static bool ObjectsFromText(const std::string& text, std::vector<Entity>& out);
+    std::string ObjectsToText(const std::vector<Entity>& entities) const;  // with their layers
+    static bool ObjectsFromText(const std::string& text, std::vector<Entity>& out, std::vector<Layer>* layers = nullptr);
+    // Layers of another drawing, matched by name (missing ones are added):
+    // their ids there -> ids here.
+    std::map<int, int> MergeLayers(const std::vector<Layer>& from);
 
     // Undo step serials, for tests.
     size_t UndoDepth() const { return m_undo.size(); }
@@ -98,7 +141,10 @@ private:
         std::wstring name;
         std::vector<Change> changes;
         uint64_t serial = 0;
+        std::optional<std::vector<Layer>> layersBefore, layersAfter;
     };
+    void SetLayers(std::vector<Layer> layers, const std::wstring& stepName);
+    void IndexLayers();
     void Record(uint64_t id, const Entity* before, const Entity* after);
     // Dimensions follow the objects they are attached to (before a step is kept).
     void UpdateDimensions();
@@ -117,6 +163,10 @@ private:
     mutable uint64_t m_extentsRevision = 0;
     mutable Box m_extents;
     DrawingSettings m_settings;
+    std::vector<Layer> m_layers;
+    std::vector<int> m_layerIndex;  // id -> index in m_layers (-1: none)
+    CurrentStyle m_current;
+    std::vector<LayerState> m_states;
 };
 
 // UTF-8 text (without Windows), for files.

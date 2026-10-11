@@ -188,6 +188,7 @@ bool SubCurve(const Entity& e, double s0, double s1, Entity& out) {
         case EntityType::Circle:
             out = Entity::Arc(e.p0, e.radius, s0 / e.radius, s1 / e.radius);
             out.id = e.id;
+            CopyStyle(e, out);
             return true;
         case EntityType::Polyline: {
             std::vector<std::pair<double, double>> ranges;
@@ -229,6 +230,7 @@ bool SubCurve(const Entity& e, double s0, double s1, Entity& out) {
             };
             out = Entity::EllipseArc(e.p0, e.p1, e.radius, paramAt(s0), paramAt(s1));
             out.id = e.id;
+            CopyStyle(e, out);
             return true;
         }
         case EntityType::Spline: {

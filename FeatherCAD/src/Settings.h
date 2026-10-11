@@ -6,6 +6,7 @@
 struct Settings {
     WINDOWPLACEMENT placement{};
     bool hasPlacement = false;
+    bool propertiesOn = true;  // the Properties panel is shown
     int themeMode = 0;                  // ThemeMode: 0 system, 1 light, 2 dark
     std::vector<std::wstring> recent;   // recently opened drawings, newest first
     Drafting drafting;                  // grid, snap, ortho, object snaps

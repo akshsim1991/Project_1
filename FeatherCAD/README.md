@@ -230,11 +230,41 @@ Arrays are saved in the `.fcad` file. They are exported to DXF as their separate
 | Trim and Extend | Choosing edges (T or B) and pressing Enter without any: every object is an edge again. |
 | Object snap tracking | No longer picks up points while a value is being typed. |
 
+## Version 1.4 (Phase B3): layers, line types and properties
+
+**Layers** (LA, or the Layers button)
+- Every object is on a layer. Layers can be switched off, ★ frozen (hidden and left out of everything), locked (shown faded; they can be snapped to and measured, but not selected or changed), and kept from printing.
+- Each layer has a colour, line type and line weight that its objects use "by layer".
+- The layer box on the tool bar shows the current layer; choosing a layer there puts the selected objects on it (or makes it current when nothing is selected).
+- ★ **Layer states** save which layers are on, frozen and locked and their colours and line types, under a name, to bring back later.
+- Layer changes can be undone.
+
+**Colours, line types, line weights**
+- Each object can have its own colour (the nine standard colours, or any colour), line type and line weight, or take them from its layer.
+- Line types: CONTINUOUS, DASHED, HIDDEN, CENTER, PHANTOM, DOT, DASHDOT, DIVIDE, BORDER and half-size ones, as in AutoCAD. LTSCALE makes all the patterns larger or smaller; each object also has its own scale.
+- **LWT** on the status bar shows the line weights.
+
+**Properties panel** (Ctrl+1, or PR)
+- On the right of the drawing. With nothing selected it sets the layer, colour, line type and weight for new objects.
+- With objects selected it changes theirs. For one object it shows its sizes, to read and to change: end points, length and angle of a line; centre, radius and diameter of a circle; angles of an arc; size of an ellipse; area and length of a polyline; text, text height and decimals of a dimension.
+
+**More**
+
+| Command | Short name | What it does |
+|---------|------------|--------------|
+| MATCHPROP | MA | Copies the layer, colour, line type and weight of one object onto others (and the dimension style between dimensions). |
+| CONSTRUCTION | CONS | Makes objects construction geometry: reference lines shown faint and dotted, for drawing, not for printing. Again: normal. |
+| OFFSET, B | | Offsets on both sides at once (symmetric offset). |
+| ORIGIN | UCS | Moves the grid origin: coordinates are typed and shown from there, the grid and snap start there. Reset puts it back at 0,0. |
+| LTSCALE | LTS | The size of line type patterns. |
+
+- Copies, trims, explodes and other edits keep the objects' layer and look. Paste puts objects on the layers of the same names in the other drawing (made if missing).
+- DXF export and import keep layers (on, frozen, locked), colours, line types and line type scale. Construction geometry goes on AutoCAD's non-printing Defpoints layer.
+
 ## Coming in later phases
 
 | Phase | Contents |
 |-------|----------|
-| B3    | Layers, line types, properties panel, match properties |
 | C     | Annotation: text, leaders, hatching and blocks |
 | D     | Sheets, printing and PDF |
 | E     | Engineering (constraints, GD&T, parts lists) |

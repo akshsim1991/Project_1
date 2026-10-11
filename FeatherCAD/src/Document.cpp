@@ -149,6 +149,13 @@ bool ParseNumber(const std::string& s, double& v) {
 // Changes and undo
 // ---------------------------------------------------------------------------
 
+Document::Document() {
+    Layer zero;
+    zero.name = L"0";
+    m_layers = {zero};
+    IndexLayers();
+}
+
 const Entity* Document::Find(uint64_t id) const {
     auto it = m_entities.find(id);
     return it == m_entities.end() ? nullptr : &it->second;
@@ -156,7 +163,7 @@ const Entity* Document::Find(uint64_t id) const {
 
 void Document::BeginChange(const std::wstring& name) {
     if (m_open) EndChange();
-    m_open = Step{name, {}, 0};
+    m_open = Step{name, {}, 0, std::nullopt, std::nullopt};
     m_openIndex.clear();
 }
 
@@ -170,7 +177,7 @@ void Document::EndChange() {
     step.changes.erase(std::remove_if(step.changes.begin(), step.changes.end(),
                                       [](const Change& c) { return !c.before && !c.after; }),
                        step.changes.end());
-    if (step.changes.empty()) return;
+    if (step.changes.empty() && !step.layersAfter) return;
     step.serial = m_nextSerial++;
     m_undo.push_back(std::move(step));
     if (m_undo.size() > kMaxUndo) m_undo.erase(m_undo.begin());
@@ -183,6 +190,179 @@ void Document::CancelChange() {
     m_open.reset();
     m_openIndex.clear();
     Apply(step, false);
+}
+
+// ---------------------------------------------------------------------------
+// Layers
+// ---------------------------------------------------------------------------
+
+void Document::IndexLayers() {
+    int maxId = 0;
+    for (const Layer& l : m_layers) maxId = std::max(maxId, l.id);
+    m_layerIndex.assign((size_t)maxId + 1, -1);
+    for (size_t i = 0; i < m_layers.size(); ++i) m_layerIndex[(size_t)m_layers[i].id] = (int)i;
+}
+
+const Layer* Document::FindLayer(int id) const {
+    if (id < 0 || (size_t)id >= m_layerIndex.size() || m_layerIndex[(size_t)id] < 0) return nullptr;
+    return &m_layers[(size_t)m_layerIndex[(size_t)id]];
+}
+
+namespace {
+std::wstring Lower(std::wstring s) {
+    for (wchar_t& c : s) c = (wchar_t)towlower(c);
+    return s;
+}
+}  // namespace
+
+const Layer* Document::LayerByName(const std::wstring& name) const {
+    const std::wstring n = Lower(name);
+    for (const Layer& l : m_layers)
+        if (Lower(l.name) == n) return &l;
+    return nullptr;
+}
+
+void Document::SetLayers(std::vector<Layer> layers, const std::wstring& stepName) {
+    const bool implicit = !m_open;
+    if (implicit) BeginChange(stepName);
+    if (!m_open->layersBefore) m_open->layersBefore = m_layers;
+    m_layers = std::move(layers);
+    IndexLayers();
+    m_open->layersAfter = m_layers;
+    Touch();
+    if (implicit) EndChange();
+}
+
+int Document::AddLayer(Layer layer) {
+    int id = 0;
+    for (const Layer& l : m_layers) id = std::max(id, l.id + 1);
+    layer.id = id;
+    if (layer.name.empty()) layer.name = L"Layer" + std::to_wstring(id);
+    const std::wstring base = layer.name;
+    for (int k = 2; LayerByName(layer.name); ++k) layer.name = base + L" (" + std::to_wstring(k) + L")";
+    std::vector<Layer> ls = m_layers;
+    ls.push_back(layer);
+    SetLayers(std::move(ls), L"New layer");
+    return id;
+}
+
+void Document::UpdateLayer(const Layer& layer) {
+    std::vector<Layer> ls = m_layers;
+    for (Layer& l : ls)
+        if (l.id == layer.id) l = layer;
+    if (layer.id == 0) ls[(size_t)m_layerIndex[0]].name = L"0";  // layer 0 keeps its name
+    SetLayers(std::move(ls), L"Layer");
+}
+
+size_t Document::LayerUse(int id) const {
+    size_t n = 0;
+    for (const auto& kv : m_entities) n += kv.second.layer == id;
+    return n;
+}
+
+bool Document::DeleteLayer(int id, std::wstring& why) {
+    if (id == 0) {
+        why = L"Layer 0 cannot be deleted.";
+        return false;
+    }
+    if (id == m_current.layer) {
+        why = L"The current layer cannot be deleted. Make another one current first.";
+        return false;
+    }
+    if (const size_t n = LayerUse(id)) {
+        why = L"The layer has " + std::to_wstring(n) + L" object(s) on it. Move or erase them first.";
+        return false;
+    }
+    std::vector<Layer> ls;
+    for (const Layer& l : m_layers)
+        if (l.id != id) ls.push_back(l);
+    SetLayers(std::move(ls), L"Delete layer");
+    return true;
+}
+
+void Document::SetCurrent(const CurrentStyle& c) {
+    m_current = c;
+    if (!FindLayer(m_current.layer)) m_current.layer = 0;
+    m_settingsChanged = true;
+    Touch();
+}
+
+void Document::SaveLayerState(const std::wstring& name) {
+    for (LayerState& s : m_states)
+        if (Lower(s.name) == Lower(name)) {
+            s.layers = m_layers;
+            m_settingsChanged = true;
+            return;
+        }
+    m_states.push_back({name, m_layers});
+    m_settingsChanged = true;
+}
+
+bool Document::RestoreLayerState(const std::wstring& name) {
+    for (const LayerState& s : m_states) {
+        if (Lower(s.name) != Lower(name)) continue;
+        std::vector<Layer> ls = m_layers;
+        for (Layer& l : ls)
+            for (const Layer& saved : s.layers)
+                if (Lower(saved.name) == Lower(l.name)) {
+                    const int id = l.id;
+                    const std::wstring nm = l.name;
+                    l = saved;
+                    l.id = id;
+                    l.name = nm;
+                }
+        SetLayers(std::move(ls), L"Restore layer state");
+        return true;
+    }
+    return false;
+}
+
+void Document::DeleteLayerState(const std::wstring& name) {
+    m_states.erase(std::remove_if(m_states.begin(), m_states.end(),
+                                  [&](const LayerState& s) { return Lower(s.name) == Lower(name); }),
+                   m_states.end());
+    m_settingsChanged = true;
+}
+
+bool Document::Visible(const Entity& e) const {
+    const Layer* l = FindLayer(e.layer);
+    return !l || (l->on && !l->frozen);
+}
+
+bool Document::Editable(const Entity& e) const {
+    const Layer* l = FindLayer(e.layer);
+    return !l || (l->on && !l->frozen && !l->locked);
+}
+
+Look Document::LookOf(const Entity& e, const Entity* block) const {
+    Look k;
+    const Layer* l = FindLayer(e.layer);
+    static const Layer zero = [] {
+        Layer z;
+        z.name = L"0";
+        return z;
+    }();
+    if (!l) l = &zero;
+    // ByBlock takes the block reference's own (or its layer's) setting.
+    int32_t color = e.color;
+    int lt = e.linetype, lw = e.lineweight;
+    const Layer* bl = block ? FindLayer(block->layer) : nullptr;
+    if (color == kByBlock) color = block ? (block->color == kByLayer ? (bl ? bl->color : 7) : block->color) : 7;
+    if (color == kByLayer || color == kByBlock) color = l->color;
+    if (lt == kLtByBlock) lt = block ? (block->linetype == kLtByLayer ? (bl ? bl->linetype : 0) : block->linetype) : 0;
+    if (lt < 0) lt = l->linetype;
+    if (lw == kLwByBlock) lw = block ? (block->lineweight == kLwByLayer ? (bl ? bl->lineweight : kLwDefault) : block->lineweight)
+                                     : kLwDefault;
+    if (lw == kLwByLayer) lw = l->lineweight;
+    if (lw < 0) lw = kDefaultLineWeight;
+    k.foreground = color == 7 || color == 255 || color == (kTrueColor | 0xFFFFFF);
+    k.rgb = ColorRgb(color);
+    k.linetype = lt;
+    k.lineweight = lw;
+    k.ltscale = m_settings.ltscale * e.ltscale * (block ? block->ltscale : 1.0);
+    k.construction = e.construction;
+    k.locked = l->locked;
+    return k;
 }
 
 void Document::Record(uint64_t id, const Entity* before, const Entity* after) {
@@ -205,6 +385,17 @@ uint64_t Document::Add(Entity e) {
     if (implicit) BeginChange(L"Add");
     const uint64_t id = m_nextId++;
     e.id = id;
+    if (e.layer < 0 || !FindLayer(e.layer)) {
+        // A new object: the current layer and style.
+        const bool fresh = e.layer < 0;
+        e.layer = m_current.layer;
+        if (fresh) {
+            e.color = m_current.color;
+            e.linetype = (int16_t)m_current.linetype;
+            e.lineweight = (int16_t)m_current.lineweight;
+            e.ltscale = (float)m_current.ltscale;
+        }
+    }
     Entity& stored = m_entities[id];
     stored = std::move(e);
     Record(id, nullptr, &stored);
@@ -224,9 +415,11 @@ void Document::Erase(uint64_t id) {
     if (implicit) EndChange();
 }
 
-void Document::Replace(const Entity& e) {
-    auto it = m_entities.find(e.id);
+void Document::Replace(const Entity& eIn) {
+    auto it = m_entities.find(eIn.id);
     if (it == m_entities.end()) return;
+    Entity e = eIn;
+    if (e.layer < 0) CopyStyle(it->second, e);  // a newly made shape in its place keeps the look
     const bool implicit = !m_open;
     if (implicit) BeginChange(L"Change");
     Record(e.id, &it->second, &e);
@@ -343,6 +536,11 @@ void Document::Apply(const Step& step, bool forward) {
         if (target) m_entities[c.id] = *target;
         else m_entities.erase(c.id);
     }
+    if (const auto& layers = forward ? step.layersAfter : step.layersBefore) {
+        m_layers = *layers;
+        IndexLayers();
+        if (!FindLayer(m_current.layer)) m_current.layer = 0;
+    }
     Touch();
 }
 
@@ -377,7 +575,7 @@ void Document::MarkSaved() {
 }
 
 void Document::SetSettings(const DrawingSettings& s) {
-    if (s.units == m_settings.units && s.precision == m_settings.precision && s.dimStyle == m_settings.dimStyle) return;
+    if (s == m_settings) return;
     m_settings = s;
     m_settings.precision = std::clamp(m_settings.precision, 0, 8);
     m_settingsChanged = true;
@@ -388,6 +586,12 @@ void Document::Clear() {
     m_open.reset();
     m_openIndex.clear();
     m_entities.clear();
+    m_layers.resize(1);
+    m_layers[0] = Layer{};
+    m_layers[0].name = L"0";
+    IndexLayers();
+    m_current = CurrentStyle{};
+    m_states.clear();
     m_undo.clear();
     m_redo.clear();
     m_nextId = 1;
@@ -399,7 +603,8 @@ void Document::Clear() {
 Box Document::Extents() const {
     if (m_extentsRevision != m_revision) {
         m_extents = Box();
-        for (const auto& kv : m_entities) m_extents.Add(Bounds(kv.second));
+        for (const auto& kv : m_entities)
+            if (Visible(kv.second)) m_extents.Add(Bounds(kv.second));
         m_extentsRevision = m_revision;
     }
     return m_extents;
@@ -472,6 +677,8 @@ std::wstring DecodeWord(const std::string& s) {
 }
 
 using Ordinals = std::map<uint64_t, size_t>;
+
+void WriteStyled(const Entity& e, std::string& out, const Ordinals* ordinals);
 
 void WriteEntity(const Entity& e, std::string& out, const Ordinals* ordinals = nullptr) {
     auto num = [&](double v) {
@@ -557,16 +764,45 @@ void WriteEntity(const Entity& e, std::string& out, const Ordinals* ordinals = n
             num((double)a.items.size());
             out += '\n';
             if (a.kind == ArrayData::Path) {
-                WriteEntity(a.path.empty() ? Entity::Line({0, 0}, {1, 0}) : a.path[0], out);
+                WriteStyled(a.path.empty() ? Entity::Line({0, 0}, {1, 0}) : a.path[0], out, nullptr);
                 out += '\n';
             }
             for (size_t i = 0; i < a.items.size(); ++i) {
-                WriteEntity(a.items[i], out);
+                WriteStyled(a.items[i], out, nullptr);
                 if (i + 1 < a.items.size()) out += '\n';
             }
             break;
         }
     }
+}
+
+// How an object looks, as key=value words: L layer, C colour, T line type,
+// W line weight, S line type scale, K construction.
+std::string StyleWords(const Entity& e) {
+    std::string w;
+    if (e.layer > 0) w += " L=" + std::to_string(e.layer);
+    if (e.color != kByLayer) w += " C=" + std::to_string(e.color);
+    if (e.linetype != kLtByLayer) w += " T=" + std::to_string(e.linetype);
+    if (e.lineweight != kLwByLayer) w += " W=" + std::to_string(e.lineweight);
+    if (e.ltscale != 1) w += " S=" + FormatNumber(e.ltscale);
+    if (e.construction) w += " K=1";
+    return w;
+}
+
+void WriteStyled(const Entity& e, std::string& out, const Ordinals* ordinals) {
+    const size_t start = out.size();
+    WriteEntity(e, out, ordinals);
+    const std::string words = StyleWords(e);
+    if (words.empty()) return;
+    const size_t nl = out.find('\n', start);  // an array: on its first line
+    if (nl == std::string::npos) out += words;
+    else out.insert(nl, words);
+}
+
+std::string LayerLine(const char* key, const Layer& l) {
+    const int flags = (l.on ? 0 : 1) | (l.frozen ? 2 : 0) | (l.locked ? 4 : 0) | (l.plot ? 0 : 8);
+    return std::string(key) + " " + std::to_string(l.id) + " " + std::to_string(flags) + " " + std::to_string(l.color) +
+           " " + std::to_string(l.linetype) + " " + std::to_string(l.lineweight) + " name=" + EncodeWord(l.name) + "\n";
 }
 
 struct Reader {
@@ -595,6 +831,47 @@ struct Reader {
             if (!ParseNumber(w[i], d)) return Fail(L"bad number \"" + std::wstring(w[i].begin(), w[i].end()) + L"\"");
             v.push_back(d);
         }
+        return true;
+    }
+    static void ApplyStyle(const std::vector<std::string>& w, Entity& e) {
+        e.layer = 0;
+        for (const std::string& word : w) {
+            if (word.size() < 3 || word[1] != '=') continue;
+            double v;
+            if (!ParseNumber(word.substr(2), v)) continue;
+            switch (word[0]) {
+                case 'L': e.layer = std::max(0, (int)v); break;
+                case 'C': e.color = (int32_t)v; break;
+                case 'T': e.linetype = (int16_t)std::clamp((int)v, -2, (int)LineTypes().size() - 1); break;
+                case 'W': e.lineweight = (int16_t)std::clamp((int)v, -3, 211); break;
+                case 'S': e.ltscale = v > 0 ? (float)v : 1.0f; break;
+                case 'K': e.construction = v != 0; break;
+                default: break;
+            }
+        }
+    }
+    bool ObjectStyled(const std::vector<std::string>& w, Entity& out, bool& known, int depth = 0) {
+        if (!Object(w, out, known, depth)) return false;
+        if (known) ApplyStyle(w, out);
+        return true;
+    }
+    // "layer id flags colour linetype lineweight name=..."
+    bool ReadLayer(const std::vector<std::string>& w, Layer& l) {
+        std::vector<double> v;
+        if (!Numbers(w, 1, v) || v.size() < 5) return error.empty() ? Fail(L"a layer needs 5 numbers") : false;
+        l.id = std::max(0, (int)v[0]);
+        const int flags = (int)v[1];
+        l.on = !(flags & 1);
+        l.frozen = (flags & 2) != 0;
+        l.locked = (flags & 4) != 0;
+        l.plot = !(flags & 8);
+        l.color = (int32_t)v[2];
+        if (l.color == kByLayer || l.color == kByBlock) l.color = 7;
+        l.linetype = std::clamp((int)v[3], 0, (int)LineTypes().size() - 1);
+        l.lineweight = std::clamp((int)v[4], -3, 211);
+        for (const std::string& word : w)
+            if (word.compare(0, 5, "name=") == 0) l.name = DecodeWord(word.substr(5));
+        if (l.name.empty()) l.name = L"Layer" + std::to_wstring(l.id);
         return true;
     }
     // Reads one object from words `w` (more lines for arrays). `known` is
@@ -639,7 +916,7 @@ struct Reader {
                 if (!Next(iw)) return Fail(L"the array's objects are missing");
                 Entity item;
                 bool k;
-                if (!Object(iw, item, k, depth + 1)) return false;
+                if (!ObjectStyled(iw, item, k, depth + 1)) return false;
                 if (!k) return Fail(L"unknown object inside an array");
                 if (a.kind == ArrayData::Path && i == 0) a.path.push_back(std::move(item));
                 else a.items.push_back(std::move(item));
@@ -744,37 +1021,62 @@ std::string Document::ToText() const {
     out += "dimstyle " + FormatNumber(st.textHeight) + " " + FormatNumber(st.arrowSize) + " " +
            FormatNumber(st.extOffset) + " " + FormatNumber(st.extBeyond) + " " + FormatNumber(st.textGap) + " " +
            std::to_string(st.precision) + " " + (st.trimZeros ? "1" : "0") + "\n";
+    if (m_settings.ltscale != 1) out += "ltscale " + FormatNumber(m_settings.ltscale) + "\n";
+    if (m_settings.origin != Vec2{}) out += "origin " + FormatNumber(m_settings.origin.x) + " " + FormatNumber(m_settings.origin.y) + "\n";
+    for (const Layer& l : m_layers) out += LayerLine("layer", l);
+    out += "current " + std::to_string(m_current.layer) + " " + std::to_string(m_current.color) + " " +
+           std::to_string(m_current.linetype) + " " + std::to_string(m_current.lineweight) + " " +
+           FormatNumber(m_current.ltscale) + "\n";
+    for (const LayerState& ls : m_states) {
+        out += "layerstate " + std::to_string(ls.layers.size()) + " name=" + EncodeWord(ls.name) + "\n";
+        for (const Layer& l : ls.layers) out += LayerLine("statelayer", l);
+    }
     Ordinals ordinals;
     size_t ord = 0;
     for (const auto& kv : m_entities) ordinals[kv.first] = ++ord;
     for (const auto& kv : m_entities) {
-        WriteEntity(kv.second, out, &ordinals);
+        WriteStyled(kv.second, out, &ordinals);
         out += '\n';
     }
     out += "end\n";
     return out;
 }
 
-std::string Document::ObjectsToText(const std::vector<Entity>& entities) {
+std::string Document::ObjectsToText(const std::vector<Entity>& entities) const {
     std::string out = std::string(kMagic) + " " + std::to_string(kFormatVersion) + "\n";
+    // The layers they are on, so another drawing can match them by name.
+    std::set<int> used;
+    for (const Entity& e : entities) used.insert(e.layer);
+    for (const Layer& l : m_layers)
+        if (used.count(l.id)) out += LayerLine("layer", l);
     Ordinals ordinals;
     size_t ord = 0;
     for (const Entity& e : entities) ordinals[e.id] = ++ord;
     for (const Entity& e : entities) {
-        WriteEntity(e, out, &ordinals);
+        WriteStyled(e, out, &ordinals);
         out += '\n';
     }
     out += "end\n";
     return out;
 }
 
-bool Document::ObjectsFromText(const std::string& text, std::vector<Entity>& out) {
+bool Document::ObjectsFromText(const std::string& text, std::vector<Entity>& out, std::vector<Layer>* layers) {
     Document d;
     std::wstring error;
     if (!d.FromText(text, error)) return false;
     out.clear();
     for (const auto& kv : d.Entities()) out.push_back(kv.second);  // ids 1..n, refs among them
+    if (layers) *layers = d.Layers();
     return true;
+}
+
+std::map<int, int> Document::MergeLayers(const std::vector<Layer>& from) {
+    std::map<int, int> ids;
+    for (const Layer& l : from) {
+        if (const Layer* mine = LayerByName(l.name)) ids[l.id] = mine->id;
+        else ids[l.id] = AddLayer(l);
+    }
+    return ids;
 }
 
 bool Document::FromText(const std::string& text, std::wstring& error) {
@@ -798,6 +1100,9 @@ bool Document::FromText(const std::string& text, std::wstring& error) {
     }
     // Newer versions are read as far as this one understands them.
     DrawingSettings settings;
+    std::vector<Layer> layers;
+    std::vector<LayerState> states;
+    CurrentStyle current;
     std::vector<Entity> ents;
     std::vector<long long> ordinalToIndex;
     bool ended = false;
@@ -817,6 +1122,36 @@ bool Document::FromText(const std::string& text, std::wstring& error) {
                 return false;
             }
             if (!v.empty()) settings.precision = std::clamp((int)v[0], 0, 8);
+        } else if (key == "layer" || key == "statelayer") {
+            Layer l;
+            if (!r.ReadLayer(w, l)) {
+                error = r.error;
+                return false;
+            }
+            if (key == "layer") layers.push_back(l);
+            else if (!states.empty()) states.back().layers.push_back(l);
+        } else if (key == "layerstate") {
+            LayerState ls;
+            for (const std::string& word : w)
+                if (word.compare(0, 5, "name=") == 0) ls.name = DecodeWord(word.substr(5));
+            states.push_back(ls);
+        } else if (key == "current" || key == "ltscale" || key == "origin") {
+            std::vector<double> v;
+            if (!r.Numbers(w, 1, v)) {
+                error = r.error;
+                return false;
+            }
+            if (key == "current" && v.size() >= 5) {
+                current.layer = (int)v[0];
+                current.color = (int32_t)v[1];
+                current.linetype = std::clamp((int)v[2], -2, (int)LineTypes().size() - 1);
+                current.lineweight = std::clamp((int)v[3], -3, 211);
+                current.ltscale = v[4] > 0 ? v[4] : 1;
+            } else if (key == "ltscale" && !v.empty() && v[0] > 0) {
+                settings.ltscale = v[0];
+            } else if (key == "origin" && v.size() >= 2) {
+                settings.origin = {v[0], v[1]};
+            }
         } else if (key == "dimstyle") {
             std::vector<double> v;
             if (!r.Numbers(w, 1, v)) {
@@ -836,7 +1171,7 @@ bool Document::FromText(const std::string& text, std::wstring& error) {
         } else {
             Entity e;
             bool known = false;
-            if (!r.Object(w, e, known)) {
+            if (!r.ObjectStyled(w, e, known)) {
                 error = r.error;
                 return false;
             }
@@ -865,7 +1200,19 @@ bool Document::FromText(const std::string& text, std::wstring& error) {
     }
     Clear();
     m_settings = settings;
+    if (!layers.empty()) {
+        // Layer 0 is always there.
+        bool zero = false;
+        for (const Layer& l : layers) zero |= l.id == 0;
+        if (!zero) layers.insert(layers.begin(), m_layers[0]);
+        m_layers = layers;
+        IndexLayers();
+    }
+    m_states = states;
+    m_current = current;
+    if (!FindLayer(m_current.layer)) m_current.layer = 0;
     for (Entity& e : ents) {
+        if (!FindLayer(e.layer)) e.layer = 0;
         e.id = m_nextId++;
         m_entities[e.id] = std::move(e);
     }
@@ -887,6 +1234,10 @@ bool Document::FromDxf(const std::string& text, std::wstring& error, std::wstrin
     Clear();
     m_settings = settings;
     m_settings.precision = std::clamp(m_settings.precision, 0, 8);
+    m_settings.ltscale = r.ltscale;
+    m_layers = r.layers;
+    IndexLayers();
+    if (const Layer* cur = LayerByName(r.currentLayer)) m_current.layer = cur->id;
     for (Entity& e : r.entities) {
         e.id = m_nextId++;
         m_entities[e.id] = std::move(e);
@@ -908,6 +1259,15 @@ std::string Document::ToDxf() const {
         out += "\r\n";
     };
     auto num = [&](int code, double v) { group(code, FormatNumber(v)); };
+    // Line type patterns are in millimetres; DXF wants drawing units.
+    double unitsPerMm = 1;
+    switch (m_settings.units) {
+        case Units::Centimetres: unitsPerMm = 0.1; break;
+        case Units::Metres: unitsPerMm = 0.001; break;
+        case Units::Inches: unitsPerMm = 1 / 25.4; break;
+        case Units::Feet: unitsPerMm = 1 / 304.8; break;
+        default: break;
+    }
     auto point = [&](int code, Vec2 p) {
         num(code, p.x);
         num(code + 10, p.y);
@@ -920,6 +1280,8 @@ std::string Document::ToDxf() const {
     group(1, "AC1009");
     group(9, "$INSUNITS");
     group(70, std::to_string(DxfInsUnits(m_settings.units)));
+    group(9, "$LTSCALE");
+    num(40, m_settings.ltscale);
     group(9, "$MEASUREMENT");
     group(70, (m_settings.units == Units::Inches || m_settings.units == Units::Feet) ? "0" : "1");
     const Box ext = Extents();
@@ -933,16 +1295,27 @@ std::string Document::ToDxf() const {
 
     group(0, "SECTION");
     group(2, "TABLES");
+    // Line types in use (and CONTINUOUS), in drawing units.
+    std::set<int> usedLt = {0};
+    for (const Layer& l : m_layers) usedLt.insert(l.linetype);
+    for (const auto& kv : m_entities)
+        if (kv.second.linetype >= 0) usedLt.insert(kv.second.linetype);
     group(0, "TABLE");
     group(2, "LTYPE");
-    group(70, "1");
-    group(0, "LTYPE");
-    group(2, "CONTINUOUS");
-    group(70, "0");
-    group(3, "Solid line");
-    group(72, "65");
-    group(73, "0");
-    group(40, "0.0");
+    group(70, std::to_string(usedLt.size()));
+    for (int lt : usedLt) {
+        const LineTypeDef& def = LineTypes()[(size_t)lt];
+        group(0, "LTYPE");
+        group(2, TextToUtf8(def.name));
+        group(70, "0");
+        group(3, TextToUtf8(def.description));
+        group(72, "65");
+        group(73, std::to_string(def.pattern.size()));
+        double total = 0;
+        for (double d : def.pattern) total += std::fabs(d);
+        num(40, total * unitsPerMm);
+        for (double d : def.pattern) num(49, d * unitsPerMm);
+    }
     group(0, "ENDTAB");
     group(0, "TABLE");
     group(2, "STYLE");
@@ -958,14 +1331,26 @@ std::string Document::ToDxf() const {
     group(3, "txt");
     group(4, "");
     group(0, "ENDTAB");
+    bool anyConstruction = false;
+    for (const auto& kv : m_entities) anyConstruction |= kv.second.construction;
     group(0, "TABLE");
     group(2, "LAYER");
-    group(70, "1");
-    group(0, "LAYER");
-    group(2, "0");
-    group(70, "0");
-    group(62, "7");
-    group(6, "CONTINUOUS");
+    group(70, std::to_string(m_layers.size() + (anyConstruction ? 1 : 0)));
+    for (const Layer& l : m_layers) {
+        group(0, "LAYER");
+        group(2, TextToUtf8(l.name));
+        group(70, std::to_string((l.frozen ? 1 : 0) | (l.locked ? 4 : 0)));
+        const int aci = (l.color & kTrueColor) ? NearestAci((uint32_t)l.color & 0xFFFFFF) : std::clamp(l.color, 1, 255);
+        group(62, std::to_string(l.on ? aci : -aci));  // negative: off
+        group(6, TextToUtf8(LineTypeName(l.linetype)));
+    }
+    if (anyConstruction) {  // construction geometry: on the layer AutoCAD never prints
+        group(0, "LAYER");
+        group(2, "Defpoints");
+        group(70, "0");
+        group(62, "8");
+        group(6, "CONTINUOUS");
+    }
     group(0, "ENDTAB");
     group(0, "ENDSEC");
 
@@ -978,23 +1363,34 @@ std::string Document::ToDxf() const {
     // Arrays have no equivalent in DXF R12: their copies are written.
     std::vector<Entity> flat;
     for (const auto& kv : m_entities) ExpandArray(kv.second, flat);
+    // Layer, colour, line type and scale of an object.
+    auto common = [&](const Entity& e) {
+        const Layer* l = FindLayer(e.layer);
+        group(8, e.construction ? "Defpoints" : TextToUtf8(l ? l->name : L"0"));
+        if (e.color == kByBlock) group(62, "0");
+        else if (e.color != kByLayer)
+            group(62, std::to_string((e.color & kTrueColor) ? NearestAci((uint32_t)e.color & 0xFFFFFF)
+                                                           : std::clamp((int)e.color, 1, 255)));
+        if (e.linetype >= 0 || e.linetype == kLtByBlock) group(6, TextToUtf8(LineTypeName(e.linetype)));
+        if (e.ltscale != 1) num(48, e.ltscale);
+    };
     for (const Entity& e : flat) {
         switch (e.type) {
             case EntityType::Line:
                 group(0, "LINE");
-                group(8, "0");
+                common(e);
                 point(10, e.p0);
                 point(11, e.p1);
                 break;
             case EntityType::Circle:
                 group(0, "CIRCLE");
-                group(8, "0");
+                common(e);
                 point(10, e.p0);
                 num(40, e.radius);
                 break;
             case EntityType::Arc:
                 group(0, "ARC");
-                group(8, "0");
+                common(e);
                 point(10, e.p0);
                 num(40, e.radius);
                 num(50, ToDegrees(e.startAngle));
@@ -1002,18 +1398,18 @@ std::string Document::ToDxf() const {
                 break;
             case EntityType::Polyline:
                 group(0, "POLYLINE");
-                group(8, "0");
+                common(e);
                 group(66, "1");
                 point(10, {0, 0});
                 group(70, e.closed ? "1" : "0");
                 for (const Vertex& v : e.verts) {
                     group(0, "VERTEX");
-                    group(8, "0");
+                    common(e);
                     point(10, v.p);
                     if (v.bulge != 0) num(42, v.bulge);
                 }
                 group(0, "SEQEND");
-                group(8, "0");
+                common(e);
                 break;
             case EntityType::Ellipse:
             case EntityType::Spline: {
@@ -1024,22 +1420,22 @@ std::string Document::ToDxf() const {
                 const bool closed = e.closed && pts.size() > 2;
                 if (closed) pts.pop_back();
                 group(0, "POLYLINE");
-                group(8, "0");
+                common(e);
                 group(66, "1");
                 point(10, {0, 0});
                 group(70, closed ? "1" : "0");
                 for (Vec2 p : pts) {
                     group(0, "VERTEX");
-                    group(8, "0");
+                    common(e);
                     point(10, p);
                 }
                 group(0, "SEQEND");
-                group(8, "0");
+                common(e);
                 break;
             }
             case EntityType::Point:
                 group(0, "POINT");
-                group(8, "0");
+                common(e);
                 point(10, e.p0);
                 break;
             case EntityType::Dimension: {
@@ -1050,12 +1446,12 @@ std::string Document::ToDxf() const {
                 for (const Prim& p : g.lines) {
                     if (p.kind == Prim::Segment) {
                         group(0, "LINE");
-                        group(8, "0");
+                        common(e);
                         point(10, p.a);
                         point(11, p.b);
                     } else {
                         group(0, "ARC");
-                        group(8, "0");
+                        common(e);
                         point(10, p.c);
                         num(40, p.r);
                         num(50, ToDegrees(NormalizeAngle(p.start)));
@@ -1064,7 +1460,7 @@ std::string Document::ToDxf() const {
                 }
                 for (const auto& a : g.arrows) {
                     group(0, "SOLID");
-                    group(8, "0");
+                    common(e);
                     point(10, a[0]);
                     point(11, a[1]);
                     point(12, a[2]);
@@ -1080,7 +1476,7 @@ std::string Document::ToDxf() const {
                 }
                 if (!t.empty()) {
                     group(0, "TEXT");
-                    group(8, "0");
+                    common(e);
                     point(10, g.textPos);
                     num(40, g.textHeight);
                     group(1, t);

@@ -68,6 +68,7 @@ struct Drafting {
     double polarAngle = 15;   // degrees between tracking directions
     bool otrackOn = true;     // object snap tracking (F11)
     bool dynOn = true;        // input and prompt at the cursor (F12)
+    bool lwDisplay = false;   // show line weights (LWT)
 };
 
 class EngineHost {
@@ -137,8 +138,10 @@ public:
     const std::vector<std::wstring>& RecentCommands() const { return m_recent; }
     Vec2 LastPoint() const { return m_lastPoint; }
     bool LastPointShift() const { return m_lastShift; }  // Shift was held for the last click
-    // The object under p (within the pick radius), the top one if several; 0 if none.
-    uint64_t PickEntity(Vec2 p) const;
+    // The object under p (within the pick radius), the top one if several; 0
+    // if none. Objects on locked layers only when `lockedToo` (to measure,
+    // not to change).
+    uint64_t PickEntity(Vec2 p, bool lockedToo = false) const;
 
     // One-shot object snap typed at a point prompt (END, MID...), or 0.
     unsigned SnapOverride() const { return m_snapOverride; }

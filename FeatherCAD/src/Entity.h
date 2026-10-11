@@ -32,6 +32,15 @@ struct Entity {
                                 // all of it; endAngle < startAngle: across the start of a closed one)
     std::vector<Vertex> verts;  // polyline vertices; spline fit points (bulge unused)
     bool closed = false;        // polyline and spline: back to the start; ellipse: full ellipse
+    // How it looks (Style.h): layer id (-1: the current layer when added),
+    // colour, line type, line weight, line type scale. Construction geometry
+    // is for reference: shown faintly, not printed.
+    int layer = -1;
+    int32_t color = -1;
+    int16_t linetype = -1;
+    int16_t lineweight = -1;
+    float ltscale = 1;
+    bool construction = false;
     // Array: shared and never changed in place (a change makes a new copy),
     // so copies of an array entity (undo history) cost nothing.
     std::shared_ptr<const ArrayData> array;
@@ -74,6 +83,8 @@ struct ArrayData {
 };
 
 const wchar_t* TypeName(EntityType type);
+// Gives `to` the layer, colour, line type and weight of `from`.
+void CopyStyle(const Entity& from, Entity& to);
 
 // Points along an ellipse (with their parameters) and a spline, fine enough
 // to stand for the curve in hit tests, snaps and intersections.

@@ -3,6 +3,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <map>
+#include <tuple>
 
 #include <windowsx.h>
 
@@ -242,7 +244,7 @@ void Canvas::Refresh() {
     const Drafting& d = m_engine->Draft();
     if (!m_engine->Active() || !d.otrackOn) m_acquired.clear();
     if (m_shownRevision != m_doc->Revision() || m_shownSelection != m_engine->SelectionRevision() ||
-        m_shownGrid != d.gridOn || m_shownGridSpacing != d.gridSpacing)
+        m_shownGrid != d.gridOn || m_shownGridSpacing != d.gridSpacing || m_shownLw != d.lwDisplay)
         m_layerValid = false;
     if (!m_engine->WantsSelection() && m_windowOn) {
         m_windowOn = false;
@@ -287,6 +289,7 @@ void Canvas::LoadColours() {
         m_labelBg = Rgb(52, 58, 70, 0.95f);
         m_labelText = Rgb(236, 239, 244);
         m_removeInk = Rgb(255, 90, 90);
+        m_constructionInk = Rgb(120, 150, 200, 0.8f);
     } else {
         m_bg = Rgb(255, 255, 255);
         m_fg = Rgb(20, 20, 24);
@@ -302,6 +305,7 @@ void Canvas::LoadColours() {
         m_labelBg = Rgb(250, 250, 252, 0.97f);
         m_labelText = Rgb(20, 20, 24);
         m_removeInk = Rgb(220, 30, 30);
+        m_constructionInk = Rgb(110, 140, 190, 0.8f);
     }
     m_gripFill = Rgb(40, 110, 255);
     m_gripHover = Rgb(255, 120, 150);
@@ -337,7 +341,7 @@ void Canvas::ReleaseTarget() {
     SafeRelease(m_target);
 }
 
-ID2D1PathGeometry* Canvas::BuildGeometry(const std::vector<const Entity*>& entities) {
+ID2D1PathGeometry* Canvas::BuildGeometry(const std::vector<const Entity*>& entities, const std::vector<float>* dashes) {
     ID2D1PathGeometry* geo = nullptr;
     ID2D1GeometrySink* sink = nullptr;
     if (FAILED(m_factory->CreatePathGeometry(&geo))) return nullptr;
@@ -349,14 +353,84 @@ ID2D1PathGeometry* Canvas::BuildGeometry(const std::vector<const Entity*>& entit
     const Box cull = view.Inflated(Px(4) / m_scale);
     const Box safe = view.Inflated(kSafeCoord / m_scale);
     std::vector<Prim> prims;
+    // Figures go through the pen: with a dash pattern (pixels: on, off, on...)
+    // it lifts and lowers itself along the way, the pattern starting again at
+    // each figure.
+    struct Pen {
+        ID2D1GeometrySink* sink;
+        const std::vector<float>* dash;
+        D2D1_POINT_2F start{}, last{};
+        size_t index = 0;
+        float left = 0;
+        bool down = false;
+        void Begin(D2D1_POINT_2F p) {
+            start = last = p;
+            if (!dash) {
+                sink->BeginFigure(p, D2D1_FIGURE_BEGIN_HOLLOW);
+                return;
+            }
+            index = 0;
+            left = (*dash)[0];
+            down = false;
+        }
+        void Line(D2D1_POINT_2F p) {
+            if (!dash) {
+                sink->AddLine(p);
+                last = p;
+                return;
+            }
+            const float dx = p.x - last.x, dy = p.y - last.y;
+            const float len = std::sqrt(dx * dx + dy * dy);
+            auto advance = [&] {
+                index = (index + 1) % dash->size();
+                left = (*dash)[index];
+            };
+            float at = 0;
+            int guard = 0;
+            while (at < len - 1e-6f && ++guard < 100000) {
+                const bool on = index % 2 == 0;
+                const D2D1_POINT_2F a = {last.x + dx * at / len, last.y + dy * at / len};
+                if (on && left <= 0.01f) {  // a dot: a short mark
+                    if (down) sink->EndFigure(D2D1_FIGURE_END_OPEN), down = false;
+                    sink->BeginFigure(a, D2D1_FIGURE_BEGIN_HOLLOW);
+                    sink->AddLine({a.x + dx / len * 0.75f, a.y + dy / len * 0.75f});
+                    sink->EndFigure(D2D1_FIGURE_END_OPEN);
+                    advance();
+                    continue;
+                }
+                const float step = std::min(left, len - at);
+                const D2D1_POINT_2F b = {last.x + dx * (at + step) / len, last.y + dy * (at + step) / len};
+                if (on) {
+                    if (!down) sink->BeginFigure(a, D2D1_FIGURE_BEGIN_HOLLOW), down = true;
+                    sink->AddLine(b);
+                }
+                at += step;
+                left -= step;
+                if (left <= 1e-4f) {
+                    if (on && down) sink->EndFigure(D2D1_FIGURE_END_OPEN), down = false;
+                    advance();
+                }
+            }
+            last = p;
+        }
+        void End(bool closed) {
+            if (!dash) {
+                sink->EndFigure(closed ? D2D1_FIGURE_END_CLOSED : D2D1_FIGURE_END_OPEN);
+                return;
+            }
+            if (closed) Line(start);
+            if (down) sink->EndFigure(D2D1_FIGURE_END_OPEN);
+            down = false;
+        }
+    } pen{sink, dashes && !dashes->empty() ? dashes : nullptr};
 
     auto line = [&](Vec2 a, Vec2 b) {
         if (!safe.Contains(a) || !safe.Contains(b)) {
             if (!ClipSegment(a, b, cull)) return;
         }
-        sink->BeginFigure(ToScreen(a), D2D1_FIGURE_BEGIN_HOLLOW);
-        sink->AddLine(ToScreen(b));
-        sink->EndFigure(D2D1_FIGURE_END_OPEN);
+        pen.Begin(ToScreen(a));
+        pen.Line(ToScreen(b));
+        pen.End(false);
     };
     // Arcs are drawn as short straight pieces, fine enough that they never
     // stray more than a fraction of a pixel from the true curve (the same on
@@ -372,7 +446,7 @@ ID2D1PathGeometry* Canvas::BuildGeometry(const std::vector<const Entity*>& entit
         const int n = steps(p);
         for (int i = 1; i <= n; ++i) {
             const double t = fromStart ? (double)i / n : 1.0 - (double)i / n;
-            sink->AddLine(ToScreen(i == n ? (fromStart ? p.b : p.a) : Polar(p.c, p.r, p.start + p.sweep * t)));
+            pen.Line(ToScreen(i == n ? (fromStart ? p.b : p.a) : Polar(p.c, p.r, p.start + p.sweep * t)));
         }
     };
     auto arc = [&](const Prim& p) {
@@ -387,9 +461,9 @@ ID2D1PathGeometry* Canvas::BuildGeometry(const std::vector<const Entity*>& entit
             }
             return;
         }
-        sink->BeginFigure(ToScreen(p.a), D2D1_FIGURE_BEGIN_HOLLOW);
+        pen.Begin(ToScreen(p.a));
         addArc(p, true);
-        sink->EndFigure(p.FullCircle() ? D2D1_FIGURE_END_CLOSED : D2D1_FIGURE_END_OPEN);
+        pen.End(p.FullCircle());
     };
 
     // Arrays are drawn as their copies.
@@ -428,9 +502,9 @@ ID2D1PathGeometry* Canvas::BuildGeometry(const std::vector<const Entity*>& entit
                         if (Box(pts[i], pts[i + 1]).Intersects(cull)) line(pts[i], pts[i + 1]);
                     break;
                 }
-                sink->BeginFigure(ToScreen(pts[0]), D2D1_FIGURE_BEGIN_HOLLOW);
-                for (size_t i = 1; i < pts.size(); ++i) sink->AddLine(ToScreen(pts[i]));
-                sink->EndFigure(D2D1_FIGURE_END_OPEN);
+                pen.Begin(ToScreen(pts[0]));
+                for (size_t i = 1; i < pts.size(); ++i) pen.Line(ToScreen(pts[i]));
+                pen.End(false);
                 break;
             }
             case EntityType::Line:
@@ -466,20 +540,20 @@ ID2D1PathGeometry* Canvas::BuildGeometry(const std::vector<const Entity*>& entit
                     break;
                 }
                 // One figure, so the corners are joined properly.
-                sink->BeginFigure(ToScreen(e->verts[0].p), D2D1_FIGURE_BEGIN_HOLLOW);
+                pen.Begin(ToScreen(e->verts[0].p));
                 const size_t n = SegmentCount(*e);
                 for (size_t i = 0; i < n; ++i) {
                     const Vertex& v = e->verts[i];
                     const Vertex& w = e->verts[(i + 1) % e->verts.size()];
                     if (v.bulge == 0) {
-                        sink->AddLine(ToScreen(w.p));
+                        pen.Line(ToScreen(w.p));
                         continue;
                     }
                     // ArcFromBulge returns the arc counter-clockwise: a clockwise
                     // bulge is travelled from its end back to its start.
                     addArc(ArcFromBulge(v.p, w.p, v.bulge), v.bulge > 0);
                 }
-                sink->EndFigure(e->closed ? D2D1_FIGURE_END_CLOSED : D2D1_FIGURE_END_OPEN);
+                pen.End(e->closed);
                 break;
             }
         }
@@ -490,9 +564,9 @@ ID2D1PathGeometry* Canvas::BuildGeometry(const std::vector<const Entity*>& entit
 }
 
 void Canvas::DrawEntities(ID2D1RenderTarget* rt, const std::vector<const Entity*>& ents, D2D1_COLOR_F color,
-                          float width, ID2D1StrokeStyle* style) {
+                          float width, ID2D1StrokeStyle* style, const std::vector<float>* dashes) {
     if (ents.empty()) return;
-    ID2D1PathGeometry* geo = BuildGeometry(ents);
+    ID2D1PathGeometry* geo = BuildGeometry(ents, dashes);
     if (!geo) return;
     ID2D1SolidColorBrush* brush = nullptr;
     rt->CreateSolidColorBrush(color, &brush);
@@ -502,6 +576,65 @@ void Canvas::DrawEntities(ID2D1RenderTarget* rt, const std::vector<const Entity*
         brush->Release();
     }
     geo->Release();
+}
+
+std::vector<float> Canvas::DashPattern(int lt, double scale, bool screen) const {
+    std::vector<float> out;
+    if (lt <= 0 || (size_t)lt >= LineTypes().size()) return out;
+    const std::vector<double>& pat = LineTypes()[(size_t)lt].pattern;
+    if (pat.empty()) return out;
+    // Patterns are in millimetres: in drawing units, then pixels.
+    double perMm = 1;
+    switch (m_doc->Settings().units) {
+        case Units::Centimetres: perMm = 0.1; break;
+        case Units::Metres: perMm = 0.001; break;
+        case Units::Inches: perMm = 1 / 25.4; break;
+        case Units::Feet: perMm = 1 / 304.8; break;
+        default: break;
+    }
+    const double px = screen ? Px(1.5) : perMm * scale * m_scale;
+    double total = 0;
+    for (double d : pat) total += std::fabs(d) * px;
+    if (total < 4 || total > 1e7) return out;  // too fine to see (or absurd): solid
+    for (double d : pat) out.push_back((float)(std::fabs(d) * px));
+    if (out.size() % 2) out.push_back(0);
+    return out;
+}
+
+void Canvas::DrawStyled(ID2D1RenderTarget* rt, const std::vector<const Entity*>& ents) {
+    // Objects that look alike are drawn together.
+    struct Key {
+        uint32_t rgb;
+        bool fg, construction, locked;
+        int lt, lw;
+        double lts;
+        bool operator<(const Key& o) const {
+            return std::tie(rgb, fg, construction, locked, lt, lw, lts) <
+                   std::tie(o.rgb, o.fg, o.construction, o.locked, o.lt, o.lw, o.lts);
+        }
+    };
+    std::map<Key, std::vector<const Entity*>> groups;
+    const bool lwOn = m_engine->Draft().lwDisplay;
+    for (const Entity* e : ents) {
+        const Look k = m_doc->LookOf(*e);
+        groups[{k.rgb, k.foreground, k.construction, k.locked, k.linetype, lwOn ? k.lineweight : 0, k.ltscale}].push_back(e);
+    }
+    for (const auto& g : groups) {
+        const Key& k = g.first;
+        D2D1_COLOR_F color = k.fg ? m_fg : Rgb((k.rgb >> 16) & 255, (k.rgb >> 8) & 255, k.rgb & 255);
+        float width = 1.0f;
+        std::vector<float> dashes;
+        if (k.construction) {
+            color = m_constructionInk;
+            dashes = DashPattern(FindLineType(L"CONSTRUCTION"), 1, true);  // the same at any zoom
+        } else {
+            // Line weight on screen: 0.25 mm is one pixel, thicker ones in proportion.
+            if (lwOn && k.lw > kDefaultLineWeight) width = (float)std::max(1.0, k.lw * 0.04 * m_dpi / 96.0);
+            dashes = DashPattern(k.lt, k.lts);
+        }
+        if (k.locked) color = D2D1::ColorF((color.r + m_bg.r) / 2, (color.g + m_bg.g) / 2, (color.b + m_bg.b) / 2, color.a);
+        DrawEntities(rt, g.second, color, width, nullptr, &dashes);
+    }
 }
 
 void Canvas::DrawDimensionParts(ID2D1RenderTarget* rt, const std::vector<const Entity*>& ents, ID2D1Brush* brush) {
@@ -568,8 +701,9 @@ void Canvas::DrawGrid(ID2D1RenderTarget* rt) {
     const double minPx = Px(8);
     for (int i = 0; spacing * m_scale < minPx && i < 40; ++i) spacing *= (i % 2 == 0) ? 5 : 2;
     const Box view = ViewBox();
-    const long long x0 = (long long)std::floor(view.minX / spacing), x1 = (long long)std::ceil(view.maxX / spacing);
-    const long long y0 = (long long)std::floor(view.minY / spacing), y1 = (long long)std::ceil(view.maxY / spacing);
+    const Vec2 org = m_doc->Settings().origin;  // the grid starts at the origin
+    const long long x0 = (long long)std::floor((view.minX - org.x) / spacing), x1 = (long long)std::ceil((view.maxX - org.x) / spacing);
+    const long long y0 = (long long)std::floor((view.minY - org.y) / spacing), y1 = (long long)std::ceil((view.maxY - org.y) / spacing);
     if (x1 - x0 > 4000 || y1 - y0 > 4000) return;
     // Major lines every fifth line (counted from the origin).
     constexpr long long majorEvery = 5;
@@ -579,13 +713,13 @@ void Canvas::DrawGrid(ID2D1RenderTarget* rt) {
         for (long long i = x0; i <= x1; ++i) {
             const bool major = i % majorEvery == 0;
             if (major != (pass == 1)) continue;
-            const float x = std::floor(ToScreen({i * spacing, 0}).x) + 0.5f;
+            const float x = std::floor(ToScreen({org.x + i * spacing, 0}).x) + 0.5f;
             rt->DrawLine(D2D1::Point2F(x, 0), D2D1::Point2F(x, (float)m_height), m_brush, 1.0f);
         }
         for (long long j = y0; j <= y1; ++j) {
             const bool major = j % majorEvery == 0;
             if (major != (pass == 1)) continue;
-            const float y = std::floor(ToScreen({0, j * spacing}).y) + 0.5f;
+            const float y = std::floor(ToScreen({0, org.y + j * spacing}).y) + 0.5f;
             rt->DrawLine(D2D1::Point2F(0, y), D2D1::Point2F((float)m_width, y), m_brush, 1.0f);
         }
     }
@@ -595,7 +729,7 @@ void Canvas::DrawGrid(ID2D1RenderTarget* rt) {
 void Canvas::DrawUcsIcon(ID2D1RenderTarget* rt) {
     // X and Y arrows at the bottom-left corner (or at the origin when it is in view).
     const float len = (float)Px(36), m = (float)Px(14);
-    D2D1_POINT_2F o = ToScreen({0, 0});
+    D2D1_POINT_2F o = ToScreen(m_doc->Settings().origin);
     if (o.x < m || o.x > m_width - len - m || o.y < len + m || o.y > m_height - m)
         o = D2D1::Point2F(m, (float)m_height - m);
     const float w = (float)Px(1.5), h = (float)Px(5);
@@ -624,7 +758,7 @@ void Canvas::RenderLayer() {
     const Drafting& d = m_engine->Draft();
     if (d.gridOn) DrawGrid(rt);
     // Axes through the origin.
-    const D2D1_POINT_2F o = ToScreen({0, 0});
+    const D2D1_POINT_2F o = ToScreen(m_doc->Settings().origin);
     m_brush->SetColor(D2D1::ColorF(m_axisX.r, m_axisX.g, m_axisX.b, 0.45f));
     rt->DrawLine(D2D1::Point2F(0, o.y), D2D1::Point2F((float)m_width, o.y), m_brush, 1.0f);
     m_brush->SetColor(D2D1::ColorF(m_axisY.r, m_axisY.g, m_axisY.b, 0.45f));
@@ -633,8 +767,11 @@ void Canvas::RenderLayer() {
     std::vector<const Entity*> normal, selected;
     normal.reserve(m_doc->Count());
     const auto& sel = m_engine->Selection();
-    for (const auto& kv : m_doc->Entities()) (sel.count(kv.first) ? selected : normal).push_back(&kv.second);
-    DrawEntities(rt, normal, m_fg, 1.0f, nullptr);
+    for (const auto& kv : m_doc->Entities()) {
+        if (!m_doc->Visible(kv.second)) continue;  // layer off or frozen
+        (sel.count(kv.first) ? selected : normal).push_back(&kv.second);
+    }
+    DrawStyled(rt, normal);
     DrawEntities(rt, selected, m_select, 1.6f, m_dashed);
     DrawUcsIcon(rt);
     if (rt->EndDraw() == (HRESULT)D2DERR_RECREATE_TARGET) {
@@ -645,6 +782,7 @@ void Canvas::RenderLayer() {
     m_shownSelection = m_engine->SelectionRevision();
     m_shownGrid = d.gridOn;
     m_shownGridSpacing = d.gridSpacing;
+    m_shownLw = d.lwDisplay;
     m_layerValid = true;
 }
 
@@ -826,7 +964,7 @@ uint64_t Canvas::PickAt(Vec2 w) const {
     double best = tol;
     uint64_t id = 0;
     for (const auto& kv : m_doc->Entities()) {
-        if (!Bounds(kv.second).Intersects(box)) continue;
+        if (!m_doc->Editable(kv.second) || !Bounds(kv.second).Intersects(box)) continue;
         const double d = DistanceTo(kv.second, w);
         if (d <= best) {  // the later (top) object wins ties
             best = d;
@@ -881,8 +1019,11 @@ void Canvas::OnMouseMove(int x, int y, WPARAM keys) {
         } else {
             StopDwell();
             if (!ResolveTracking(pr, d, p)) {
-                if (d.snapOn && d.snapSpacing > 0)
-                    p = {std::round(p.x / d.snapSpacing) * d.snapSpacing, std::round(p.y / d.snapSpacing) * d.snapSpacing};
+                if (d.snapOn && d.snapSpacing > 0) {
+                    const Vec2 org = m_doc->Settings().origin;
+                    p = {org.x + std::round((p.x - org.x) / d.snapSpacing) * d.snapSpacing,
+                         org.y + std::round((p.y - org.y) / d.snapSpacing) * d.snapSpacing};
+                }
                 if (ortho && pr.hasBase) {
                     const Vec2 delta = p - pr.base;
                     if (std::fabs(delta.x) >= std::fabs(delta.y)) p.y = pr.base.y;

@@ -17,7 +17,7 @@ bool IsOpenCurve(const Entity& e) { return IsCurve(e) && !IsClosedCurve(e); }
 std::vector<Prim> Edges(Engine* E, uint64_t except, const std::vector<uint64_t>& only, const Box* near) {
     std::vector<Prim> prims;
     auto add = [&](const Entity& e) {
-        if (e.id == except || e.type == EntityType::Dimension) return;
+        if (e.id == except || e.type == EntityType::Dimension || !E->Doc().Visible(e)) return;
         if (near && !Bounds(e).Intersects(*near)) return;
         Primitives(e, prims);
     };
@@ -179,6 +179,24 @@ public:
             m_through = true;
             E->lastOffset = -1;
             AskSelect();
+        } else if (k == L"B" && m_step == Side) {
+            // Symmetric: a copy on each side at the same distance.
+            const Entity* e = E->Doc().Find(m_target);
+            if (!e || m_through) {
+                E->Msg(L"Both sides needs a distance (not Through).");
+                return;
+            }
+            StepLog::Step& step = m_log.Begin();
+            int made = 0;
+            for (double side : {1.0, -1.0}) {
+                Entity out;
+                if (OffsetEntity(*E->Doc().Find(m_target), side * m_dist, out)) {
+                    step.added.push_back(E->Doc().Add(out));
+                    ++made;
+                }
+            }
+            if (made < 2) E->Msg(L"Only one side could be offset that far.");
+            AskSelect();
         } else if (k == L"E") {
             E->Finish();
         } else if (k == L"U") {
@@ -213,7 +231,7 @@ public:
                 }
                 m_target = id;
                 E->Ask(P(m_through ? L"Specify through point" : L"Specify point on side to offset", kAcceptPoint,
-                         {{L"E", L"Exit"}, {L"U", L"Undo"}}));
+                         {{L"B", L"Both sides"}, {L"E", L"Exit"}, {L"U", L"Undo"}}));
                 m_step = Side;
                 break;
             }
@@ -449,7 +467,13 @@ public:
             res.second.id = id;
             E->Doc().Replace(res.second);
         }
-        if (res.hasJoin) step.added.push_back(E->Doc().Add(res.join));
+        if (res.hasJoin) {
+            // The new arc or line is on the objects' layer when they share one.
+            const Entity* a = E->Doc().Find(m_first);
+            const Entity* b = E->Doc().Find(id);
+            if (a && b && a->layer == b->layer) CopyStyle(*a, res.join);
+            step.added.push_back(E->Doc().Add(res.join));
+        }
         Done();
     }
     void OnKeyword(const std::wstring& k) override {

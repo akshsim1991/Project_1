@@ -16,7 +16,7 @@ public:
 
     void SetCoordinates(const std::wstring& text);
     void SetInfo(const std::wstring& text);  // middle: selection count, snap...
-    // GRID, SNAP, ORTHO, POLAR, OSNAP, E, M, I, C, OTRACK, DYN
+    // GRID, SNAP, ORTHO, POLAR, OSNAP, E, M, I, C, OTRACK, DYN, LWT
     void SetToggles(const std::vector<bool>& states);
     void SetUnits(const std::wstring& text);
     void OnThemeChanged();

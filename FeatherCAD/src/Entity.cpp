@@ -173,6 +173,15 @@ void SplinePoints(const Entity& e, std::vector<Vec2>& pts) {
     }
 }
 
+void CopyStyle(const Entity& from, Entity& to) {
+    to.layer = from.layer;
+    to.color = from.color;
+    to.linetype = from.linetype;
+    to.lineweight = from.lineweight;
+    to.ltscale = from.ltscale;
+    to.construction = from.construction;
+}
+
 const wchar_t* TypeName(EntityType type) {
     switch (type) {
         case EntityType::Line: return L"Line";

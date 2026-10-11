@@ -30,7 +30,7 @@ struct Picked {
 
 Picked PickFor(Engine* E, Vec2 p) {
     Picked k;
-    const uint64_t id = E->PickEntity(p);
+    const uint64_t id = E->PickEntity(p, true);  // locked layers can be measured
     const Entity* e = id ? E->Doc().Find(id) : nullptr;
     if (!e) return k;
     k.id = id;
@@ -700,7 +700,7 @@ public:
         // The lower left corner is where pasted objects hang from.
         const Vec2 base = box.Empty() ? Vec2{} : Vec2{box.minX, box.minY};
         E->Host().SetClipboard(std::string(kClipMagic) + " " + FormatNumber(base.x) + " " + FormatNumber(base.y) + "\n" +
-                               Document::ObjectsToText(ents));
+                               E->Doc().ObjectsToText(ents));
         if (m_cut) {
             E->Doc().BeginChange(L"Cut");
             for (const Entity& e : ents) E->Doc().Erase(e.id);
@@ -714,6 +714,7 @@ public:
 
 class PasteClipCmd : public Command {
     std::vector<Entity> m_ents;
+    std::vector<Layer> m_layers;  // the layers they came from
     Vec2 m_base;
 
 public:
@@ -734,7 +735,7 @@ public:
             }
         }
         m_base = {x, y};
-        if (nl == std::string::npos || !Document::ObjectsFromText(text.substr(nl + 1), m_ents) || m_ents.empty()) {
+        if (nl == std::string::npos || !Document::ObjectsFromText(text.substr(nl + 1), m_ents, &m_layers) || m_ents.empty()) {
             E->Msg(L"The clipboard could not be read.");
             return E->Finish();
         }
@@ -743,6 +744,12 @@ public:
     void OnPoint(Vec2 p) override {
         for (Entity& e : m_ents) Translate(e, p - m_base);
         E->Doc().BeginChange(L"Paste");
+        // Onto the layers of the same names here (made if missing).
+        const std::map<int, int> layerIds = E->Doc().MergeLayers(m_layers);
+        for (Entity& e : m_ents) {
+            auto it = layerIds.find(e.layer);
+            e.layer = it != layerIds.end() ? it->second : 0;
+        }
         const std::vector<uint64_t> ids = E->Doc().AddGroup(std::move(m_ents));
         E->Doc().EndChange();
         E->ClearSelection();

@@ -21,7 +21,7 @@
 #include <vector>
 
 #define APP_NAME L"Feather CAD"
-#define APP_VERSION L"1.3.1"
+#define APP_VERSION L"1.4.0"
 #define APP_AUTHOR L"Akshaya Simha"
 #define APP_COPYRIGHT L"\x00A9 2026 Akshaya Simha"
 #define APP_WINDOW_CLASS L"FeatherCadMain"
@@ -36,6 +36,7 @@ enum : UINT {
     WM_APP_COMMAND_KEY,                // command line: a key it does not use (wParam = VK)
     WM_APP_COMMAND_TYPING,             // command line: the text being typed changed (lParam = std::wstring*)
     WM_APP_CANVAS_EDIT,                // canvas: an object was double-clicked (lParam = const uint64_t* id)
+    WM_APP_PROPERTIES,                 // fill the Properties panel again (after a change made in it)
 };
 
 // Command ids: menu items, toolbar buttons and accelerators. Items that
@@ -141,6 +142,15 @@ enum : int {
     ID_TANLINE,
     ID_CIRCLE_TTR,
     ID_LENGTHEN_DYNAMIC,
+    // Version 1.4
+    ID_TOGGLE_LWT,
+    ID_LAYERS,
+    ID_PROPERTIES,
+    ID_MATCHPROP,
+    ID_CONSTRUCTION,
+    ID_ORIGIN,
+    ID_LTSCALE,
+    ID_LAYER_COMBO,
     // Help
     ID_COMMAND_LIST,
     ID_ABOUT,
@@ -151,6 +161,7 @@ enum : int {
     ID_MENU_DRAW,
     ID_MENU_MODIFY,
     ID_MENU_DIMENSION,
+    ID_MENU_FORMAT,
     ID_MENU_TOOLS,
     ID_MENU_HELP,
     // Context menu

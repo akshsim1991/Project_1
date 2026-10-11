@@ -113,9 +113,38 @@ std::string Trim(std::string s) {
     return s.substr(b);
 }
 
+// Layer, colour, line type and weight of the object being converted.
+struct Props {
+    int layer = 0;
+    int32_t color = kByLayer;
+    int linetype = kLtByLayer;
+    int lineweight = kLwByLayer;
+    double ltscale = 1;
+};
+
+// A DXF line type name, or the nearest Feather CAD has.
+int LineTypeFromName(const std::wstring& name) {
+    const int lt = FindLineType(name);
+    if (lt != -100) return lt;
+    std::wstring u = name;
+    for (wchar_t& c : u) c = (wchar_t)std::towupper(c);
+    if (u.find(L"HIDDEN") != std::wstring::npos) return FindLineType(L"HIDDEN");
+    if (u.find(L"CENTER") != std::wstring::npos || u.find(L"CENTRE") != std::wstring::npos) return FindLineType(L"CENTER");
+    if (u.find(L"PHANTOM") != std::wstring::npos) return FindLineType(L"PHANTOM");
+    if (u.find(L"DASHDOT") != std::wstring::npos) return FindLineType(L"DASHDOT");
+    if (u.find(L"DASH") != std::wstring::npos) return FindLineType(L"DASHED");
+    if (u.find(L"DOT") != std::wstring::npos) return FindLineType(L"DOT");
+    return 0;
+}
+
 class Importer {
 public:
-    Importer(DxfResult& out) : m_out(out) {}
+    Importer(DxfResult& out) : m_out(out) {
+        Layer zero;
+        zero.name = L"0";
+        m_out.layers = {zero};
+        m_layerIds[L"0"] = 0;
+    }
 
     bool Parse(const std::string& text, std::wstring& error) {
         if (text.compare(0, 18, "AutoCAD Binary DXF") == 0) {
@@ -155,6 +184,7 @@ public:
                 i += 2;
                 if (name == "HEADER") Header(i);
                 else if (name == "BLOCKS") Blocks(i);
+                else if (name == "TABLES") Tables(i);
                 else if (name == "ENTITIES") {
                     m_entities = Entities(i, {"ENDSEC"});
                     sawEntities = true;
@@ -169,7 +199,7 @@ public:
             error = L"There are no drawing objects in this file (no ENTITIES section). It may not be a DXF drawing.";
             return false;
         }
-        for (const Raw& r : m_entities) Convert(r, Affine{}, 0);
+        for (const Raw& r : m_entities) Convert(r, Affine{}, 0, nullptr);
         return true;
     }
 
@@ -220,6 +250,10 @@ private:
             } else if (isNum && var == "$DIMZIN") {
                 zin = true;
                 zinValue = (int)v;
+            } else if (isNum && var == "$LTSCALE" && v > 0) {
+                m_out.ltscale = v;
+            } else if (var == "$CLAYER" && g.code == 8) {
+                m_out.currentLayer = Text(g.value);
             } else if (isNum && var == "$DIMSCALE" && v > 0) {
                 dimScale = v;
             }
@@ -375,7 +409,81 @@ private:
 
     void Skipped(const std::string& type) { ++m_out.skipped[type]; }
 
+    // ---- layers and styles ----------------------------------------------------
+
+    static std::wstring Key(const std::wstring& s) {
+        std::wstring k = s;
+        for (wchar_t& c : k) c = (wchar_t)std::towlower(c);
+        return k;
+    }
+    int LayerId(const std::wstring& name) {
+        const std::wstring n = name.empty() ? L"0" : name;
+        auto it = m_layerIds.find(Key(n));
+        if (it != m_layerIds.end()) return it->second;
+        Layer l;
+        l.id = (int)m_out.layers.size();
+        l.name = n;
+        m_out.layers.push_back(l);
+        m_layerIds[Key(n)] = l.id;
+        return l.id;
+    }
+
+    void Tables(size_t& i) {
+        while (i < m_groups.size() && !(m_groups[i].code == 0 && m_groups[i].value == "ENDSEC")) {
+            if (m_groups[i].code == 0 && m_groups[i].value == "LAYER") {
+                Raw r;
+                ++i;
+                while (i < m_groups.size() && m_groups[i].code != 0) r.g.push_back(m_groups[i++]);
+                const std::wstring name = Text(r.Str(2));
+                if (name.empty()) continue;
+                const int id = LayerId(name);
+                Layer& l = m_out.layers[(size_t)id];
+                const int c = r.Int(62, 7);
+                l.on = c >= 0;
+                l.color = std::clamp(std::abs(c), 1, 255);
+                if (r.Has(420)) l.color = kTrueColor | (r.Int(420) & 0xFFFFFF);
+                const int flags = r.Int(70);
+                l.frozen = (flags & 1) != 0;
+                l.locked = (flags & 4) != 0;
+                l.linetype = r.Has(6) ? std::max(0, LineTypeFromName(Text(r.Str(6)))) : 0;
+                l.lineweight = r.Has(370) ? std::clamp(r.Int(370), -3, 211) : kLwDefault;
+                if (l.lineweight == kLwByLayer || l.lineweight == kLwByBlock) l.lineweight = kLwDefault;
+                l.plot = !r.Has(290) || r.Int(290) != 0;
+            } else {
+                ++i;
+            }
+        }
+        if (i < m_groups.size()) ++i;
+    }
+
+    // An object's style; inside a block, layer "0" and "by block" take the reference's.
+    Props PropsOf(const Raw& r, const Props* parent) {
+        Props p;
+        const std::wstring layer = Text(r.Str(8));
+        p.layer = (parent && (layer.empty() || layer == L"0")) ? parent->layer : LayerId(layer);
+        if (r.Has(420)) p.color = kTrueColor | (r.Int(420) & 0xFFFFFF);
+        else if (r.Has(62)) {
+            const int c = r.Int(62);
+            p.color = c == 256 ? kByLayer : c == 0 ? kByBlock : std::clamp(std::abs(c), 1, 255);
+        }
+        if (r.Has(6)) p.linetype = LineTypeFromName(Text(r.Str(6)));
+        if (r.Has(370)) p.lineweight = std::clamp(r.Int(370), -3, 211);
+        p.ltscale = r.Num(48, 1) > 0 ? r.Num(48, 1) : 1;
+        if (parent) {
+            if (p.color == kByBlock) p.color = parent->color;
+            if (p.linetype == kLtByBlock) p.linetype = parent->linetype;
+            if (p.lineweight == kLwByBlock) p.lineweight = parent->lineweight;
+            p.ltscale *= parent->ltscale;
+        }
+        return p;
+    }
+
     void Add(Entity e) {
+        e.layer = m_props.layer;
+        e.color = m_props.color;
+        e.linetype = (int16_t)m_props.linetype;
+        e.lineweight = (int16_t)m_props.lineweight;
+        e.ltscale = (float)m_props.ltscale;
         if (m_out.entities.size() < kMaxObjects) m_out.entities.push_back(std::move(e));
     }
 
@@ -601,6 +709,7 @@ private:
             return;
         }
         const Block& b = it->second;
+        const Props insertProps = m_props;
         const Affine ocs = M * Ocs(r);
         const Vec2 at = r.Pt(10);
         const double sx = r.Num(41, 1), sy = r.Num(42, 1), ang = ToRadians(r.Num(50));
@@ -615,12 +724,18 @@ private:
                 const Vec2 offset = RotateAround({col * cs, row * rs}, {0, 0}, ang);
                 const Affine T = ocs * Affine::Move(at + offset) * Affine::Turn(ang) * Affine::Scale(sx == 0 ? 1 : sx, sy == 0 ? 1 : sy) *
                                  Affine::Move(-b.base);
-                for (const Raw& e : b.ents) Convert(e, T, depth + 1);
+                for (const Raw& e : b.ents) Convert(e, T, depth + 1, &insertProps);
             }
     }
 
-    void Convert(const Raw& r, const Affine& M, int depth) {
+    void Convert(const Raw& r, const Affine& M, int depth, const Props* parent) {
         if (r.Int(67) == 1) return;  // paper space
+        struct Keep {  // the style of the object being converted, put back after it
+            Props& p;
+            Props saved;
+            ~Keep() { p = saved; }
+        } keep{m_props, m_props};
+        m_props = PropsOf(r, parent);
         const std::string& t = r.type;
         if (t == "LINE") {
             const Vec2 a = M(r.Pt(10)), b = M(r.Pt(11));
@@ -706,7 +821,8 @@ private:
                 Skipped("DIMENSION");
                 return;
             }
-            for (const Raw& e : it->second.ents) Convert(e, M, depth + 1);
+            const Props dimProps = m_props;
+            for (const Raw& e : it->second.ents) Convert(e, M, depth + 1, &dimProps);
         } else if (t == "VIEWPORT" || t == "SEQEND" || t == "ATTDEF") {
             // nothing to draw
         } else {
@@ -719,6 +835,8 @@ private:
     std::vector<Raw> m_entities;
     std::map<std::string, Block> m_blocks;
     bool m_utf8 = false;
+    Props m_props;
+    std::map<std::wstring, int> m_layerIds;  // lower-case name -> id
 };
 }  // namespace
 

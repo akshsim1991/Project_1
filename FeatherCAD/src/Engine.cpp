@@ -91,7 +91,10 @@ Engine::~Engine() = default;
 
 std::wstring Engine::Len(double v) const { return FormatDecimal(v, m_doc.Settings().precision); }
 std::wstring Engine::Ang(double rad) const { return FormatDegrees(rad, m_doc.Settings().precision); }
-std::wstring Engine::Pt(Vec2 p) const { return Len(p.x) + L"," + Len(p.y); }
+std::wstring Engine::Pt(Vec2 p) const {
+    const Vec2 o = m_doc.Settings().origin;  // shown from the grid origin
+    return Len(p.x - o.x) + L"," + Len(p.y - o.y);
+}
 
 void Engine::Echo(const std::wstring& typed) {
     m_host.Message((m_cmd ? m_prompt.FullText() : std::wstring(L"Command:")) + L" " + typed);
@@ -177,12 +180,13 @@ void Engine::Point(Vec2 p, bool shift) {
     Accepted(p);
 }
 
-uint64_t Engine::PickEntity(Vec2 p) const {
+uint64_t Engine::PickEntity(Vec2 p, bool lockedToo) const {
     const double tol = m_host.PickRadius();
     const Box box = Box(p, p).Inflated(tol);
     double best = tol;
     uint64_t id = 0;
     for (const auto& kv : m_doc.Entities()) {
+        if (lockedToo ? !m_doc.Visible(kv.second) : !m_doc.Editable(kv.second)) continue;
         if (!Bounds(kv.second).Intersects(box)) continue;
         const double d = DistanceTo(kv.second, p);
         if (d <= best) {  // the later (top) object wins ties
@@ -258,7 +262,7 @@ bool Engine::ParsePoint(const std::wstring& raw, Vec2& out) const {
         }
     }
     if (s[0] == L'#') s.erase(0, 1);  // absolute, as typed with dynamic input elsewhere
-    const Vec2 origin = relative ? m_lastPoint : Vec2{0, 0};
+    const Vec2 origin = relative ? m_lastPoint : m_doc.Settings().origin;
     size_t lt = s.find(L'<'), comma = s.find(L',');
     double a, b;
     if (lt != std::wstring::npos) {
@@ -359,8 +363,11 @@ void Engine::GetPreview(Vec2 cursor, Preview& out) {
 
 void Engine::AddToSelection(const std::vector<uint64_t>& ids) {
     size_t added = 0;
-    for (uint64_t id : ids)
-        if (m_doc.Find(id) && m_selection.insert(id).second) ++added;
+    for (uint64_t id : ids) {
+        const Entity* e = m_doc.Find(id);
+        // Objects on locked, frozen or hidden layers cannot be selected.
+        if (e && m_doc.Editable(*e) && m_selection.insert(id).second) ++added;
+    }
     if (added) ++m_selRevision;
     if (m_selecting)
         m_host.Message(std::to_wstring(ids.size()) + L" found, " + std::to_wstring(m_selection.size()) + L" total");

@@ -78,6 +78,7 @@ SnapResult FindSnap(const Document& doc, const SnapQuery& q) {
         const Entity& e = kv.second;
         const uint64_t id = kv.first;
         if (e.type == EntityType::Dimension) continue;  // dimensions are not drawing geometry
+        if (!doc.Visible(e)) continue;                  // hidden or frozen layer
         const Box bounds = Bounds(e);
         const bool curveNear = bounds.Intersects(search);
         // Centres: also found when the cursor is on the circle itself.

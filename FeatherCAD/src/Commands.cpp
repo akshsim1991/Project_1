@@ -74,7 +74,7 @@ public:
 // as a line or an arc). False if there is none.
 // ---------------------------------------------------------------------------
 bool TangentObject(Engine* E, Vec2 p, Entity& out) {
-    const uint64_t id = E->PickEntity(p);
+    const uint64_t id = E->PickEntity(p, true);
     const Entity* e = id ? E->Doc().Find(id) : nullptr;
     if (!e) return false;
     if (e->type == EntityType::Line || e->type == EntityType::Circle || e->type == EntityType::Arc) {
@@ -1050,6 +1050,12 @@ const std::vector<CommandInfo>& AllCommands() {
         {L"COPYCLIP", {}, L"Copy to clipboard", L"Copy objects to paste them elsewhere, also into another drawing (Ctrl+C)"},
         {L"CUTCLIP", {}, L"Cut to clipboard", L"Remove objects to paste them elsewhere (Ctrl+X)"},
         {L"PASTECLIP", {}, L"Paste", L"Paste copied objects at a point (Ctrl+V)"},
+        {L"LAYER", {L"LA"}, L"Layers", L"Layer manager: new layers, on/off, freeze, lock, colour, line type, layer states", true},
+        {L"PROPERTIES", {L"PR", L"PROPS"}, L"Properties", L"Show or hide the Properties panel (Ctrl+1)", true},
+        {L"MATCHPROP", {L"MA"}, L"Match properties", L"Copy the layer, colour and line type of one object onto others"},
+        {L"CONSTRUCTION", {L"CONS"}, L"Construction geometry", L"Make objects reference geometry (faint, not printed), or normal again"},
+        {L"ORIGIN", {L"UCS"}, L"Grid origin", L"Where coordinates and the grid start (Reset: back to 0,0)"},
+        {L"LTSCALE", {L"LTS"}, L"Line type scale", L"How large dashes and gaps of line types are"},
         {L"UNDO", {L"U"}, L"Undo", L"Take back the last command"},
         {L"REDO", {}, L"Redo", L"Do again what Undo took back"},
         {L"SELECTALL", {L"ALL"}, L"Select all", L"Select every object"},

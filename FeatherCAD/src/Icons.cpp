@@ -205,6 +205,18 @@ void DrawCadIcon(HDC dc, int icon, const RECT& rc, COLORREF ink, COLORREF accent
             point(3, 17);
             point(17, 17);
             break;
+        case kIconLayers: {
+            // Three sheets stacked.
+            for (int k = 2; k >= 0; --k) {
+                const REAL y = 5.0f + k * 4.0f;
+                PointF sheet[4] = {PointF(10, y - 3.5f), PointF(18, y), PointF(10, y + 3.5f), PointF(2, y)};
+                SolidBrush fill(k == 0 ? C(accent) : Color(255, 255, 255, 255));
+                if (k != 0) fill.SetColor(Color(0, 0, 0, 0));
+                g.FillPolygon(&fill, sheet, 4);
+                g.DrawPolygon(&pen, sheet, 4);
+            }
+            break;
+        }
         default:
             break;
     }

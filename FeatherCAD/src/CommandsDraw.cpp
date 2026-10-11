@@ -4,6 +4,7 @@
 #include <algorithm>
 
 #include "CommandUtil.h"
+#include "Dimension.h"
 #include "Grips.h"
 #include "Select.h"
 #include "Spline.h"
@@ -456,7 +457,123 @@ public:
 };
 }  // namespace
 
+namespace {
+// ---------------------------------------------------------------------------
+// MATCHPROP: the look of one object onto others
+// ---------------------------------------------------------------------------
+class MatchPropCmd : public Command {
+    Entity m_source;
+    bool m_have = false;
+
+public:
+    void Start() override {
+        E->ClearSelection();
+        E->Ask(Pick(L"Select source object"));
+    }
+    void OnPoint(Vec2 p) override {
+        const uint64_t id = E->PickEntity(p, true);
+        const Entity* e = id ? E->Doc().Find(id) : nullptr;
+        if (!e) {
+            E->Msg(L"No object there.");
+            return;
+        }
+        m_source = *e;
+        m_have = true;
+        const Layer* l = E->Doc().FindLayer(e->layer);
+        E->Msg(L"Layer " + (l ? l->name : std::wstring(L"0")) + L", colour " + ColorName(e->color) + L", line type " +
+               LineTypeName(e->linetype) + L", line weight " + LineWeightName(e->lineweight) + L".");
+        E->AskSelection();
+    }
+    void OnSelected() override {
+        const std::vector<uint64_t> ids = SelectionIds(E);
+        E->Doc().BeginChange(L"Match properties");
+        for (uint64_t id : ids) {
+            const Entity* e = E->Doc().Find(id);
+            if (!e || id == m_source.id) continue;
+            Entity x = *e;
+            CopyStyle(m_source, x);
+            // Dimensions also take the dimension style.
+            if (x.type == EntityType::Dimension && m_source.type == EntityType::Dimension && x.dim && m_source.dim) {
+                DimData d = *x.dim;
+                d.style = m_source.dim->style;
+                x.dim = std::make_shared<const DimData>(std::move(d));
+            }
+            E->Doc().Replace(x);
+        }
+        E->ClearSelection();
+        E->Msg(std::to_wstring(ids.size()) + L" object(s) changed.");
+        E->Finish();
+    }
+};
+
+// ---------------------------------------------------------------------------
+// CONSTRUCTION: reference geometry on or off
+// ---------------------------------------------------------------------------
+class ConstructionCmd : public Command {
+public:
+    void Start() override { E->AskSelection(); }
+    void OnSelected() override {
+        const std::vector<uint64_t> ids = SelectionIds(E);
+        bool all = true;
+        for (uint64_t id : ids)
+            if (const Entity* e = E->Doc().Find(id)) all &= e->construction;
+        E->Doc().BeginChange(L"Construction");
+        for (uint64_t id : ids)
+            if (const Entity* e = E->Doc().Find(id)) {
+                Entity x = *e;
+                x.construction = !all;
+                E->Doc().Replace(x);
+            }
+        E->ClearSelection();
+        E->Msg(std::to_wstring(ids.size()) + (all ? L" object(s) are normal geometry again."
+                                                  : L" object(s) are now construction geometry (shown faintly, not printed)."));
+        E->Finish();
+    }
+};
+
+// ---------------------------------------------------------------------------
+// ORIGIN: where coordinates and the grid start
+// ---------------------------------------------------------------------------
+class OriginCmd : public Command {
+    void Set(Vec2 o) {
+        DrawingSettings s = E->Doc().Settings();
+        s.origin = o;
+        E->Doc().SetSettings(s);
+        E->Msg(o == Vec2{} ? L"The origin is back at 0,0." : L"Coordinates are now measured from this point.");
+        E->Finish();
+    }
+
+public:
+    void Start() override { E->Ask(P(L"Specify new origin point", kAcceptPoint | kAcceptEmpty, {{L"R", L"Reset"}}, L"Reset")); }
+    void OnPoint(Vec2 p) override { Set(p); }
+    void OnKeyword(const std::wstring&) override { Set({}); }
+    void OnEnter() override { Set({}); }
+};
+
+// ---------------------------------------------------------------------------
+// LTSCALE: how large line type patterns are
+// ---------------------------------------------------------------------------
+class LtScaleCmd : public Command {
+public:
+    void Start() override {
+        E->Ask(P(L"Enter line type scale factor", kAcceptNumber | kAcceptEmpty, {},
+                 FormatDecimal(E->Doc().Settings().ltscale, 4)));
+    }
+    void OnNumber(double v) override {
+        if (!Positive(E, v)) return;
+        DrawingSettings s = E->Doc().Settings();
+        s.ltscale = v;
+        E->Doc().SetSettings(s);
+        E->Finish();
+    }
+};
+}  // namespace
+
 std::unique_ptr<Command> CreateDrawCommand(const std::wstring& name) {
+    if (name == L"MATCHPROP") return std::make_unique<MatchPropCmd>();
+    if (name == L"CONSTRUCTION") return std::make_unique<ConstructionCmd>();
+    if (name == L"ORIGIN") return std::make_unique<OriginCmd>();
+    if (name == L"LTSCALE") return std::make_unique<LtScaleCmd>();
     if (name == L"ELLIPSE") return std::make_unique<EllipseCmd>();
     if (name == L"POLYGON") return std::make_unique<PolygonCmd>();
     if (name == L"SPLINE") return std::make_unique<SplineCmd>();

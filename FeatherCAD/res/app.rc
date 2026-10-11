@@ -120,6 +120,24 @@ BEGIN
     PUSHBUTTON      "Cancel", IDCANCEL, 200, 128, 50, 14
 END
 
+IDD_LAYERS DIALOGEX 0, 0, 480, 252
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Layers"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    CONTROL         "", IDC_LY_LIST, "SysListView32", LVS_REPORT | LVS_SHOWSELALWAYS | LVS_SINGLESEL | LVS_EDITLABELS | WS_BORDER | WS_TABSTOP, 10, 10, 460, 168
+    PUSHBUTTON      "&New", IDC_LY_NEW, 10, 184, 50, 14
+    PUSHBUTTON      "&Delete", IDC_LY_DELETE, 64, 184, 50, 14
+    PUSHBUTTON      "Set &current", IDC_LY_CURRENT, 118, 184, 60, 14
+    LTEXT           "Click On, Freeze, Lock or Plot to switch them, Colour, Line type or Weight to choose. Double-click: current. F2: rename.", -1, 186, 183, 284, 20
+    GROUPBOX        "Layer states (saved on/off, freeze, lock, colours and line types)", -1, 10, 206, 340, 38
+    COMBOBOX        IDC_LY_STATE, 18, 222, 120, 100, CBS_DROPDOWN | CBS_AUTOHSCROLL | WS_VSCROLL | WS_TABSTOP
+    PUSHBUTTON      "&Save", IDC_LY_SAVESTATE, 144, 221, 56, 14
+    PUSHBUTTON      "&Restore", IDC_LY_RESTORESTATE, 204, 221, 56, 14
+    PUSHBUTTON      "Delete s&tate", IDC_LY_DELSTATE, 264, 221, 78, 14
+    DEFPUSHBUTTON   "Close", IDOK, 420, 228, 50, 14
+END
+
 IDD_OPTIONS DIALOGEX 0, 0, 260, 112
 STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "Auto-save and versions"
@@ -170,8 +188,8 @@ BEGIN
 END
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 1,3,1,0
- PRODUCTVERSION 1,3,1,0
+ FILEVERSION 1,4,0,0
+ PRODUCTVERSION 1,4,0,0
  FILEFLAGSMASK 0x3fL
  FILEFLAGS 0x0L
  FILEOS VOS_NT_WINDOWS32
@@ -184,12 +202,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "Akshaya Simha"
             VALUE "FileDescription", "Feather CAD"
-            VALUE "FileVersion", "1.3.1.0"
+            VALUE "FileVersion", "1.4.0.0"
             VALUE "InternalName", "FeatherCAD"
             VALUE "LegalCopyright", "\251 2026 Akshaya Simha"
             VALUE "OriginalFilename", "FeatherCAD.exe"
             VALUE "ProductName", "Feather CAD"
-            VALUE "ProductVersion", "1.3.1.0"
+            VALUE "ProductVersion", "1.4.0.0"
         END
     END
     BLOCK "VarFileInfo"

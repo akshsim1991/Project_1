@@ -77,9 +77,15 @@ private:
     void RenderOverlay();
     void DrawGrid(ID2D1RenderTarget* rt);
     void DrawUcsIcon(ID2D1RenderTarget* rt);
-    ID2D1PathGeometry* BuildGeometry(const std::vector<const Entity*>& entities);
+    // With `dashes` (pixels: on, off, on...) the lines are cut into dashes.
+    ID2D1PathGeometry* BuildGeometry(const std::vector<const Entity*>& entities, const std::vector<float>* dashes = nullptr);
     void DrawEntities(ID2D1RenderTarget* rt, const std::vector<const Entity*>& ents, D2D1_COLOR_F color,
-                      float width, ID2D1StrokeStyle* style);
+                      float width, ID2D1StrokeStyle* style, const std::vector<float>* dashes = nullptr);
+    // The objects in their own colours, line types and weights.
+    void DrawStyled(ID2D1RenderTarget* rt, const std::vector<const Entity*>& ents);
+    // The dash pattern of line type `lt` at this zoom, in pixels (empty: solid).
+    // `screen`: the same size at any zoom.
+    std::vector<float> DashPattern(int lt, double scale, bool screen = false) const;
     // Arrows and text of the dimensions among `ents`.
     void DrawDimensionParts(ID2D1RenderTarget* rt, const std::vector<const Entity*>& ents, ID2D1Brush* brush);
     void DrawSnapMarker(ID2D1RenderTarget* rt);
@@ -124,7 +130,8 @@ private:
 
     // colours
     D2D1_COLOR_F m_bg, m_fg, m_gridMinor, m_gridMajor, m_axisX, m_axisY, m_select, m_previewInk, m_guide, m_snap,
-        m_cross, m_windowFill, m_windowEdge, m_crossFill, m_crossEdge, m_labelBg, m_labelText, m_removeInk;
+        m_cross, m_windowFill, m_windowEdge, m_crossFill, m_crossEdge, m_labelBg, m_labelText, m_removeInk,
+        m_constructionInk;
 
     // view: world point at the window centre and pixels per drawing unit
     Vec2 m_centre{150, 100};
@@ -135,7 +142,7 @@ private:
 
     // what the layer shows (to know when to rebuild it)
     uint64_t m_shownRevision = 0, m_shownSelection = 0;
-    bool m_shownGrid = false;
+    bool m_shownGrid = false, m_shownLw = false;
     double m_shownGridSpacing = 0;
 
     // cursor and interaction state

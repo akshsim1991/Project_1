@@ -1,5 +1,7 @@
 // Dialogs.h - the settings and history dialogs (templates in res/app.rc).
 #pragma once
+#include <functional>
+
 #include "Common.h"
 #include "Document.h"
 #include "Engine.h"
@@ -33,3 +35,11 @@ struct DimEditResult {
     int precision = 2;
 };
 bool DimEditDialog(HWND owner, const DimData& d, bool attached, DimEditResult& out);
+
+// The layer manager. Changes go straight into the drawing (each one can be
+// undone); `changed` is called after each so the drawing is redrawn.
+void LayerDialog(HWND owner, Document& doc, const std::function<void()>& changed);
+// A colour chosen from a menu at the cursor (named colours, or any colour
+// with the Windows colour picker). `allowBy`: ByLayer and ByBlock too.
+// False if nothing was chosen.
+bool PickColor(HWND owner, int32_t& color, bool allowBy);

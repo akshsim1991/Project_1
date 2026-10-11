@@ -1731,6 +1731,188 @@ void TestOlderGaps131() {
         CHECK(near && OffsetSide(sp, out.verts[2].p) == 1);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Version 1.4 (Phase B3): layers, styles, construction, origin
+// ---------------------------------------------------------------------------
+
+void TestLayers() {
+    Document doc;
+    CHECK(doc.Layers().size() == 1 && doc.Layers()[0].name == L"0");
+    Layer walls;
+    walls.name = L"Walls";
+    walls.color = 1;
+    walls.linetype = FindLineType(L"DASHED");
+    walls.lineweight = 50;
+    const int w = doc.AddLayer(walls);
+    CHECK(w == 1 && doc.LayerByName(L"walls") && doc.FindLayer(w)->color == 1);
+    CHECK(doc.AddLayer(walls) == 2 && doc.FindLayer(2)->name == L"Walls (2)");  // names stay unique
+    CHECK(doc.CanUndo());
+    doc.Undo();
+    CHECK(doc.Layers().size() == 2 && !doc.FindLayer(2));
+    doc.Redo();
+    CHECK(doc.FindLayer(2));
+
+    // New objects go on the current layer with the current style.
+    CurrentStyle cur = doc.Current();
+    cur.layer = w;
+    doc.SetCurrent(cur);
+    const uint64_t a = doc.Add(Entity::Line({0, 0}, {10, 0}));
+    CHECK(doc.Find(a)->layer == w && doc.Find(a)->color == kByLayer);
+    Look k = doc.LookOf(*doc.Find(a));
+    CHECK(k.rgb == 0xFF0000 && k.linetype == FindLineType(L"DASHED") && k.lineweight == 50);
+    Entity own = *doc.Find(a);
+    own.color = 3;
+    own.lineweight = kLwDefault;
+    doc.Replace(own);
+    k = doc.LookOf(*doc.Find(a));
+    CHECK(k.rgb == 0x00FF00 && k.lineweight == kDefaultLineWeight);
+    // A shape made anew in an object's place keeps its look.
+    doc.Replace([&] {
+        Entity n = Entity::Line({0, 0}, {5, 0});
+        n.id = a;
+        return n;
+    }());
+    CHECK(doc.Find(a)->layer == w && doc.Find(a)->color == 3);
+
+    // Off, frozen and locked layers.
+    std::wstring why;
+    CHECK(!doc.DeleteLayer(0, why) && !doc.DeleteLayer(w, why) && doc.DeleteLayer(2, why));
+    Layer l = *doc.FindLayer(w);
+    l.locked = true;
+    doc.UpdateLayer(l);
+    TestHost host;
+    Engine eng(doc, host);
+    CHECK(!eng.PickEntity({2, 0}) && eng.PickEntity({2, 0}, true) == a);
+    eng.SelectAll();
+    CHECK(eng.Selection().empty());
+    l.locked = false;
+    l.on = false;
+    doc.UpdateLayer(l);
+    CHECK(!doc.Visible(*doc.Find(a)) && !eng.PickEntity({2, 0}, true) && doc.Extents().Empty());
+    SnapQuery q;
+    q.cursor = {0, 0};
+    q.aperture = 1;
+    q.modes = kSnapEndpoint;
+    CHECK(!FindSnap(doc, q).found);
+    l.on = true;
+    doc.UpdateLayer(l);
+    CHECK(FindSnap(doc, q).found);
+
+    // Layer states.
+    doc.SaveLayerState(L"Plot");
+    l.on = false;
+    l.color = 5;
+    doc.UpdateLayer(l);
+    CHECK(doc.RestoreLayerState(L"plot") && doc.FindLayer(w)->on && doc.FindLayer(w)->color == 1);
+
+    // The file keeps layers, styles, states, the current style, scale and origin.
+    DrawingSettings ds = doc.Settings();
+    ds.ltscale = 2.5;
+    ds.origin = {100, 50};
+    doc.SetSettings(ds);
+    Entity c = Entity::Circle({5, 5}, 2);
+    c.layer = w;  // a layer given: its own style is kept
+    c.construction = true;
+    c.ltscale = 0.5f;
+    c.color = kTrueColor | 0x123456;
+    c.linetype = (int16_t)FindLineType(L"CENTER");
+    const uint64_t ci = doc.Add(c);
+    Document back;
+    std::wstring err;
+    CHECK(back.FromText(doc.ToText(), err));
+    CHECK(back.Layers().size() == 2 && back.LayerByName(L"Walls") && back.LayerByName(L"Walls")->lineweight == 50);
+    CHECK(back.Current().layer == w && back.LayerStates().size() == 1 && back.Settings().ltscale == 2.5 &&
+          back.Settings().origin == Vec2(100, 50));
+    const Entity* bc = back.Find(2);
+    CHECK(bc && bc->construction && bc->ltscale == 0.5f && bc->color == (kTrueColor | 0x123456) &&
+          bc->linetype == FindLineType(L"CENTER") && bc->layer == w);
+    (void)ci;
+
+    // DXF keeps layers, colours and line types.
+    Document dx;
+    std::wstring notes;
+    CHECK(dx.FromDxf(doc.ToDxf(), err, notes));
+    const Layer* dw = dx.LayerByName(L"Walls");
+    CHECK(dw && dw->color == 1 && dw->linetype == FindLineType(L"DASHED"));
+    bool lineOk = false, circleOk = false;
+    for (const auto& kv : dx.Entities()) {
+        if (kv.second.type == EntityType::Line) lineOk = kv.second.layer == dw->id && kv.second.color == 3;
+        if (kv.second.type == EntityType::Circle)
+            circleOk = dx.FindLayer(kv.second.layer)->name == L"Defpoints" && kv.second.linetype == FindLineType(L"CENTER") &&
+                       kv.second.color == NearestAci(0x123456);
+    }
+    CHECK(lineOk && circleOk && dx.Settings().ltscale == 2.5);
+
+    // Pasting into another drawing: layers matched by name.
+    Document other;
+    std::vector<Entity> ents, got;
+    ents.push_back(*doc.Find(a));
+    std::vector<Layer> layers;
+    CHECK(Document::ObjectsFromText(doc.ObjectsToText(ents), got, &layers) && got.size() == 1);
+    const std::map<int, int> ids = other.MergeLayers(layers);
+    CHECK(other.LayerByName(L"Walls") && ids.at(w) == other.LayerByName(L"Walls")->id);
+}
+
+void TestStyleCommands() {
+    Document doc;
+    TestHost host;
+    Engine eng(doc, host);
+    Layer red;
+    red.name = L"Red";
+    red.color = 1;
+    const int r = doc.AddLayer(red);
+    Entity src = Entity::Line({0, 0}, {10, 0});
+    src.layer = r;
+    src.linetype = (int16_t)FindLineType(L"HIDDEN");
+    const uint64_t s = doc.Add(src);
+    const uint64_t t = doc.Add(Entity::Circle({50, 0}, 5));
+    // MATCHPROP
+    Type(eng, {L"ma"});
+    eng.Point({5, 0});
+    eng.AddToSelection({t});
+    Type(eng, {L""});
+    CHECK(doc.Find(t)->layer == r && doc.Find(t)->linetype == FindLineType(L"HIDDEN") && !eng.Active());
+    // CONSTRUCTION on, then off
+    eng.AddToSelection({s, t});
+    Type(eng, {L"construction"});
+    CHECK(doc.Find(s)->construction && doc.Find(t)->construction);
+    eng.AddToSelection({s, t});
+    Type(eng, {L"cons"});
+    CHECK(!doc.Find(s)->construction);
+    // ORIGIN: typed coordinates and shown coordinates from there
+    Type(eng, {L"origin", L"100,100", L"l", L"0,0", L"10,0", L""});
+    CHECK(Close(Last(doc).p0, {100, 100}) && Close(Last(doc).p1, {110, 100}) && eng.Pt({110, 100}) == L"10.00,0.00");
+    Type(eng, {L"origin", L"r"});
+    CHECK(doc.Settings().origin == Vec2{});
+    // LTSCALE
+    Type(eng, {L"lts", L"5"});
+    CHECK(doc.Settings().ltscale == 5);
+    // OFFSET both sides
+    const size_t before = doc.Count();
+    Type(eng, {L"o", L"2"});
+    eng.Point({5, 0});
+    Type(eng, {L"b", L""});
+    CHECK(doc.Count() == before + 2 && Close(Last(doc).p0.y, -2) && Last(doc).layer == r);
+    // EXPLODE keeps the look
+    Entity pl = Entity::Rectangle({0, 50}, {10, 60});
+    pl.layer = r;
+    pl.color = 4;
+    const uint64_t pid = doc.Add(pl);
+    eng.AddToSelection({pid});
+    Type(eng, {L"x"});
+    CHECK(Last(doc).type == EntityType::Line && Last(doc).layer == r && Last(doc).color == 4);
+    // Trimming a circle into an arc keeps the look
+    Entity circ = Entity::Circle({200, 0}, 10);
+    circ.layer = 0;
+    circ.color = 5;
+    const uint64_t cid = doc.Add(circ);
+    doc.Add(Entity::Line({195, -20}, {195, 20}));
+    Type(eng, {L"tr"});
+    eng.Point({210, 0});
+    Type(eng, {L""});
+    CHECK(doc.Find(cid) && doc.Find(cid)->type == EntityType::Arc && doc.Find(cid)->color == 5);
+}
 }  // namespace
 
 int main() {
@@ -1763,6 +1945,8 @@ int main() {
     TestRenumberedVertices();
     TestTangents131();
     TestOlderGaps131();
+    TestLayers();
+    TestStyleCommands();
     std::printf("%d checks, %d failed\n", g_checks, g_failures);
     return g_failures;
 }

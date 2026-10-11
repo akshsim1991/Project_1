@@ -7,6 +7,7 @@
 #include <algorithm>
 
 #include <commctrl.h>
+#include <commdlg.h>
 
 #include "Theme.h"
 #include "Util.h"
@@ -526,6 +527,262 @@ INT_PTR CALLBACK DimEditProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
     return FALSE;
 }
 
+
+// ---- colours and layers ---------------------------------------------------------
+UINT PopupAtCursor(HWND owner, HMENU m) {
+    POINT pt;
+    GetCursorPos(&pt);
+    const UINT id = (UINT)TrackPopupMenu(m, TPM_RETURNCMD | TPM_NONOTIFY | TPM_LEFTALIGN, pt.x, pt.y, 0, owner, nullptr);
+    DestroyMenu(m);
+    return id;
+}
+
+struct LayerData {
+    Document* doc;
+    const std::function<void()>* changed;
+};
+
+enum LayerColumn { kColCurrent, kColName, kColOn, kColFreeze, kColLock, kColColor, kColLinetype, kColWeight, kColPlot, kColUse };
+
+void FillLayerList(HWND dlg, const Document& doc, int selectId) {
+    HWND list = GetDlgItem(dlg, IDC_LY_LIST);
+    SendMessageW(list, WM_SETREDRAW, FALSE, 0);
+    ListView_DeleteAllItems(list);
+    int sel = 0;
+    for (size_t i = 0; i < doc.Layers().size(); ++i) {
+        const Layer& l = doc.Layers()[i];
+        LVITEMW it{};
+        it.mask = LVIF_TEXT | LVIF_PARAM;
+        it.iItem = (int)i;
+        it.lParam = l.id;
+        std::wstring cur = l.id == doc.Current().layer ? L"\x2022" : L"";
+        it.pszText = cur.data();
+        ListView_InsertItem(list, &it);
+        auto set = [&](int col, const std::wstring& text) {
+            ListView_SetItemText(list, (int)i, col, const_cast<wchar_t*>(text.c_str()));
+        };
+        set(kColName, l.name);
+        set(kColOn, l.on ? L"On" : L"Off");
+        set(kColFreeze, l.frozen ? L"Frozen" : L"-");
+        set(kColLock, l.locked ? L"Locked" : L"-");
+        set(kColColor, ColorName(l.color));
+        set(kColLinetype, LineTypeName(l.linetype));
+        set(kColWeight, LineWeightName(l.lineweight));
+        set(kColPlot, l.plot ? L"Yes" : L"No");
+        set(kColUse, std::to_wstring(doc.LayerUse(l.id)));
+        if (l.id == selectId) sel = (int)i;
+    }
+    ListView_SetItemState(list, sel, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+    ListView_EnsureVisible(list, sel, FALSE);
+    SendMessageW(list, WM_SETREDRAW, TRUE, 0);
+    // Layer states
+    HWND states = GetDlgItem(dlg, IDC_LY_STATE);
+    std::wstring typed = GetText(dlg, IDC_LY_STATE);
+    SendMessageW(states, CB_RESETCONTENT, 0, 0);
+    for (const LayerState& st : doc.LayerStates()) SendMessageW(states, CB_ADDSTRING, 0, (LPARAM)st.name.c_str());
+    SetWindowTextW(states, typed.c_str());
+}
+
+int SelectedLayerId(HWND dlg) {
+    HWND list = GetDlgItem(dlg, IDC_LY_LIST);
+    const int i = ListView_GetNextItem(list, -1, LVNI_SELECTED);
+    if (i < 0) return -1;
+    LVITEMW it{};
+    it.mask = LVIF_PARAM;
+    it.iItem = i;
+    ListView_GetItem(list, &it);
+    return (int)it.lParam;
+}
+
+INT_PTR CALLBACK LayerProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
+    auto* d = (LayerData*)GetWindowLongPtrW(dlg, DWLP_USER);
+    auto refresh = [&](int id) {
+        FillLayerList(dlg, *d->doc, id);
+        (*d->changed)();
+    };
+    switch (msg) {
+        case WM_INITDIALOG: {
+            SetWindowLongPtrW(dlg, DWLP_USER, lp);
+            d = (LayerData*)lp;
+            InitDialog(dlg);
+            HWND list = GetDlgItem(dlg, IDC_LY_LIST);
+            ListView_SetExtendedListViewStyle(list, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
+            const struct {
+                const wchar_t* title;
+                int width;
+            } cols[] = {{L"", 22}, {L"Name", 130}, {L"On", 40}, {L"Freeze", 52}, {L"Lock", 50}, {L"Colour", 92},
+                        {L"Line type", 92}, {L"Weight", 70}, {L"Plot", 36}, {L"Objects", 54}};
+            const int dpi = GetWindowDpi(dlg);
+            for (int i = 0; i < (int)std::size(cols); ++i) {
+                LVCOLUMNW c{};
+                c.mask = LVCF_TEXT | LVCF_WIDTH;
+                c.pszText = const_cast<wchar_t*>(cols[i].title);
+                c.cx = Dpi(cols[i].width, dpi);
+                ListView_InsertColumn(list, i, &c);
+            }
+            FillLayerList(dlg, *d->doc, d->doc->Current().layer);
+            return TRUE;
+        }
+        case WM_NOTIFY: {
+            auto* nm = (NMHDR*)lp;
+            if (nm->idFrom != IDC_LY_LIST) break;
+            if (nm->code == NM_CLICK || nm->code == NM_DBLCLK) {
+                auto* ia = (NMITEMACTIVATE*)lp;
+                if (ia->iItem < 0) return TRUE;
+                LVITEMW it{};
+                it.mask = LVIF_PARAM;
+                it.iItem = ia->iItem;
+                ListView_GetItem(GetDlgItem(dlg, IDC_LY_LIST), &it);
+                const Layer* found = d->doc->FindLayer((int)it.lParam);
+                if (!found) return TRUE;
+                Layer l = *found;
+                if (nm->code == NM_DBLCLK && (ia->iSubItem == kColCurrent || ia->iSubItem == kColName)) {
+                    CurrentStyle c = d->doc->Current();
+                    c.layer = l.id;
+                    d->doc->SetCurrent(c);
+                    refresh(l.id);
+                    return TRUE;
+                }
+                if (nm->code != NM_CLICK) return TRUE;
+                bool change = true;
+                switch (ia->iSubItem) {
+                    case kColOn: l.on = !l.on; break;
+                    case kColFreeze:
+                        if (l.id == d->doc->Current().layer && !l.frozen) {
+                            MessageBoxW(dlg, L"The current layer cannot be frozen.", APP_NAME, MB_ICONINFORMATION);
+                            change = false;
+                        } else {
+                            l.frozen = !l.frozen;
+                        }
+                        break;
+                    case kColLock: l.locked = !l.locked; break;
+                    case kColPlot: l.plot = !l.plot; break;
+                    case kColColor: change = PickColor(dlg, l.color, false); break;
+                    case kColLinetype: {
+                        HMENU m = CreatePopupMenu();
+                        for (size_t i = 0; i < LineTypes().size(); ++i)
+                            AppendMenuW(m, MF_STRING | ((int)i == l.linetype ? MF_CHECKED : 0), i + 1,
+                                        (std::wstring(LineTypes()[i].name) + L"\t" + LineTypes()[i].description).c_str());
+                        const UINT id = PopupAtCursor(dlg, m);
+                        change = id != 0;
+                        if (change) l.linetype = (int)id - 1;
+                        break;
+                    }
+                    case kColWeight: {
+                        HMENU m = CreatePopupMenu();
+                        AppendMenuW(m, MF_STRING | (l.lineweight < 0 ? MF_CHECKED : 0), 1000, L"Default (0.25 mm)");
+                        for (int w : LineWeights())
+                            AppendMenuW(m, MF_STRING | (w == l.lineweight ? MF_CHECKED : 0), (UINT_PTR)w + 1,
+                                        LineWeightName(w).c_str());
+                        const UINT id = PopupAtCursor(dlg, m);
+                        change = id != 0;
+                        if (change) l.lineweight = id == 1000 ? kLwDefault : (int)id - 1;
+                        break;
+                    }
+                    default: change = false; break;
+                }
+                if (change) {
+                    d->doc->UpdateLayer(l);
+                    refresh(l.id);
+                }
+                return TRUE;
+            }
+            if (nm->code == LVN_BEGINLABELEDITW) {
+                auto* di = (NMLVDISPINFOW*)lp;
+                LVITEMW it{};
+                it.mask = LVIF_PARAM;
+                it.iItem = di->item.iItem;
+                ListView_GetItem(GetDlgItem(dlg, IDC_LY_LIST), &it);
+                SetWindowLongPtrW(dlg, DWLP_MSGRESULT, it.lParam == 0 ? TRUE : FALSE);  // layer 0 keeps its name
+                return TRUE;
+            }
+            if (nm->code == LVN_ENDLABELEDITW) {
+                auto* di = (NMLVDISPINFOW*)lp;
+                if (!di->item.pszText) return TRUE;
+                LVITEMW it{};
+                it.mask = LVIF_PARAM;
+                it.iItem = di->item.iItem;
+                ListView_GetItem(GetDlgItem(dlg, IDC_LY_LIST), &it);
+                const std::wstring name = di->item.pszText;
+                const Layer* other = d->doc->LayerByName(name);
+                const Layer* mine = d->doc->FindLayer((int)it.lParam);
+                if (name.empty() || !mine || (other && other->id != mine->id)) {
+                    MessageBoxW(dlg, L"Each layer needs a name of its own.", APP_NAME, MB_ICONINFORMATION);
+                    return TRUE;
+                }
+                Layer l = *mine;
+                l.name = name;
+                d->doc->UpdateLayer(l);
+                refresh(l.id);
+                return TRUE;
+            }
+            break;
+        }
+        case WM_COMMAND:
+            switch (LOWORD(wp)) {
+                case IDC_LY_NEW: {
+                    Layer l;
+                    l.name = L"Layer1";
+                    for (int k = 1; d->doc->LayerByName(l.name); ++k) l.name = L"Layer" + std::to_wstring(k);
+                    const int id = d->doc->AddLayer(l);
+                    refresh(id);
+                    HWND list = GetDlgItem(dlg, IDC_LY_LIST);
+                    SetFocus(list);
+                    ListView_EditLabel(list, ListView_GetNextItem(list, -1, LVNI_SELECTED));
+                    return TRUE;
+                }
+                case IDC_LY_DELETE: {
+                    std::wstring why;
+                    const int id = SelectedLayerId(dlg);
+                    if (id >= 0 && !d->doc->DeleteLayer(id, why)) MessageBoxW(dlg, why.c_str(), APP_NAME, MB_ICONINFORMATION);
+                    refresh(0);
+                    return TRUE;
+                }
+                case IDC_LY_CURRENT: {
+                    const int id = SelectedLayerId(dlg);
+                    const Layer* l = d->doc->FindLayer(id);
+                    if (!l) return TRUE;
+                    if (l->frozen) {
+                        MessageBoxW(dlg, L"A frozen layer cannot be current. Thaw it first.", APP_NAME, MB_ICONINFORMATION);
+                        return TRUE;
+                    }
+                    CurrentStyle c = d->doc->Current();
+                    c.layer = id;
+                    d->doc->SetCurrent(c);
+                    refresh(id);
+                    return TRUE;
+                }
+                case IDC_LY_SAVESTATE: {
+                    const std::wstring name = GetText(dlg, IDC_LY_STATE);
+                    if (name.empty()) {
+                        MessageBoxW(dlg, L"Type a name for the layer state first.", APP_NAME, MB_ICONINFORMATION);
+                        return TRUE;
+                    }
+                    d->doc->SaveLayerState(name);
+                    refresh(SelectedLayerId(dlg));
+                    return TRUE;
+                }
+                case IDC_LY_RESTORESTATE: {
+                    if (!d->doc->RestoreLayerState(GetText(dlg, IDC_LY_STATE)))
+                        MessageBoxW(dlg, L"Choose a saved layer state first.", APP_NAME, MB_ICONINFORMATION);
+                    refresh(SelectedLayerId(dlg));
+                    return TRUE;
+                }
+                case IDC_LY_DELSTATE:
+                    d->doc->DeleteLayerState(GetText(dlg, IDC_LY_STATE));
+                    SetDlgItemTextW(dlg, IDC_LY_STATE, L"");
+                    refresh(SelectedLayerId(dlg));
+                    return TRUE;
+                case IDOK:
+                case IDCANCEL:
+                    EndDialog(dlg, IDOK);
+                    return TRUE;
+            }
+            break;
+    }
+    return FALSE;
+}
+
 INT_PTR CALLBACK AboutProc(HWND dlg, UINT msg, WPARAM wp, LPARAM) {
     switch (msg) {
         case WM_INITDIALOG: {
@@ -601,4 +858,39 @@ bool DimEditDialog(HWND owner, const DimData& dim, bool attached, DimEditResult&
     DimEditData d{&dim, attached, &out, L""};
     return DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_DIMEDIT), owner, DimEditProc, (LPARAM)&d) ==
            IDOK;
+}
+
+void LayerDialog(HWND owner, Document& doc, const std::function<void()>& changed) {
+    LayerData d{&doc, &changed};
+    DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_LAYERS), owner, LayerProc, (LPARAM)&d);
+}
+
+bool PickColor(HWND owner, int32_t& color, bool allowBy) {
+    HMENU m = CreatePopupMenu();
+    if (allowBy) {
+        AppendMenuW(m, MF_STRING | (color == kByLayer ? MF_CHECKED : 0), 300, L"ByLayer");
+        AppendMenuW(m, MF_STRING | (color == kByBlock ? MF_CHECKED : 0), 301, L"ByBlock");
+        AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    }
+    for (int i = 1; i <= 9; ++i)
+        AppendMenuW(m, MF_STRING | (color == i ? MF_CHECKED : 0), (UINT_PTR)i, ColorName(i).c_str());
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_STRING, 400, L"Other colour...");
+    const UINT id = PopupAtCursor(owner, m);
+    if (id == 0) return false;
+    if (id == 300) color = kByLayer;
+    else if (id == 301) color = kByBlock;
+    else if (id <= 9) color = (int32_t)id;
+    else {
+        static COLORREF custom[16] = {};
+        CHOOSECOLORW cc{sizeof(cc)};
+        cc.hwndOwner = owner;
+        const uint32_t now = (color == kByLayer || color == kByBlock) ? 0xFFFFFF : ColorRgb(color);
+        cc.rgbResult = RGB((now >> 16) & 255, (now >> 8) & 255, now & 255);
+        cc.lpCustColors = custom;
+        cc.Flags = CC_FULLOPEN | CC_RGBINIT;
+        if (!ChooseColorW(&cc)) return false;
+        color = kTrueColor | (int32_t)((GetRValue(cc.rgbResult) << 16) | (GetGValue(cc.rgbResult) << 8) | GetBValue(cc.rgbResult));
+    }
+    return true;
 }

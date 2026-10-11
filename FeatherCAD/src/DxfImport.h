@@ -19,6 +19,9 @@ struct DxfResult {
     Units units = Units::Millimetres;
     bool hasDimStyle = false;
     DimStyle dimStyle;
+    std::vector<Layer> layers;   // "0" first (id 0); the objects' layer ids are these
+    double ltscale = 1;          // $LTSCALE
+    std::wstring currentLayer;   // $CLAYER
     std::map<std::string, size_t> skipped;  // DXF type -> how many were left out
     std::wstring Notes() const;             // "Not brought in: 12 TEXT, 3 HATCH."
 };

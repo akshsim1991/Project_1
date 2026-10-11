@@ -13,6 +13,7 @@
 #include "Document.h"
 #include "Engine.h"
 #include "History.h"
+#include "PropertiesPanel.h"
 #include "Settings.h"
 #include "StatusBar.h"
 #include "TabBar.h"
@@ -107,6 +108,13 @@ private:
     void DimensionStyle();
     void ClipboardCommand(int id);
 
+    // layers and the Properties panel
+    void ShowLayers();
+    void UpdateLayerCombo();
+    void UpdateProperties(bool force = false);
+    // Changes every selected object (one undo step).
+    void ChangeSelected(const wchar_t* stepName, const std::function<void(Entity&)>& change);
+
     void ApplyTheme(int mode);
     void ToggleDrafting(int id);
     void QuickSelect();
@@ -124,6 +132,16 @@ private:
     Toolbar m_menuBar, m_tools;
     TabBar m_tabs;
     CommandPalette m_palette;
+    PropertiesPanel m_props;
+    HWND m_layerCombo = nullptr;
+    std::vector<std::wstring> m_comboLayers;  // what the layer box shows
+    struct PropsKey {
+        size_t drawing = 0;
+        uint64_t revision = 0, selection = 0;
+        bool operator==(const PropsKey& o) const {
+            return drawing == o.drawing && revision == o.revision && selection == o.selection;
+        }
+    } m_propsShown;
     int m_untitledCount = 0;
     std::wstring m_shownTitle;
     UINT m_clipFormat = 0;

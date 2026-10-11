@@ -280,6 +280,7 @@ bool OffsetSampled(const Entity& e, double d, Entity& out) {
     for (size_t i = 0; i + 1 < fit.size(); ++i)
         if (Dot(fit[i + 1] - fit[i], orig[i + 1] - orig[i]) <= 0) return false;
     out = Entity::Spline(fit, closed);
+    CopyStyle(e, out);
     return true;
 }
 }  // namespace
@@ -769,6 +770,7 @@ std::vector<JoinGroup> JoinObjects(const std::vector<Entity>& in) {
         } else {
             g.result = Entity::Polyline(c.v, closed);
         }
+        CopyStyle(in[c.sources[0]], g.result);
         groups.push_back(std::move(g));
     }
     return groups;
@@ -784,6 +786,7 @@ bool Explode(const Entity& e, std::vector<Entity>& out) {
         if (!p.arc) out.push_back(Entity::Line(p.a, p.b));
         else if (p.sweep > 0) out.push_back(Entity::Arc(p.c, p.r, p.a0, p.a0 + p.sweep));
         else out.push_back(Entity::Arc(p.c, p.r, p.a0 + p.sweep, p.a0));
+        CopyStyle(e, out.back());
     }
     return !out.empty();
 }
