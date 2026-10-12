@@ -24,6 +24,7 @@ const wchar_t* RelKindName(RelKind k) {
         case RelKind::Fix: return L"Fixed";
         case RelKind::Symmetric: return L"Symmetric";
         case RelKind::Midpoint: return L"Midpoint";
+        case RelKind::Regular: return L"Regular polygon";
     }
     return L"";
 }
@@ -32,7 +33,8 @@ int RelElementCount(RelKind k) {
     switch (k) {
         case RelKind::Horizontal:
         case RelKind::Vertical:
-        case RelKind::Fix: return 1;
+        case RelKind::Fix:
+        case RelKind::Regular: return 1;
         case RelKind::Symmetric: return 3;
         default: return 2;
     }
@@ -90,6 +92,20 @@ Element ElementOf(const Document& doc, const DimRef& ref) {
 namespace {
 Vec2 Dir(const Element& l) { return l.b - l.a; }
 
+// A closed polyline of straight sides (what Regular polygon is for).
+bool IsPlainPolygon(const Entity& e) {
+    if (e.type != EntityType::Polyline || !e.closed || e.verts.size() < 3) return false;
+    for (const Vertex& v : e.verts)
+        if (v.bulge != 0) return false;
+    return true;
+}
+
+Vec2 VertexMean(const Entity& e) {
+    Vec2 m{0, 0};
+    for (const Vertex& v : e.verts) m = m + v.p;
+    return m * (1.0 / (double)e.verts.size());
+}
+
 // Where a mark goes for an element: beside a line's middle, on top of a circle, at a point.
 Vec2 MarkAnchor(const Element& el) {
     switch (el.kind) {
@@ -104,14 +120,48 @@ bool PlaceRelationMarks(const Document& doc, Entity& rel) {
     if (rel.type != EntityType::Relation || !rel.annot) return false;
     const RelationData& r = rel.annot->rel;
     std::vector<Vec2> pts;
-    for (int i = 0; i < RelElementCount(r.kind); ++i) {
-        const Element el = ElementOf(doc, r.refs[(size_t)i]);
-        if (el.kind == ElemKind::None) return false;
-        pts.push_back(MarkAnchor(el));
+    if (r.kind == RelKind::Regular) {  // in the middle of the polygon
+        const Entity* pe = doc.Find(r.refs[0].id);
+        if (!pe || !IsPlainPolygon(*pe)) return false;
+        pts.push_back(VertexMean(*pe));
     }
-    if (pts == rel.annot->pts) return true;
+    Element el[3];
+    for (int i = 0; i < RelElementCount(r.kind) && r.kind != RelKind::Regular; ++i) {
+        el[i] = ElementOf(doc, r.refs[(size_t)i]);
+        if (el[i].kind == ElemKind::None) return false;
+        pts.push_back(MarkAnchor(el[i]));
+    }
+    if (r.kind == RelKind::Tangent) {  // one mark, where they touch
+        Vec2 t = pts[0];
+        if (el[0].kind == ElemKind::Line || el[1].kind == ElemKind::Line) {
+            const Element& l = el[0].kind == ElemKind::Line ? el[0] : el[1];
+            const Element& c = el[0].kind == ElemKind::Line ? el[1] : el[0];
+            const Vec2 u = Normalized(l.b - l.a);
+            t = l.a + u * Dot(c.a - l.a, u);
+        } else if (Dist(el[0].a, el[1].a) > 1e-12) {
+            const Element& big = el[0].r >= el[1].r ? el[0] : el[1];
+            const Element& other = el[0].r >= el[1].r ? el[1] : el[0];
+            t = big.a + Normalized(other.a - big.a) * big.r;
+        }
+        pts = {t};
+    }
+    // Marks of other relationships at the same spot: this one goes beside them.
+    std::vector<int> slots(pts.size(), 0);
+    if (r.kind != RelKind::Coincident)
+        for (const auto& kv : doc.Entities()) {
+            const Entity& o = kv.second;
+            if (o.type != EntityType::Relation || !o.annot || kv.first == rel.id || (rel.id && kv.first > rel.id) ||
+                o.annot->rel.kind == RelKind::Coincident)
+                continue;
+            for (size_t i = 0; i < pts.size(); ++i)
+                for (size_t j = 0; j < o.annot->pts.size(); ++j)
+                    if (Near(o.annot->pts[j], pts[i], 1e-9 * (1 + std::fabs(pts[i].x) + std::fabs(pts[i].y))))
+                        slots[i] = std::max(slots[i], (j < o.annot->markSlots.size() ? o.annot->markSlots[j] : 0) + 1);
+        }
+    if (pts == rel.annot->pts && slots == rel.annot->markSlots) return true;
     Annot& a = EditAnnot(rel);
     a.pts = pts;
+    a.markSlots = slots;
     rel.p0 = pts[0];
     return true;
 }
@@ -186,12 +236,19 @@ bool MakeRelation(const Document& doc, RelKind kind, const std::array<DimRef, 3>
             ok = is(0, ElemKind::Point) && is(1, ElemKind::Point) && is(2, ElemKind::Line);
             why = L"Symmetric needs two points and a line to be symmetric about.";
             break;
+        case RelKind::Regular: {
+            const Entity* pe = doc.Find(refs[0].id);
+            ok = pe && IsPlainPolygon(*pe);
+            why = L"Regular polygon is for a closed polyline with straight sides.";
+            break;
+        }
     }
     if (!ok) return false;
     why.clear();
     std::array<DimRef, 3> r = refs;
     // A point first, then what it lies on.
     if ((kind == RelKind::Coincident || kind == RelKind::Midpoint) && !is(0, ElemKind::Point)) std::swap(r[0], r[1]);
+    if (kind == RelKind::Regular) r[0].grip = -1;  // the whole polyline
     out = Entity{};
     out.type = EntityType::Relation;
     auto a = std::make_shared<Annot>();
@@ -315,6 +372,14 @@ public:
         m_L = std::max({box.Width(), box.Height(), 1.0});
     }
 
+    // How far each condition is from holding, as things are (0: it holds).
+    std::vector<double> Residuals() {
+        std::vector<double> c;
+        Eval(m_x, c);
+        return c;
+    }
+    double Size() const { return m_L; }
+
     // True when everything holds.
     bool Run(std::wstring& why) {
         std::vector<double> c;
@@ -404,6 +469,11 @@ private:
         for (const Slot& s : m_slots) SetVars(m_ents[s.id], x.data() + s.start);
     }
 
+    const Entity* Ent(uint64_t id) {
+        auto it = m_ents.find(id);
+        return it != m_ents.end() ? &it->second : m_doc.Find(id);
+    }
+
     Element El(const DimRef& r) {
         auto it = m_ents.find(r.id);
         if (it != m_ents.end()) return ElementOf(it->second, r.grip);
@@ -482,6 +552,23 @@ private:
                     out.push_back(Dot(b.a - a.a, u));
                     break;
                 }
+                case RelKind::Regular: {
+                    // Each corner, turned about the middle by one step, lands on the next.
+                    const Entity* pe = Ent(c.refs[0].id);
+                    if (!pe || !IsPlainPolygon(*pe)) break;
+                    const auto& v = pe->verts;
+                    const size_t n = v.size();
+                    const Vec2 m = VertexMean(*pe);
+                    double area2 = 0;
+                    for (size_t i = 0; i < n; ++i) area2 += Cross(v[i].p, v[(i + 1) % n].p);
+                    const double t = (area2 >= 0 ? kTau : -kTau) / (double)n, cs = std::cos(t), sn = std::sin(t);
+                    for (size_t i = 0; i < n; ++i) {
+                        const Vec2 d = v[i].p - m, e = v[(i + 1) % n].p - m;
+                        out.push_back(cs * d.x - sn * d.y - e.x);
+                        out.push_back(sn * d.x + cs * d.y - e.y);
+                    }
+                    break;
+                }
                 case RelKind::Fix: break;
             }
         }
@@ -494,6 +581,22 @@ private:
     std::vector<double> m_x, m_w;
     double m_L = 1;
 };
+
+// The condition a relationship or a locked dimension stands for.
+Con ConOf(const Entity& e, uint64_t id) {
+    Con c;
+    c.id = id;
+    if (e.type == EntityType::Relation && e.annot) {
+        const RelationData& r = e.annot->rel;
+        c.kind = r.kind;
+        for (size_t i = 0; i < 3; ++i) c.refs[i] = r.refs[i];
+        c.param = r.param;
+    } else if (e.dim) {
+        c.dim = e.dim.get();
+        c.refs = e.dim->refs;
+    }
+    return c;
+}
 
 std::vector<uint64_t> RefIds(const Con& c) {
     std::vector<uint64_t> ids;
@@ -517,18 +620,9 @@ SolveReport SolveRelations(Document& doc, const std::set<uint64_t>& changed, con
                 if (r.refs[0].id) fixed.insert(r.refs[0].id);
                 continue;
             }
-            Con c;
-            c.kind = r.kind;
-            for (size_t i = 0; i < 3; ++i) c.refs[i] = r.refs[i];
-            c.param = r.param;
-            c.id = kv.first;
-            all.push_back(c);
+            all.push_back(ConOf(e, kv.first));
         } else if (e.type == EntityType::Dimension && e.dim && e.dim->locked && HasRefs(e)) {
-            Con c;
-            c.dim = e.dim.get();
-            c.refs = e.dim->refs;
-            c.id = kv.first;
-            all.push_back(c);
+            all.push_back(ConOf(e, kv.first));
         }
     }
     if (all.empty()) return rep;
@@ -789,10 +883,32 @@ int AddImpliedRelations(Document& doc, const std::set<uint64_t>& ids) {
             }
         }
     }
-    // Rectangles (closed four-sided polylines with square corners) keep their right angles.
+    // Rectangles (closed four-sided polylines with square corners) keep their
+    // right angles; other regular polygons (POLYGON) stay regular.
     for (uint64_t id : seen) {
         const Entity* e = doc.Find(id);
-        if (!e || e->type != EntityType::Polyline || !e->closed || e->verts.size() != 4) continue;
+        if (!e || !IsPlainPolygon(*e)) continue;
+        if (e->verts.size() != 4) {
+            const size_t n = e->verts.size();
+            const Vec2 m = VertexMean(*e);
+            const double side = Dist(e->verts[0].p, e->verts[1].p), r = Dist(e->verts[0].p, m);
+            bool regular = side > 1e-9;
+            for (size_t i = 0; i < n && regular; ++i)
+                regular = std::fabs(Dist(e->verts[i].p, e->verts[(i + 1) % n].p) - side) <= 1e-6 * side &&
+                          std::fabs(Dist(e->verts[i].p, m) - r) <= 1e-6 * side;
+            if (regular && !exists(RelKind::Regular, {id, -1}, {})) {
+                Entity rel;
+                std::wstring why;
+                if (MakeRelation(doc, RelKind::Regular, {DimRef{id, -1}, DimRef{}, DimRef{}}, markSize, rel, why)) {
+                    EditAnnot(rel).rel.implied = true;
+                    rel.layer = -1;
+                    doc.Add(rel);
+                    have.push_back(rel.annot->rel);
+                    ++added;
+                }
+            }
+            continue;
+        }
         bool rect = true;
         for (size_t i = 0; i < 4 && rect; ++i) {
             const Vec2 u = e->verts[(i + 1) % 4].p - e->verts[i].p, w = e->verts[(i + 2) % 4].p - e->verts[(i + 1) % 4].p;
@@ -804,13 +920,112 @@ int AddImpliedRelations(Document& doc, const std::set<uint64_t>& ids) {
     return added;
 }
 
-void AutoRelate(Document& doc, uint64_t lineId) {
-    const Entity* e = doc.Find(lineId);
-    if (!e || e->type != EntityType::Line) return;
-    const double len = Dist(e->p0, e->p1);
-    if (len <= 1e-9) return;
+namespace {
+bool HasRelation(const Document& doc, RelKind k, const DimRef& a, const DimRef& b) {
+    for (const auto& kv : doc.Entities()) {
+        if (kv.second.type != EntityType::Relation || !kv.second.annot) continue;
+        const RelationData& r = kv.second.annot->rel;
+        if (r.kind != k) continue;
+        if ((SameRef(r.refs[0], a) && SameRef(r.refs[1], b)) || (SameRef(r.refs[0], b) && SameRef(r.refs[1], a))) return true;
+    }
+    return false;
+}
+}  // namespace
+
+int ReleaseBrokenRelations(Document& doc, const std::set<uint64_t>& changed, const std::map<uint64_t, Entity>& before) {
+    std::vector<uint64_t> ids;
+    for (const auto& kv : doc.Entities()) {
+        const Entity& e = kv.second;
+        const DimRef* refs = nullptr;
+        size_t n = 0;
+        if (e.type == EntityType::Relation && e.annot) refs = e.annot->rel.refs.data(), n = 3;
+        else if (e.type == EntityType::Dimension && e.dim && e.dim->locked) refs = e.dim->refs.data(), n = 4;
+        bool touched = false;
+        for (size_t i = 0; i < n; ++i) touched |= refs[i].id && changed.count(refs[i].id);
+        if (touched) ids.push_back(kv.first);
+    }
+    int released = 0;
+    for (uint64_t id : ids) {
+        const Entity* x = doc.Find(id);
+        if (!x) continue;
+        Entity e = *x;
+        const Con con = ConOf(e, id);
+        std::vector<uint64_t> refIds = RefIds(con);
+        bool gone = false;
+        for (uint64_t r : refIds) gone |= !doc.Find(r);
+        std::vector<double> res;
+        double size = 1;
+        if (!gone) {
+            const std::vector<Con> one{con};
+            const std::set<uint64_t> all(refIds.begin(), refIds.end());
+            Solver s(doc, one, refIds, all, {}, {});
+            res = s.Residuals();
+            size = s.Size();
+        }
+        double worst = 0;
+        for (double r : res) worst = std::max(worst, std::fabs(r));
+        if (!gone && worst <= 1e-7 * size) continue;  // still holds
+        if (e.type == EntityType::Dimension) {
+            // A locked dimension takes the size the object now has.
+            if (gone || res.size() != 1) continue;
+            DimData d = *e.dim;
+            const bool angle = d.kind == DimData::Angular || d.kind == DimData::AngularCoord;
+            d.value += res[0] / (angle ? size : 1);
+            e.dim = std::make_shared<const DimData>(std::move(d));
+            doc.Replace(e);
+            continue;
+        }
+        RelationData r = e.annot->rel;
+        if (!gone && r.kind == RelKind::Coincident) {
+            // One point stayed where it was and the other was cut away from it:
+            // whatever end is left at that corner (the other piece of a broken
+            // line) takes its place.
+            int stayed = -1;
+            for (int k = 0; k < 2; ++k) {
+                const Element now = ElementOf(doc, r.refs[(size_t)k]);
+                if (now.kind != ElemKind::Point) continue;
+                auto it = before.find(r.refs[(size_t)k].id);
+                const Element was = it == before.end() ? now : ElementOf(it->second, r.refs[(size_t)k].grip);
+                if (was.kind == ElemKind::Point && Near(was.a, now.a, 1e-9 * (1 + size))) stayed = stayed < 0 ? k : -2;
+            }
+            if (stayed >= 0) {
+                const DimRef keepRef = r.refs[(size_t)stayed], lost = r.refs[(size_t)(1 - stayed)];
+                const Vec2 at = ElementOf(doc, keepRef).a;
+                const double tol = 1e-7 * (1 + std::fabs(at.x) + std::fabs(at.y));
+                DimRef found;
+                std::vector<Grip> pts;
+                for (const auto& kv : doc.Entities()) {
+                    if (kv.first == keepRef.id || !Joinable(doc, kv.second) || !Bounds(kv.second).Inflated(tol).Contains(at)) continue;
+                    JoinPoints(kv.second, pts);
+                    for (const Grip& g : pts)
+                        if (Near(g.p, at, tol) && !SameRef({kv.first, g.index}, lost) &&
+                            !HasRelation(doc, RelKind::Coincident, keepRef, {kv.first, g.index}))
+                            found = {kv.first, g.index};
+                    if (found.id) break;
+                }
+                if (found.id) {
+                    r.refs[(size_t)(1 - stayed)] = found;
+                    EditAnnot(e).rel = r;
+                    if (PlaceRelationMarks(doc, e)) {
+                        doc.Replace(e);
+                        continue;
+                    }
+                }
+            }
+        }
+        doc.Erase(id);
+        ++released;
+    }
+    return released;
+}
+
+void AutoRelate(Document& doc, uint64_t id) {
+    const Entity* e = doc.Find(id);
+    if (!e || (e->type != EntityType::Line && e->type != EntityType::Arc)) return;
+    const Entity me = *e;
     const double size = doc.Settings().dimStyle.textHeight * 0.8;
     auto add = [&](RelKind k, std::array<DimRef, 3> refs) {
+        if (HasRelation(doc, k, refs[0], refs[1])) return;
         Entity rel;
         std::wstring why;
         if (MakeRelation(doc, k, refs, size, rel, why)) {
@@ -818,23 +1033,45 @@ void AutoRelate(Document& doc, uint64_t lineId) {
             doc.Add(rel);
         }
     };
-    const double tol = 1e-9 * (1 + len);
-    if (std::fabs(e->p1.y - e->p0.y) <= tol) add(RelKind::Horizontal, {DimRef{lineId, -1}, {}, {}});
-    else if (std::fabs(e->p1.x - e->p0.x) <= tol) add(RelKind::Vertical, {DimRef{lineId, -1}, {}, {}});
+    Vec2 ends[2];
+    int endGrip[2];
+    double len;
+    if (me.type == EntityType::Line) {
+        len = Dist(me.p0, me.p1);
+        if (len <= 1e-9) return;
+        const double tol = 1e-9 * (1 + len);
+        if (std::fabs(me.p1.y - me.p0.y) <= tol) add(RelKind::Horizontal, {DimRef{id, -1}, {}, {}});
+        else if (std::fabs(me.p1.x - me.p0.x) <= tol) add(RelKind::Vertical, {DimRef{id, -1}, {}, {}});
+        ends[0] = me.p0, ends[1] = me.p1, endGrip[0] = 0, endGrip[1] = 1;
+    } else {
+        len = me.radius;
+        if (len <= 1e-9) return;
+        ends[0] = Polar(me.p0, me.radius, me.startAngle), ends[1] = Polar(me.p0, me.radius, me.endAngle);
+        endGrip[0] = 1, endGrip[1] = 2;
+    }
+    const double tol = 1e-9 * (1 + len + std::fabs(ends[0].x) + std::fabs(ends[0].y));
     // Its ends on other objects' ends, centres and midpoints.
-    const Vec2 ends[2] = {e->p0, e->p1};
     for (int k = 0; k < 2; ++k) {
         std::vector<Grip> grips;
         for (const auto& kv : doc.Entities()) {
             const Entity& o = kv.second;
-            if (kv.first == lineId || IsAnnotation(o) || o.type == EntityType::Relation || o.type == EntityType::Insert ||
+            if (kv.first == id || IsAnnotation(o) || o.type == EntityType::Relation || o.type == EntityType::Insert ||
                 o.type == EntityType::Array || !Bounds(o).Inflated(tol).Contains(ends[k]))
                 continue;
             grips.clear();
             GripsOf(o, grips);
             for (const Grip& g : grips)
                 if (Near(g.p, ends[k], tol)) {
-                    add(RelKind::Coincident, {DimRef{lineId, k}, DimRef{kv.first, g.index}, {}});
+                    add(RelKind::Coincident, {DimRef{id, endGrip[k]}, DimRef{kv.first, g.index}, {}});
+                    // An arc that runs smoothly on from a line or another arc (a fillet): tangent too.
+                    if (me.type == EntityType::Arc && (o.type == EntityType::Line || o.type == EntityType::Arc)) {
+                        const Element other = ElementOf(o, -1);
+                        const double gap = other.kind == ElemKind::Line
+                                               ? std::fabs(std::fabs(Cross(Normalized(other.b - other.a), me.p0 - other.a)) - me.radius)
+                                               : std::min(std::fabs(Dist(me.p0, other.a) - (me.radius + other.r)),
+                                                          std::fabs(Dist(me.p0, other.a) - std::fabs(me.radius - other.r)));
+                        if (gap <= 1e-7 * (1 + len)) add(RelKind::Tangent, {DimRef{id, -1}, DimRef{kv.first, -1}, {}});
+                    }
                     break;
                 }
         }

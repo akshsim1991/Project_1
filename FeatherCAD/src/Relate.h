@@ -9,6 +9,7 @@
 //
 // Plain C++ (no Windows).
 #pragma once
+#include <map>
 #include <set>
 #include <utility>
 #include <string>
@@ -59,7 +60,17 @@ bool LookupName(const Document& doc, const std::wstring& name, double& value);
 // BeginChange / EndChange; returns how many relationships were added.
 int AddImpliedRelations(Document& doc, const std::set<uint64_t>& ids);
 
-// Relationships the drawing suggests for a new line (horizontal or
-// vertical, ends on other objects' points): added when the drawing's
+// After a change that cuts or reshapes objects (trim, extend, fillet,
+// chamfer, break, lengthen, join): the relationships of the objects
+// `changed` that it broke are let go instead of pulling the objects back (a
+// connect moves to the end left at the same corner, as when a line is broken
+// in two), and locked dimensions on them take the size they now have.
+// `before` holds the changed objects as they were. Returns how many
+// relationships were let go. Call inside BeginChange / EndChange.
+int ReleaseBrokenRelations(Document& doc, const std::set<uint64_t>& changed, const std::map<uint64_t, Entity>& before);
+
+// Relationships the drawing suggests for a new line or arc (horizontal or
+// vertical; ends on other objects' points; an arc running smoothly on from
+// a line or arc, as a fillet does, tangent to it): added when the drawing's
 // "add relationships while drawing" is on.
-void AutoRelate(Document& doc, uint64_t lineId);
+void AutoRelate(Document& doc, uint64_t id);

@@ -1373,10 +1373,12 @@ std::vector<std::pair<Vec2, Vec2>>& HatchLines(const Annot& a) {
 }  // namespace
 
 namespace {
+double g_relationMarkSize = 0;
+
 // A relationship's marks: a small box with a letter (or a little drawing) by each element.
 void RelationLayout(const Entity& e, AnnotGraphics& g) {
     const Annot& a = *e.annot;
-    const double s = a.arrow > 0 ? a.arrow : 2.5;
+    const double s = g_relationMarkSize > 0 ? g_relationMarkSize : a.arrow > 0 ? a.arrow : 2.5;
     for (const Vec2& p : a.pts) {
         if (a.rel.kind == RelKind::Coincident) {  // a small filled square on the point
             const double h = s * 0.18;
@@ -1384,7 +1386,9 @@ void RelationLayout(const Entity& e, AnnotGraphics& g) {
             g.boxes.push_back({p + Vec2{-h, -h}, p + Vec2{h, -h}, p + Vec2{h, h}, p + Vec2{-h, h}});
             continue;
         }
-        const Vec2 c = p + Vec2{s * 0.9, s * 0.9}, h{s / 2, s / 2};
+        const size_t i = (size_t)(&p - a.pts.data());
+        const int slot = i < a.markSlots.size() ? a.markSlots[i] : 0;
+        const Vec2 c = p + Vec2{s * (0.9 + 1.15 * slot), s * 0.9}, h{s / 2, s / 2};
         const Vec2 q[4] = {c - h, c + Vec2{h.x, -h.y}, c + h, c + Vec2{-h.x, h.y}};
         for (int i = 0; i < 4; ++i) g.lines.push_back(Prim::Seg(q[i], q[(i + 1) % 4]));
         g.boxes.push_back({q[0], q[1], q[2], q[3]});
@@ -1412,6 +1416,9 @@ void RelationLayout(const Entity& e, AnnotGraphics& g) {
             case RelKind::Fix: letter = L"F"; break;
             case RelKind::Symmetric: letter = L"S"; break;
             case RelKind::Midpoint: letter = L"M"; break;
+            case RelKind::Regular:  // a little hexagon
+                for (int i = 0; i < 6; ++i) seg(Polar({0, 0}, 1, kPi / 3 * i), Polar({0, 0}, 1, kPi / 3 * (i + 1)));
+                break;
             case RelKind::Coincident: break;
         }
         if (letter) {
@@ -1427,6 +1434,8 @@ void RelationLayout(const Entity& e, AnnotGraphics& g) {
     }
 }
 }  // namespace
+
+void SetRelationMarkSize(double size) { g_relationMarkSize = size; }
 
 void AnnotLayout(const Entity& e, const FieldValues* fields, AnnotGraphics& g) {
     if (!e.annot) return;

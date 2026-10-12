@@ -101,6 +101,7 @@ public:
     void Start() override {
         E->ClearSelection();
         E->Doc().BeginChange(m_extend ? L"Extend" : L"Trim");
+        E->Doc().MarkReshape();
         E->Msg(m_extend ? L"Every object is a boundary; B chooses particular ones."
                         : L"Every object is a cutting edge; T chooses particular ones.");
         AskPick();
@@ -382,6 +383,7 @@ public:
     void Start() override {
         E->ClearSelection();
         E->Doc().BeginChange(m_chamfer ? L"Chamfer" : L"Fillet");
+        E->Doc().MarkReshape();
         Settings();
         AskFirst();
     }
@@ -876,6 +878,7 @@ class BreakCmd : public Command {
             return;
         }
         E->Doc().BeginChange(L"Break");
+        E->Doc().MarkReshape();
         if (pieces.empty()) {
             E->Doc().Erase(m_id);
         } else {
@@ -939,6 +942,7 @@ public:
             return E->Finish();
         }
         E->Doc().BeginChange(L"Join");
+        E->Doc().MarkReshape();
         size_t joined = 0;
         for (const JoinGroup& g : groups) {
             for (size_t i : g.sources) E->Doc().Erase(ents[i].id);
@@ -1040,6 +1044,7 @@ public:
     void Start() override {
         E->ClearSelection();
         E->Doc().BeginChange(L"Lengthen");
+        E->Doc().MarkReshape();
         AskMeasure();
     }
     void OnPoint(Vec2 p) override {

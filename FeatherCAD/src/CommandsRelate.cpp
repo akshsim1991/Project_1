@@ -76,6 +76,7 @@ class RelateCmd : public Command {
             case RelKind::Symmetric:
                 q = m_have == 0 ? L"Select first point" : m_have == 1 ? L"Select second point" : L"Select the line they are symmetric about";
                 break;
+            case RelKind::Regular: q = L"Select a closed polyline"; break;
         }
         Prompt p = Pick(L"", kAcceptEmpty);
         p.text = q;

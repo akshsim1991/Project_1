@@ -1656,6 +1656,7 @@ std::unique_ptr<MainWindow::Drawing> MainWindow::MakeDrawing() {
     DrawingSettings ds;
     ds.units = (Units)m_settings.newUnits;
     ds.precision = m_settings.newPrecision;
+    ds.autoRelations = true;  // lines drawn keep their joins and their level or upright sides (as in Solid Edge)
     d->doc.SetSettings(ds);
     d->doc.MarkSaved();
     d->untitledName = L"Drawing" + std::to_wstring(++m_untitledCount);

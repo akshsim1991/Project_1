@@ -683,6 +683,23 @@ std::vector<uint64_t> Document::AddGroup(std::vector<Entity> entities) {
 }
 
 void Document::SolveStep() {
+    if (m_open->reshape) {
+        // Cut or reshaped: what it broke is let go; new pieces get their relationships.
+        std::set<uint64_t> shapes;
+        std::map<uint64_t, Entity> before;
+        std::vector<uint64_t> added;
+        for (const Change& c : m_open->changes) {
+            const Entity& x = c.after ? *c.after : *c.before;
+            if (!c.after && !c.before) continue;
+            if (x.type == EntityType::Relation || x.type == EntityType::Dimension || IsAnnotation(x)) continue;
+            shapes.insert(c.id);
+            if (c.before) before[c.id] = *c.before;
+            else if (c.after) added.push_back(c.id);
+        }
+        ReleaseBrokenRelations(*this, shapes, before);
+        if (m_settings.autoRelations)
+            for (uint64_t id : added) AutoRelate(*this, id);
+    }
     std::set<uint64_t> changed, keep;
     std::set<std::pair<uint64_t, int>> pinned;
     for (const Change& c : m_open->changes) {
@@ -1546,7 +1563,7 @@ struct Reader {
             return true;
         }
         if (key == "rel") {
-            if (!need(9) || v[0] < 0 || v[0] > (double)RelKind::Midpoint) return Fail(L"a relationship needs its kind and elements");
+            if (!need(9) || v[0] < 0 || v[0] > (double)RelKind::Regular) return Fail(L"a relationship needs its kind and elements");
             if (depth > 0) {  // inside a block or array: nothing to relate
                 known = false;
                 return true;

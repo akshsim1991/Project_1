@@ -81,6 +81,11 @@ public:
     void EndChange();     // commits the group (an empty group leaves no step)
     void CancelChange();  // takes back everything since BeginChange
     bool InChange() const { return m_open.has_value(); }
+    // The open change cuts or reshapes objects (trim, fillet, break...): the
+    // relationships it breaks are let go rather than kept (Relate.h).
+    void MarkReshape() {
+        if (m_open) m_open->reshape = true;
+    }
     // Outside BeginChange/EndChange each of these is a step of its own.
     uint64_t Add(Entity e);
     void Erase(uint64_t id);
@@ -202,6 +207,7 @@ private:
         std::optional<std::vector<Layer>> layersBefore, layersAfter;
         std::optional<BlockTable> blocksBefore, blocksAfter;
         std::optional<std::vector<Variable>> varsBefore, varsAfter;
+        bool reshape = false;
     };
     void SetBlocks(BlockTable blocks, const std::wstring& stepName);
     void SetLayers(std::vector<Layer> layers, const std::wstring& stepName);

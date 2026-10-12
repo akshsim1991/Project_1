@@ -170,7 +170,8 @@ BlockData PartsListBlock(const std::vector<PartsRow>& rows, double textHeight);
 
 // ---- relationships (Relate.h) ---------------------------------------------------
 enum class RelKind : uint8_t {
-    Coincident, Horizontal, Vertical, Parallel, Perpendicular, Collinear, Tangent, Concentric, Equal, Fix, Symmetric, Midpoint
+    Coincident, Horizontal, Vertical, Parallel, Perpendicular, Collinear, Tangent, Concentric, Equal, Fix, Symmetric, Midpoint,
+    Regular  // a closed polyline stays a regular polygon (equal sides and angles)
 };
 struct RelationData {
     RelKind kind = RelKind::Coincident;
@@ -196,6 +197,7 @@ struct Annot {
     double viewScale = 1;
     bool viewLocked = false;
     RelationData rel;  // Relation (pts: where its marks are shown)
+    std::vector<int> markSlots;  // Relation: each mark's place in the row of marks at the same spot (0 first)
     std::wstring image;  // Image: the picture's file
     // Text that is a point's label: the point it labels (an object's grip)
     // and where it sits from it; it follows the point.
@@ -258,6 +260,10 @@ const TextData* TextOf(const Entity& e);  // Text and Leader; nullptr otherwise
 // What a text, leader or hatch looks like (block references: nothing; they
 // are drawn as their objects).
 void AnnotLayout(const Entity& e, const FieldValues* fields, AnnotGraphics& g);
+// Relationship marks are laid out this size (drawing units) whatever size
+// they were made at, while it is above 0: the canvas sets it from its zoom so
+// the marks stay one size on the screen.
+void SetRelationMarkSize(double size);
 
 // Geometry for hit tests and selection (Entity.cpp uses these).
 void AnnotPrimitives(const Entity& e, std::vector<Prim>& out);

@@ -20,6 +20,7 @@ namespace {
 const wchar_t kClass[] = L"FeatherCadCanvas";
 constexpr double kMinScale = 1e-7, kMaxScale = 1e8;
 constexpr int kPickboxDip = 5;     // half size of the pick box
+constexpr int kRelationMarkDip = 14;  // relationship marks, whatever the zoom
 constexpr int kApertureDip = 10;   // object snap search radius
 constexpr int kDragDip = 4;        // movement that turns a click into a drag
 constexpr double kSafeCoord = 1e6; // beyond this many pixels, clip before drawing
@@ -914,7 +915,9 @@ void Canvas::DrawPaper(ID2D1RenderTarget* rt) {
         m_centre = vp.annot->viewCentre + (m_centre - c) / vp.annot->viewScale;
         m_scale *= vp.annot->viewScale;
         m_doc = const_cast<Document*>(m_model);
+        SetRelationMarkSize(Px(kRelationMarkDip) / m_scale);
         DrawStyled(rt, model);
+        SetRelationMarkSize(Px(kRelationMarkDip) / savedScale);
         m_doc = savedDoc;
         m_centre = savedCentre;
         m_scale = savedScale;
@@ -1187,6 +1190,7 @@ void Canvas::RenderOverlay() {
 
 void Canvas::Paint() {
     if (!EnsureTarget()) return;
+    SetRelationMarkSize(Px(kRelationMarkDip) / m_scale);
     if (!m_layerValid) RenderLayer();
     if (!m_target) return;
     m_target->BeginDraw();
@@ -1203,6 +1207,7 @@ void Canvas::Paint() {
 // ---------------------------------------------------------------------------
 
 uint64_t Canvas::PickAt(Vec2 w) const {
+    SetRelationMarkSize(Px(kRelationMarkDip) / m_scale);
     const double tol = Px(kPickboxDip) / m_scale;
     const Box box = Box(w, w).Inflated(tol);
     double best = tol;

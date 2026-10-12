@@ -351,7 +351,7 @@ Relationships say how objects belong together, as in Solid Edge's 2D sketching. 
 | FIX | | An object stays where it is; the others move around it |
 
 - Small orange marks show the relationships (H, V, a box for connect, symbols for parallel and the others). **Relate > Show relationships** hides them; they never print.
-- **Add relationships while drawing** (AUTOREL): lines drawn get horizontal, vertical and connect relationships by themselves.
+- **Add relationships while drawing** (AUTOREL): lines drawn get horizontal, vertical and connect relationships by themselves. On in new drawings since 2.1.
 - **Maintain relationships** (MAINTAINREL) turns the keeping off and on.
 - Erasing an object takes its relationships with it. When relationships contradict each other the command line says so and nothing jumps.
 
@@ -422,6 +422,13 @@ Drawing projections (a prism resting on HP, its axis inclined to HP and VP...) b
 **Worked example**: `samples/Prism-axis-45-to-HP-edge-30-to-VP.fcad` (and its PDF) - a square prism, 35 mm base and 65 mm axis, resting on HP on an edge of its base inclined to VP at 30 deg, the axis inclined to HP at 45 deg: the three stages with projectors, every corner labelled, hidden edges dashed, and the 35, 65, 45 deg and 30 deg dimensions.
 
 The toolbar has a Point button before Line, and a group with Projector, Label points and Hidden line. On a narrow window, the toolbar buttons that do not fit are in the » menu at its right end.
+
+## Version 2.1: relationships that behave
+
+- **Regular polygons stay regular.** When a relationship is added to a POLYGON (or a dimension on it is locked), it gets a Regular polygon relationship (a small hexagon mark in its middle): all sides and corners stay equal, so dragging a corner or changing a side's length resizes the whole polygon. A rectangle (four sides) keeps its right angles, as before.
+- **Relationships while drawing are on in new drawings** (Relate > Add relationships while drawing): lines drawn get horizontal, vertical and connect relationships, so a rectangle drawn with LINE moves and stretches as one shape. Drawings saved earlier keep their own setting.
+- **Trim, Extend, Fillet, Chamfer, Break, Lengthen and Join** no longer fight the relationships they deliberately break: a corner that is cut or rounded lets go of its connect instead of being pulled back together (and dragging the shape with it), and a locked dimension on a line that is cut takes the new length. A line broken in two passes its corner's connect to the piece left at the corner. With relationships while drawing on, a fillet arc is joined and tangent to both lines, and a chamfer edge is joined to both.
+- **Relationship marks stay one size on the screen**, whatever the zoom: readable when zoomed out, not huge when zoomed in.
 
 ## Building
 

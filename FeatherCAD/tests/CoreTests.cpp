@@ -3257,6 +3257,178 @@ void TestRelationsKeepShape() {
     CHECK(r.LastSolve().ok);
 }
 
+
+// The relationships of a kind on an object.
+int RelationsOn(const Document& d, RelKind k, uint64_t id) {
+    int n = 0;
+    for (const auto& kv : d.Entities())
+        if (kv.second.type == EntityType::Relation && kv.second.annot && kv.second.annot->rel.kind == k)
+            for (const DimRef& r : kv.second.annot->rel.refs) n += r.id == id;
+    return n;
+}
+
+void TestReshapeAndRegular() {
+    TestHost host;
+    auto autorel = [](Document& d) {
+        DrawingSettings st = d.Settings();
+        st.autoRelations = true;
+        d.SetSettings(st);
+    };
+    auto lineAt = [](const Document& d, Vec2 a) -> uint64_t {
+        for (const auto& kv : d.Entities())
+            if (kv.second.type == EntityType::Line && Close(kv.second.p0, a, 1e-6)) return kv.first;
+        return 0;
+    };
+#define RECT {L"l", L"0,0", L"100,0", L"100,60", L"0,60", L"c"}
+    {   // Drawn with relationships while drawing: level and upright sides, joined corners.
+        Document d;
+        autorel(d);
+        Engine e(d, host);
+        Type(e, RECT);
+        CHECK(CountOf(d, EntityType::Relation) == 4 + 4);
+        // FILLET: the lines are cut back, not pulled; the arc joins both, tangent.
+        Type(e, {L"f", L"r", L"10", L"50,0", L"100,30"});
+        const uint64_t bottom = lineAt(d, {0, 0}), right = lineAt(d, {100, 10});
+        CHECK(bottom && right && Close(d.Find(bottom)->p1, Vec2{90, 0}, 1e-9) && d.LastSolve().ok);
+        const Entity* arc = FirstOf(d, EntityType::Arc);
+        CHECK(arc && RelationsOn(d, RelKind::Tangent, arc->id) == 2 && RelationsOn(d, RelKind::Coincident, arc->id) == 2);
+        CHECK(RelationsOn(d, RelKind::Coincident, bottom) == 2);  // the old corner let go; the arc and the left side
+        // Moving the bottom side down: the arc and the right side follow, still joined and tangent.
+        e.AddToSelection({bottom});
+        Type(e, {L"move", L"0,0", L"0,-10"});
+        arc = FirstOf(d, EntityType::Arc);
+        const Entity &b = *d.Find(bottom), &r = *d.Find(right);
+        CHECK(d.LastSolve().ok && Close(b.p0.y, -10, 1e-6) && Close(b.p1.y, -10, 1e-6));
+        CHECK(Close(Polar(arc->p0, arc->radius, arc->startAngle), b.p1, 1e-5) &&
+              Close(Polar(arc->p0, arc->radius, arc->endAngle), r.p0, 1e-5));
+        CHECK(Close(arc->p0.y - arc->radius, -10, 1e-5) && Close(arc->p0.x + arc->radius, r.p0.x, 1e-5));
+    }
+    {   // CHAMFER: the new edge joins both lines; nothing moves.
+        Document d;
+        autorel(d);
+        Engine e(d, host);
+        Type(e, RECT);
+        Type(e, {L"cha", L"d", L"10", L"10", L"50,0", L"100,30"});
+        CHECK(Close(d.Find(lineAt(d, {0, 0}))->p1, Vec2{90, 0}, 1e-9) && lineAt(d, {100, 10}) && d.LastSolve().ok);
+        CHECK(RelationsOn(d, RelKind::Coincident, lineAt(d, {90, 0})) == 2);
+    }
+    {   // TRIM: the cut end is let go of; the right side stays where it is.
+        Document d;
+        autorel(d);
+        Engine e(d, host);
+        Type(e, RECT);
+        Type(e, {L"l", L"50,-20", L"50,80", L""});
+        Type(e, {L"tr", L"80,0", L""});
+        CHECK(Close(d.Find(lineAt(d, {0, 0}))->p1, Vec2{50, 0}, 1e-9) && lineAt(d, {100, 0}) && d.LastSolve().ok);
+        CHECK(RelationsOn(d, RelKind::Coincident, lineAt(d, {100, 0})) == 1);  // only the top corner now
+    }
+    {   // BREAK: the corner's connect goes to the new piece; it moves with the right side.
+        Document d;
+        autorel(d);
+        Engine e(d, host);
+        Type(e, RECT);
+        Type(e, {L"breakatpoint", L"50,0", L"50,0"});
+        const uint64_t piece = lineAt(d, {50, 0}), right = lineAt(d, {100, 0});
+        CHECK(piece && right && RelationsOn(d, RelKind::Coincident, piece) == 2 && d.LastSolve().ok);
+        Entity x = *d.Find(right);
+        x.p0 = x.p0 + Vec2{10, 0};
+        x.p1 = x.p1 + Vec2{10, 0};
+        d.BeginChange(L"Move");
+        d.Replace(x);
+        d.EndChange();
+        CHECK(Close(d.Find(piece)->p1, Vec2{110, 0}, 1e-6) && Close(d.Find(piece)->p0, Vec2{50, 0}, 1e-6));
+    }
+    {   // Without relationships while drawing (older drawings): fillet still does not drag the corner back.
+        Document d;
+        Engine e(d, host);
+        Type(e, {L"l", L"0,0", L"100,3", L"97,60", L"-2,58", L"c"});
+        Type(e, {L"parallel"});
+        e.Point({50, 1.5});
+        e.Point({47.5, 59});
+        e.Cancel();
+        const Vec2 corner = d.Find(lineAt(d, {0, 0}))->p1;
+        Type(e, {L"f", L"r", L"5", L"50,1.5", L"98.5,31.5"});
+        const Entity* arc = FirstOf(d, EntityType::Arc);
+        CHECK(arc && d.LastSolve().ok && Close(d.Find(lineAt(d, {0, 0}))->p0, Vec2{0, 0}, 1e-9));
+        CHECK(Dist(d.Find(lineAt(d, {0, 0}))->p1, corner) > 1);  // cut back, not pulled to the old corner
+    }
+    {   // POLYGON: a relationship on it keeps it regular.
+        Document d;
+        Engine e(d, host);
+        Type(e, {L"pol", L"6", L"0,0", L"i", L"10,0"});
+        const uint64_t hex = FirstOf(d, EntityType::Polyline)->id;
+        const Vec2 s0 = Lerp(d.Find(hex)->verts[0].p, d.Find(hex)->verts[1].p, 0.5);
+        const Vec2 s2 = Lerp(d.Find(hex)->verts[2].p, d.Find(hex)->verts[3].p, 0.5);
+        Type(e, {L"equal"});
+        e.Point(s0);
+        e.Point(s2);
+        e.Cancel();
+        CHECK(RelationsOn(d, RelKind::Regular, hex) == 1);
+        Entity x = *d.Find(hex);
+        x.verts[0].p = x.verts[0].p + Vec2{6, 3};  // a corner dragged out
+        d.BeginChange(L"Grip");
+        d.Replace(x);
+        d.EndChange();
+        const Entity& h = *d.Find(hex);
+        Vec2 m{0, 0};
+        for (const Vertex& v : h.verts) m = m + v.p / 6.0;
+        const double side = Dist(h.verts[0].p, h.verts[1].p), rad = Dist(h.verts[0].p, m);
+        CHECK(d.LastSolve().ok && side > 10.5 && Close(rad, side, 1e-5));
+        for (size_t i = 0; i < 6; ++i)
+            CHECK(Close(Dist(h.verts[i].p, h.verts[(i + 1) % 6].p), side, 1e-5) && Close(Dist(h.verts[i].p, m), rad, 1e-5));
+        // Saved and opened again.
+        Document o;
+        std::wstring err;
+        CHECK(o.FromText(d.ToText(), err) && RelationsOn(o, RelKind::Regular, FirstOf(o, EntityType::Polyline)->id) == 1);
+        // Filleting a corner: no longer a polygon of straight sides; the relationship goes.
+        Type(e, {L"f", L"r", L"1", L"p"});
+        e.Point(Lerp(h.verts[3].p, h.verts[4].p, 0.5));
+        e.Cancel();
+        bool bulges = false;
+        for (const Vertex& v : d.Find(hex)->verts) bulges |= v.bulge != 0;
+        CHECK(bulges && RelationsOn(d, RelKind::Regular, hex) == 0 && d.LastSolve().ok);
+    }
+    {   // A locked length on a line that is trimmed: it takes the new length.
+        Document d;
+        Engine e(d, host);
+        const uint64_t a = d.Add(Entity::Line({0, 0}, {100, 0}));
+        d.Add(Entity::Line({60, -20}, {60, 20}));
+        DimData dd = Aligned({0, 0}, {100, 0}, {50, 10});
+        dd.refs[0] = {a, 0};
+        dd.refs[1] = {a, 1};
+        dd.locked = true;
+        dd.value = 100;
+        const uint64_t dim = d.Add(MakeDimension(dd));
+        Type(e, {L"tr", L"80,0", L""});
+        CHECK(Close(d.Find(a)->p1, Vec2{60, 0}, 1e-9) && Close(d.Find(dim)->dim->value, 60, 1e-6) && d.Find(dim)->dim->locked);
+        CHECK(d.LastSolve().ok);
+    }
+    {   // Marks drawn one size on the screen.
+        Entity rel;
+        std::wstring why;
+        Document d;
+        const uint64_t l = d.Add(Entity::Line({0, 0}, {100, 0}));
+        CHECK(MakeRelation(d, RelKind::Horizontal, {DimRef{l, -1}, {}, {}}, 2, rel, why));
+        const double small = Bounds(rel).Width();
+        SetRelationMarkSize(20);
+        const double big = Bounds(rel).Width();
+        SetRelationMarkSize(0);
+        CHECK(Close(big / small, 10, 1e-6) && Close(Bounds(rel).Width(), small, 1e-12));
+        // Two on one line: side by side, not on top of each other.
+        d.Add(rel);
+        const uint64_t l2 = d.Add(Entity::Line({0, 10}, {100, 10}));
+        Entity eq;
+        CHECK(MakeRelation(d, RelKind::Equal, {DimRef{l, -1}, DimRef{l2, -1}, {}}, 2, eq, why));
+        CHECK(eq.annot->markSlots.size() == 2 && eq.annot->markSlots[0] == 1 && eq.annot->markSlots[1] == 0);
+        // Tangent: one mark, where they touch.
+        const uint64_t c = d.Add(Entity::Circle({50, 20}, 10));
+        Entity tan;
+        CHECK(MakeRelation(d, RelKind::Tangent, {DimRef{l2, -1}, DimRef{c, -1}, {}}, 2, tan, why));
+        CHECK(tan.annot->pts.size() == 1 && Close(tan.annot->pts[0], Vec2{50, 10}, 1e-9));
+    }
+#undef RECT
+}
+
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);  // failures show even if a later check crashes
     TestAngles();
@@ -3303,6 +3475,7 @@ int main() {
     TestCloseByClicking();
     TestProjectionHelpers();
     TestRelationsKeepShape();
+    TestReshapeAndRegular();
     std::printf("%d checks, %d failed\n", g_checks, g_failures);
     return g_failures;
 }
