@@ -670,6 +670,120 @@ public:
 }  // namespace
 
 // ---------------------------------------------------------------------------
+// PROJECTOR: faint construction lines (not printed) through the points
+// clicked: upright, level, both, or at an angle - for carrying points from
+// one view to another.
+// ---------------------------------------------------------------------------
+namespace {
+class ProjectorCmd : public Command {
+    int m_mode = 0;  // 0 upright, 1 level, 2 both, 3 at m_angle
+    double m_angle = 45;
+    bool m_typingAngle = false;
+
+    std::vector<Vec2> Dirs() const {
+        switch (m_mode) {
+            case 1: return {{1, 0}};
+            case 2: return {{0, 1}, {1, 0}};
+            case 3: return {{std::cos(ToRadians(m_angle)), std::sin(ToRadians(m_angle))}};
+            default: return {{0, 1}};
+        }
+    }
+    // Long enough to cross the whole drawing (projectors themselves aside).
+    double Reach(Vec2 p) const {
+        Box b;
+        b.Add(p);
+        for (const auto& kv : E->Doc().Entities())
+            if (!kv.second.construction && !IsAnnotation(kv.second)) b.Add(Bounds(kv.second));
+        return std::max({b.Width(), b.Height(), 100.0}) * 1.5;
+    }
+    void Ask() {
+        static const wchar_t* const what[] = {L"an upright", L"a level", L"an upright and a level", L"a slanted"};
+        E->Ask(P((std::wstring(L"Specify a point for ") + what[m_mode] + L" projector").c_str(), kAcceptPoint | kAcceptEmpty,
+                 {{L"V", L"Upright"}, {L"H", L"Level"}, {L"B", L"Both"}, {L"A", L"At an angle"}}));
+    }
+
+public:
+    void Start() override { Ask(); }
+    void OnKeyword(const std::wstring& k) override {
+        if (k == L"A") {
+            m_typingAngle = true;
+            return E->Ask(P(L"Enter the angle (degrees from level, such as 45)", kAcceptNumber, {}, E->Ang(m_angle)));
+        }
+        m_mode = k == L"H" ? 1 : k == L"B" ? 2 : 0;
+        Ask();
+    }
+    void OnNumber(double v) override {
+        if (!m_typingAngle) return;
+        m_angle = v;
+        m_mode = 3;
+        m_typingAngle = false;
+        Ask();
+    }
+    void OnPoint(Vec2 p) override {
+        const double r = Reach(p);
+        E->Doc().BeginChange(L"Projector");
+        for (Vec2 d : Dirs()) {
+            Entity l = Entity::Line(p - d * r, p + d * r);
+            l.construction = true;  // faint, never printed; points still snap to it
+            E->Doc().Add(l);
+        }
+        E->Doc().EndChange();
+        Ask();
+    }
+    void GetPreview(Vec2 c, Preview& out) override {
+        if (m_typingAngle) return;
+        const double r = Reach(c);
+        for (Vec2 d : Dirs()) out.guides.push_back({c - d * r, c + d * r});
+    }
+};
+
+// HIDDEN: a click makes an edge a hidden line (dashed); again, visible.
+class HiddenCmd : public Command {
+    static int HiddenType() {
+        const int t = FindLineType(L"HIDDEN2");
+        return t >= 0 ? t : FindLineType(L"HIDDEN");
+    }
+    static bool IsHidden(int lt) { return lt >= 0 && (lt == FindLineType(L"HIDDEN") || lt == FindLineType(L"HIDDEN2")); }
+    void Toggle(const std::vector<uint64_t>& ids) {
+        Document& d = E->Doc();
+        int hidden = 0, shown = 0;
+        d.BeginChange(L"Hidden line");
+        for (uint64_t id : ids) {
+            const Entity* e = d.Find(id);
+            if (!e || IsAnnotation(*e) || e->type == EntityType::Insert || e->type == EntityType::Dimension) continue;
+            Entity x = *e;
+            if (IsHidden(x.linetype)) {
+                // Visible again: as its layer draws, unless the layer's lines are hidden ones.
+                const Layer* l = d.FindLayer(x.layer);
+                x.linetype = (int16_t)(l && IsHidden(l->linetype) ? 0 : kLtByLayer);
+                ++shown;
+            } else {
+                x.linetype = (int16_t)HiddenType();
+                ++hidden;
+            }
+            d.Replace(x);
+        }
+        d.EndChange();
+        if (hidden + shown == 1) E->Msg(hidden ? L"Hidden (dashed) now. Click it again to make it visible." : L"Visible again.");
+    }
+
+public:
+    void Start() override {
+        if (!E->Selection().empty()) {  // the objects already selected
+            Toggle(SelectionIds(E));
+            E->ClearSelection();
+            return E->Finish();
+        }
+        E->Ask(Pick(L"Select an edge to make it hidden (again: visible)", kAcceptEmpty));
+    }
+    void OnPoint(Vec2 p) override {
+        if (const uint64_t id = E->PickEntity(p, false)) Toggle({id});
+        else E->Msg(L"Click on a line, arc or circle.");
+    }
+};
+}  // namespace
+
+// ---------------------------------------------------------------------------
 // IMAGE: a picture (photo, scan) to trace over or show
 // ---------------------------------------------------------------------------
 namespace {
@@ -727,6 +841,8 @@ public:
 
 std::unique_ptr<Command> CreateDrawCommand(const std::wstring& name) {
     if (name == L"IMAGE") return std::make_unique<ImageCmd>();
+    if (name == L"PROJECTOR") return std::make_unique<ProjectorCmd>();
+    if (name == L"HIDDEN") return std::make_unique<HiddenCmd>();
     if (name == L"SKETCH") return std::make_unique<SketchCmd>();
     if (name == L"MATCHPROP") return std::make_unique<MatchPropCmd>();
     if (name == L"CONSTRUCTION") return std::make_unique<ConstructionCmd>();

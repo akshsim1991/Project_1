@@ -96,8 +96,10 @@ void Toolbar::CreateFonts() {
 }
 
 void Toolbar::Add(Item item) {
-    m_items.push_back(std::move(item));
-    Item& it = m_items.back();
+    // Before the "more" button, which stays last.
+    if (!m_items.empty() && m_items.back().id == ID_TOOLBAR_MORE) m_items.insert(m_items.end() - 1, std::move(item));
+    else m_items.push_back(std::move(item));
+    Item& it = m_items.back().id == ID_TOOLBAR_MORE && m_items.size() > 1 ? m_items[m_items.size() - 2] : m_items.back();
     if (it.child) {
         SetParent(it.child, m_hwnd);
         SendMessageW(it.child, WM_SETFONT, (WPARAM)m_textFont, FALSE);
@@ -241,10 +243,20 @@ void Toolbar::Layout() {
     for (auto& it : m_items) {
         if (it.kind == Kind::Spacer)
             ++spacers;
-        else
+        else if (it.id != ID_TOOLBAR_MORE)
             fixed += Dpi(it.widthDip, m_dpi) + gap;
     }
     const int spacerWidth = spacers ? std::max(0, (int)(client.right - fixed) / spacers) : 0;
+    // Too narrow for every button: those that do not fit go into a "more" menu at the end.
+    const bool overflow = !spacers && client.right > 0 && fixed > client.right;
+    if (overflow && (m_items.empty() || m_items.back().id != ID_TOOLBAR_MORE)) {
+        Item more{Kind::TextButton};
+        more.id = ID_TOOLBAR_MORE;
+        more.text = L"\x00BB";  // >>
+        more.widthDip = kButtonDip;
+        m_items.push_back(more);
+    }
+    const int moreLeft = client.right - Dpi(6, m_dpi) - Dpi(kButtonDip, m_dpi);
 
     int x = Dpi(6, m_dpi);
     for (size_t i = 0; i < m_items.size(); ++i) {
@@ -252,8 +264,16 @@ void Toolbar::Layout() {
         int w = it.kind == Kind::Spacer ? spacerWidth : Dpi(it.widthDip, m_dpi);
         int h = it.kind == Kind::Child ? Dpi(kChildHeightDip, m_dpi) : Dpi(kButtonDip, m_dpi);
         int top = (height - h) / 2;
+        if (it.id == ID_TOOLBAR_MORE) {
+            it.rc = overflow ? RECT{moreLeft, top, moreLeft + w, top + h} : RECT{};
+            continue;
+        }
         it.rc = {x, top, x + w, top + h};
         x += w + (it.kind == Kind::Spacer ? 0 : gap);
+        const bool hidden = overflow && it.rc.right > moreLeft - gap;
+        if (hidden) it.rc = RECT{};
+        if (it.child) ShowWindow(it.child, hidden ? SW_HIDE : SW_SHOWNA);
+        if (hidden) continue;
 
         if (it.child) {
             // Centre a borderless edit inside the drawn frame.
@@ -276,6 +296,25 @@ void Toolbar::Layout() {
             SendMessageW(m_tooltip, TTM_NEWTOOLRECTW, 0, (LPARAM)&ti);
         }
     }
+}
+
+void Toolbar::ShowMore() {
+    // The buttons that did not fit, by name.
+    HMENU m = CreatePopupMenu();
+    RECT moreRc{};
+    for (const Item& it : m_items) {
+        if (it.id == ID_TOOLBAR_MORE) moreRc = it.rc;
+        if ((it.kind != Kind::Button && it.kind != Kind::TextButton) || it.id == ID_TOOLBAR_MORE || it.rc.right > it.rc.left) continue;
+        std::wstring name = it.tip.empty() ? it.text : it.tip;
+        const size_t cut = name.find(L": ");
+        if (cut != std::wstring::npos) name.resize(cut);
+        AppendMenuW(m, MF_STRING | (it.enabled ? 0 : MF_GRAYED), (UINT_PTR)it.id, name.c_str());
+    }
+    POINT pt{moreRc.right, moreRc.bottom};
+    ClientToScreen(m_hwnd, &pt);
+    const int id = (int)TrackPopupMenu(m, TPM_RETURNCMD | TPM_RIGHTALIGN | TPM_TOPALIGN | TPM_NONOTIFY, pt.x, pt.y, 0, m_hwnd, nullptr);
+    DestroyMenu(m);
+    if (id > 0) SendMessageW(m_target, WM_COMMAND, MAKEWPARAM(id, 0), 0);
 }
 
 int Toolbar::HitTest(POINT pt) const {
@@ -415,8 +454,10 @@ LRESULT Toolbar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             m_pressed = -1;
             ReleaseCapture();
             InvalidateItem(pressed);
-            if (HitTest({GET_X_LPARAM(lp), GET_Y_LPARAM(lp)}) == pressed)
-                SendMessageW(m_target, WM_COMMAND, MAKEWPARAM(m_items[pressed].id, 0), 0);
+            if (HitTest({GET_X_LPARAM(lp), GET_Y_LPARAM(lp)}) == pressed) {
+                if (m_items[pressed].id == ID_TOOLBAR_MORE) ShowMore();
+                else SendMessageW(m_target, WM_COMMAND, MAKEWPARAM(m_items[pressed].id, 0), 0);
+            }
             return 0;
         }
         case WM_CAPTURECHANGED:

@@ -65,6 +65,7 @@ private:
     void Paint(HDC hdc);
     void CreateFonts();
     void InvalidateItem(int index);
+    void ShowMore();  // the "more" menu: buttons there was no room for
 
     HWND m_hwnd = nullptr;
     HWND m_target = nullptr;

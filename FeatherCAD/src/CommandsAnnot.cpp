@@ -9,6 +9,7 @@
 
 #include "CommandUtil.h"
 #include "Curve.h"
+#include "Grips.h"
 #include "Modify.h"
 #include "Sheet.h"
 
@@ -1868,6 +1869,125 @@ public:
 }  // namespace
 
 // ---------------------------------------------------------------------------
+// LABEL: points lettered a, b, c... (a1', [c1'] with subscripts and primes):
+// one click a label, placed beside the point where the drawing leaves room,
+// and kept with the point when it moves.
+// ---------------------------------------------------------------------------
+namespace {
+// The next label after `s`: its last letter one on (a1' -> b1', [c1'] -> [d1']).
+std::wstring NextLabel(std::wstring s) {
+    for (size_t i = s.size(); i-- > 0;) {
+        wchar_t& c = s[i];
+        if (c >= L'a' && c < L'z') return ++c, s;
+        if (c >= L'A' && c < L'Z') return ++c, s;
+        if (c == L'z' || c == L'Z') return c = (wchar_t)(c - 25), s;
+    }
+    return s;
+}
+
+class LabelCmd : public Command {
+    std::wstring m_next = L"a";
+
+    // The free direction around p: halfway across the widest gap between the
+    // lines leaving it (up and to the right if nothing is there).
+    Vec2 FreeDirection(Vec2 p, double tol) const {
+        std::vector<double> angles;
+        std::vector<Prim> prims;
+        for (const auto& kv : E->Doc().Entities()) {
+            const Entity& o = kv.second;
+            if (IsAnnotation(o) || !E->Doc().Visible(o) || !Bounds(o).Inflated(tol).Contains(p)) continue;
+            prims.clear();
+            Primitives(o, prims);
+            for (const Prim& pr : prims) {
+                if (pr.kind == Prim::Segment) {
+                    if (Near(pr.a, p, tol)) angles.push_back(AngleOf(pr.b - pr.a));
+                    else if (Near(pr.b, p, tol)) angles.push_back(AngleOf(pr.a - pr.b));
+                    else if (Distance(pr, p) <= tol) {
+                        angles.push_back(AngleOf(pr.b - pr.a));
+                        angles.push_back(AngleOf(pr.a - pr.b));
+                    }
+                } else if (Distance(pr, p) <= tol) {  // an arc or circle: along it both ways
+                    const Vec2 t = Perp(Normalized(p - pr.c));
+                    angles.push_back(AngleOf(t));
+                    angles.push_back(AngleOf(t * -1));
+                }
+            }
+        }
+        if (angles.empty()) return Normalized(Vec2{1, 1});
+        for (double& a : angles) a = NormalizeAngle(a);
+        std::sort(angles.begin(), angles.end());
+        double best = -1, at = 0;
+        for (size_t i = 0; i < angles.size(); ++i) {
+            const double a = angles[i], b = i + 1 < angles.size() ? angles[i + 1] : angles[0] + kTau;
+            if (b - a > best) best = b - a, at = (a + b) / 2;
+        }
+        return {std::cos(at), std::sin(at)};
+    }
+    void Ask() {
+        Prompt p = P(L"", kAcceptPoint | kAcceptEmpty);
+        p.text = L"Click a corner to label it " + m_next + L" (or type another label, such as a1' or [c1'])";
+        E->Ask(p);
+    }
+
+public:
+    void Start() override {
+        // Carry on from the last label drawn.
+        for (const auto& kv : E->Doc().Entities())
+            if (const TextData* t = TextOf(kv.second); t && t->frame == kFrameLabel && !t->content.empty())
+                m_next = NextLabel(t->content);
+        Ask();
+    }
+    bool OnText(const std::wstring& s) override {
+        // Typed coordinates (10,20 or @5,0) are a point, not a label.
+        if (s.find(L',') != std::wstring::npos || (!s.empty() && s[0] == L'@')) return false;
+        m_next = s;
+        Ask();
+        return true;
+    }
+    void OnPoint(Vec2 p) override {
+        Document& d = E->Doc();
+        const double h = d.Settings().dimStyle.textHeight;
+        const double tol = std::max(E->Host().PickRadius() * 0.3, 1e-6);
+        // The object's point it is (to stay with it).
+        DimRef anchor;
+        double best = tol;
+        std::vector<Grip> grips;
+        for (const auto& kv : d.Entities()) {
+            const Entity& o = kv.second;
+            if (IsAnnotation(o) || o.construction || !Bounds(o).Inflated(tol).Contains(p)) continue;
+            grips.clear();
+            GripsOf(o, grips);
+            for (const Grip& g : grips)
+                if (const double dd = Dist(g.p, p); dd <= best) best = dd, anchor = {kv.first, g.index}, p = g.p;
+        }
+        TextData t = E->lastText;
+        t.content = m_next;
+        t.height = h;
+        t.frame = kFrameLabel;
+        t.rotation = 0;
+        t.justify = 4;
+        t.tag.clear();
+        t.prompt.clear();
+        // Beside the point, in the free direction, clear of it by about a letter.
+        const Vec2 dir = FreeDirection(p, std::max(tol, E->Host().PickRadius() * 0.5));
+        const double w = TextWidth(m_next, h) * 0.8;
+        const Vec2 at = p + dir * (h * 0.9) + Vec2{dir.x * w / 2, 0};
+        Entity label = MakeText(at, t);
+        if (anchor.id) {
+            Annot& a = EditAnnot(label);
+            a.anchor = anchor;
+            a.anchorOffset = at - p;
+        }
+        d.BeginChange(L"Label");
+        d.Add(label);
+        d.EndChange();
+        m_next = NextLabel(m_next);
+        Ask();
+    }
+};
+}  // namespace
+
+// ---------------------------------------------------------------------------
 // TABLE: a grid of cells (a text whose lines are rows, cells split by "|")
 // PARTBALLOON: a balloon on a leader showing a part's item number from the
 // parts list ({item:PN}, kept up to date as parts are added)
@@ -1969,6 +2089,7 @@ public:
 
 std::unique_ptr<Command> CreateAnnotCommand(const std::wstring& name) {
     if (name == L"TABLE") return std::make_unique<TableCmd>();
+    if (name == L"LABEL") return std::make_unique<LabelCmd>();
     if (name == L"PARTBALLOON") return std::make_unique<PartBalloonCmd>();
     if (name == L"BPARAM") return std::make_unique<BlockParamCmd>();
     if (name == L"FCF") return std::make_unique<SymbolCmd>(kFrameControl);

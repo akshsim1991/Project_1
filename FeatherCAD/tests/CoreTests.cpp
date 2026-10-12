@@ -3107,6 +3107,83 @@ void TestCloseByClicking() {
     CHECK(!e.Active() && doc.Count() == before + 3 && Close(Last(doc).p1, {400, 0}));
 }
 
+void TestProjectionHelpers() {
+    // Labels: digits after a letter are subscripts; ' is a prime.
+    auto parts = ParseLabel(L"a1'");
+    CHECK(parts.size() == 3 && parts[0].text == L"a" && parts[1].sub && parts[1].text == L"1" && parts[2].prime);
+    parts = ParseLabel(L"[c1']");
+    CHECK(parts.size() == 4 && parts[0].text == L"[c" && parts[1].sub && parts[2].prime && parts[3].text == L"]");
+    parts = ParseLabel(L"12");
+    CHECK(parts.size() == 1 && !parts[0].sub);
+
+    Document doc;
+    TestHost host;
+    Engine e(doc, host);
+    const uint64_t rect = doc.Add(Entity::Rectangle({0, 0}, {100, 60}));
+    // LABEL: a click on a corner; the label goes where the drawing leaves room.
+    Type(e, {L"label"});
+    e.Point({0, 0});
+    const Entity* l = FirstOf(doc, EntityType::Text);
+    CHECK(l && l->annot->text.frame == kFrameLabel && l->annot->text.content == L"a");
+    CHECK(l && l->p0.x < 0 && l->p0.y < 0 && l->annot->anchor.id == rect);  // outside the corner, down and left
+    AnnotGraphics g;
+    // The next one is b; typed labels are kept and carried on from.
+    e.Point({100, 60});
+    CHECK(Last(doc).annot->text.content == L"b" && Last(doc).p0.x > 100 && Last(doc).p0.y > 60);
+    Type(e, {L"c1'"});
+    e.Point({100, 0});
+    const Entity& c = Last(doc);
+    CHECK(c.annot->text.content == L"c1'" && c.p0.x > 100 && c.p0.y < 0);
+    g = {};
+    AnnotLayout(c, nullptr, g);
+    CHECK(g.texts.size() == 2 && g.texts[1].text == L"1" && g.texts[1].height < g.texts[0].height && g.lines.size() == 1);
+    Type(e, {L""});  // Done
+    CHECK(!e.Active());
+    Type(e, {L"label", L"0,60"});  // typed coordinates are a point
+    CHECK(Last(doc).annot->text.content == L"d1'" && Last(doc).annot->anchor.id == rect);
+    e.Cancel();
+    // A label stays with its point when the drawing moves.
+    const Vec2 was = FirstOf(doc, EntityType::Text)->p0;
+    Entity r = *doc.Find(rect);
+    Translate(r, {10, 5});
+    doc.BeginChange(L"Move");
+    doc.Replace(r);
+    doc.EndChange();
+    CHECK(Close(FirstOf(doc, EntityType::Text)->p0, was + Vec2{10, 5}));
+    // Kept in the file, still attached.
+    {
+        const std::string text = doc.ToText();
+        Document back;
+        std::wstring err;
+        CHECK(back.FromText(text, err) && back.ToText() == text);
+        const Entity* bl = FirstOf(back, EntityType::Text);
+        CHECK(bl && bl->annot->anchor.id != 0);
+    }
+
+    // PROJECTOR: construction lines through the point clicked.
+    const size_t n = doc.Count();
+    Type(e, {L"pj"});
+    e.Point({50, 30});
+    CHECK(doc.Count() == n + 1 && Last(doc).construction && Close(Last(doc).p0.x, 50) && Close(Last(doc).p1.x, 50));
+    CHECK(Last(doc).p0.y < -100 && Last(doc).p1.y > 150);  // right across the drawing
+    Type(e, {L"b"});
+    e.Point({20, 20});
+    CHECK(doc.Count() == n + 3);
+    Type(e, {L"a", L"45"});
+    e.Point({0, 0});
+    CHECK(doc.Count() == n + 4 && Close(Last(doc).p1.x - Last(doc).p0.x, Last(doc).p1.y - Last(doc).p0.y));
+    e.Cancel();
+
+    // HIDDEN: a click makes an edge hidden; again, visible.
+    const uint64_t edge = doc.Add(Entity::Line({0, 100}, {100, 100}));
+    Type(e, {L"hidden"});
+    e.Point({50, 100});
+    CHECK(std::wstring(LineTypes()[(size_t)doc.Find(edge)->linetype].name).find(L"HIDDEN") == 0);
+    e.Point({50, 100});
+    CHECK(doc.Find(edge)->linetype == kLtByLayer);
+    e.Cancel();
+}
+
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);  // failures show even if a later check crashes
     TestAngles();
@@ -3151,6 +3228,7 @@ int main() {
     TestTablesAndBalloons();
     TestImages();
     TestCloseByClicking();
+    TestProjectionHelpers();
     std::printf("%d checks, %d failed\n", g_checks, g_failures);
     return g_failures;
 }

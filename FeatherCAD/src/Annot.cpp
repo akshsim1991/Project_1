@@ -192,6 +192,27 @@ std::wstring Upper(std::wstring s) {
 }
 }  // namespace
 
+std::vector<LabelPart> ParseLabel(const std::wstring& s) {
+    std::vector<LabelPart> parts;
+    bool afterLetter = false;  // digits now are subscripts
+    for (wchar_t c : s) {
+        if (c == L'\'' || c == 0x2032 || c == 0x2019) {
+            parts.push_back({L"", false, true});
+            continue;  // a subscript can follow a prime too (a'1)
+        }
+        const bool digit = c >= L'0' && c <= L'9';
+        if (digit && afterLetter) {
+            if (!parts.empty() && parts.back().sub) parts.back().text += c;
+            else parts.push_back({std::wstring(1, c), true, false});
+            continue;
+        }
+        if (!parts.empty() && !parts.back().sub && !parts.back().prime) parts.back().text += c;
+        else parts.push_back({std::wstring(1, c), false, false});
+        afterLetter = (bool)std::iswalpha(c);
+    }
+    return parts;
+}
+
 const std::vector<GdtSymbol>& GdtSymbols() {
     static const std::vector<GdtSymbol> list = {
         {L"STRAIGHTNESS", L"STR", L"Straightness"},     {L"FLATNESS", L"FLAT", L"Flatness"},
@@ -411,6 +432,35 @@ void WeldSymbol(Sketch& k, const std::wstring& content) {
     }
 }
 
+// A point's label, centred on (0,0): letters, subscripts, primes.
+void LabelLayout(Sketch& k, const std::wstring& text) {
+    const double h = k.h, hs = h * 0.62;
+    const std::vector<LabelPart> parts = ParseLabel(text);
+    // Widths first, to centre it.
+    double total = 0, subRun = 0, x = 0;
+    for (const LabelPart& p : parts) {
+        if (p.prime) total = std::max(total, x + h * 0.42);
+        else if (p.sub) subRun = TextWidth(p.text, hs), total = std::max(total, x + subRun);
+        else x = std::max(total, x) + TextWidth(p.text, h), total = x;
+    }
+    x = -total / 2;
+    double baseEnd = x, end = x;
+    for (const LabelPart& p : parts) {
+        if (p.prime) {  // a short slanted stroke at the top right of the letter
+            const double px = baseEnd + h * 0.1;
+            k.Seg({px + h * 0.04, h * 0.2}, {px + h * 0.22, h * 0.78});
+            end = std::max(end, px + h * 0.32);
+        } else if (p.sub) {
+            k.Text(p.text, {baseEnd, -h * 0.42}, 0, hs);
+            end = std::max(end, baseEnd + TextWidth(p.text, hs));
+        } else {
+            const double at = std::max(end, baseEnd);
+            k.Text(p.text, {at, 0}, 0, h);
+            baseEnd = end = at + TextWidth(p.text, h);
+        }
+    }
+}
+
 // A table: one row per line, cells separated by "|" (or tabs, as pasted
 // from a spreadsheet). Columns as wide as their widest cell; the first row
 // is the heading, ruled off with a heavier line. Hangs from its top left.
@@ -478,6 +528,7 @@ void SymbolLayout(const TextData& t, Vec2 at, const FieldValues* fields, AnnotGr
         case 4: DatumSymbol(k, lines.empty() ? L"" : lines[0]); break;
         case 5: SurfaceSymbol(k, lines); break;
         case 7: TableLayout(k, lines); break;
+        case 8: LabelLayout(k, lines.empty() ? L"" : lines[0]); break;
         default:
             WeldSymbol(k, text);
             mirror = col == 2;

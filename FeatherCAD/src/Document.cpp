@@ -12,6 +12,7 @@
 #include <sstream>
 
 #include "DxfImport.h"
+#include "Grips.h"
 #include "Relate.h"
 
 namespace {
@@ -629,7 +630,8 @@ std::vector<uint64_t> Document::AddGroup(std::vector<Entity> entities) {
     // Objects first, then the dimensions, pointed at the new objects.
     auto attached = [](const Entity& e) {
         return e.type == EntityType::Dimension || e.type == EntityType::Relation ||
-               (e.type == EntityType::Hatch && e.annot && !e.annot->hatch.refs.empty());
+               (e.type == EntityType::Hatch && e.annot && !e.annot->hatch.refs.empty()) ||
+               (e.type == EntityType::Text && e.annot && e.annot->anchor.id);
     };
     for (size_t i = 0; i < entities.size(); ++i) {
         if (attached(entities[i])) continue;
@@ -652,6 +654,10 @@ std::vector<uint64_t> Document::AddGroup(std::vector<Entity> entities) {
             }
             if (!all) continue;
             EditAnnot(e).rel = r;
+        }
+        if (e.type == EntityType::Text && e.annot && e.annot->anchor.id) {  // a label: with its object, or on its own
+            auto it = idMap.find(e.annot->anchor.id);
+            EditAnnot(e).anchor.id = it == idMap.end() ? 0 : it->second;
         }
         if (e.type == EntityType::Hatch) {
             HatchData& h = EditAnnot(e).hatch;
@@ -726,6 +732,34 @@ void Document::SolveStep() {
         const std::vector<Vec2> before = e.annot->pts;
         if (!PlaceRelationMarks(*this, e)) Erase(id);
         else if (e.annot->pts != before) Replace(e);
+    }
+    // Labels follow their points; a label moved on its own keeps its new place beside the point.
+    std::vector<uint64_t> labels;
+    for (const auto& kv : m_entities)
+        if (kv.second.type == EntityType::Text && kv.second.annot && kv.second.annot->anchor.id &&
+            (now.count(kv.first) || now.count(kv.second.annot->anchor.id)))
+            labels.push_back(kv.first);
+    for (uint64_t id : labels) {
+        Entity e = m_entities[id];
+        const DimRef anchor = e.annot->anchor;
+        const Entity* o = Find(anchor.id);
+        Vec2 at;
+        bool found = false;
+        if (o) {
+            std::vector<Grip> grips;
+            GripsOf(*o, grips);
+            for (const Grip& g : grips)
+                if (g.index == anchor.grip) at = g.p, found = true;
+        }
+        Annot& a = EditAnnot(e);
+        if (!found) {
+            a.anchor = DimRef{};  // its point is gone: it stays where it is
+        } else if (now.count(anchor.id)) {
+            e.p0 = at + a.anchorOffset;
+        } else {
+            a.anchorOffset = e.p0 - at;
+        }
+        if (!(e.p0 == m_entities[id].p0) || !(a.anchorOffset == m_entities[id].annot->anchorOffset) || !found) Replace(e);
     }
 }
 
@@ -1021,7 +1055,7 @@ void ReadTextWords(const std::vector<std::string>& w, TextData& t) {
         else if (key == "tw" && isNum && v > 0) t.widthFactor = v;
         else if (key == "tl" && isNum && v > 0) t.lineSpacing = v;
         else if (key == "tj" && isNum) t.justify = std::clamp((int)v, 0, 8);
-        else if (key == "tf" && isNum) t.frame = std::clamp((int)v, 0, 7);
+        else if (key == "tf" && isNum) t.frame = std::clamp((int)v, 0, 8);
         else if (key == "font") t.font = DecodeWord(val);
         else if (key == "tag") t.tag = DecodeWord(val);
         else if (key == "prompt") t.prompt = DecodeWord(val);
@@ -1112,6 +1146,10 @@ void WriteEntity(const Entity& e, std::string& out, const Ordinals* ordinals = n
             out += "text";
             num(e.p0.x); num(e.p0.y);
             out += TextWords(e.annot->text);
+            if (const size_t o = OrdinalOf(e.annot->anchor.id, ordinals)) {  // a label on an object's point
+                out += " anchor=" + std::to_string(o) + " grip=" + std::to_string(e.annot->anchor.grip) +
+                       " ox=" + FormatNumber(e.annot->anchorOffset.x) + " oy=" + FormatNumber(e.annot->anchorOffset.y);
+            }
             break;
         case EntityType::Leader: {
             const Annot& a = *e.annot;
@@ -1457,6 +1495,18 @@ struct Reader {
             TextData t;
             ReadTextWords(w, t);
             out = MakeText({v[0], v[1]}, std::move(t));
+            double anchor = 0, grip = 0, ox = 0, oy = 0;
+            for (const std::string& word : w) {
+                if (word.compare(0, 7, "anchor=") == 0) ParseNumber(word.substr(7), anchor);
+                else if (word.compare(0, 5, "grip=") == 0) ParseNumber(word.substr(5), grip);
+                else if (word.compare(0, 3, "ox=") == 0) ParseNumber(word.substr(3), ox);
+                else if (word.compare(0, 3, "oy=") == 0) ParseNumber(word.substr(3), oy);
+            }
+            if (anchor >= 1 && depth == 0) {  // the object's file ordinal for now (made an id later)
+                Annot& a = EditAnnot(out);
+                a.anchor = {(uint64_t)anchor, (int)grip};
+                a.anchorOffset = {ox, oy};
+            }
             return true;
         }
         if (key == "leader") {
@@ -1905,6 +1955,8 @@ bool Document::FromText(const std::string& text, std::wstring& error) {
         for (DimRef& ref : r.refs) ref.id = ref.id ? idOf(ref.id) : 0;
         EditAnnot(e).rel = r;
     }
+    for (Entity& e : ents)
+        if (e.type == EntityType::Text && e.annot && e.annot->anchor.id) EditAnnot(e).anchor.id = idOf(e.annot->anchor.id);
     for (Entity& e : ents) {
         if (e.type != EntityType::Hatch || !e.annot || e.annot->hatch.refs.empty()) continue;
         HatchData& h = EditAnnot(e).hatch;

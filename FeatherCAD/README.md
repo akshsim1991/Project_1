@@ -407,6 +407,18 @@ The symbols are text objects with a frame: their contents can be changed like an
 
 **Also**: the guide strip above the drawing (since 1.7.1) gives every command's choices as buttons - the "Options bar" planned for this phase.
 
+## Version 1.9: helpers for projections of solids
+
+Drawing projections (a prism resting on HP, its axis inclined to HP and VP...) by the usual steps, faster:
+
+| Command | Short name | What it does |
+|---------|------------|--------------|
+| PROJECTOR | PJ, XL | Click points: a faint construction line (not printed) runs through each, right across the drawing - upright (to carry a point from the top view to the front view), level, both, or at any angle (45 for a mitre line). Points snap to where projectors cross (Cross snap). |
+| LABEL | LB | Click corners to letter them: a, b, c... follow on by themselves. Type a label first to change it: digits after a letter are written small and low, ' is a prime, so a1' shows as a with a small 1 and a prime, and [c1'] marks a hidden point. Each label sits beside its corner where the drawing leaves room, and moves with the corner. |
+| HIDDEN | HID | Click an edge to make it a hidden (dashed) line; click it again to make it visible. Objects selected first are all changed at once. |
+
+The toolbar has a Point button before Line, and a group with Projector, Label points and Hidden line. On a narrow window, the toolbar buttons that do not fit are in the » menu at its right end.
+
 ## Building
 
 ```

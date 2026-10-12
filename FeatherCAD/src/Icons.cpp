@@ -249,6 +249,42 @@ void DrawCadIcon(HDC dc, int icon, const RECT& rc, COLORREF ink, COLORREF accent
             point(2.5f, 17.5f);
             break;
         }
+        case kIconPoint:
+            // A small cross with the point in its middle.
+            g.DrawLine(&pen, 5.0f, 10.0f, 15.0f, 10.0f);
+            g.DrawLine(&pen, 10.0f, 5.0f, 10.0f, 15.0f);
+            g.FillEllipse(&dot, 7.2f, 7.2f, 5.6f, 5.6f);
+            break;
+        case kIconProjector: {
+            // A square (a view) with a dashed line carried up from its corner.
+            g.DrawRectangle(&pen, 2.5f, 11.0f, 7.5f, 6.5f);
+            Pen dash(C(accent), 1.3f);
+            dash.SetDashStyle(DashStyleDash);
+            g.DrawLine(&dash, 10.0f, 11.0f, 10.0f, 1.5f);
+            g.DrawLine(&dash, 10.0f, 11.0f, 18.5f, 11.0f);
+            point(10, 11);
+            break;
+        }
+        case kIconLabel: {
+            // A corner with the letter "a" and a prime beside it.
+            g.DrawLine(&pen, 3.0f, 17.0f, 3.0f, 9.0f);
+            g.DrawLine(&pen, 3.0f, 17.0f, 11.0f, 17.0f);
+            point(3, 17);
+            FontFamily family(L"Arial");
+            Font font(&family, 9.5f, FontStyleBold, UnitPixel);
+            SolidBrush accentBrush(C(accent));
+            g.DrawString(L"a", 1, &font, PointF(7.5f, 2.0f), &accentBrush);
+            g.DrawLine(&pen, 15.0f, 3.0f, 14.0f, 6.0f);  // the prime
+            break;
+        }
+        case kIconHidden: {
+            // A solid edge above, a hidden (dashed) one below.
+            g.DrawLine(&pen, 2.5f, 6.0f, 17.5f, 6.0f);
+            Pen dash(C(accent), 1.6f);
+            dash.SetDashStyle(DashStyleDash);
+            g.DrawLine(&dash, 2.5f, 14.0f, 17.5f, 14.0f);
+            break;
+        }
         default:
             break;
     }

@@ -168,6 +168,9 @@ const IdCommand kIdCommands[] = {
     {ID_TABLE, L"TABLE", nullptr},
     {ID_PARTBALLOON, L"PARTBALLOON", nullptr},
     {ID_IMAGE, L"IMAGE", nullptr},
+    {ID_PROJECTOR, L"PROJECTOR", nullptr},
+    {ID_LABEL, L"LABEL", nullptr},
+    {ID_HIDDEN, L"HIDDEN", nullptr},
     {ID_CIRCLE_TTR, L"CIRCLE", L"T"},
     {ID_LAYERS, L"LAYER", nullptr},
     {ID_PROPERTIES, L"PROPERTIES", nullptr},
@@ -282,6 +285,7 @@ void MainWindow::CreateChildren() {
     m_tools.AddButton(ID_UNDO, kGlyphUndo, L"Undo (Ctrl+Z)");
     m_tools.AddButton(ID_REDO, kGlyphRedo, L"Redo (Ctrl+Y)");
     m_tools.AddSeparator();
+    m_tools.AddIconButton(ID_POINT, kIconPoint, L"Point (PO)");
     m_tools.AddIconButton(ID_LINE, kIconLine, L"Line (L)");
     m_tools.AddIconButton(ID_PLINE, kIconPolyline, L"Polyline (PL)");
     m_tools.AddIconButton(ID_CIRCLE, kIconCircle, L"Circle (C)");
@@ -290,6 +294,10 @@ void MainWindow::CreateChildren() {
     m_tools.AddIconButton(ID_POLYGON, kIconPolygon, L"Polygon (POL)");
     m_tools.AddIconButton(ID_ELLIPSE, kIconEllipse, L"Ellipse (EL)");
     m_tools.AddIconButton(ID_SPLINE, kIconSpline, L"Spline (SPL)");
+    m_tools.AddSeparator();
+    m_tools.AddIconButton(ID_PROJECTOR, kIconProjector, L"Projector (PJ): faint lines through points, to carry them to another view");
+    m_tools.AddIconButton(ID_LABEL, kIconLabel, L"Label points (LB): a, b, c... with subscripts and primes, e.g. a1'");
+    m_tools.AddIconButton(ID_HIDDEN, kIconHidden, L"Hidden line (HID): click an edge to make it dashed; again to make it solid");
     m_tools.AddSeparator();
     m_tools.AddIconButton(ID_MOVE, kIconMove, L"Move (M)");
     m_tools.AddIconButton(ID_COPY, kIconCopy, L"Copy (CO)");
@@ -1356,6 +1364,7 @@ HMENU MainWindow::BuildMenu(int menuId) {
             }
             Append(m, ID_SPLINE, L"&Spline\tSPL");
             Append(m, ID_POINT, L"P&oint\tPO");
+            Append(m, ID_PROJECTOR, L"Pro&jector (construction line)\tPJ");
             Separator(m);
             Append(m, ID_IMAGE, L"P&icture (photo, scan)...\tIMAGE");
             break;
@@ -1390,6 +1399,7 @@ HMENU MainWindow::BuildMenu(int menuId) {
                 Submenu(m, arr, L"&Array");
             }
             Separator(m);
+            Append(m, ID_HIDDEN, L"&Hidden line on/off\tHID");
             Append(m, ID_ERASE, L"&Erase\tE");
             break;
         case ID_MENU_DIMENSION:
@@ -1447,6 +1457,7 @@ HMENU MainWindow::BuildMenu(int menuId) {
             Append(m, ID_CENTERLINE, L"Centre li&ne\tCL");
             Append(m, ID_REVCLOUD, L"&Revision cloud\tRC");
             Separator(m);
+            Append(m, ID_LABEL, L"Label &points (a, b, c... a1')\tLB");
             Append(m, ID_FCF, L"Feature &control frame (GD&&T)\tFCF");
             Append(m, ID_DATUM, L"&Datum\tDATUM");
             Append(m, ID_SURFACE, L"&Surface texture\tSURFACE");
@@ -2332,7 +2343,7 @@ void MainWindow::AnnotationRows(const Entity& e, std::vector<PropertiesPanel::Ro
         }
         number(L"Width factor", t.widthFactor, [](Entity& x, double v) { return v > 0 && (EditAnnot(x).text.widthFactor = v, true); });
         number(L"Line spacing", t.lineSpacing, [](Entity& x, double v) { return v > 0 && (EditAnnot(x).text.lineSpacing = v, true); });
-        choice(L"Frame", {L"None", L"Box", L"Circle", L"Feature control frame", L"Datum", L"Surface texture", L"Weld", L"Table"}, t.frame,
+        choice(L"Frame", {L"None", L"Box", L"Circle", L"Feature control frame", L"Datum", L"Surface texture", L"Weld", L"Table", L"Point label"}, t.frame,
                [](Entity& x, int i) { return EditAnnot(x).text.frame = i, true; });
         if (e.type == EntityType::Leader)
             number(L"Arrow size", a.arrow, [](Entity& x, double v) { return v >= 0 && (EditAnnot(x).arrow = v, true); });

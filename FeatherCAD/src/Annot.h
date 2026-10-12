@@ -24,7 +24,8 @@ struct TextData {
     double lineSpacing = 1;      // times the normal spacing (1.6667 x height)
     int justify = 0;             // 0 top left, 1 top centre, 2 top right, 3-5 middle, 6-8 bottom
     // 0 none, 1 box, 2 circle (a balloon); symbols made of the content:
-    // 3 feature control frame, 4 datum, 5 surface texture, 6 weld, 7 table.
+    // 3 feature control frame, 4 datum, 5 surface texture, 6 weld, 7 table,
+    // 8 a point's label (centred on its position; see ParseLabel).
     int frame = 0;
     std::wstring tag, prompt;    // an attribute definition: its tag and question
     bool operator==(const TextData& o) const {
@@ -68,7 +69,15 @@ struct GdtSymbol {
 };
 const std::vector<GdtSymbol>& GdtSymbols();
 int FindGdtSymbol(const std::wstring& name);  // -1 if none
-enum : int { kFrameNone, kFrameBox, kFrameCircle, kFrameControl, kFrameDatum, kFrameSurface, kFrameWeld, kFrameTable };
+enum : int { kFrameNone, kFrameBox, kFrameCircle, kFrameControl, kFrameDatum, kFrameSurface, kFrameWeld, kFrameTable, kFrameLabel };
+// A point's label as typed ("a1'", "[c1']") in its parts: digits after a
+// letter are subscripts, ' is a prime.
+struct LabelPart {
+    std::wstring text;
+    bool sub = false;    // small and low
+    bool prime = false;  // a prime mark (text empty)
+};
+std::vector<LabelPart> ParseLabel(const std::wstring& s);
 
 // Text laid out at `at` (its insertion point).
 void LayoutText(const TextData& t, Vec2 at, const FieldValues* fields, AnnotGraphics& g);
@@ -187,6 +196,10 @@ struct Annot {
     bool viewLocked = false;
     RelationData rel;  // Relation (pts: where its marks are shown)
     std::wstring image;  // Image: the picture's file
+    // Text that is a point's label: the point it labels (an object's grip)
+    // and where it sits from it; it follows the point.
+    DimRef anchor;
+    Vec2 anchorOffset;
     // A hatch's pattern lines, worked out once (not copied with it).
     struct Cache {
         mutable std::shared_ptr<std::vector<std::pair<Vec2, Vec2>>> segs;
