@@ -3,6 +3,7 @@
 
 #include <algorithm>
 
+#include "Annot.h"
 #include "Dimension.h"
 
 namespace {
@@ -781,6 +782,53 @@ bool Explode(const Entity& e, std::vector<Entity>& out) {
         ExpandArray(e, out);
         return true;
     }
+    if (e.type == EntityType::Insert) {  // one level: blocks inside stay blocks
+        ExpandBlock(e, out, 0, false);
+        return !out.empty();
+    }
+    if (e.type == EntityType::Leader && e.annot) {
+        const auto& p = e.annot->pts;
+        for (size_t i = 0; i + 1 < p.size(); ++i) out.push_back(Entity::Line(p[i], p[i + 1]));
+        AnnotGraphics g;
+        AnnotLayout(e, nullptr, g);
+        for (const auto& f : g.fills) {  // the arrow
+            std::vector<Vertex> v;
+            for (Vec2 q : f) v.push_back({q, 0});
+            out.push_back(Entity::Polyline(v, true));
+        }
+        TextData note;
+        Vec2 at, land;
+        if (LeaderNote(e, nullptr, note, at, &land)) {
+            out.push_back(Entity::Line(p.back(), land));
+            out.push_back(MakeText(at, note));
+        }
+        for (Entity& x : out) CopyStyle(e, x);
+        return !out.empty();
+    }
+    if (e.type == EntityType::Hatch && e.annot) {  // its pattern as lines (a solid fill cannot be)
+        if (IsSolid(e.annot->hatch)) return false;
+        std::vector<std::pair<Vec2, Vec2>> segs;
+        if (!HatchSegments(e.annot->hatch, segs) || segs.empty()) return false;
+        for (const auto& sg : segs) {
+            out.push_back(Near(sg.first, sg.second, 1e-12) ? Entity::Point(sg.first) : Entity::Line(sg.first, sg.second));
+            CopyStyle(e, out.back());
+        }
+        return true;
+    }
+    if (e.type == EntityType::Text && e.annot) {  // one text per line
+        AnnotGraphics g;
+        LayoutText(e.annot->text, e.p0, nullptr, g);
+        if (g.texts.size() < 2) return false;
+        for (const TextItem& it : g.texts) {
+            TextData t = e.annot->text;
+            t.content = SplitLines(t.content)[&it - &g.texts[0]];
+            t.justify = 3 + it.align;
+            t.frame = 0;
+            out.push_back(MakeText(it.pos, t));
+            CopyStyle(e, out.back());
+        }
+        return true;
+    }
     if (e.type != EntityType::Polyline) return false;
     for (const CurvePiece& p : CurvePieces(e)) {
         if (!p.arc) out.push_back(Entity::Line(p.a, p.b));
@@ -858,8 +906,25 @@ bool StretchEntity(Entity& e, const Box& w, Vec2 d) {
         }
         case EntityType::Dimension:
             return DimStretch(e, w, d);
+        case EntityType::Leader: {
+            bool moved = false;
+            Annot& a = EditAnnot(e);
+            for (Vec2& p : a.pts)
+                if (w.Contains(p)) {
+                    p += d;
+                    moved = true;
+                }
+            if (!a.pts.empty()) e.p0 = a.pts[0];
+            return moved;
+        }
+        case EntityType::Text:
+        case EntityType::Insert:
+            if (!w.Contains(e.p0)) return false;
+            Translate(e, d);
+            return true;
         case EntityType::Array:
         case EntityType::Point:
+        case EntityType::Hatch:  // follows its outline (if associative)
             return false;
     }
     return false;

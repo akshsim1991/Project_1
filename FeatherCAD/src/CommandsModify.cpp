@@ -17,7 +17,7 @@ bool IsOpenCurve(const Entity& e) { return IsCurve(e) && !IsClosedCurve(e); }
 std::vector<Prim> Edges(Engine* E, uint64_t except, const std::vector<uint64_t>& only, const Box* near) {
     std::vector<Prim> prims;
     auto add = [&](const Entity& e) {
-        if (e.id == except || e.type == EntityType::Dimension || !E->Doc().Visible(e)) return;
+        if (e.id == except || IsAnnotation(e) || !E->Doc().Visible(e)) return;
         if (near && !Bounds(e).Intersects(*near)) return;
         Primitives(e, prims);
     };
@@ -970,7 +970,7 @@ public:
             ++done;
         }
         E->Msg(done ? std::to_wstring(done) + L" object(s) exploded."
-                    : L"Nothing to explode: only polylines and arrays are made of other objects.");
+                    : L"Nothing to explode: only polylines, arrays, blocks, leaders, hatches and texts of several lines are made of other objects.");
         E->Finish();
     }
 };

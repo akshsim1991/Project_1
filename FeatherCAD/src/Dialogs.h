@@ -39,6 +39,8 @@ bool DimEditDialog(HWND owner, const DimData& d, bool attached, DimEditResult& o
 // The layer manager. Changes go straight into the drawing (each one can be
 // undone); `changed` is called after each so the drawing is redrawn.
 void LayerDialog(HWND owner, Document& doc, const std::function<void()>& changed);
+// The text editor: content (several lines), symbols, fields, font, size, angle, justification, frame.
+bool TextEditDialog(HWND owner, TextData& text, const std::wstring& title);
 // A colour chosen from a menu at the cursor (named colours, or any colour
 // with the Windows colour picker). `allowBy`: ByLayer and ByBlock too.
 // False if nothing was chosen.

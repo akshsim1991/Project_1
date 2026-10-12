@@ -715,6 +715,7 @@ public:
 class PasteClipCmd : public Command {
     std::vector<Entity> m_ents;
     std::vector<Layer> m_layers;  // the layers they came from
+    BlockTable m_blocks;          // and the blocks they use
     Vec2 m_base;
 
 public:
@@ -735,7 +736,7 @@ public:
             }
         }
         m_base = {x, y};
-        if (nl == std::string::npos || !Document::ObjectsFromText(text.substr(nl + 1), m_ents, &m_layers) || m_ents.empty()) {
+        if (nl == std::string::npos || !Document::ObjectsFromText(text.substr(nl + 1), m_ents, &m_layers, &m_blocks) || m_ents.empty()) {
             E->Msg(L"The clipboard could not be read.");
             return E->Finish();
         }
@@ -744,13 +745,8 @@ public:
     void OnPoint(Vec2 p) override {
         for (Entity& e : m_ents) Translate(e, p - m_base);
         E->Doc().BeginChange(L"Paste");
-        // Onto the layers of the same names here (made if missing).
-        const std::map<int, int> layerIds = E->Doc().MergeLayers(m_layers);
-        for (Entity& e : m_ents) {
-            auto it = layerIds.find(e.layer);
-            e.layer = it != layerIds.end() ? it->second : 0;
-        }
-        const std::vector<uint64_t> ids = E->Doc().AddGroup(std::move(m_ents));
+        // Onto the layers (and blocks) of the same names here (made if missing).
+        const std::vector<uint64_t> ids = E->Doc().AddForeign(std::move(m_ents), m_layers, m_blocks);
         E->Doc().EndChange();
         E->ClearSelection();
         E->AddToSelection(ids);

@@ -1,6 +1,7 @@
 // Grips.cpp - see Grips.h.
 #include "Grips.h"
 
+#include "Annot.h"
 #include "Dimension.h"
 #include "Spline.h"
 
@@ -83,6 +84,15 @@ void GripsOf(const Entity& e, std::vector<Grip>& out) {
             for (const auto& x : g) add(x.first, x.second);
             break;
         }
+        case EntityType::Text:
+        case EntityType::Leader:
+        case EntityType::Hatch:
+        case EntityType::Insert: {
+            std::vector<std::pair<int, Vec2>> g;
+            AnnotGrips(e, g);
+            for (const auto& x : g) add(x.first, x.second);
+            break;
+        }
     }
 }
 
@@ -158,6 +168,11 @@ bool DragGrip(Entity& e, int index, Vec2 from, Vec2 to) {
             return true;
         case EntityType::Dimension:
             return DragDimGrip(e, index, from, to);
+        case EntityType::Text:
+        case EntityType::Leader:
+        case EntityType::Hatch:
+        case EntityType::Insert:
+            return DragAnnotGrip(e, index, from, to);
     }
     return false;
 }

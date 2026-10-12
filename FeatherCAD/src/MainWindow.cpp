@@ -103,6 +103,25 @@ const IdCommand kIdCommands[] = {
     {ID_DIM_BASELINE, L"DIMBASELINE", nullptr},
     {ID_DIM_EDIT, L"DIMEDIT", nullptr},
     {ID_DIM_STYLE, L"DIMSTYLE", nullptr},
+    {ID_TEXT, L"TEXT", nullptr},
+    {ID_TEXTEDIT, L"TEXTEDIT", nullptr},
+    {ID_LEADER, L"LEADER", nullptr},
+    {ID_BALLOON, L"BALLOON", nullptr},
+    {ID_CENTERMARK, L"CENTERMARK", nullptr},
+    {ID_CENTERLINE, L"CENTERLINE", nullptr},
+    {ID_HATCH, L"HATCH", nullptr},
+    {ID_FILL, L"FILL", nullptr},
+    {ID_BLOCK, L"BLOCK", nullptr},
+    {ID_INSERT, L"INSERT", nullptr},
+    {ID_ATTDEF, L"ATTDEF", nullptr},
+    {ID_ATTEDIT, L"ATTEDIT", nullptr},
+    {ID_PURGE, L"PURGE", nullptr},
+    {ID_REVCLOUD, L"REVCLOUD", nullptr},
+    {ID_AREA, L"AREA", nullptr},
+    {ID_DIM_ORDINATE, L"DIMORDINATE", nullptr},
+    {ID_DIM_ANGCOORD, L"DIMANGCOORD", nullptr},
+    {ID_DIM_SPACE, L"DIMSPACE", nullptr},
+    {ID_DIM_DRIVEN, L"DIMDRIVEN", nullptr},
     {ID_TANLINE, L"TANLINE", nullptr},
     {ID_CIRCLE_TTR, L"CIRCLE", L"T"},
     {ID_LAYERS, L"LAYER", nullptr},
@@ -190,6 +209,7 @@ void MainWindow::CreateChildren() {
     m_menuBar.AddTextButton(ID_MENU_DRAW, L"Draw", nullptr, 50);
     m_menuBar.AddTextButton(ID_MENU_MODIFY, L"Modify", nullptr, 60);
     m_menuBar.AddTextButton(ID_MENU_DIMENSION, L"Dimension", nullptr, 78);
+    m_menuBar.AddTextButton(ID_MENU_ANNOTATE, L"Annotate", nullptr, 72);
     m_menuBar.AddTextButton(ID_MENU_FORMAT, L"Format", nullptr, 58);
     m_menuBar.AddTextButton(ID_MENU_TOOLS, L"Tools", nullptr, 50);
     m_menuBar.AddTextButton(ID_MENU_HELP, L"Help", nullptr, 48);
@@ -229,6 +249,9 @@ void MainWindow::CreateChildren() {
     m_tools.AddSeparator();
     m_tools.AddIconButton(ID_DIM_SMART, kIconDimension,
                           L"Smart dimension (DIM): click a line, circle, arc or two lines. Double-click a dimension to edit it");
+    m_tools.AddIconButton(ID_TEXT, kIconText, L"Text (T): several lines, fonts, symbols and fields. Double-click a text to edit it");
+    m_tools.AddIconButton(ID_HATCH, kIconHatch, L"Hatch (H): click inside an area");
+    m_tools.AddIconButton(ID_INSERT, kIconBlock, L"Insert block (I). BLOCK makes one from objects");
     m_tools.AddSeparator();
     // The current layer (or the selected objects' layer).
     m_layerCombo = CreateWindowExW(0, L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | WS_VSCROLL | CBS_DROPDOWNLIST, 0, 0, 0,
@@ -285,6 +308,7 @@ void MainWindow::CreateAccelerators() {
         {FVIRTKEY | FALT, 'D', ID_MENU_DRAW},
         {FVIRTKEY | FALT, 'M', ID_MENU_MODIFY},
         {FVIRTKEY | FALT, 'N', ID_MENU_DIMENSION},
+        {FVIRTKEY | FALT, 'A', ID_MENU_ANNOTATE},
         {FVIRTKEY | FALT, 'O', ID_MENU_FORMAT},
         {FVIRTKEY | FALT, 'T', ID_MENU_TOOLS},
         {FVIRTKEY | FALT, 'H', ID_MENU_HELP},
@@ -464,6 +488,7 @@ std::wstring MainWindow::DrawingName(const Drawing& d) const {
 }
 
 void MainWindow::UpdateTitle() {
+    UpdateFields();
     const std::wstring title = DrawingName() + (Doc().Modified() ? L"*" : L"") + L" - " + APP_NAME;
     if (title != m_shownTitle) {
         m_shownTitle = title;
@@ -805,11 +830,35 @@ HMENU MainWindow::BuildMenu(int menuId) {
             Append(m, ID_DIM_DIAMETER, L"&Diameter\tDDI");
             Append(m, ID_DIM_ANGULAR, L"An&gular\tDAN");
             Separator(m);
+            Append(m, ID_DIM_ORDINATE, L"&Ordinate (coordinate)\tDOR");
+            Append(m, ID_DIM_ANGCOORD, L"Angular coordina&te\tDAC");
+            Separator(m);
             Append(m, ID_DIM_CONTINUE, L"&Continue\tDCO");
             Append(m, ID_DIM_BASELINE, L"&Baseline\tDBA");
+            Append(m, ID_DIM_SPACE, L"S&pace evenly\tDSP");
+            Append(m, ID_DIM_DRIVEN, L"Dri&ven / driving\tDDR");
             Separator(m);
             Append(m, ID_DIM_EDIT, L"&Edit dimension (or double-click it)\tDED");
             Append(m, ID_DIM_STYLE, L"Dimension st&yle...\tD");
+            break;
+        case ID_MENU_ANNOTATE:
+            Append(m, ID_TEXT, L"&Text\tT");
+            Append(m, ID_TEXTEDIT, L"&Edit text (or double-click it)\tED");
+            Separator(m);
+            Append(m, ID_LEADER, L"&Leader\tLE");
+            Append(m, ID_BALLOON, L"&Balloon (callout)\tBALLOON");
+            Append(m, ID_CENTERMARK, L"Centre &mark\tCM");
+            Append(m, ID_CENTERLINE, L"Centre li&ne\tCL");
+            Append(m, ID_REVCLOUD, L"&Revision cloud\tRC");
+            Separator(m);
+            Append(m, ID_HATCH, L"&Hatch\tH");
+            Append(m, ID_FILL, L"&Fill\tFILL");
+            Separator(m);
+            Append(m, ID_BLOCK, L"Make bloc&k\tB");
+            Append(m, ID_INSERT, L"&Insert block\tI");
+            Append(m, ID_ATTDEF, L"&Attribute definition\tATT");
+            Append(m, ID_ATTEDIT, L"Edit attri&butes\tATE");
+            Append(m, ID_PURGE, L"&Purge unused blocks\tPU");
             break;
         case ID_MENU_FORMAT:
             Append(m, ID_LAYERS, L"&Layers...\tLA");
@@ -826,6 +875,7 @@ HMENU MainWindow::BuildMenu(int menuId) {
             break;
         case ID_MENU_TOOLS:
             Append(m, ID_DIST, L"Measure &distance\tDI");
+            Append(m, ID_AREA, L"Measure &area\tAA");
             Append(m, ID_ID_POINT, L"Point &coordinates\tID");
             Separator(m);
             Append(m, ID_TOGGLE_GRID, L"&Grid\tF7", true, d.gridOn);
@@ -1255,7 +1305,7 @@ void MainWindow::ImportDxf() {
     }
     const size_t n = r.entities.size();
     Doc().BeginChange(L"Import DXF");
-    const std::vector<uint64_t> ids = Doc().AddGroup(std::move(r.entities));
+    const std::vector<uint64_t> ids = Doc().AddForeign(std::move(r.entities), r.layers, r.blocks);
     Doc().EndChange();
     Eng().ClearSelection();
     Eng().AddToSelection(ids);
@@ -1282,7 +1332,7 @@ void MainWindow::ShowHistory() {
     std::vector<Entity> ents;
     for (const auto& kv : copy.Entities()) ents.push_back(kv.second);
     Eng().ClearSelection();
-    Doc().ReplaceAll(std::move(ents), L"Restore version");
+    Doc().ReplaceAll(std::move(ents), L"Restore version", &copy.Blocks());
     Message(L"Restored the version from " + FormatFileTime(versions[(size_t)i].time) +
             L". Undo (Ctrl+Z) brings back what was there before.");
     m_canvas.ZoomExtents();
@@ -1329,6 +1379,50 @@ void MainWindow::Autosave() {
 // ---------------------------------------------------------------------------
 // Dimensions and the clipboard
 // ---------------------------------------------------------------------------
+
+int MainWindow::EditText(TextData& text, const std::wstring& title) {
+    return TextEditDialog(m_hwnd, text, title) ? 1 : 0;
+}
+
+void MainWindow::EditObject(uint64_t id) {
+    const Entity* e = Doc().Find(id);
+    if (!e) return;
+    if (e->type == EntityType::Dimension) return EditDimension(id);
+    if (const TextData* t = TextOf(*e)) {
+        Eng().Cancel();
+        TextData edited = *t;
+        if (!TextEditDialog(m_hwnd, edited, e->type == EntityType::Leader ? L"Leader note" : L"Edit text") || edited == *t)
+            return;
+        Entity x = *Doc().Find(id);
+        EditAnnot(x).text = edited;
+        Doc().BeginChange(L"Edit text");
+        Doc().Replace(x);
+        Doc().EndChange();
+        AfterInput();
+        return;
+    }
+    if (e->type == EntityType::Insert) {  // its attributes are in the Properties panel
+        Eng().Cancel();
+        Eng().ClearSelection();
+        Eng().AddToSelection({id});
+        if (!m_settings.propertiesOn) OnCommand(ID_PROPERTIES);
+        AfterInput();
+    }
+}
+
+void MainWindow::UpdateFields() {
+    FieldValues f;
+    f[L"filename"] = DrawingName();
+    wchar_t buf[128] = L"";
+    if (GetDateFormatEx(LOCALE_NAME_USER_DEFAULT, DATE_SHORTDATE, nullptr, nullptr, buf, 128, nullptr)) f[L"date"] = buf;
+    if (GetTimeFormatEx(LOCALE_NAME_USER_DEFAULT, TIME_NOSECONDS, nullptr, nullptr, buf, 128)) f[L"time"] = buf;
+    DWORD n = 128;
+    if (GetUserNameW(buf, &n)) f[L"author"] = buf;
+    if (f != m_fields) {
+        m_fields = f;
+        m_canvas.SetFields(f);
+    }
+}
 
 void MainWindow::EditDimension(uint64_t id) {
     const Entity* e = Doc().Find(id);
@@ -1513,6 +1607,186 @@ std::vector<int> WeightChoices() {
     return c;
 }
 }  // namespace
+
+namespace {
+const std::vector<std::wstring>& CommonFonts() {
+    static const std::vector<std::wstring> f = {L"Arial", L"Calibri", L"Cambria", L"Consolas", L"Courier New",
+                                                L"Georgia", L"ISOCPEUR", L"Segoe UI", L"Tahoma", L"Times New Roman",
+                                                L"Verdana"};
+    return f;
+}
+// Lines of text in one line of the panel: a new line is shown as \P.
+std::wstring OneLine(const std::wstring& s) {
+    std::wstring o;
+    for (wchar_t c : s) o += c == L'\n' ? std::wstring(L"\\P") : std::wstring(1, c);
+    return o;
+}
+std::wstring FromOneLine(const std::wstring& s) {
+    std::wstring o;
+    for (size_t i = 0; i < s.size(); ++i) {
+        if (s[i] == L'\\' && i + 1 < s.size() && (s[i + 1] == L'P' || s[i + 1] == L'p')) {
+            o += L'\n';
+            ++i;
+        } else {
+            o += s[i];
+        }
+    }
+    return o;
+}
+}  // namespace
+
+void MainWindow::AnnotationRows(const Entity& e, std::vector<PropertiesPanel::Row>& rows) {
+    using Row = PropertiesPanel::Row;
+    const uint64_t id = e.id;
+    const auto refresh = [this] { PostMessageW(m_hwnd, WM_APP_PROPERTIES, 0, 0); };
+    // A row that changes the object through `set` (false: not possible).
+    auto add = [&](Row r, std::function<bool(Entity&, const Row&)> set) {
+        r.apply = [this, id, set, refresh](const Row& edited) {
+            if (const Entity* cur = Doc().Find(id)) {
+                Entity x = *cur;
+                if (set(x, edited)) {
+                    Doc().BeginChange(L"Properties");
+                    Doc().Replace(x);
+                    Doc().EndChange();
+                } else {
+                    Message(L"That value cannot be used here.");
+                }
+            }
+            AfterInput();
+            refresh();
+        };
+        rows.push_back(std::move(r));
+    };
+    auto text = [&](const wchar_t* label, const std::wstring& value, std::function<bool(Entity&, const std::wstring&)> set) {
+        Row r;
+        r.kind = Row::Text;
+        r.label = label;
+        r.value = value;
+        add(r, [set](Entity& x, const Row& ed) { return set(x, ed.value); });
+    };
+    auto number = [&](const wchar_t* label, double value, std::function<bool(Entity&, double)> set) {
+        text(label, Eng().Len(value), [set](Entity& x, const std::wstring& t) {
+            double v;
+            return ReadNumber(t, v) && set(x, v);
+        });
+    };
+    auto choice = [&](const wchar_t* label, std::vector<std::wstring> choices, int now, std::function<bool(Entity&, int)> set) {
+        Row r;
+        r.kind = Row::Choice;
+        r.label = label;
+        r.choices = std::move(choices);
+        r.choice = now;
+        add(r, [set](Entity& x, const Row& ed) { return ed.choice >= 0 && set(x, ed.choice); });
+    };
+    auto info = [&](const wchar_t* label, const std::wstring& value) {
+        Row r;
+        r.label = label;
+        r.value = value;
+        rows.push_back(r);
+    };
+    if (!e.annot) return;
+    const Annot& a = *e.annot;
+    if (e.type == EntityType::Text || e.type == EntityType::Leader) {
+        const TextData& t = a.text;
+        if (!t.tag.empty()) {
+            text(L"Tag", t.tag, [](Entity& x, const std::wstring& v) { return !v.empty() && (EditAnnot(x).text.tag = v, true); });
+            text(L"Question", t.prompt, [](Entity& x, const std::wstring& v) { return EditAnnot(x).text.prompt = v, true; });
+        }
+        text(t.tag.empty() ? L"Text (\\P: new line)" : L"Default value", OneLine(t.content),
+             [](Entity& x, const std::wstring& v) { return EditAnnot(x).text.content = FromOneLine(v), true; });
+        std::vector<std::wstring> fonts = CommonFonts();
+        int f = -1;
+        for (size_t i = 0; i < fonts.size(); ++i)
+            if (fonts[i] == t.font) f = (int)i;
+        if (f < 0) fonts.push_back(t.font), f = (int)fonts.size() - 1;
+        choice(L"Font", fonts, f, [fonts](Entity& x, int i) { return EditAnnot(x).text.font = fonts[(size_t)i], true; });
+        number(L"Height", t.height, [](Entity& x, double v) { return v > 0 && (EditAnnot(x).text.height = v, true); });
+        if (e.type == EntityType::Text) {
+            number(L"Rotation", ToDegrees(t.rotation), [](Entity& x, double v) { return EditAnnot(x).text.rotation = ToRadians(v), true; });
+            choice(L"Justify",
+                   {L"Top left", L"Top centre", L"Top right", L"Middle left", L"Middle centre", L"Middle right", L"Bottom left",
+                    L"Bottom centre", L"Bottom right"},
+                   t.justify, [](Entity& x, int i) { return EditAnnot(x).text.justify = i, true; });
+        }
+        number(L"Width factor", t.widthFactor, [](Entity& x, double v) { return v > 0 && (EditAnnot(x).text.widthFactor = v, true); });
+        number(L"Line spacing", t.lineSpacing, [](Entity& x, double v) { return v > 0 && (EditAnnot(x).text.lineSpacing = v, true); });
+        choice(L"Frame", {L"None", L"Box", L"Circle"}, t.frame, [](Entity& x, int i) { return EditAnnot(x).text.frame = i, true; });
+        if (e.type == EntityType::Leader)
+            number(L"Arrow size", a.arrow, [](Entity& x, double v) { return v >= 0 && (EditAnnot(x).arrow = v, true); });
+        else
+            AnnotPointRows(rows, e, L"X", L"Y", e.p0, [](Entity& x, Vec2 p) { Translate(x, p - x.p0); });
+    } else if (e.type == EntityType::Hatch) {
+        const HatchData& h = a.hatch;
+        std::vector<std::wstring> names;
+        int now = -1;
+        for (const HatchPattern& p : HatchPatterns()) {
+            if (SameName(p.name, h.pattern)) now = (int)names.size();
+            names.push_back(p.name);
+        }
+        choice(L"Pattern", names, now, [names](Entity& x, int i) { return EditAnnot(x).hatch.pattern = names[(size_t)i], true; });
+        if (!IsSolid(h)) {
+            number(L"Scale", h.scale, [](Entity& x, double v) { return v > 0 && (EditAnnot(x).hatch.scale = v, true); });
+            number(L"Angle", ToDegrees(h.angle), [](Entity& x, double v) { return EditAnnot(x).hatch.angle = ToRadians(v), true; });
+        }
+        info(L"Area", Eng().Len(HatchArea(h)));
+        info(L"Outlines", std::to_wstring(h.loops.size()));
+        info(L"Associative", h.refs.empty() ? L"No" : L"Yes (follows its outline)");
+    } else if (e.type == EntityType::Insert && a.block) {
+        info(L"Block", a.block->name);
+        AnnotPointRows(rows, e, L"Position X", L"Position Y", e.p0, [](Entity& x, Vec2 p) { Translate(x, p - x.p0); });
+        number(L"Scale", e.radius, [](Entity& x, double v) { return v > 0 && (x.radius = v, true); });
+        number(L"Rotation", ToDegrees(e.startAngle), [](Entity& x, double v) { return x.startAngle = ToRadians(v), true; });
+        Row m;
+        m.kind = Row::Check;
+        m.label = L"Mirrored";
+        m.checked = e.closed;
+        add(m, [](Entity& x, const Row& ed) { return x.closed = ed.checked, true; });
+        const std::vector<const TextData*> defs = AttributeDefs(*a.block);
+        if (!defs.empty()) {
+            Row h;
+            h.heading = true;
+            h.label = L"Attributes";
+            rows.push_back(h);
+        }
+        for (size_t i = 0; i < defs.size(); ++i) {
+            const std::wstring v = i < a.values.size() ? a.values[i] : defs[i]->content;
+            text(defs[i]->tag.c_str(), v, [i, n = defs.size()](Entity& x, const std::wstring& nv) {
+                Annot& an = EditAnnot(x);
+                if (an.values.size() < n) an.values.resize(n);
+                an.values[i] = nv;
+                return true;
+            });
+        }
+    }
+}
+
+void MainWindow::AnnotPointRows(std::vector<PropertiesPanel::Row>& rows, const Entity& e, const wchar_t* lx, const wchar_t* ly, Vec2 p,
+                           std::function<void(Entity&, Vec2)> set) {
+    using Row = PropertiesPanel::Row;
+    const uint64_t id = e.id;
+    const Vec2 org = Doc().Settings().origin;
+    for (int k = 0; k < 2; ++k) {
+        Row r;
+        r.kind = Row::Text;
+        r.label = k == 0 ? lx : ly;
+        r.value = Eng().Len(k == 0 ? p.x - org.x : p.y - org.y);
+        r.apply = [this, id, k, org, set](const Row& edited) {
+            double v;
+            if (const Entity* cur = Doc().Find(id); cur && ReadNumber(edited.value, v)) {
+                Entity x = *cur;
+                Vec2 q = x.p0;
+                (k == 0 ? q.x : q.y) = v + (k == 0 ? org.x : org.y);
+                set(x, q);
+                Doc().BeginChange(L"Properties");
+                Doc().Replace(x);
+                Doc().EndChange();
+            }
+            AfterInput();
+            PostMessageW(m_hwnd, WM_APP_PROPERTIES, 0, 0);
+        };
+        rows.push_back(r);
+    }
+}
 
 void MainWindow::UpdateProperties(bool force) {
     if (!m_ready || !m_settings.propertiesOn) return;
@@ -1851,8 +2125,32 @@ void MainWindow::UpdateProperties(bool force) {
                     double v;
                     return ReadNumber(t, v) && v >= 0 && v <= 8 && (nd.style.precision = (int)v, true);
                 });
+                Row r;
+                r.kind = Row::Check;
+                r.label = L"Driven (reports only)";
+                r.checked = d.driven;
+                r.apply = [this, id, refresh](const Row& edited) {
+                    if (const Entity* cur = Doc().Find(id)) {
+                        Entity x = *cur;
+                        DimData nd = *x.dim;
+                        nd.driven = edited.checked;
+                        x.dim = std::make_shared<const DimData>(std::move(nd));
+                        Doc().BeginChange(L"Dimension");
+                        Doc().Replace(x);
+                        Doc().EndChange();
+                    }
+                    AfterInput();
+                    refresh();
+                };
+                rows.push_back(r);
                 break;
             }
+            case EntityType::Text:
+            case EntityType::Leader:
+            case EntityType::Hatch:
+            case EntityType::Insert:
+                AnnotationRows(e, rows);
+                break;
             case EntityType::Array:
                 info(L"Kind", e.array && e.array->kind == ArrayData::Rect    ? L"Rectangular"
                               : e.array && e.array->kind == ArrayData::Polar ? L"Polar"
@@ -1952,7 +2250,7 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             ShowContextMenu(GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
             return 0;
         case WM_APP_CANVAS_EDIT:
-            EditDimension(*(const uint64_t*)lp);
+            EditObject(*(const uint64_t*)lp);
             return 0;
         case WM_PARENTNOTIFY:
             // A click in the drawing keeps typing going to the command line.

@@ -3,6 +3,8 @@
 
 #include <algorithm>
 
+#include "Annot.h"
+
 const wchar_t* SnapName(unsigned mode) {
     switch (mode) {
         case kSnapEndpoint: return L"Endpoint";
@@ -77,7 +79,7 @@ SnapResult FindSnap(const Document& doc, const SnapQuery& q) {
     for (const auto& kv : doc.Entities()) {
         const Entity& e = kv.second;
         const uint64_t id = kv.first;
-        if (e.type == EntityType::Dimension) continue;  // dimensions are not drawing geometry
+        if (IsAnnotation(e)) continue;  // dimensions, text and hatches are not drawing geometry
         if (!doc.Visible(e)) continue;                  // hidden or frozen layer
         const Box bounds = Bounds(e);
         const bool curveNear = bounds.Intersects(search);

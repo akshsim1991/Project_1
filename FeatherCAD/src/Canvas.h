@@ -11,7 +11,9 @@
 // double-click zooms to the extents, right click opens the context menu.
 #pragma once
 #include <d2d1.h>
+#include <deque>
 #include <dwrite.h>
+#include <map>
 
 #include "Common.h"
 #include "Engine.h"
@@ -33,6 +35,9 @@ public:
     };
     View GetView() const;
     void SetView(const View& v);
+
+    // Values of text fields ({filename}, {date}...).
+    void SetFields(const FieldValues& f);
 
     // ---- view ---------------------------------------------------------------
     void ZoomExtents();
@@ -86,8 +91,12 @@ private:
     // The dash pattern of line type `lt` at this zoom, in pixels (empty: solid).
     // `screen`: the same size at any zoom.
     std::vector<float> DashPattern(int lt, double scale, bool screen = false) const;
-    // Arrows and text of the dimensions among `ents`.
+    // Arrays and blocks as the objects they stand for (kept in `store`).
+    std::vector<const Entity*> Flatten(const std::vector<const Entity*>& ents, std::deque<Entity>& store) const;
+    // Arrows, fills and text of the dimensions and annotations among `ents`.
     void DrawDimensionParts(ID2D1RenderTarget* rt, const std::vector<const Entity*>& ents, ID2D1Brush* brush);
+    void DrawTextItem(ID2D1RenderTarget* rt, const TextItem& t, ID2D1Brush* brush);
+    IDWriteTextFormat* FontFormat(const std::wstring& font);
     void DrawSnapMarker(ID2D1RenderTarget* rt);
     void DrawLabel(ID2D1RenderTarget* rt, const std::wstring& text, float x, float y);
     void LoadColours();
@@ -122,6 +131,8 @@ private:
     IDWriteFactory* m_dwrite = nullptr;
     IDWriteTextFormat* m_textFormat = nullptr;
     IDWriteTextFormat* m_dimFormat = nullptr;  // dimension text, drawn scaled
+    std::map<std::wstring, IDWriteTextFormat*> m_fonts;  // text in other fonts, the same way
+    FieldValues m_fields;
     ID2D1HwndRenderTarget* m_target = nullptr;
     ID2D1BitmapRenderTarget* m_layer = nullptr;
     ID2D1SolidColorBrush* m_brush = nullptr;

@@ -8,9 +8,11 @@
 #include <cstdint>
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
+#include "Annot.h"
 #include "Dimension.h"
 #include "Entity.h"
 #include "Style.h"
@@ -43,6 +45,8 @@ struct Look {
     bool locked = false;
 };
 
+using BlockTable = std::vector<std::shared_ptr<const BlockData>>;
+
 class Document {
 public:
     using Map = std::map<uint64_t, Entity>;  // keyed by id: id order = drawing order
@@ -66,7 +70,7 @@ public:
     // was erased: commands use it to take back one of their own steps.
     void Restore(const Entity& e);
     // Replaces the whole drawing in one undo step (restoring a version).
-    void ReplaceAll(std::vector<Entity> entities, const std::wstring& name);
+    void ReplaceAll(std::vector<Entity> entities, const std::wstring& name, const BlockTable* blocks = nullptr);
     // Adds objects together, keeping the dimensions among them attached to
     // the new copies (their ids in `entities` are the old ones). Returns the
     // new ids, in order.
@@ -112,6 +116,22 @@ public:
     Look LookOf(const Entity& e, const Entity* block = nullptr) const;
     size_t LayerUse(int id) const;  // objects on it
 
+    // ---- blocks -------------------------------------------------------------
+    const BlockTable& Blocks() const { return m_blocks; }
+    std::shared_ptr<const BlockData> FindBlock(const std::wstring& name) const;  // not case sensitive
+    // Adds a block, or redefines the one of that name (its references in the
+    // drawing change with it). An undo step of its own, or part of the open one.
+    std::shared_ptr<const BlockData> DefineBlock(BlockData b);
+    bool DeleteBlock(const std::wstring& name, std::wstring& why);  // only when not used
+    size_t BlockUse(const std::wstring& name) const;                // references to it
+    // Blocks of another drawing: those missing here are added; references in
+    // `ents` are pointed at the blocks here (same name).
+    void MergeBlocks(const BlockTable& from, std::vector<Entity>* ents = nullptr);
+    // Objects from another drawing, with its layers and blocks: those are
+    // matched here by name (missing ones are added), then the objects are
+    // added as AddGroup does. Returns the new ids.
+    std::vector<uint64_t> AddForeign(std::vector<Entity> ents, const std::vector<Layer>& layers, const BlockTable& blocks);
+
     // ---- files ------------------------------------------------------------
     std::string ToText() const;  // Feather CAD drawing (.fcad, UTF-8 text)
     // Replaces the drawing (and clears the history). On failure the
@@ -124,7 +144,8 @@ public:
     bool FromDxf(const std::string& text, std::wstring& error, std::wstring& notes);
     // Objects as text, and back (copy and paste between drawings).
     std::string ObjectsToText(const std::vector<Entity>& entities) const;  // with their layers
-    static bool ObjectsFromText(const std::string& text, std::vector<Entity>& out, std::vector<Layer>* layers = nullptr);
+    static bool ObjectsFromText(const std::string& text, std::vector<Entity>& out, std::vector<Layer>* layers = nullptr,
+                                BlockTable* blocks = nullptr);
     // Layers of another drawing, matched by name (missing ones are added):
     // their ids there -> ids here.
     std::map<int, int> MergeLayers(const std::vector<Layer>& from);
@@ -142,12 +163,15 @@ private:
         std::vector<Change> changes;
         uint64_t serial = 0;
         std::optional<std::vector<Layer>> layersBefore, layersAfter;
+        std::optional<BlockTable> blocksBefore, blocksAfter;
     };
+    void SetBlocks(BlockTable blocks, const std::wstring& stepName);
     void SetLayers(std::vector<Layer> layers, const std::wstring& stepName);
     void IndexLayers();
     void Record(uint64_t id, const Entity* before, const Entity* after);
-    // Dimensions follow the objects they are attached to (before a step is kept).
+    // Dimensions and hatches follow the objects they are attached to (before a step is kept).
     void UpdateDimensions();
+    void UpdateHatches(const std::set<uint64_t>& changed, const std::set<uint64_t>& touched);
     void Apply(const Step& step, bool forward);
     void Touch() { ++m_revision; }
 
@@ -167,6 +191,7 @@ private:
     std::vector<int> m_layerIndex;  // id -> index in m_layers (-1: none)
     CurrentStyle m_current;
     std::vector<LayerState> m_states;
+    BlockTable m_blocks;
 };
 
 // UTF-8 text (without Windows), for files.

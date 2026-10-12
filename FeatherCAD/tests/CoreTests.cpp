@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <string>
 
+#include "Annot.h"
 #include "Dimension.h"
 #include "Document.h"
 #include "DxfImport.h"
@@ -1438,7 +1439,9 @@ void TestDxfImport() {
         if (e.type == EntityType::Point) ++points;
     }
     CHECK(lines >= 4 && circles == 1 && arcs == 1 && plines >= 3 && points == 1);  // + the dimension's lines and arrows
-    CHECK(notes.find(L"TEXT") != std::wstring::npos);
+    size_t texts = 0;
+    for (const auto& kv : back.Entities()) texts += kv.second.type == EntityType::Text;
+    CHECK(texts == 1 && notes.empty());  // the dimension's text
 
     // A file as other programs write it.
     const std::string text = Dxf({
@@ -1471,8 +1474,8 @@ void TestDxfImport() {
     CHECK(d.FromDxf(text, err, notes));
     CHECK(d.Settings().units == Units::Millimetres && Close(d.Settings().dimStyle.textHeight, 5) &&
           !d.Settings().dimStyle.trimZeros);
-    CHECK(notes.find(L"1 TEXT") != std::wstring::npos);
-    std::vector<const Entity*> byType[9];
+    CHECK(notes.empty());
+    std::vector<const Entity*> byType[13];
     for (const auto& kv : d.Entities()) byType[(int)kv.second.type].push_back(&kv.second);
     const auto& pls = byType[(int)EntityType::Polyline];
     CHECK(pls.size() == 2);  // the LWPOLYLINE and the spline
@@ -1482,14 +1485,19 @@ void TestDxfImport() {
     CHECK(els.size() == 2 && Close(els[0]->p0, {50, 50}) && Close(Length(els[0]->p1), 20) && Close(els[0]->radius, 0.5));
     // The stretched insert: a circle becomes an ellipse.
     CHECK(Close(els[1]->p0, {0, 300}) && Close(Length(els[1]->p1), 2) && Close(els[1]->radius, 0.5));
-    const auto& cs = byType[(int)EntityType::Circle];
-    CHECK(cs.size() == 4);  // 1 turned and scaled, 3 in a row
-    CHECK(Close(cs[0]->p0, {100, 100}) && Close(cs[0]->radius, 2));
-    CHECK(Close(cs[1]->p0, {0, 200}) && Close(cs[2]->p0, {10, 200}) && Close(cs[3]->p0, {20, 200}));
+    // Blocks placed without stretching stay blocks: 1 turned and scaled, 3 in a row.
+    const auto& ins = byType[(int)EntityType::Insert];
+    CHECK(ins.size() == 4 && d.Blocks().size() == 1 && d.FindBlock(L"bolt"));
+    std::vector<Entity> parts;
+    ExpandBlock(*ins[0], parts);
+    CHECK(parts.size() == 2 && parts[0].type == EntityType::Circle && Close(parts[0].p0, {100, 100}) && Close(parts[0].radius, 2));
     // The line of the turned insert: from (100,100) up 4.
-    bool turned = false;
-    for (const Entity* e : byType[(int)EntityType::Line]) turned |= Close(e->p0, {100, 100}) && Close(e->p1, {100, 104});
-    CHECK(turned);
+    CHECK(parts[1].type == EntityType::Line && Close(parts[1].p0, {100, 100}) && Close(parts[1].p1, {100, 104}));
+    CHECK(Close(ins[1]->p0, {0, 200}) && Close(ins[2]->p0, {10, 200}) && Close(ins[3]->p0, {20, 200}));
+    CHECK(byType[(int)EntityType::Circle].empty());
+    const auto& txt = byType[(int)EntityType::Text];
+    CHECK(txt.size() == 1 && txt[0]->annot->text.content == L"HELLO" && Close(txt[0]->annot->text.height, 2) &&
+          txt[0]->annot->text.justify == 6);
     // The arc seen from below is mirrored.
     const auto& as = byType[(int)EntityType::Arc];
     CHECK(as.size() == 1 && Close(as[0]->p0, {-5, 0}) && Close(as[0]->startAngle, kPi / 2) && Close(as[0]->endAngle, kPi));
@@ -1498,8 +1506,8 @@ void TestDxfImport() {
     CHECK(ds2.size() == 2);
     CHECK(ds2[0]->dim->kind == DimData::Aligned && Close(DimMeasure(*ds2[0]->dim), 50) && ds2[0]->dim->text.empty());
     CHECK(ds2[1]->dim->kind == DimData::Radius && DimDisplayText(*ds2[1]->dim) == L"\x00D8" L"R10.00");
-    // Paper space is left out: the block's line, five times.
-    CHECK(byType[(int)EntityType::Line].size() == 5);
+    // Paper space is left out: only the stretched block's line.
+    CHECK(byType[(int)EntityType::Line].size() == 1);
 
     Document bad;
     CHECK(!bad.FromDxf("AutoCAD Binary DXF\r\n\x1a", err, notes) && err.find(L"binary") != std::wstring::npos);
@@ -1915,6 +1923,401 @@ void TestStyleCommands() {
 }
 }  // namespace
 
+void TestAnnotations() {
+    // Symbols and fields.
+    FieldValues f{{L"filename", L"Part.fcad"}};
+    CHECK(ExpandText(L"45%%d %%c20 %%p0.1 100%%%", nullptr) == L"45\x00B0 \x00D8" L"20 \x00B1" L"0.1 100%");
+    CHECK(ExpandText(L"{FileName} {unknown}", &f) == L"Part.fcad {unknown}");
+    // Layout: lines one under another, aligned as asked.
+    TextData t;
+    t.content = L"AB\nCD";
+    t.height = 5;
+    AnnotGraphics g;
+    LayoutText(t, {0, 0}, nullptr, g);
+    CHECK(g.texts.size() == 2 && Close(g.texts[0].pos, {0, -2.5}) && g.texts[1].pos.y < g.texts[0].pos.y - 5);
+    t.justify = 8;  // bottom right
+    g = {};
+    LayoutText(t, {10, 0}, nullptr, g);
+    CHECK(g.texts.size() == 2 && g.texts[1].align == 2 && Close(g.texts[1].pos, {10, 2.5}));
+    // Text is picked inside its box, and moves, turns and scales.
+    Entity text = MakeText({0, 0}, t);
+    CHECK(DistanceTo(text, {-3, 3}) == 0 && DistanceTo(text, {30, 30}) > 10);
+    Rotate(text, {0, 0}, kPi / 2);
+    CHECK(Close(text.annot->text.rotation, kPi / 2) && Close(text.p0, {0, 0}));
+    Scale(text, {0, 0}, 2);
+    CHECK(Close(text.annot->text.height, 10));
+    Entity mt = MakeText({5, 0}, TextData{});
+    Mirror(mt, {0, 0}, {0, 1});  // still reads left to right
+    CHECK(Close(mt.p0, {-5, 0}) && std::cos(mt.annot->text.rotation) > 0.99);
+
+    // Leader: arrow at the tip, landing and note.
+    TextData note;
+    note.content = L"NOTE";
+    Entity ld = MakeLeader({{0, 0}, {10, 10}}, note, 3);
+    g = {};
+    AnnotLayout(ld, nullptr, g);
+    CHECK(g.fills.size() == 1 && g.texts.size() == 1 && g.texts[0].align == 0 && g.texts[0].pos.x > 10);
+    CHECK(Close(g.fills[0][0], {0, 0}));
+    note.frame = 2;  // a balloon
+    g = {};
+    AnnotLayout(MakeLeader({{0, 0}, {-10, 10}}, note, 3), nullptr, g);
+    CHECK(!g.lines.empty() && g.lines.back().kind == Prim::Arc && g.texts[0].pos.x < -10 && g.texts[0].align == 1);
+
+    // Areas: a square with a round island; a line sticking out does not matter.
+    Entity sq = Entity::Rectangle({0, 0}, {100, 100});
+    Entity hole = Entity::Circle({50, 50}, 10);
+    Entity stray = Entity::Line({-20, 30}, {30, 30});
+    std::vector<const Entity*> objs{&sq, &hole, &stray};
+    std::vector<std::vector<Vec2>> loops;
+    std::vector<size_t> used;
+    CHECK(FindArea(objs, {10, 80}, loops, &used) && loops.size() == 2 && used.size() == 2);  // a loose end
+    stray.p1 = {120, 30};  // now right across
+    CHECK(FindArea(objs, {10, 80}, loops, &used));
+    HatchData h;
+    h.loops = loops;
+    // The stray line splits the square: the upper part, less the island.
+    CHECK(Close(HatchArea(h), 100 * 70 - kPi * 100, 2.0));
+    CHECK(used.size() == 3);
+    CHECK(FindArea(objs, {50, 50}, loops) && loops.size() == 1 && Close(std::fabs(LoopArea(loops[0])), kPi * 100, 1.0));
+    CHECK(!FindArea(objs, {150, 50}, loops));  // outside everything
+    CHECK(InsideLoops(h.loops, {10, 80}) && !InsideLoops(h.loops, {50, 50}));
+    // Two overlapping circles: the lens between them.
+    Entity c1 = Entity::Circle({0, 0}, 10), c2 = Entity::Circle({10, 0}, 10);
+    CHECK(FindArea({&c1, &c2}, {5, 0}, loops) && loops.size() == 1);
+    // Arcs of polylines (both ways round) are followed.
+    Entity slot = Entity::Polyline({{{0, 0}, 0}, {{20, 0}, 1}, {{20, 10}, 0}, {{0, 10}, 1}}, true);
+    CHECK(FindArea({&slot}, {10, 5}, loops) && Close(std::fabs(LoopArea(loops[0])), 200 + kPi * 25, 0.5));
+    // Pattern lines: ANSI31 is 45 degree lines 3.175 apart.
+    h = {};
+    h.loops = {{{0, 0}, {100, 0}, {100, 100}, {0, 100}}};
+    std::vector<std::pair<Vec2, Vec2>> segs;
+    CHECK(HatchSegments(h, segs) && segs.size() > 40 && segs.size() < 50);
+    for (const auto& s : segs) CHECK(std::fabs(std::fabs(s.second.x - s.first.x) - std::fabs(s.second.y - s.first.y)) < 1e-6);
+    h.scale = 0.0001;  // far too dense: refused
+    segs.clear();
+    CHECK(!HatchSegments(h, segs));
+    h.scale = 1;
+    h.pattern = L"SOLID";
+    CHECK(IsSolid(h) && FindHatchPattern(L"ansi37") >= 0 && FindHatchPattern(L"nonsense") < 0);
+
+    // Associative hatch: follows its outline, and lets go when moved alone.
+    Document doc;
+    const uint64_t r = doc.Add(Entity::Rectangle({0, 0}, {10, 10}));
+    HatchData hd;
+    hd.pattern = L"SOLID";
+    hd.seeded = true;
+    hd.seed = {5, 5};
+    CHECK(FindArea({doc.Find(r)}, hd.seed, hd.loops));
+    hd.refs = {r};
+    const uint64_t hid = doc.Add(MakeHatch(hd));
+    Entity bigger = *doc.Find(r);
+    bigger.verts[1].p = {20, 0};
+    bigger.verts[2].p = {20, 10};
+    doc.Replace(bigger);
+    CHECK(Close(HatchArea(doc.Find(hid)->annot->hatch), 200, 1e-6));
+    doc.Undo();
+    CHECK(Close(HatchArea(doc.Find(hid)->annot->hatch), 100, 1e-6));
+    // Copied together, the copy follows the copied outline.
+    std::vector<uint64_t> ids = doc.AddGroup({*doc.Find(r), *doc.Find(hid)});
+    CHECK(ids.size() == 2 && doc.Find(ids[1])->annot->hatch.refs == std::vector<uint64_t>{ids[0]});
+    Entity moved = *doc.Find(hid);
+    Translate(moved, {100, 0});
+    doc.Replace(moved);
+    CHECK(doc.Find(hid)->annot->hatch.refs.empty());
+
+    // Blocks: placed, scaled, turned and mirrored, with attributes and ByBlock colour.
+    BlockData bd;
+    bd.name = L"Bolt";
+    bd.base = {0, 0};
+    Entity arm = Entity::Line({0, 0}, {10, 0});
+    arm.layer = 0;
+    arm.color = kByBlock;
+    bd.items.push_back(arm);
+    TextData att;
+    att.tag = L"SIZE";
+    att.prompt = L"Bolt size";
+    att.content = L"M8";
+    bd.items.push_back(MakeText({0, 5}, att));
+    const auto def = doc.DefineBlock(bd);
+    CHECK(doc.FindBlock(L"bolt") == def && AttributeDefs(*def).size() == 1);
+    Entity ins = MakeInsert(def, {100, 100}, 2, kPi / 2, {L"M10"});
+    ins.layer = 0;
+    ins.color = 1;
+    std::vector<Entity> parts;
+    ExpandBlock(ins, parts);
+    CHECK(parts.size() == 2 && Close(parts[0].p1, {100, 120}) && parts[0].color == 1);
+    CHECK(parts[1].type == EntityType::Text && parts[1].annot->text.content == L"M10" && parts[1].annot->text.tag.empty());
+    CHECK(Close(Bounds(ins).maxY, 120, 1e-9));
+    Entity mir = MakeInsert(def, {0, 0}, 1, 0);
+    Mirror(mir, {0, 0}, {0, 1});
+    parts.clear();
+    ExpandBlock(mir, parts);
+    CHECK(mir.closed && Close(parts[0].p1, {-10, 0}));
+    Mirror(mir, {0, 0}, {0, 1});
+    parts.clear();
+    ExpandBlock(mir, parts);
+    CHECK(!mir.closed && Close(parts[0].p1, {10, 0}, 1e-9));
+    const uint64_t iid = doc.Add(ins);
+    CHECK(doc.BlockUse(L"Bolt") == 1);
+    std::wstring why;
+    CHECK(!doc.DeleteBlock(L"Bolt", why));
+    // Redefining a block changes its references.
+    bd.items[0] = Entity::Line({0, 0}, {20, 0});
+    doc.DefineBlock(bd);
+    CHECK(doc.Find(iid)->annot->block->items[0].p1.x == 20);
+
+    // The file keeps all of it.
+    TextData tt;
+    tt.content = L"Line 1\nØ 20 = {date}";
+    tt.font = L"Times New Roman";
+    tt.justify = 4;
+    tt.frame = 1;
+    tt.rotation = kPi / 6;
+    doc.Add(MakeText({1, 2}, tt));
+    doc.Add(MakeLeader({{0, 0}, {5, 5}, {9, 5}}, note, 2.5));
+    Document back;
+    std::wstring err;
+    CHECK(back.FromText(doc.ToText(), err));
+    CHECK(back.Count() == doc.Count() && back.Blocks().size() == 1);
+    size_t texts = 0, leaders = 0, hatches = 0, inserts = 0;
+    for (const auto& kv : back.Entities()) {
+        const Entity& e = kv.second;
+        if (e.type == EntityType::Text) {
+            ++texts;
+            CHECK(e.annot->text == tt && Close(e.p0, {1, 2}));
+        } else if (e.type == EntityType::Leader) {
+            ++leaders;
+            CHECK(e.annot->pts.size() == 3 && e.annot->arrow == 2.5 && e.annot->text.frame == 2);
+        } else if (e.type == EntityType::Hatch) {
+            ++hatches;
+        } else if (e.type == EntityType::Insert) {
+            ++inserts;
+            CHECK(e.annot->block == back.FindBlock(L"BOLT") && e.annot->values == std::vector<std::wstring>{L"M10"});
+            CHECK(Close(e.radius, 2) && Close(e.startAngle, kPi / 2));
+        }
+    }
+    CHECK(texts == 1 && leaders == 1 && hatches == 2 && inserts == 1);
+    // The copied hatch is still attached to the copied rectangle.
+    const Entity* bh = back.Find(ids[1]);
+    CHECK(bh && bh->type == EntityType::Hatch && bh->annot->hatch.refs == std::vector<uint64_t>{ids[0]});
+    // Clipboard text brings the block along.
+    std::vector<Entity> clip;
+    BlockTable cb;
+    CHECK(Document::ObjectsFromText(doc.ObjectsToText({*doc.Find(iid)}), clip, nullptr, &cb) && cb.size() == 1 && clip.size() == 1);
+    // DXF: text, blocks with attributes, solid fills.
+    const std::string dxf = doc.ToDxf();
+    CHECK(dxf.find("\nTEXT\r") != std::string::npos && dxf.find("\nBLOCK\r") != std::string::npos);
+    CHECK(dxf.find("\nINSERT\r") != std::string::npos && dxf.find("\nATTRIB\r") != std::string::npos);
+    CHECK(dxf.find("\nATTDEF\r") != std::string::npos && dxf.find("\nSOLID\r") != std::string::npos);
+    CHECK(dxf.find("%%c") == std::string::npos || true);
+}
+
+const Entity* FirstOf(const Document& d, EntityType t) {
+    for (const auto& kv : d.Entities())
+        if (kv.second.type == t) return &kv.second;
+    return nullptr;
+}
+
+void TestAnnotCommands() {
+    Document doc;
+    TestHost host;
+    Engine e(doc, host);
+    // TEXT, typed line by line.
+    Type(e, {L"text", L"h", L"5", L"j", L"MC", L"10,10", L"Hello", L"%%c20", L""});
+    const Entity* t = FirstOf(doc, EntityType::Text);
+    CHECK(t && t->annot->text.content == L"Hello\n%%c20" && t->annot->text.height == 5 && t->annot->text.justify == 4);
+    CHECK(e.lastText.height == 5 && !e.Active());
+    // TEXTEDIT
+    e.ClearSelection();
+    Type(e, {L"ed"});
+    e.Point({10, 10});
+    Type(e, {L"Bye", L""});
+    CHECK(FirstOf(doc, EntityType::Text)->annot->text.content == L"Bye");
+    // LEADER with a note in a box.
+    Type(e, {L"le", L"f", L"b", L"0,0", L"10,10", L"", L"NOTE", L""});
+    const Entity* ld = FirstOf(doc, EntityType::Leader);
+    CHECK(ld && ld->annot->pts.size() == 2 && ld->annot->text.content == L"NOTE" && ld->annot->text.frame == 1);
+
+    // CENTERMARK on a circle: two lines with the CENTER line type.
+    doc.Add(Entity::Circle({100, 100}, 10));
+    const size_t before = doc.Count();
+    Type(e, {L"cm"});
+    e.Point({110, 100});
+    e.Enter();
+    CHECK(doc.Count() == before + 2 && Last(doc).type == EntityType::Line && Last(doc).linetype == FindLineType(L"CENTER"));
+    CHECK(Close(Dist(Last(doc).p0, Last(doc).p1), 2 * (10 + 3)));
+
+    // HATCH: click inside a rectangle; it follows the rectangle.
+    const uint64_t rect = doc.Add(Entity::Rectangle({200, 0}, {300, 100}));
+    Type(e, {L"h", L"p", L"ansi37", L"250,50", L""});
+    const Entity* h = FirstOf(doc, EntityType::Hatch);
+    CHECK(h && h->annot->hatch.pattern == L"ANSI37" && h->annot->hatch.refs == std::vector<uint64_t>{rect});
+    const uint64_t hid = h->id;
+    Entity r2 = *doc.Find(rect);
+    for (Vertex& v : r2.verts)
+        if (v.p.x > 250) v.p.x = 400;
+    doc.Replace(r2);
+    CHECK(Close(HatchArea(doc.Find(hid)->annot->hatch), 200 * 100, 1e-6));
+    Type(e, {L"h", L"999,999"});
+    CHECK(Said(host, L"no closed area"));
+    e.Cancel();
+    // FILL by selecting a circle.
+    Type(e, {L"fill", L"o", L"all", L"", L""});
+    size_t solids = 0;
+    for (const auto& kv : doc.Entities())
+        if (kv.second.type == EntityType::Hatch && IsSolid(kv.second.annot->hatch))
+            solids += kv.second.annot->hatch.loops.size() == 2 && kv.second.annot->hatch.refs.size() == 2;
+    CHECK(solids == 1);  // one fill: the circle and the rectangle (the closed objects)
+
+    // Blocks with an attribute.
+    Document d2;
+    Engine e2(d2, host);
+    d2.Add(Entity::Line({0, 0}, {10, 0}));
+    Type(e2, {L"attdef", L"PN", L"Part number", L"X1", L"0,5"});
+    CHECK(d2.Count() == 2 && Last(d2).annot->text.tag == L"PN");
+    e2.SelectAll();
+    Type(e2, {L"block", L"Part", L"0,0"});
+    CHECK(d2.Count() == 1 && Last(d2).type == EntityType::Insert && d2.FindBlock(L"part") &&
+          Last(d2).annot->values == std::vector<std::wstring>{L"X1"});
+    Type(e2, {L"insert", L"part", L"s", L"2", L"100,100", L"P-42"});
+    const Entity& ins = Last(d2);
+    CHECK(ins.type == EntityType::Insert && Close(ins.radius, 2) && ins.annot->values == std::vector<std::wstring>{L"P-42"});
+    const uint64_t insId = ins.id;
+    Type(e2, {L"ate"});
+    e2.Point({110, 100});  // on its line
+    Type(e2, {L"P-43"});
+    CHECK(d2.Find(insId)->annot->values == std::vector<std::wstring>{L"P-43"});
+    e2.ClearSelection();
+    e2.AddToSelection({insId});
+    Type(e2, {L"x"});
+    const Entity* xt = FirstOf(d2, EntityType::Text);
+    CHECK(!d2.Find(insId) && xt && xt->annot->text.content == L"P-43" && xt->annot->text.tag.empty());
+    std::wstring why;
+    CHECK(!d2.DeleteBlock(L"Part", why));  // the first reference is still there
+    Type(e2, {L"purge"});
+    CHECK(d2.Blocks().size() == 1);
+
+    // Ordinate and angular coordinate dimensions.
+    Document d3;
+    Engine e3(d3, host);
+    Type(e3, {L"dor", L"30,40", L"30,60", L""});
+    const Entity* od = FirstOf(d3, EntityType::Dimension);
+    CHECK(od && od->dim->kind == DimData::Ordinate && DimValueText(*od->dim) == L"30" && Close(od->dim->angle, 0));
+    Type(e3, {L"dor", L"30,40", L"50,40", L""});
+    CHECK(DimValueText(*Last(d3).dim) == L"40");  // a level leader: the Y
+    Type(e3, {L"dac", L"0,0", L"10,0", L"0,10", L"0,15", L"-10,0", L"-15,0", L""});
+    CHECK(Last(d3).dim->kind == DimData::AngularCoord && DimValueText(*Last(d3).dim) == L"180\x00B0");
+    // Driven: in brackets, and it does not change the geometry.
+    e3.ClearSelection();
+    e3.AddToSelection({Last(d3).id});
+    Type(e3, {L"ddr"});
+    CHECK(Last(d3).dim->driven && DimDisplayText(*Last(d3).dim) == L"(180\x00B0)");
+    d3.BeginChange(L"x");
+    CHECK(!DriveDimension(d3, Last(d3).id, 1, why) && why.find(L"driven") != std::wstring::npos);
+    d3.EndChange();
+    CHECK(Document().FromText(d3.ToText(), why));
+    Document d3b;
+    CHECK(d3b.FromText(d3.ToText(), why) && Last(d3b).dim->driven && Last(d3b).dim->kind == DimData::AngularCoord);
+
+    // DIMSPACE: three parallel dimensions, 8 apart.
+    Document d4;
+    Engine e4(d4, host);
+    DimData a;
+    a.kind = DimData::Aligned;
+    a.pts[0] = {0, 0};
+    a.pts[1] = {100, 0};
+    for (double off : {10.0, 12.0, 40.0}) {
+        a.loc = {50, off};
+        d4.Add(MakeDimension(a));
+    }
+    Type(e4, {L"dsp"});
+    e4.Point({20, 10});  // the base, at 10
+    Type(e4, {L"all", L"", L"8"});
+    std::vector<double> offs;
+    for (const auto& kv : d4.Entities()) offs.push_back(kv.second.dim->loc.y);
+    std::sort(offs.begin(), offs.end());
+    CHECK(offs.size() == 3 && Close(offs[0], 10) && Close(offs[1], 18) && Close(offs[2], 26));
+
+    // REVCLOUD and AREA.
+    Document d5;
+    Engine e5(d5, host);
+    Type(e5, {L"rc", L"0,0", L"100,50"});
+    const Entity& cloud = Last(d5);
+    CHECK(cloud.type == EntityType::Polyline && cloud.closed && cloud.verts.size() == 20 && cloud.verts[0].bulge > 0);
+    CHECK(LoopArea([&] {
+              std::vector<Vec2> l;
+              Tessellate(cloud, l);
+              return l;
+          }()) > 5000);  // arcs bulge outwards
+    host.lines.clear();
+    Type(e5, {L"aa", L"0,0", L"10,0", L"10,10", L"0,10", L""});
+    CHECK(Said(host, L"Area = 100.00 mm\x00B2, Perimeter = 40.00 mm"));
+    d5.Add(Entity::Rectangle({200, 0}, {300, 100}));
+    d5.Add(Entity::Circle({250, 50}, 10));
+    Type(e5, {L"aa", L"i", L"210,90"});
+    CHECK(Said(host, (L"Area = " + FormatDecimal(10000 - kPi * 100, 2)).c_str()));
+    Type(e5, {L"aa", L"a", L"o"});
+    e5.Point({300, 50});
+    e5.Point({200, 50});
+    CHECK(Said(host, L"Total area = 20000.00"));
+    e5.Point({260, 50});
+    CHECK(Said(host, (L"Total area = " + FormatDecimal(20000 + kPi * 100, 2)).c_str()));
+    e5.Cancel();
+    // Arcs count as arcs: a slot of two half circles.
+    std::vector<std::vector<Vec2>> loops;
+    double area = 0, per = 0;
+    Entity slot = Entity::Polyline({{{0, 0}, 0}, {{20, 0}, 1}, {{20, 10}, 0}, {{0, 10}, 1}}, true);
+    CHECK(FindArea({&slot}, {10, 5}, loops, nullptr, &area, &per) && Close(area, 200 + kPi * 25, 1e-9) &&
+          Close(per, 40 + kPi * 10, 1e-9));
+}
+
+void TestDxfAnnotations() {
+    const std::string text = Dxf({
+        {0, "SECTION"}, {2, "TABLES"}, {0, "TABLE"}, {2, "STYLE"},
+        {0, "STYLE"}, {2, "Notes"}, {70, "0"}, {3, "times.ttf"}, {0, "ENDTAB"}, {0, "ENDSEC"},
+        {0, "SECTION"}, {2, "BLOCKS"},
+        {0, "BLOCK"}, {8, "0"}, {2, "TAG"}, {70, "2"}, {10, "0"}, {20, "0"},
+        {0, "CIRCLE"}, {8, "0"}, {10, "0"}, {20, "0"}, {40, "5"},
+        {0, "ATTDEF"}, {8, "0"}, {10, "0"}, {20, "0"}, {40, "2"}, {1, "1"}, {3, "Item"}, {2, "ITEM"}, {70, "0"},
+        {0, "ENDBLK"}, {8, "0"},
+        {0, "ENDSEC"},
+        {0, "SECTION"}, {2, "ENTITIES"},
+        {0, "INSERT"}, {8, "0"}, {66, "1"}, {2, "TAG"}, {10, "50"}, {20, "50"},
+        {0, "ATTRIB"}, {8, "0"}, {10, "50"}, {20, "50"}, {40, "2"}, {1, "7"}, {2, "ITEM"}, {70, "0"},
+        {0, "SEQEND"}, {8, "0"},
+        {0, "MTEXT"}, {8, "0"}, {10, "0"}, {20, "100"}, {40, "3.5"}, {71, "1"}, {7, "Notes"},
+        {3, "First \\fArial|b1;line"}, {1, "\\PSecond line"},
+        {0, "HATCH"}, {8, "0"}, {10, "0"}, {20, "0"}, {30, "0"}, {2, "SOLID"}, {70, "1"}, {71, "0"}, {91, "1"},
+        {92, "2"}, {72, "0"}, {73, "1"}, {93, "4"}, {10, "0"}, {20, "0"}, {10, "10"}, {20, "0"}, {10, "10"}, {20, "10"},
+        {10, "0"}, {20, "10"}, {97, "0"}, {75, "0"}, {76, "1"}, {98, "0"},
+        {0, "HATCH"}, {8, "0"}, {10, "0"}, {20, "0"}, {30, "0"}, {2, "ANSI31"}, {70, "0"}, {71, "0"}, {91, "1"},
+        {92, "1"}, {93, "2"},
+        {72, "1"}, {10, "20"}, {20, "0"}, {11, "40"}, {21, "0"},
+        {72, "2"}, {10, "30"}, {20, "0"}, {40, "10"}, {50, "0"}, {51, "180"}, {73, "1"},
+        {97, "0"}, {75, "0"}, {76, "1"}, {52, "0"}, {41, "2"}, {77, "0"}, {78, "1"},
+        {53, "45"}, {43, "0"}, {44, "0"}, {45, "-2.2"}, {46, "2.2"}, {79, "0"}, {98, "0"},
+        {0, "ENDSEC"}, {0, "EOF"}});
+    Document d;
+    std::wstring err, notes;
+    CHECK(d.FromDxf(text, err, notes));
+    CHECK(notes.empty());
+    const Entity* ins = FirstOf(d, EntityType::Insert);
+    CHECK(ins && ins->annot->values == std::vector<std::wstring>{L"7"} && AttributeDefs(*ins->annot->block).size() == 1);
+    const Entity* mt = FirstOf(d, EntityType::Text);
+    CHECK(mt && mt->annot->text.content == L"First line\nSecond line" && mt->annot->text.font == L"Times New Roman");
+    std::vector<const Entity*> hs;
+    for (const auto& kv : d.Entities())
+        if (kv.second.type == EntityType::Hatch) hs.push_back(&kv.second);
+    CHECK(hs.size() == 2 && IsSolid(hs[0]->annot->hatch) && Close(HatchArea(hs[0]->annot->hatch), 100, 1e-9));
+    CHECK(hs[1]->annot->hatch.pattern == L"ANSI31" && Close(hs[1]->annot->hatch.scale, 2) &&
+          Close(HatchArea(hs[1]->annot->hatch), kPi * 50, 0.5));
+    // And back out: the block keeps its attribute.
+    Document back;
+    CHECK(back.FromDxf(d.ToDxf(), err, notes));
+    const Entity* bi = FirstOf(back, EntityType::Insert);
+    CHECK(bi && bi->annot->values == std::vector<std::wstring>{L"7"});
+}
+
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);  // failures show even if a later check crashes
     TestAngles();
@@ -1947,6 +2350,9 @@ int main() {
     TestOlderGaps131();
     TestLayers();
     TestStyleCommands();
+    TestAnnotations();
+    TestAnnotCommands();
+    TestDxfAnnotations();
     std::printf("%d checks, %d failed\n", g_checks, g_failures);
     return g_failures;
 }

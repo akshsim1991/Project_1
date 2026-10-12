@@ -1,10 +1,13 @@
 // DxfImport.cpp - see DxfImport.h.
 #include "DxfImport.h"
 
+#include "Annot.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cwchar>
 #include <cwctype>
+#include <functional>
 #include <set>
 
 namespace {
@@ -316,7 +319,7 @@ private:
                     v.type = m_groups[i].value;
                     ++i;
                     while (i < m_groups.size() && m_groups[i].code != 0) v.g.push_back(m_groups[i++]);
-                    if (v.type == "VERTEX") r.sub.push_back(std::move(v));
+                    if (v.type == "VERTEX" || v.type == "ATTRIB") r.sub.push_back(std::move(v));
                 }
                 if (i < m_groups.size() && m_groups[i].value == "SEQEND") {
                     ++i;
@@ -449,11 +452,41 @@ private:
                 l.lineweight = r.Has(370) ? std::clamp(r.Int(370), -3, 211) : kLwDefault;
                 if (l.lineweight == kLwByLayer || l.lineweight == kLwByBlock) l.lineweight = kLwDefault;
                 l.plot = !r.Has(290) || r.Int(290) != 0;
+            } else if (m_groups[i].code == 0 && m_groups[i].value == "STYLE") {
+                Raw r;
+                ++i;
+                while (i < m_groups.size() && m_groups[i].code != 0) r.g.push_back(m_groups[i++]);
+                m_fonts[Key(Text(r.Str(2)))] = FontName(Text(r.Str(3)), Text(r.Str(1000)));
             } else {
                 ++i;
             }
         }
         if (i < m_groups.size()) ++i;
+    }
+
+    // A text style's font file ("times.ttf", "romans.shx") as a font name.
+    static std::wstring FontName(const std::wstring& file, const std::wstring& family) {
+        if (!family.empty()) return family;
+        std::wstring base = file;
+        const size_t slash = base.find_last_of(L"\\/");
+        if (slash != std::wstring::npos) base = base.substr(slash + 1);
+        const size_t dot = base.rfind(L'.');
+        const std::wstring ext = dot == std::wstring::npos ? L"" : Key(base.substr(dot));
+        if (dot != std::wstring::npos) base = base.substr(0, dot);
+        const std::wstring k = Key(base);
+        if (ext != L".ttf" && ext != L".otf") return L"Arial";  // AutoCAD's own (.shx) fonts
+        const std::pair<const wchar_t*, const wchar_t*> known[] = {
+            {L"arial", L"Arial"}, {L"times", L"Times New Roman"}, {L"cour", L"Courier New"}, {L"calibri", L"Calibri"},
+            {L"verdana", L"Verdana"}, {L"tahoma", L"Tahoma"}, {L"isocpeur", L"ISOCPEUR"}, {L"isoct", L"ISOCT"},
+            {L"segoeui", L"Segoe UI"}, {L"consola", L"Consolas"}, {L"georgia", L"Georgia"}};
+        for (const auto& kv : known)
+            if (k == kv.first) return kv.second;
+        if (!base.empty()) base[0] = (wchar_t)std::towupper(base[0]);
+        return base.empty() ? L"Arial" : base;
+    }
+    std::wstring FontOf(const Raw& r) const {
+        auto it = m_fonts.find(Key(Text(r.Str(7).empty() ? "STANDARD" : r.Str(7))));
+        return it == m_fonts.end() ? L"Arial" : it->second;
     }
 
     // An object's style; inside a block, layer "0" and "by block" take the reference's.
@@ -484,7 +517,7 @@ private:
         e.linetype = (int16_t)m_props.linetype;
         e.lineweight = (int16_t)m_props.lineweight;
         e.ltscale = (float)m_props.ltscale;
-        if (m_out.entities.size() < kMaxObjects) m_out.entities.push_back(std::move(e));
+        if (m_count++ < kMaxObjects) m_target->push_back(std::move(e));
     }
 
     // The ellipse c + u cos t + v sin t (t from t0 to t1), u and v conjugate.
@@ -640,6 +673,196 @@ private:
         return pts;
     }
 
+    static double Size(const Affine& M) { return std::sqrt(std::fabs(M.Det())); }
+
+    void AddText(const Raw& r, const Affine& M, bool mtext) {
+        TextData t;
+        t.font = FontOf(r);
+        const double k = Size(M);
+        t.height = r.Num(40, 2.5) * k;
+        if (!(t.height > 0)) t.height = 2.5;
+        Vec2 at;
+        double angle = ToRadians(r.Num(50));
+        if (mtext) {
+            std::string raw;
+            for (const Group& g : r.g)
+                if (g.code == 3) raw += g.value;
+            raw += r.Str(1);
+            t.content = MText(Text(raw));
+            if (r.Has(11)) angle = AngleOf(r.Pt(11));
+            t.justify = std::clamp(r.Int(71, 1), 1, 9) - 1;
+            t.lineSpacing = r.Num(44, 1) > 0 ? r.Num(44, 1) : 1;
+            at = r.Pt(10);
+        } else {
+            t.content = Text(r.Str(1));
+            if (r.type == "ATTDEF") {
+                t.tag = Text(r.Str(2));
+                t.prompt = Text(r.Str(3));
+            }
+            t.widthFactor = r.Num(41, 1) > 0 ? r.Num(41, 1) : 1;
+            int h = r.Int(72), v = r.type == "ATTDEF" ? r.Int(74) : r.Int(73);
+            at = (h == 0 && v == 0) ? r.Pt(10) : r.Pt(11);
+            if (h == 3 || h == 5) {  // aligned or fit between two points: centred there
+                at = Lerp(r.Pt(10), r.Pt(11), 0.5);
+                h = 1;
+                v = 0;
+            } else if (h == 4) {  // middle
+                h = 1;
+                v = 2;
+            }
+            const int row = v == 3 ? 0 : v == 2 ? 1 : 2;  // top, middle; baseline and bottom both at the bottom
+            t.justify = row * 3 + std::clamp(h, 0, 2);
+        }
+        const Affine T = M * Ocs(r);
+        const Vec2 dir = T.Vec({std::cos(angle), std::sin(angle)});
+        t.rotation = Length(dir) > 0 ? AngleOf(dir) : 0;
+        if (std::fabs(t.rotation) < 1e-12) t.rotation = 0;
+        if (t.content.empty() && t.tag.empty()) return;
+        if (r.type == "ATTDEF" && m_target == &m_out.entities) {  // outside a block: just its tag
+            t.content = t.tag;
+            t.tag.clear();
+            t.prompt.clear();
+        }
+        Add(MakeText(T(at), std::move(t)));
+    }
+
+    // Multi-line text: paragraphs become lines; other formatting codes are dropped.
+    static std::wstring MText(const std::wstring& s) {
+        std::wstring withBreaks;
+        for (size_t i = 0; i < s.size(); ++i) {
+            if (s[i] == L'\\' && i + 1 < s.size() && (s[i + 1] == L'P' || s[i + 1] == L'X')) {
+                withBreaks += L'\x01';
+                ++i;
+            } else {
+                withBreaks += s[i];
+            }
+        }
+        std::wstring out = PlainText(withBreaks);
+        for (wchar_t& c : out)
+            if (c == L'\x01') c = L'\n';
+        return out;
+    }
+
+    // A hatch: its outlines (lines, arcs, ellipses, splines or polylines), pattern, angle and scale.
+    void AddHatch(const Raw& r, const Affine& M) {
+        HatchData h;
+        h.pattern = Text(r.Str(2));
+        const bool solid = r.Int(70) == 1;
+        if (solid || Key(h.pattern) == L"solid") h.pattern = L"SOLID";
+        else if (FindHatchPattern(h.pattern) < 0) h.pattern = L"ANSI31";  // a pattern Feather CAD does not have
+        const Affine T = M * Ocs(r);
+        const auto& g = r.g;
+        size_t i = 0;
+        auto num = [&](size_t k) {
+            double v = 0;
+            ParseNumber(g[k].value, v);
+            return v;
+        };
+        // Finds the next group with `code` from i on (false at the end).
+        auto seek = [&](int code) {
+            while (i < g.size() && g[i].code != code) ++i;
+            return i < g.size();
+        };
+        auto pt = [&](int code) {  // a point at the next `code`, `code`+10
+            Vec2 p;
+            if (seek(code)) p.x = num(i++);
+            if (seek(code + 10)) p.y = num(i++);
+            return p;
+        };
+        if (!seek(91)) return;
+        const int paths = (int)num(i++);
+        for (int pi = 0; pi < paths && pi < 10000; ++pi) {
+            if (!seek(92)) break;
+            const int type = (int)num(i++);
+            std::vector<Vec2> loop;
+            if (type & 2) {  // a polyline
+                if (!seek(72)) break;
+                const bool bulges = num(i++) != 0;
+                if (!seek(93)) break;
+                const int n = (int)num(i++);
+                std::vector<Vertex> verts;
+                for (int k = 0; k < n && k < 1000000; ++k) {
+                    Vertex v;
+                    v.p = pt(10);
+                    if (bulges && i < g.size() && g[i].code == 42) v.bulge = num(i++);
+                    verts.push_back(v);
+                }
+                Tessellate(Entity::Polyline(verts, true), loop);
+            } else {
+                if (!seek(93)) break;
+                const int edges = (int)num(i++);
+                for (int k = 0; k < edges && k < 1000000; ++k) {
+                    if (!seek(72)) break;
+                    const int et = (int)num(i++);
+                    std::vector<Vec2> pts;
+                    if (et == 1) {
+                        const Vec2 a = pt(10), b = pt(11);
+                        pts = {a, b};
+                    } else if (et == 2 || et == 3) {
+                        const Vec2 c = pt(10);
+                        Vec2 major;
+                        if (et == 3) major = pt(11);
+                        double rad = 0;
+                        if (seek(40)) rad = num(i++);  // arc: radius; ellipse: minor / major
+                        double a0 = 0, a1 = 360;
+                        if (seek(50)) a0 = num(i++);
+                        if (seek(51)) a1 = num(i++);
+                        const bool ccw = seek(73) ? num(i++) != 0 : true;
+                        // Clockwise ones are stored mirrored.
+                        double s0 = ToRadians(ccw ? a0 : -a0), s1 = ToRadians(ccw ? a1 : -a1);
+                        double sweep = ccw ? SweepCCW(s0, s1) : -SweepCCW(s1, s0);
+                        if (std::fabs(sweep) < 1e-12) sweep = ccw ? kTau : -kTau;
+                        const int n = std::max(8, (int)(std::fabs(sweep) / kTau * 96));
+                        for (int q = 0; q <= n; ++q) {
+                            const double a = s0 + sweep * q / n;
+                            if (et == 2) pts.push_back(Polar(c, rad, a));
+                            else pts.push_back(c + major * std::cos(a) + Perp(major) * (rad * std::sin(a)));
+                        }
+                    } else if (et == 4) {
+                        int degree = 3, nk = 0, nc = 0;
+                        if (seek(94)) degree = (int)num(i++);
+                        if (seek(95)) nk = (int)num(i++);
+                        if (seek(96)) nc = (int)num(i++);
+                        std::vector<double> knots, weights;
+                        std::vector<Vec2> ctrl;
+                        for (int q = 0; q < nk && seek(40); ++q) knots.push_back(num(i++));
+                        for (int q = 0; q < nc; ++q) {
+                            ctrl.push_back(pt(10));
+                            if (i < g.size() && g[i].code == 42) weights.push_back(num(i++));
+                        }
+                        pts = Nurbs(ctrl, knots, weights, degree);
+                        // Fit point data may follow (97 count, 11/21 points): skipped.
+                        if (i < g.size() && g[i].code == 97) {
+                            const int nf = (int)num(i++);
+                            for (int q = 0; q < nf; ++q) pt(11);
+                            if (i < g.size() && g[i].code == 12) pt(12), pt(13);
+                        }
+                    }
+                    for (Vec2 p : pts)
+                        if (loop.empty() || !Near(loop.back(), p, 1e-12)) loop.push_back(p);
+                }
+            }
+            // Source objects (97 count, 330 handles): not kept.
+            if (i < g.size() && g[i].code == 97) {
+                const int ns = (int)num(i++);
+                for (int q = 0; q < ns && i < g.size() && g[i].code == 330; ++q) ++i;
+            }
+            if (loop.size() > 1 && Near(loop.front(), loop.back(), 1e-9)) loop.pop_back();
+            for (Vec2& p : loop) p = T(p);
+            if (loop.size() >= 3) h.loops.push_back(std::move(loop));
+        }
+        if (h.loops.empty()) {
+            Skipped("HATCH");
+            return;
+        }
+        if (seek(52)) h.angle = ToRadians(num(i++));
+        if (seek(41)) h.scale = num(i) > 0 ? num(i) : 1, ++i;
+        const Vec2 dir = T.Vec({std::cos(h.angle), std::sin(h.angle)});
+        h.angle = Length(dir) > 0 ? AngleOf(dir) : 0;
+        h.scale *= Size(T);
+        Add(MakeHatch(std::move(h)));
+    }
+
     bool AddDimension(const Raw& r, const Affine& M) {
         double s, rot;
         bool mirror;
@@ -702,8 +925,61 @@ private:
         return true;
     }
 
+    // A block kept as a block (converted once): its objects as they are in
+    // the block, attribute definitions as texts with a tag.
+    std::shared_ptr<const BlockData> Def(const std::string& name, int depth) {
+        auto done = m_defs.find(name);
+        if (done != m_defs.end()) return done->second;
+        auto it = m_blocks.find(name);
+        if (it == m_blocks.end() || depth >= kMaxDepth || m_busy.count(name)) return nullptr;
+        m_busy.insert(name);
+        BlockData b;
+        b.name = Text(name);
+        b.base = it->second.base;
+        std::vector<Entity>* saved = m_target;
+        m_target = &b.items;
+        for (const Raw& e : it->second.ents) Convert(e, Affine{}, depth + 1, nullptr);
+        m_target = saved;
+        m_busy.erase(name);
+        auto def = std::make_shared<const BlockData>(std::move(b));
+        m_defs[name] = def;
+        m_out.blocks.push_back(def);
+        return def;
+    }
+
     void Insert(const Raw& r, const Affine& M, int depth) {
-        auto it = m_blocks.find(r.Str(2));
+        const std::string name = r.Str(2);
+        // A named block placed without stretching: kept as a block.
+        if (!name.empty() && name[0] != '*' && m_blocks.count(name)) {
+            const Affine ocs = M * Ocs(r);
+            const Vec2 at = r.Pt(10);
+            const double sx = r.Num(41, 1), sy = r.Num(42, 1), ang = ToRadians(r.Num(50));
+            const int cols = std::clamp(r.Int(70, 1), 1, 10000), rows = std::clamp(r.Int(71, 1), 1, 10000);
+            const double cs = r.Num(44), rs = r.Num(45);
+            double scale = 0, rot = 0;
+            bool mirror = false;
+            const Affine L = ocs * Affine::Turn(ang) * Affine::Scale(sx == 0 ? 1 : sx, sy == 0 ? 1 : sy);
+            if ((size_t)cols * rows <= 100000 && L.Similar(scale, rot, mirror)) {
+                if (auto def = Def(name, depth)) {
+                    // Attribute values by tag, in the block's order.
+                    std::vector<std::wstring> values;
+                    for (const TextData* t : AttributeDefs(*def)) {
+                        std::wstring v = t->content;
+                        for (const Raw& a : r.sub)
+                            if (a.type == "ATTRIB" && Key(Text(a.Str(2))) == Key(t->tag)) v = Text(a.Str(1));
+                        values.push_back(v);
+                    }
+                    if (mirror) rot += kPi;  // ours: mirrored left to right first, then turned
+                    for (int row = 0; row < rows; ++row)
+                        for (int col = 0; col < cols; ++col) {
+                            const Vec2 offset = RotateAround({col * cs, row * rs}, {0, 0}, ang);
+                            Add(MakeInsert(def, ocs(at + offset), scale, std::remainder(rot, kTau), values, mirror));
+                        }
+                    return;
+                }
+            }
+        }
+        auto it = m_blocks.find(name);
         if (it == m_blocks.end() || depth >= kMaxDepth) {
             Skipped("INSERT");
             return;
@@ -807,10 +1083,17 @@ private:
             if (!Near(c, d, 1e-12)) v.push_back({T(c), 0});
             AddPolyline(Affine{}, std::move(v), true);
         } else if (t == "LEADER") {
-            std::vector<Vertex> v;
+            std::vector<Vec2> pts;
             const std::vector<double> xs = r.All(10), ys = r.All(20);
-            for (size_t i = 0; i < xs.size() && i < ys.size(); ++i) v.push_back({{xs[i], ys[i]}, 0});
-            AddPolyline(M, std::move(v), false);
+            for (size_t i = 0; i < xs.size() && i < ys.size(); ++i) pts.push_back(M({xs[i], ys[i]}));
+            if (pts.size() >= 2)
+                Add(MakeLeader(std::move(pts), TextData{}, r.Int(71, 1) ? m_out.dimStyle.arrowSize * Size(M) : 0));
+        } else if (t == "TEXT" || t == "ATTDEF") {
+            AddText(r, M, false);
+        } else if (t == "MTEXT") {
+            AddText(r, M, true);
+        } else if (t == "HATCH") {
+            AddHatch(r, M);
         } else if (t == "INSERT") {
             Insert(r, M, depth);
         } else if (t == "DIMENSION") {
@@ -823,7 +1106,7 @@ private:
             }
             const Props dimProps = m_props;
             for (const Raw& e : it->second.ents) Convert(e, M, depth + 1, &dimProps);
-        } else if (t == "VIEWPORT" || t == "SEQEND" || t == "ATTDEF") {
+        } else if (t == "VIEWPORT" || t == "SEQEND") {
             // nothing to draw
         } else {
             Skipped(t);
@@ -834,6 +1117,11 @@ private:
     std::vector<Group> m_groups;
     std::vector<Raw> m_entities;
     std::map<std::string, Block> m_blocks;
+    std::map<std::string, std::shared_ptr<const BlockData>> m_defs;  // blocks kept as blocks
+    std::set<std::string> m_busy;                                     // being converted
+    std::vector<Entity>* m_target = &m_out.entities;                  // where objects go
+    size_t m_count = 0;
+    std::map<std::wstring, std::wstring> m_fonts;                     // text style -> font
     bool m_utf8 = false;
     Props m_props;
     std::map<std::wstring, int> m_layerIds;  // lower-case name -> id
@@ -850,8 +1138,6 @@ std::wstring DxfResult::Notes() const {
         s += std::to_wstring(kv.second) + L" " + TextFromUtf8(kv.first);
     }
     s += L".";
-    if (skipped.count("TEXT") || skipped.count("MTEXT") || skipped.count("HATCH"))
-        s += L" Text and hatching come in a later version.";
     return s;
 }
 

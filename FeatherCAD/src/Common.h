@@ -21,7 +21,7 @@
 #include <vector>
 
 #define APP_NAME L"Feather CAD"
-#define APP_VERSION L"1.4.0"
+#define APP_VERSION L"1.5.0"
 #define APP_AUTHOR L"Akshaya Simha"
 #define APP_COPYRIGHT L"\x00A9 2026 Akshaya Simha"
 #define APP_WINDOW_CLASS L"FeatherCadMain"
@@ -151,6 +151,26 @@ enum : int {
     ID_ORIGIN,
     ID_LTSCALE,
     ID_LAYER_COMBO,
+    // Version 1.5: annotation and blocks
+    ID_TEXT,
+    ID_TEXTEDIT,
+    ID_LEADER,
+    ID_BALLOON,
+    ID_CENTERMARK,
+    ID_CENTERLINE,
+    ID_HATCH,
+    ID_FILL,
+    ID_BLOCK,
+    ID_INSERT,
+    ID_ATTDEF,
+    ID_ATTEDIT,
+    ID_PURGE,
+    ID_REVCLOUD,
+    ID_AREA,
+    ID_DIM_ORDINATE,
+    ID_DIM_ANGCOORD,
+    ID_DIM_SPACE,
+    ID_DIM_DRIVEN,
     // Help
     ID_COMMAND_LIST,
     ID_ABOUT,
@@ -161,6 +181,7 @@ enum : int {
     ID_MENU_DRAW,
     ID_MENU_MODIFY,
     ID_MENU_DIMENSION,
+    ID_MENU_ANNOTATE,
     ID_MENU_FORMAT,
     ID_MENU_TOOLS,
     ID_MENU_HELP,

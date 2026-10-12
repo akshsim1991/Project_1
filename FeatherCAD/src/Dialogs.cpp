@@ -355,9 +355,10 @@ struct QSelectData {
     QSelectMode* mode;
 };
 
-constexpr EntityType kQsTypes[] = {EntityType::Line,    EntityType::Circle,  EntityType::Arc,
-                                   EntityType::Polyline, EntityType::Ellipse, EntityType::Spline,
-                                   EntityType::Point,   EntityType::Array,   EntityType::Dimension};
+constexpr EntityType kQsTypes[] = {EntityType::Line,  EntityType::Circle,    EntityType::Arc,    EntityType::Polyline,
+                                   EntityType::Ellipse, EntityType::Spline, EntityType::Point,   EntityType::Array,
+                                   EntityType::Dimension, EntityType::Text, EntityType::Leader,  EntityType::Hatch,
+                                   EntityType::Insert};
 
 INT_PTR CALLBACK QSelectProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
     auto* d = (QSelectData*)GetWindowLongPtrW(dlg, DWLP_USER);
@@ -527,6 +528,106 @@ INT_PTR CALLBACK DimEditProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
     return FALSE;
 }
 
+
+// ---- text editor -------------------------------------------------------------------
+const wchar_t* const kTextSymbols[] = {L"\x00B0", L"\x00D8", L"\x00B1", L"\x2104", L"\x00B2", L"\x00B3", L"\x00B5",
+                                       L"\x03A9", L"\x2248", L"\x2264", L"\x2265", L"\x2206", L"\x00D7", L"\x221A"};
+UINT PopupAtCursor(HWND owner, HMENU m);
+
+struct TextEditData {
+    TextData* t;
+    std::wstring title;
+};
+
+int CALLBACK AddFont(const LOGFONTW* lf, const TEXTMETRICW*, DWORD type, LPARAM lp) {
+    if (!(type & TRUETYPE_FONTTYPE) || lf->lfFaceName[0] == L'@') return 1;
+    HWND combo = (HWND)lp;
+    if (SendMessageW(combo, CB_FINDSTRINGEXACT, (WPARAM)-1, (LPARAM)lf->lfFaceName) == CB_ERR)
+        SendMessageW(combo, CB_ADDSTRING, 0, (LPARAM)lf->lfFaceName);
+    return 1;
+}
+
+INT_PTR CALLBACK TextEditProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
+    auto* d = (TextEditData*)GetWindowLongPtrW(dlg, DWLP_USER);
+    switch (msg) {
+        case WM_INITDIALOG: {
+            SetWindowLongPtrW(dlg, DWLP_USER, lp);
+            d = (TextEditData*)lp;
+            InitDialog(dlg);
+            const TextData& t = *d->t;
+            SetWindowTextW(dlg, d->title.c_str());
+            std::wstring crlf;
+            for (wchar_t c : t.content) crlf += c == L'\n' ? std::wstring(L"\r\n") : std::wstring(1, c);
+            SetDlgItemTextW(dlg, IDC_TE_TEXT, crlf.c_str());
+            for (int i = 0; i < (int)std::size(kTextSymbols); ++i) {
+                SetDlgItemTextW(dlg, IDC_TE_SYMBOL + i, kTextSymbols[i]);
+            }
+            HWND fonts = GetDlgItem(dlg, IDC_TE_FONT);
+            HDC dc = GetDC(dlg);
+            LOGFONTW lf{};
+            lf.lfCharSet = DEFAULT_CHARSET;
+            EnumFontFamiliesExW(dc, &lf, AddFont, (LPARAM)fonts, 0);
+            ReleaseDC(dlg, dc);
+            SetWindowTextW(fonts, t.font.c_str());
+            SetDlgItemTextW(dlg, IDC_TE_HEIGHT, FormatDecimal(t.height, 4).c_str());
+            SetDlgItemTextW(dlg, IDC_TE_ROTATION, FormatDegrees(t.rotation, 4).c_str());
+            SetDlgItemTextW(dlg, IDC_TE_WIDTH, FormatDecimal(t.widthFactor, 3).c_str());
+            for (const wchar_t* j : {L"Top left", L"Top centre", L"Top right", L"Middle left", L"Middle centre",
+                                     L"Middle right", L"Bottom left", L"Bottom centre", L"Bottom right"})
+                SendDlgItemMessageW(dlg, IDC_TE_JUSTIFY, CB_ADDSTRING, 0, (LPARAM)j);
+            SendDlgItemMessageW(dlg, IDC_TE_JUSTIFY, CB_SETCURSEL, (WPARAM)std::clamp(t.justify, 0, 8), 0);
+            for (const wchar_t* f : {L"None", L"Box", L"Circle (balloon)"})
+                SendDlgItemMessageW(dlg, IDC_TE_FRAME, CB_ADDSTRING, 0, (LPARAM)f);
+            SendDlgItemMessageW(dlg, IDC_TE_FRAME, CB_SETCURSEL, (WPARAM)std::clamp(t.frame, 0, 2), 0);
+            SetFocus(GetDlgItem(dlg, IDC_TE_TEXT));
+            SendDlgItemMessageW(dlg, IDC_TE_TEXT, EM_SETSEL, 0, -1);
+            return FALSE;
+        }
+        case WM_COMMAND: {
+            const int id = LOWORD(wp);
+            if (id >= IDC_TE_SYMBOL && id < IDC_TE_SYMBOL + (int)std::size(kTextSymbols)) {
+                SendDlgItemMessageW(dlg, IDC_TE_TEXT, EM_REPLACESEL, TRUE, (LPARAM)kTextSymbols[id - IDC_TE_SYMBOL]);
+                SetFocus(GetDlgItem(dlg, IDC_TE_TEXT));
+            } else if (id == IDC_TE_FIELD) {
+                HMENU m = CreatePopupMenu();
+                AppendMenuW(m, MF_STRING, 1, L"&Date (today)");
+                AppendMenuW(m, MF_STRING, 2, L"&Time");
+                AppendMenuW(m, MF_STRING, 3, L"&File name");
+                AppendMenuW(m, MF_STRING, 4, L"&Author (Windows user)");
+                const UINT f = PopupAtCursor(dlg, m);
+                const wchar_t* field = f == 1 ? L"{date}" : f == 2 ? L"{time}" : f == 3 ? L"{filename}" : f == 4 ? L"{author}" : nullptr;
+                if (field) SendDlgItemMessageW(dlg, IDC_TE_TEXT, EM_REPLACESEL, TRUE, (LPARAM)field);
+                SetFocus(GetDlgItem(dlg, IDC_TE_TEXT));
+            } else if (id == IDOK) {
+                TextData t = *d->t;
+                double h, w;
+                if (!ReadPositive(dlg, IDC_TE_HEIGHT, h) || !ReadPositive(dlg, IDC_TE_WIDTH, w)) return TRUE;
+                double rot = 0;
+                if (!ParseNumber(WideToUtf8(GetText(dlg, IDC_TE_ROTATION)), rot)) {
+                    MessageBoxW(dlg, L"Please enter the rotation in degrees.", APP_NAME, MB_ICONWARNING);
+                    return TRUE;
+                }
+                std::wstring content;
+                for (wchar_t c : GetText(dlg, IDC_TE_TEXT))
+                    if (c != L'\r') content += c;
+                t.content = content;
+                const std::wstring font = GetText(dlg, IDC_TE_FONT);
+                if (!font.empty()) t.font = font;
+                t.height = h;
+                t.widthFactor = w;
+                t.rotation = ToRadians(rot);
+                t.justify = std::max(0, (int)SendDlgItemMessageW(dlg, IDC_TE_JUSTIFY, CB_GETCURSEL, 0, 0));
+                t.frame = std::max(0, (int)SendDlgItemMessageW(dlg, IDC_TE_FRAME, CB_GETCURSEL, 0, 0));
+                *d->t = t;
+                EndDialog(dlg, IDOK);
+            } else if (id == IDCANCEL) {
+                EndDialog(dlg, IDCANCEL);
+            }
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
 
 // ---- colours and layers ---------------------------------------------------------
 UINT PopupAtCursor(HWND owner, HMENU m) {
@@ -858,6 +959,11 @@ bool DimEditDialog(HWND owner, const DimData& dim, bool attached, DimEditResult&
     DimEditData d{&dim, attached, &out, L""};
     return DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_DIMEDIT), owner, DimEditProc, (LPARAM)&d) ==
            IDOK;
+}
+
+bool TextEditDialog(HWND owner, TextData& text, const std::wstring& title) {
+    TextEditData d{&text, title};
+    return DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_TEXTEDIT), owner, TextEditProc, (LPARAM)&d) == IDOK;
 }
 
 void LayerDialog(HWND owner, Document& doc, const std::function<void()>& changed) {

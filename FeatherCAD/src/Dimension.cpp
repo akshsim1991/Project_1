@@ -151,7 +151,7 @@ void MovePointEverywhere(Document& doc, Vec2 from, Vec2 to) {
     std::vector<Grip> grips;
     for (const auto& kv : doc.Entities()) {
         const Entity& e = kv.second;
-        if (e.type == EntityType::Dimension || e.type == EntityType::Array) continue;
+        if (IsAnnotation(e) || e.type == EntityType::Array || e.type == EntityType::Insert) continue;
         if (!Bounds(e).Inflated(tol).Contains(from)) continue;
         grips.clear();
         GripsOf(e, grips);
@@ -179,7 +179,7 @@ std::set<uint64_t> Connected(const Document& doc, uint64_t start) {
     std::map<uint64_t, std::vector<Vec2>> ends;
     for (const auto& kv : doc.Entities()) {
         const Entity& e = kv.second;
-        if (e.type == EntityType::Dimension || e.type == EntityType::Array) continue;
+        if (IsAnnotation(e) || e.type == EntityType::Array) continue;
         std::vector<Vec2> pts;
         EndPoints(e, pts);
         for (Vec2 p : pts) index[{(long long)std::llround(p.x / cell), (long long)std::llround(p.y / cell)}].push_back(kv.first);
@@ -270,6 +270,8 @@ const wchar_t* DimKindName(DimData::Kind k) {
         case DimData::Radius: return L"Radius";
         case DimData::Diameter: return L"Diameter";
         case DimData::Angular: return L"Angular";
+        case DimData::Ordinate: return L"Ordinate";
+        case DimData::AngularCoord: return L"Angular coordinate";
     }
     return L"";
 }
@@ -286,6 +288,10 @@ double DimMeasure(const DimData& d) {
             Sector s;
             return FindSector(d, s) ? s.sweep : 0;
         }
+        case DimData::Ordinate: return std::fabs(Dot(d.pts[0] - d.pts[1], Vec2{std::cos(d.angle), std::sin(d.angle)}));
+        case DimData::AngularCoord:
+            if (Near(d.pts[1], d.pts[0], 1e-12) || Near(d.pts[2], d.pts[0], 1e-12)) return 0;
+            return SweepCCW(AngleOf(d.pts[1] - d.pts[0]), AngleOf(d.pts[2] - d.pts[0]));
     }
     return 0;
 }
@@ -308,18 +314,18 @@ std::wstring DimValueText(const DimData& d) {
     switch (d.kind) {
         case DimData::Radius: return L"R" + DimNumber(m, d.style);
         case DimData::Diameter: return L"\x00D8" + DimNumber(m, d.style);
-        case DimData::Angular: return DimNumber(ToDegrees(m), d.style) + L"\x00B0";
+        case DimData::Angular:
+        case DimData::AngularCoord: return DimNumber(ToDegrees(m), d.style) + L"\x00B0";
         default: return DimNumber(m, d.style);
     }
 }
 
 std::wstring DimDisplayText(const DimData& d) {
-    if (d.text.empty()) return DimValueText(d);
-    std::wstring t = d.text;
+    std::wstring t = d.text.empty() ? L"<>" : d.text;
     const std::wstring value = DimValueText(d);
     for (size_t pos = t.find(L"<>"); pos != std::wstring::npos; pos = t.find(L"<>", pos + value.size()))
         t.replace(pos, 2, value);
-    return t;
+    return d.driven ? L"(" + t + L")" : t;
 }
 
 double FontSizeForHeight(double height) { return height / kCapHeight; }
@@ -472,6 +478,44 @@ void DimLayout(const DimData& d, DimGraphics& g) {
             g.textPos = Polar(s.v, R + st.textGap + h / 2, mid);
             break;
         }
+        case DimData::Ordinate: {
+            // A leader square to the axis measured, with a jog over to the text.
+            const Vec2 u{std::cos(d.angle), std::sin(d.angle)}, n = Perp(u);
+            const Vec2 p = d.pts[0];
+            const double t = Dot(d.loc - p, n), sgn = t >= 0 ? 1 : -1;
+            const double along = Dot(d.loc - p, u);
+            const Vec2 start = p + n * (sgn * st.extOffset);
+            if (std::fabs(along) < 1e-9 || std::fabs(t) < 3 * as) {
+                seg(start, d.loc);
+            } else {
+                const Vec2 k1 = p + n * (t * 0.5), k2 = d.loc - n * (t * 0.25);
+                seg(start, k1);
+                seg(k1, k2);
+                seg(k2, d.loc);
+            }
+            g.textAngle = Readable(AngleOf(n * sgn));
+            g.textPos = d.loc + n * (sgn * (st.textGap + g.textWidth / 2));
+            break;
+        }
+        case DimData::AngularCoord: {
+            const Vec2 c = d.pts[0];
+            const double R = std::max(Dist(d.loc, c), 1e-9);
+            const double a0 = AngleOf(d.pts[1] - c), sweep = DimMeasure(d), a1 = a0 + sweep;
+            const Vec2 e1 = Polar(c, R, a1);
+            const Vec2 t1{-std::sin(a1), std::cos(a1)};
+            // The 0 degree line, the arc round to the point and a line out to it.
+            seg(c, Polar(c, R + st.extBeyond, a0));
+            if (sweep > 1e-12) {
+                g.lines.push_back(Prim::ArcCCW(c, R, a0, sweep));
+                g.arrows.push_back(Arrow(e1, t1, as));
+            }
+            const double rp = Dist(d.pts[2], c);
+            if (R > rp + st.extOffset) seg(Polar(c, rp + st.extOffset, a1), Polar(c, R + st.extBeyond, a1));
+            else if (R < rp - st.extOffset) seg(Polar(c, rp - st.extOffset, a1), Polar(c, std::max(0.0, R - st.extBeyond), a1));
+            g.textAngle = Readable(a1 - kPi / 2);
+            g.textPos = Polar(c, R + st.textGap + h / 2, a1) + t1 * (g.textWidth / 2 + as);
+            break;
+        }
     }
 }
 
@@ -549,7 +593,7 @@ bool DimStretch(Entity& e, const Box& w, Vec2 delta) {
     if (!e.dim) return false;
     DimData d = *e.dim;
     bool moved = false;
-    const int n = d.kind == DimData::Angular ? 4 : 2;
+    const int n = d.kind == DimData::Angular ? 4 : d.kind == DimData::AngularCoord ? 3 : d.kind == DimData::Ordinate ? 1 : 2;
     for (int i = 0; i < n; ++i)
         if (w.Contains(d.pts[(size_t)i])) d.pts[(size_t)i] += delta, moved = true;
     if (w.Contains(d.loc)) d.loc += delta, moved = true;
@@ -566,6 +610,9 @@ void DimGrips(const Entity& e, std::vector<std::pair<int, Vec2>>& out) {
         out.push_back({0, d.pts[0]});
         out.push_back({1, d.pts[1]});
         out.push_back({2, g.textPos});
+    } else if (d.kind == DimData::Ordinate) {
+        out.push_back({0, d.pts[0]});
+        out.push_back({2, d.loc});
     } else {
         out.push_back({2, g.textPos});
     }
@@ -574,7 +621,9 @@ void DimGrips(const Entity& e, std::vector<std::pair<int, Vec2>>& out) {
 bool DragDimGrip(Entity& e, int index, Vec2 from, Vec2 to) {
     if (!e.dim) return false;
     DimData d = *e.dim;
-    if ((index == 0 || index == 1) && (d.kind == DimData::Linear || d.kind == DimData::Aligned)) {
+    if (index == 0 && d.kind == DimData::Ordinate) {
+        d.pts[0] = to;
+    } else if ((index == 0 || index == 1) && (d.kind == DimData::Linear || d.kind == DimData::Aligned)) {
         d.pts[(size_t)index] = to;
         if (d.kind == DimData::Aligned && Near(d.pts[0], d.pts[1], 1e-12)) return false;
     } else {
@@ -594,7 +643,7 @@ DimRef FindRef(const Document& doc, Vec2 p) {
     DimRef best;
     for (const auto& kv : doc.Entities()) {
         const Entity& e = kv.second;
-        if (e.type == EntityType::Dimension || e.type == EntityType::Array) continue;
+        if (IsAnnotation(e) || e.type == EntityType::Array) continue;
         if (!Bounds(e).Inflated(tol).Contains(p)) continue;
         grips.clear();
         GripsOf(e, grips);
@@ -785,6 +834,23 @@ bool FollowRefs(const Document& doc, Entity& dim) {
             changed = true;
             break;
         }
+        case DimData::Ordinate: {
+            point(0);
+            if (np[0] == d.pts[0]) break;
+            d.loc += np[0] - d.pts[0];  // the text keeps its place by the point
+            d.pts = np;
+            changed = true;
+            break;
+        }
+        case DimData::AngularCoord: {
+            for (size_t i = 0; i < 3; ++i) point(i);
+            if (np == d.pts) break;
+            const double R = Dist(d.loc, d.pts[0]);
+            d.pts = np;
+            d.loc = Polar(np[0], R, AngleOf(np[2] - np[0]));
+            changed = true;
+            break;
+        }
     }
     if (changed) SetData(dim, d);
     return changed;
@@ -841,6 +907,34 @@ bool DriveDimension(Document& doc, uint64_t dimId, double value, std::wstring& w
         return false;
     }
     const DimData d = *de->dim;
+    if (d.driven) {
+        why = L"This is a driven dimension: it only reports. Make it driving first (in its properties).";
+        return false;
+    }
+    if (d.kind == DimData::Ordinate || d.kind == DimData::AngularCoord) {
+        if (!d.refs[d.kind == DimData::Ordinate ? 0 : 2].id) {
+            why = L"This dimension is not attached to any object, so there is nothing to change.";
+            return false;
+        }
+        if (!(value >= 0) || !std::isfinite(value)) {
+            why = L"The value cannot be negative.";
+            return false;
+        }
+        Vec2 to;
+        if (d.kind == DimData::Ordinate) {
+            const Vec2 u{std::cos(d.angle), std::sin(d.angle)};
+            const double cur = Dot(d.pts[0] - d.pts[1], u);
+            to = d.pts[0] + u * ((cur < 0 ? -value : value) - cur);
+        } else {
+            if (value >= kTau) {
+                why = L"The angle must be less than 360\x00B0.";
+                return false;
+            }
+            to = RotateAround(d.pts[2], d.pts[0], value - DimMeasure(d));
+        }
+        MovePointEverywhere(doc, d.pts[d.kind == DimData::Ordinate ? 0 : 2], to);
+        return true;
+    }
     if (!(value > 0) || !std::isfinite(value)) {
         why = L"The value must be positive.";
         return false;
@@ -931,6 +1025,8 @@ bool DriveDimension(Document& doc, uint64_t dimId, double value, std::wstring& w
             }
             return true;
         }
+        default:
+            break;
     }
     why = L"This dimension is not attached to any object, so there is nothing to change. "
           L"Change its text instead, or dimension the objects again.";

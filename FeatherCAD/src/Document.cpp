@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <charconv>
 #include <cstring>
+#include <cwctype>
+#include <functional>
 #include <set>
 #include <sstream>
 
@@ -163,7 +165,7 @@ const Entity* Document::Find(uint64_t id) const {
 
 void Document::BeginChange(const std::wstring& name) {
     if (m_open) EndChange();
-    m_open = Step{name, {}, 0, std::nullopt, std::nullopt};
+    m_open = Step{name, {}, 0, std::nullopt, std::nullopt, std::nullopt, std::nullopt};
     m_openIndex.clear();
 }
 
@@ -177,7 +179,7 @@ void Document::EndChange() {
     step.changes.erase(std::remove_if(step.changes.begin(), step.changes.end(),
                                       [](const Change& c) { return !c.before && !c.after; }),
                        step.changes.end());
-    if (step.changes.empty() && !step.layersAfter) return;
+    if (step.changes.empty() && !step.layersAfter && !step.blocksAfter) return;
     step.serial = m_nextSerial++;
     m_undo.push_back(std::move(step));
     if (m_undo.size() > kMaxUndo) m_undo.erase(m_undo.begin());
@@ -258,6 +260,133 @@ size_t Document::LayerUse(int id) const {
     size_t n = 0;
     for (const auto& kv : m_entities) n += kv.second.layer == id;
     return n;
+}
+
+// ---------------------------------------------------------------------------
+// Blocks
+// ---------------------------------------------------------------------------
+
+std::shared_ptr<const BlockData> Document::FindBlock(const std::wstring& name) const {
+    for (const auto& b : m_blocks)
+        if (SameName(b->name, name)) return b;
+    return nullptr;
+}
+
+void Document::SetBlocks(BlockTable blocks, const std::wstring& stepName) {
+    const bool implicit = !m_open;
+    if (implicit) BeginChange(stepName);
+    if (!m_open->blocksBefore) m_open->blocksBefore = m_blocks;
+    m_blocks = std::move(blocks);
+    m_open->blocksAfter = m_blocks;
+    Touch();
+    if (implicit) EndChange();
+}
+
+std::shared_ptr<const BlockData> Document::DefineBlock(BlockData b) {
+    const bool implicit = !m_open;
+    if (implicit) BeginChange(L"Block");
+    auto def = std::make_shared<const BlockData>(std::move(b));
+    BlockTable table = m_blocks;
+    bool replaced = false;
+    for (auto& x : table)
+        if (SameName(x->name, def->name)) x = def, replaced = true;
+    if (!replaced) table.push_back(def);
+    SetBlocks(std::move(table), L"Block");
+    if (replaced) {
+        // Its references show the new definition.
+        std::vector<Entity> refs;
+        for (const auto& kv : m_entities)
+            if (kv.second.type == EntityType::Insert && kv.second.annot && kv.second.annot->block &&
+                SameName(kv.second.annot->block->name, def->name))
+                refs.push_back(kv.second);
+        for (Entity& e : refs) {
+            EditAnnot(e).block = def;
+            Replace(e);
+        }
+    }
+    if (implicit) EndChange();
+    return def;
+}
+
+size_t Document::BlockUse(const std::wstring& name) const {
+    size_t n = 0;
+    for (const auto& kv : m_entities)
+        if (kv.second.type == EntityType::Insert && kv.second.annot && kv.second.annot->block &&
+            (SameName(kv.second.annot->block->name, name) || BlockUses(*kv.second.annot->block, name)))
+            ++n;
+    return n;
+}
+
+bool Document::DeleteBlock(const std::wstring& name, std::wstring& why) {
+    if (!FindBlock(name)) {
+        why = L"There is no block \"" + name + L"\".";
+        return false;
+    }
+    if (BlockUse(name)) {
+        why = L"Block \"" + name + L"\" is used in the drawing.";
+        return false;
+    }
+    for (const auto& b : m_blocks)
+        if (!SameName(b->name, name) && BlockUses(*b, name)) {
+            why = L"Block \"" + name + L"\" is used inside block \"" + b->name + L"\".";
+            return false;
+        }
+    BlockTable table;
+    for (const auto& b : m_blocks)
+        if (!SameName(b->name, name)) table.push_back(b);
+    SetBlocks(std::move(table), L"Delete block");
+    return true;
+}
+
+void Document::MergeBlocks(const BlockTable& from, std::vector<Entity>* ents) {
+    BlockTable table = m_blocks;
+    bool added = false;
+    for (const auto& b : from) {
+        if (FindBlock(b->name)) continue;
+        table.push_back(b);
+        added = true;
+    }
+    if (added) SetBlocks(std::move(table), L"Blocks");
+    if (!ents) return;
+    for (Entity& e : *ents)
+        if (e.type == EntityType::Insert && e.annot && e.annot->block)
+            if (auto mine = FindBlock(e.annot->block->name)) EditAnnot(e).block = mine;
+}
+
+std::vector<uint64_t> Document::AddForeign(std::vector<Entity> ents, const std::vector<Layer>& layers,
+                                           const BlockTable& blocks) {
+    const bool implicit = !m_open;
+    if (implicit) BeginChange(L"Add");
+    const std::map<int, int> layerIds = MergeLayers(layers);
+    auto mapLayer = [&](int id) {
+        auto it = layerIds.find(id);
+        return it == layerIds.end() ? 0 : it->second;
+    };
+    std::function<void(Entity&, int)> fix;
+    std::function<std::shared_ptr<const BlockData>(const std::shared_ptr<const BlockData>&, int)> adopt =
+        [&](const std::shared_ptr<const BlockData>& b, int depth) {
+            if (auto mine = FindBlock(b->name)) return mine;  // the one here wins
+            if (depth > 16) return b;
+            BlockData copy = *b;
+            for (Entity& x : copy.items) fix(x, depth + 1);
+            return DefineBlock(std::move(copy));
+        };
+    fix = [&](Entity& e, int depth) {
+        e.layer = mapLayer(e.layer);
+        if (e.type == EntityType::Insert && e.annot && e.annot->block) {
+            EditAnnot(e).block = adopt(e.annot->block, depth);
+        } else if (e.type == EntityType::Array && e.array) {
+            ArrayData a = *e.array;
+            for (Entity& x : a.items) fix(x, depth + 1);
+            for (Entity& x : a.path) fix(x, depth + 1);
+            e.array = std::make_shared<const ArrayData>(std::move(a));
+        }
+    };
+    for (const auto& b : blocks) adopt(b, 0);
+    for (Entity& e : ents) fix(e, 0);
+    std::vector<uint64_t> ids = AddGroup(std::move(ents));
+    if (implicit) EndChange();
+    return ids;
 }
 
 bool Document::DeleteLayer(int id, std::wstring& why) {
@@ -440,8 +569,9 @@ void Document::Restore(const Entity& e) {
     if (implicit) EndChange();
 }
 
-void Document::ReplaceAll(std::vector<Entity> entities, const std::wstring& name) {
+void Document::ReplaceAll(std::vector<Entity> entities, const std::wstring& name, const BlockTable* blocks) {
     BeginChange(name);
+    if (blocks) SetBlocks(*blocks, name);
     std::vector<uint64_t> ids;
     ids.reserve(m_entities.size());
     for (const auto& kv : m_entities) ids.push_back(kv.first);
@@ -456,15 +586,27 @@ std::vector<uint64_t> Document::AddGroup(std::vector<Entity> entities) {
     std::vector<uint64_t> ids(entities.size(), 0);
     std::map<uint64_t, uint64_t> idMap;
     // Objects first, then the dimensions, pointed at the new objects.
+    auto attached = [](const Entity& e) {
+        return e.type == EntityType::Dimension || (e.type == EntityType::Hatch && e.annot && !e.annot->hatch.refs.empty());
+    };
     for (size_t i = 0; i < entities.size(); ++i) {
-        if (entities[i].type == EntityType::Dimension) continue;
+        if (attached(entities[i])) continue;
         const uint64_t old = entities[i].id;
         ids[i] = Add(std::move(entities[i]));
         if (old) idMap[old] = ids[i];
     }
     for (size_t i = 0; i < entities.size(); ++i) {
-        if (entities[i].type != EntityType::Dimension) continue;
+        if (!attached(entities[i])) continue;
         Entity& e = entities[i];
+        if (e.type == EntityType::Hatch) {
+            HatchData& h = EditAnnot(e).hatch;
+            std::vector<uint64_t> refs;
+            for (uint64_t r : h.refs) {
+                auto it = idMap.find(r);
+                if (it != idMap.end()) refs.push_back(it->second);
+            }
+            h.refs = refs;
+        }
         if (e.dim) {
             DimData d = *e.dim;
             for (DimRef& r : d.refs) {
@@ -481,7 +623,7 @@ std::vector<uint64_t> Document::AddGroup(std::vector<Entity> entities) {
 
 void Document::UpdateDimensions() {
     if (!m_open || m_open->changes.empty()) return;
-    std::set<uint64_t> changed, touchedDims;
+    std::set<uint64_t> changed, touchedDims, touchedHatches;
     bool anyDims = false;
     for (const Change& c : m_open->changes) {
         const std::optional<Entity>& x = c.after ? c.after : c.before;
@@ -489,8 +631,10 @@ void Document::UpdateDimensions() {
             if (c.after) touchedDims.insert(c.id);
         } else {
             changed.insert(c.id);
+            if (x && x->type == EntityType::Hatch && c.before && c.after) touchedHatches.insert(c.id);
         }
     }
+    UpdateHatches(changed, touchedHatches);
     for (const auto& kv : m_entities)
         if (kv.second.type == EntityType::Dimension) anyDims = true;
     if (!anyDims) return;
@@ -527,6 +671,50 @@ void Document::UpdateDimensions() {
     for (const Entity& e : updates) Replace(e);
 }
 
+void Document::UpdateHatches(const std::set<uint64_t>& changed, const std::set<uint64_t>& touched) {
+    std::vector<Entity> updates;
+    for (const auto& kv : m_entities) {
+        const Entity& e = kv.second;
+        if (e.type != EntityType::Hatch || !e.annot || e.annot->hatch.refs.empty()) continue;
+        const HatchData& h = e.annot->hatch;
+        bool depends = false;
+        for (uint64_t r : h.refs) depends |= changed.count(r) > 0;
+        Entity copy = e;
+        if (!depends) {
+            // Moved or edited on its own: no longer attached.
+            if (touched.count(kv.first)) {
+                EditAnnot(copy).hatch.refs.clear();
+                updates.push_back(std::move(copy));
+            }
+            continue;
+        }
+        HatchData& nh = EditAnnot(copy).hatch;
+        std::vector<const Entity*> objs;
+        std::vector<uint64_t> alive;
+        for (uint64_t r : h.refs)
+            if (const Entity* x = Find(r)) objs.push_back(x), alive.push_back(r);
+        std::vector<std::vector<Vec2>> loops;
+        bool ok = false;
+        if (h.seeded) {
+            ok = !objs.empty() && FindArea(objs, h.seed, loops);
+        } else {
+            for (const Entity* x : objs) {
+                std::vector<Vec2> l;
+                if (ClosedOutline(*x, l)) loops.push_back(std::move(l));
+            }
+            ok = !loops.empty();
+        }
+        if (ok) {
+            nh.loops = std::move(loops);
+            nh.refs = alive;
+        } else {
+            nh.refs.clear();  // its outline is gone: it stays as it was
+        }
+        updates.push_back(std::move(copy));
+    }
+    for (const Entity& e : updates) Replace(e);
+}
+
 void Document::Apply(const Step& step, bool forward) {
     // Backwards in reverse order, so repeated ids end in the right state.
     const size_t n = step.changes.size();
@@ -541,6 +729,7 @@ void Document::Apply(const Step& step, bool forward) {
         IndexLayers();
         if (!FindLayer(m_current.layer)) m_current.layer = 0;
     }
+    if (const auto& blocks = forward ? step.blocksAfter : step.blocksBefore) m_blocks = *blocks;
     Touch();
 }
 
@@ -592,6 +781,7 @@ void Document::Clear() {
     IndexLayers();
     m_current = CurrentStyle{};
     m_states.clear();
+    m_blocks.clear();
     m_undo.clear();
     m_redo.clear();
     m_nextId = 1;
@@ -640,7 +830,7 @@ Box Document::Extents() const {
 // ---------------------------------------------------------------------------
 
 namespace {
-const char* const kDimKinds[] = {"linear", "aligned", "radius", "diameter", "angular"};
+const char* const kDimKinds[] = {"linear", "aligned", "radius", "diameter", "angular", "ordinate", "angcoord"};
 
 std::string EncodeWord(const std::wstring& w) {
     static const char hex[] = "0123456789ABCDEF";
@@ -679,6 +869,48 @@ std::wstring DecodeWord(const std::string& s) {
 using Ordinals = std::map<uint64_t, size_t>;
 
 void WriteStyled(const Entity& e, std::string& out, const Ordinals* ordinals);
+
+// A text's settings as key=value words (the content last).
+std::string TextWords(const TextData& t) {
+    std::string w = " th=" + FormatNumber(t.height);
+    if (t.rotation != 0) w += " tr=" + FormatNumber(ToDegrees(t.rotation));
+    if (t.widthFactor != 1) w += " tw=" + FormatNumber(t.widthFactor);
+    if (t.lineSpacing != 1) w += " tl=" + FormatNumber(t.lineSpacing);
+    if (t.justify) w += " tj=" + std::to_string(t.justify);
+    if (t.frame) w += " tf=" + std::to_string(t.frame);
+    if (t.font != L"Arial") w += " font=" + EncodeWord(t.font);
+    if (!t.tag.empty()) w += " tag=" + EncodeWord(t.tag);
+    if (!t.prompt.empty()) w += " prompt=" + EncodeWord(t.prompt);
+    w += " content=" + EncodeWord(t.content);
+    return w;
+}
+
+void ReadTextWords(const std::vector<std::string>& w, TextData& t) {
+    for (const std::string& word : w) {
+        const size_t eq = word.find('=');
+        if (eq == std::string::npos) continue;
+        const std::string key = word.substr(0, eq), val = word.substr(eq + 1);
+        double v = 0;
+        const bool isNum = ParseNumber(val, v);
+        if (key == "th" && isNum && v > 0) t.height = v;
+        else if (key == "tr" && isNum) t.rotation = ToRadians(v);
+        else if (key == "tw" && isNum && v > 0) t.widthFactor = v;
+        else if (key == "tl" && isNum && v > 0) t.lineSpacing = v;
+        else if (key == "tj" && isNum) t.justify = std::clamp((int)v, 0, 8);
+        else if (key == "tf" && isNum) t.frame = std::clamp((int)v, 0, 2);
+        else if (key == "font") t.font = DecodeWord(val);
+        else if (key == "tag") t.tag = DecodeWord(val);
+        else if (key == "prompt") t.prompt = DecodeWord(val);
+        else if (key == "content") t.content = DecodeWord(val);
+    }
+    if (t.font.empty()) t.font = L"Arial";
+}
+
+size_t OrdinalOf(uint64_t id, const Ordinals* ordinals) {
+    if (!id || !ordinals) return 0;
+    auto it = ordinals->find(id);
+    return it == ordinals->end() ? 0 : it->second;
+}
 
 void WriteEntity(const Entity& e, std::string& out, const Ordinals* ordinals = nullptr) {
     auto num = [&](double v) {
@@ -746,6 +978,50 @@ void WriteEntity(const Entity& e, std::string& out, const Ordinals* ordinals = n
                 num(ord ? r.grip : 0);
             }
             if (!d.text.empty()) out += " text=" + EncodeWord(d.text);
+            if (d.driven) out += " driven=1";
+            break;
+        }
+        case EntityType::Text:
+            out += "text";
+            num(e.p0.x); num(e.p0.y);
+            out += TextWords(e.annot->text);
+            break;
+        case EntityType::Leader: {
+            const Annot& a = *e.annot;
+            out += "leader";
+            num(a.arrow); num((double)a.pts.size());
+            for (Vec2 p : a.pts) {
+                num(p.x); num(p.y);
+            }
+            out += TextWords(a.text);
+            break;
+        }
+        case EntityType::Hatch: {
+            const HatchData& h = e.annot->hatch;
+            out += "hatch";
+            num(h.scale); num(ToDegrees(h.angle)); num(h.origin.x); num(h.origin.y);
+            num(h.seeded ? 1 : 0); num(h.seed.x); num(h.seed.y);
+            num((double)h.loops.size());
+            std::vector<size_t> refs;
+            for (uint64_t r : h.refs)
+                if (size_t o = OrdinalOf(r, ordinals)) refs.push_back(o);
+            num((double)refs.size());
+            for (size_t o : refs) num((double)o);
+            out += " pattern=" + EncodeWord(h.pattern);
+            for (const auto& l : h.loops) {
+                out += "\nloop " + std::to_string(l.size());
+                for (Vec2 p : l) {
+                    num(p.x); num(p.y);
+                }
+            }
+            break;
+        }
+        case EntityType::Insert: {
+            const Annot& a = *e.annot;
+            out += "insert";
+            num(e.p0.x); num(e.p0.y); num(e.radius); num(ToDegrees(e.startAngle)); num(e.closed ? 1 : 0);
+            out += " name=" + EncodeWord(a.block ? a.block->name : L"?");
+            for (const std::wstring& v : a.values) out += " v=" + EncodeWord(v);
             break;
         }
         case EntityType::Array: {
@@ -797,6 +1073,47 @@ void WriteStyled(const Entity& e, std::string& out, const Ordinals* ordinals) {
     const size_t nl = out.find('\n', start);  // an array: on its first line
     if (nl == std::string::npos) out += words;
     else out.insert(nl, words);
+}
+
+// Text for DXF: the usual symbols as %% codes, other non-ASCII letters as \\U+XXXX.
+std::string DxfText(const std::wstring& w) {
+    std::string t;
+    for (wchar_t c : w) {
+        if (c == L'\x2300' || c == L'\x00D8') t += "%%c";
+        else if (c == L'\x00B0') t += "%%d";
+        else if (c == L'\x00B1') t += "%%p";
+        else if (c >= 32 && c < 127) t += (char)c;
+        else if (c >= 32) {
+            char buf[16];
+            std::snprintf(buf, sizeof buf, "\\U+%04X", (unsigned)c);
+            t += buf;
+        }
+    }
+    return t;
+}
+
+void WriteBlock(const BlockData& b, std::string& out) {
+    out += "block " + FormatNumber(b.base.x) + " " + FormatNumber(b.base.y) + " " + std::to_string(b.items.size()) +
+           " name=" + EncodeWord(b.name) + "\n";
+    for (const Entity& e : b.items) {
+        WriteStyled(e, out, nullptr);
+        out += '\n';
+    }
+}
+
+// The blocks `e` uses (and those they use), added to `out` once each.
+void UsedBlocks(const Entity& e, BlockTable& out, int depth = 0) {
+    if (depth > 16) return;
+    if (e.type == EntityType::Array && e.array) {
+        for (const Entity& x : e.array->items) UsedBlocks(x, out, depth + 1);
+        return;
+    }
+    if (e.type != EntityType::Insert || !e.annot || !e.annot->block) return;
+    const auto& b = e.annot->block;
+    for (const auto& x : out)
+        if (SameName(x->name, b->name)) return;
+    out.push_back(b);
+    for (const Entity& x : b->items) UsedBlocks(x, out, depth + 1);
 }
 
 std::string LayerLine(const char* key, const Layer& l) {
@@ -930,7 +1247,7 @@ struct Reader {
             if (v.size() < 27) return Fail(L"a dimension needs 27 numbers");
             DimData d;
             bool kindOk = false;
-            for (int k = 0; k < 5; ++k)
+            for (int k = 0; k < 7; ++k)
                 if (w[1] == kDimKinds[k]) d.kind = (DimData::Kind)k, kindOk = true;
             if (!kindOk) {
                 known = false;  // a kind from a newer version
@@ -952,8 +1269,10 @@ struct Reader {
                 d.refs[i].id = v[19 + 2 * i] >= 1 ? (uint64_t)v[19 + 2 * i] : 0;
                 d.refs[i].grip = (int)v[20 + 2 * i];
             }
-            for (const std::string& word : w)
+            for (const std::string& word : w) {
                 if (word.compare(0, 5, "text=") == 0) d.text = DecodeWord(word.substr(5));
+                if (word == "driven=1") d.driven = true;
+            }
             if (depth > 0)
                 for (DimRef& r : d.refs) r = {};
             out = MakeDimension(std::move(d));
@@ -961,6 +1280,59 @@ struct Reader {
         }
         if (!Numbers(w, 1, v)) return false;
         auto need = [&](size_t k) { return v.size() >= k; };
+        if (key == "text") {
+            if (!need(2)) return Fail(L"a text needs its position");
+            TextData t;
+            ReadTextWords(w, t);
+            out = MakeText({v[0], v[1]}, std::move(t));
+            return true;
+        }
+        if (key == "leader") {
+            if (!need(2) || v[1] < 1 || v[1] > 10000 || v.size() < 2 + 2 * (size_t)v[1]) return Fail(L"a leader needs its points");
+            std::vector<Vec2> pts;
+            for (size_t i = 0; i < (size_t)v[1]; ++i) pts.push_back({v[2 + 2 * i], v[3 + 2 * i]});
+            TextData t;
+            ReadTextWords(w, t);
+            out = MakeLeader(std::move(pts), std::move(t), std::max(0.0, v[0]));
+            return true;
+        }
+        if (key == "hatch") {
+            if (!need(9)) return Fail(L"a hatch needs 9 numbers");
+            HatchData h;
+            h.scale = v[0] > 0 ? v[0] : 1;
+            h.angle = ToRadians(v[1]);
+            h.origin = {v[2], v[3]};
+            h.seeded = v[4] != 0;
+            h.seed = {v[5], v[6]};
+            const size_t loops = (size_t)std::max(0.0, v[7]), refs = (size_t)std::max(0.0, v[8]);
+            if (loops > 100000 || v.size() < 9 + refs) return Fail(L"wrong hatch outline or reference count");
+            for (size_t i = 0; i < refs; ++i)
+                if (depth == 0 && v[9 + i] >= 1) h.refs.push_back((uint64_t)v[9 + i]);  // file places for now
+            for (const std::string& word : w)
+                if (word.compare(0, 8, "pattern=") == 0) h.pattern = DecodeWord(word.substr(8));
+            for (size_t i = 0; i < loops; ++i) {
+                std::vector<std::string> lw;
+                std::vector<double> lv;
+                if (!Next(lw) || lw[0] != "loop" || !Numbers(lw, 1, lv) || lv.empty() || lv.size() != 1 + 2 * (size_t)lv[0])
+                    return error.empty() ? Fail(L"a hatch outline is missing or wrong") : false;
+                std::vector<Vec2> l;
+                for (size_t k = 0; k < (size_t)lv[0]; ++k) l.push_back({lv[1 + 2 * k], lv[2 + 2 * k]});
+                h.loops.push_back(std::move(l));
+            }
+            out = MakeHatch(std::move(h));
+            return true;
+        }
+        if (key == "insert") {
+            if (!need(5)) return Fail(L"a block reference needs 5 numbers");
+            auto b = std::make_shared<BlockData>();  // only its name: the block is found later
+            std::vector<std::wstring> values;
+            for (const std::string& word : w) {
+                if (word.compare(0, 5, "name=") == 0) b->name = DecodeWord(word.substr(5));
+                else if (word.compare(0, 2, "v=") == 0) values.push_back(DecodeWord(word.substr(2)));
+            }
+            out = MakeInsert(b, {v[0], v[1]}, v[2], ToRadians(v[3]), std::move(values), v[4] != 0);
+            return true;
+        }
         if (key == "line") {
             if (!need(4)) return Fail(L"a line needs 4 numbers");
             out = Entity::Line({v[0], v[1]}, {v[2], v[3]});
@@ -1002,6 +1374,8 @@ struct Reader {
         } else if (key == "point") {
             if (!need(2)) return Fail(L"a point needs 2 numbers");
             out = Entity::Point({v[0], v[1]});
+        } else if (key == "loop") {
+            return Fail(L"a hatch outline on its own");
         } else {
             known = false;  // from a newer version
         }
@@ -1031,6 +1405,9 @@ std::string Document::ToText() const {
         out += "layerstate " + std::to_string(ls.layers.size()) + " name=" + EncodeWord(ls.name) + "\n";
         for (const Layer& l : ls.layers) out += LayerLine("statelayer", l);
     }
+    BlockTable blocks = m_blocks;
+    for (const auto& kv : m_entities) UsedBlocks(kv.second, blocks);
+    for (const auto& b : blocks) WriteBlock(*b, out);
     Ordinals ordinals;
     size_t ord = 0;
     for (const auto& kv : m_entities) ordinals[kv.first] = ++ord;
@@ -1049,6 +1426,9 @@ std::string Document::ObjectsToText(const std::vector<Entity>& entities) const {
     for (const Entity& e : entities) used.insert(e.layer);
     for (const Layer& l : m_layers)
         if (used.count(l.id)) out += LayerLine("layer", l);
+    BlockTable blocks;
+    for (const Entity& e : entities) UsedBlocks(e, blocks);
+    for (const auto& b : blocks) WriteBlock(*b, out);
     Ordinals ordinals;
     size_t ord = 0;
     for (const Entity& e : entities) ordinals[e.id] = ++ord;
@@ -1060,13 +1440,15 @@ std::string Document::ObjectsToText(const std::vector<Entity>& entities) const {
     return out;
 }
 
-bool Document::ObjectsFromText(const std::string& text, std::vector<Entity>& out, std::vector<Layer>* layers) {
+bool Document::ObjectsFromText(const std::string& text, std::vector<Entity>& out, std::vector<Layer>* layers,
+                               BlockTable* blocks) {
     Document d;
     std::wstring error;
     if (!d.FromText(text, error)) return false;
     out.clear();
     for (const auto& kv : d.Entities()) out.push_back(kv.second);  // ids 1..n, refs among them
     if (layers) *layers = d.Layers();
+    if (blocks) *blocks = d.Blocks();
     return true;
 }
 
@@ -1105,6 +1487,7 @@ bool Document::FromText(const std::string& text, std::wstring& error) {
     CurrentStyle current;
     std::vector<Entity> ents;
     std::vector<long long> ordinalToIndex;
+    std::vector<std::shared_ptr<BlockData>> rawBlocks;
     bool ended = false;
     while (!ended && r.Next(w)) {
         const std::string& key = w[0];
@@ -1152,6 +1535,31 @@ bool Document::FromText(const std::string& text, std::wstring& error) {
             } else if (key == "origin" && v.size() >= 2) {
                 settings.origin = {v[0], v[1]};
             }
+        } else if (key == "block") {
+            std::vector<double> v;
+            if (!r.Numbers(w, 1, v) || v.size() < 3 || v[2] < 0 || v[2] > 1e7) {
+                error = r.error.empty() ? L"Line " + std::to_wstring(r.pos) + L": a block needs its base point and size" : r.error;
+                return false;
+            }
+            auto b = std::make_shared<BlockData>();
+            b->base = {v[0], v[1]};
+            for (const std::string& word : w)
+                if (word.compare(0, 5, "name=") == 0) b->name = DecodeWord(word.substr(5));
+            for (size_t i = 0; i < (size_t)v[2]; ++i) {
+                std::vector<std::string> iw;
+                Entity item;
+                bool k = false;
+                if (!r.Next(iw)) {
+                    error = L"The block \"" + b->name + L"\" is incomplete.";
+                    return false;
+                }
+                if (!r.ObjectStyled(iw, item, k, 1)) {
+                    error = r.error;
+                    return false;
+                }
+                if (k) b->items.push_back(std::move(item));
+            }
+            rawBlocks.push_back(std::move(b));
         } else if (key == "dimstyle") {
             std::vector<double> v;
             if (!r.Numbers(w, 1, v)) {
@@ -1184,7 +1592,55 @@ bool Document::FromText(const std::string& text, std::wstring& error) {
         error = L"The file is incomplete (it may have been cut off while saving).";
         return false;
     }
-    // Objects get the ids 1, 2, 3... in file order: dimensions point at them.
+    // Block references find their blocks by name (blocks inside blocks too).
+    BlockTable table;
+    std::set<std::wstring> busy;
+    std::function<void(Entity&)> fix;
+    std::function<std::shared_ptr<const BlockData>(const std::wstring&)> resolve = [&](const std::wstring& name) {
+        for (const auto& b : table)
+            if (SameName(b->name, name)) return b;
+        std::wstring key = name;
+        for (wchar_t& c : key) c = (wchar_t)std::towupper(c);
+        if (busy.count(key)) return std::shared_ptr<const BlockData>();  // a block inside itself
+        for (const auto& raw : rawBlocks) {
+            if (!SameName(raw->name, name)) continue;
+            busy.insert(key);
+            BlockData copy = *raw;
+            for (Entity& x : copy.items) fix(x);
+            busy.erase(key);
+            auto def = std::make_shared<const BlockData>(std::move(copy));
+            table.push_back(def);
+            return def;
+        }
+        return std::shared_ptr<const BlockData>();
+    };
+    fix = [&](Entity& e) {
+        if (e.type == EntityType::Insert && e.annot && e.annot->block) {
+            if (auto b = resolve(e.annot->block->name)) EditAnnot(e).block = b;
+        } else if (e.type == EntityType::Array && e.array) {
+            ArrayData a = *e.array;
+            for (Entity& x : a.items) fix(x);
+            e.array = std::make_shared<const ArrayData>(std::move(a));
+        }
+    };
+    for (const auto& raw : rawBlocks) resolve(raw->name);
+    for (Entity& e : ents) fix(e);
+    // Objects get the ids 1, 2, 3... in file order: dimensions and hatches point at them.
+    auto idOf = [&](uint64_t ord) -> uint64_t {
+        if (ord >= 1 && ord <= ordinalToIndex.size() && ordinalToIndex[ord - 1] >= 0) {
+            const size_t idx = (size_t)ordinalToIndex[ord - 1];
+            if (ents[idx].type != EntityType::Dimension && ents[idx].type != EntityType::Hatch) return idx + 1;
+        }
+        return 0;
+    };
+    for (Entity& e : ents) {
+        if (e.type != EntityType::Hatch || !e.annot || e.annot->hatch.refs.empty()) continue;
+        HatchData& h = EditAnnot(e).hatch;
+        std::vector<uint64_t> refs;
+        for (uint64_t o : h.refs)
+            if (uint64_t id = idOf(o)) refs.push_back(id);
+        h.refs = refs;
+    }
     for (Entity& e : ents) {
         if (e.type != EntityType::Dimension || !e.dim) continue;
         DimData d = *e.dim;
@@ -1209,6 +1665,7 @@ bool Document::FromText(const std::string& text, std::wstring& error) {
         IndexLayers();
     }
     m_states = states;
+    m_blocks = table;
     m_current = current;
     if (!FindLayer(m_current.layer)) m_current.layer = 0;
     for (Entity& e : ents) {
@@ -1238,6 +1695,7 @@ bool Document::FromDxf(const std::string& text, std::wstring& error, std::wstrin
     m_layers = r.layers;
     IndexLayers();
     if (const Layer* cur = LayerByName(r.currentLayer)) m_current.layer = cur->id;
+    m_blocks = r.blocks;
     for (Entity& e : r.entities) {
         e.id = m_nextId++;
         m_entities[e.id] = std::move(e);
@@ -1354,15 +1812,6 @@ std::string Document::ToDxf() const {
     group(0, "ENDTAB");
     group(0, "ENDSEC");
 
-    group(0, "SECTION");
-    group(2, "BLOCKS");
-    group(0, "ENDSEC");
-
-    group(0, "SECTION");
-    group(2, "ENTITIES");
-    // Arrays have no equivalent in DXF R12: their copies are written.
-    std::vector<Entity> flat;
-    for (const auto& kv : m_entities) ExpandArray(kv.second, flat);
     // Layer, colour, line type and scale of an object.
     auto common = [&](const Entity& e) {
         const Layer* l = FindLayer(e.layer);
@@ -1374,7 +1823,90 @@ std::string Document::ToDxf() const {
         if (e.linetype >= 0 || e.linetype == kLtByBlock) group(6, TextToUtf8(LineTypeName(e.linetype)));
         if (e.ltscale != 1) num(48, e.ltscale);
     };
-    for (const Entity& e : flat) {
+    std::function<void(const Entity&)> write;
+    // Lines, arcs, filled shapes and texts of an annotation.
+    auto graphics = [&](const Entity& e, const AnnotGraphics& g) {
+        for (const Prim& p : g.lines) {
+            if (p.kind == Prim::Segment && Near(p.a, p.b, 1e-12)) {
+                group(0, "POINT");
+                common(e);
+                point(10, p.a);
+            } else if (p.kind == Prim::Segment) {
+                group(0, "LINE");
+                common(e);
+                point(10, p.a);
+                point(11, p.b);
+            } else if (p.FullCircle()) {
+                group(0, "CIRCLE");
+                common(e);
+                point(10, p.c);
+                num(40, p.r);
+            } else {
+                group(0, "ARC");
+                common(e);
+                point(10, p.c);
+                num(40, p.r);
+                num(50, ToDegrees(NormalizeAngle(p.start)));
+                num(51, ToDegrees(NormalizeAngle(p.start + p.sweep)));
+            }
+        }
+        for (const auto& f : g.fills) {
+            if (f.size() < 3) continue;
+            group(0, "SOLID");
+            common(e);
+            point(10, f[0]);
+            point(11, f[1]);
+            point(12, f[2]);
+            point(13, f.size() > 3 ? f[3] : f[2]);
+        }
+        for (const TextItem& t : g.texts) {
+            if (t.text.empty()) continue;
+            group(0, "TEXT");
+            common(e);
+            point(10, t.pos);
+            num(40, t.height);
+            group(1, DxfText(t.text));
+            num(50, ToDegrees(t.angle));
+            if (t.widthFactor != 1) num(41, t.widthFactor);
+            group(72, std::to_string(t.align));
+            point(11, t.pos);
+            group(73, "2");
+        }
+    };
+    // A solid fill (even-odd) as level strips of four-cornered SOLIDs.
+    auto solidFill = [&](const Entity& e, const std::vector<std::vector<Vec2>>& loops) {
+        std::vector<double> ys;
+        for (const auto& l : loops)
+            for (Vec2 p : l) ys.push_back(p.y);
+        std::sort(ys.begin(), ys.end());
+        ys.erase(std::unique(ys.begin(), ys.end()), ys.end());
+        struct X {
+            double xm, x0, x1;
+        };
+        std::vector<X> xs;
+        for (size_t i = 0; i + 1 < ys.size(); ++i) {
+            const double y0 = ys[i], y1 = ys[i + 1], ym = (y0 + y1) / 2;
+            if (y1 - y0 < 1e-12) continue;
+            xs.clear();
+            for (const auto& l : loops)
+                for (size_t k = 0; k < l.size(); ++k) {
+                    const Vec2 p = l[k], q = l[(k + 1) % l.size()];
+                    if ((p.y > ym) == (q.y > ym)) continue;
+                    auto at = [&](double y) { return p.x + (q.x - p.x) * (y - p.y) / (q.y - p.y); };
+                    xs.push_back({at(ym), at(y0), at(y1)});
+                }
+            std::sort(xs.begin(), xs.end(), [](const X& a, const X& b) { return a.xm < b.xm; });
+            for (size_t k = 0; k + 1 < xs.size(); k += 2) {
+                group(0, "SOLID");
+                common(e);
+                point(10, {xs[k].x0, y0});
+                point(11, {xs[k + 1].x0, y0});
+                point(12, {xs[k].x1, y1});
+                point(13, {xs[k + 1].x1, y1});
+            }
+        }
+    };
+    write = [&](const Entity& e) {
         switch (e.type) {
             case EntityType::Line:
                 group(0, "LINE");
@@ -1487,10 +2019,123 @@ std::string Document::ToDxf() const {
                 }
                 break;
             }
-            case EntityType::Array:
+            case EntityType::Array: {
+                std::vector<Entity> copies;
+                ExpandArray(e, copies);
+                for (const Entity& c : copies) write(c);
                 break;
+            }
+            case EntityType::Text:
+            case EntityType::Leader: {
+                AnnotGraphics g;
+                AnnotLayout(e, nullptr, g);
+                graphics(e, g);
+                break;
+            }
+            case EntityType::Hatch: {
+                AnnotGraphics g;
+                AnnotLayout(e, nullptr, g);
+                if (g.solid) solidFill(e, g.fills);
+                else graphics(e, g);
+                break;
+            }
+            case EntityType::Insert: {
+                if (!e.annot || !e.annot->block) break;
+                const BlockData& b = *e.annot->block;
+                const std::vector<const TextData*> defs = AttributeDefs(b);
+                group(0, "INSERT");
+                common(e);
+                if (!defs.empty()) group(66, "1");
+                group(2, TextToUtf8(b.name));
+                point(10, e.p0);
+                num(41, e.closed ? -e.radius : e.radius);
+                num(42, e.radius);
+                num(43, e.radius);
+                num(50, ToDegrees(e.startAngle));
+                if (defs.empty()) break;
+                // The attributes, where the block puts them.
+                size_t k = 0;
+                for (const Entity& item : b.items) {
+                    if (item.type != EntityType::Text || !item.annot || item.annot->text.tag.empty()) continue;
+                    Entity x = item;
+                    Translate(x, -b.base);
+                    if (e.closed) Mirror(x, {0, 0}, {0, 1});
+                    Scale(x, {0, 0}, e.radius > 0 ? e.radius : 1);
+                    Rotate(x, {0, 0}, e.startAngle);
+                    Translate(x, e.p0);
+                    AnnotGraphics g;
+                    TextData t = x.annot->text;
+                    t.content = k < e.annot->values.size() ? e.annot->values[k] : t.content;
+                    t.tag.clear();
+                    LayoutText(t, x.p0, nullptr, g);
+                    ++k;
+                    if (g.texts.empty()) continue;
+                    const TextItem& ti = g.texts[0];
+                    group(0, "ATTRIB");
+                    common(e);
+                    point(10, ti.pos);
+                    num(40, ti.height);
+                    group(1, DxfText(SplitLines(t.content)[0]));
+                    group(2, TextToUtf8(x.annot->text.tag));
+                    group(70, "0");
+                    num(50, ToDegrees(ti.angle));
+                    if (ti.widthFactor != 1) num(41, ti.widthFactor);
+                    group(72, std::to_string(ti.align));
+                    point(11, ti.pos);
+                    group(74, "2");
+                }
+                group(0, "SEQEND");
+                common(e);
+                break;
+            }
         }
+    };
+
+    // Blocks: their objects (attribute definitions as ATTDEF).
+    BlockTable blocks = m_blocks;
+    for (const auto& kv : m_entities) UsedBlocks(kv.second, blocks);
+    group(0, "SECTION");
+    group(2, "BLOCKS");
+    for (const auto& b : blocks) {
+        group(0, "BLOCK");
+        group(8, "0");
+        group(2, TextToUtf8(b->name));
+        group(70, AttributeDefs(*b).empty() ? "0" : "2");
+        point(10, b->base);
+        group(3, TextToUtf8(b->name));
+        for (const Entity& item : b->items) {
+            if (item.type != EntityType::Text || !item.annot || item.annot->text.tag.empty()) {
+                write(item);
+                continue;
+            }
+            const TextData& t = item.annot->text;
+            AnnotGraphics g;
+            TextData shown = t;
+            shown.tag.clear();
+            LayoutText(shown, item.p0, nullptr, g);
+            if (g.texts.empty()) continue;
+            const TextItem& ti = g.texts[0];
+            group(0, "ATTDEF");
+            common(item);
+            point(10, ti.pos);
+            num(40, ti.height);
+            group(1, DxfText(SplitLines(t.content)[0]));
+            group(3, TextToUtf8(t.prompt.empty() ? t.tag : t.prompt));
+            group(2, TextToUtf8(t.tag));
+            group(70, "0");
+            num(50, ToDegrees(ti.angle));
+            group(72, std::to_string(ti.align));
+            point(11, ti.pos);
+            group(74, "2");
+        }
+        group(0, "ENDBLK");
+        group(8, "0");
     }
+    group(0, "ENDSEC");
+
+    group(0, "SECTION");
+    group(2, "ENTITIES");
+    for (const auto& kv : m_entities) write(kv.second);
     group(0, "ENDSEC");
     group(0, "EOF");
     return out;

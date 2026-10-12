@@ -7,7 +7,7 @@
 ; The installer is written to installer\Output\FeatherCAD-Setup-<version>.exe
 
 #define AppName "Feather CAD"
-#define AppVersion "1.4.0"
+#define AppVersion "1.5.0"
 #define AppExe "FeatherCAD.exe"
 #define ProgId "FeatherCAD.Drawing"
 

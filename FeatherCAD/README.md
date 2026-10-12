@@ -261,11 +261,49 @@ Arrays are saved in the `.fcad` file. They are exported to DXF as their separate
 - Copies, trims, explodes and other edits keep the objects' layer and look. Paste puts objects on the layers of the same names in the other drawing (made if missing).
 - DXF export and import keep layers (on, frozen, locked), colours, line types and line type scale. Construction geometry goes on AutoCAD's non-printing Defpoints layer.
 
+## Version 1.5 (Phase C): text, leaders, hatching and blocks
+
+**Text** (T, also MTEXT)
+- One or several lines, any font on the PC, any height, angle, width and line spacing, and nine ways to justify it (top left to bottom right). A frame (box or circle) can go round it.
+- Symbols: buttons in the editor for ° Ø ± ℄ ² ³ µ Ω ≈ ≤ ≥ ∆ × √, or the AutoCAD codes %%d, %%c and %%p.
+- ★ **Fields**: {date}, {time}, {filename} and {author} in a text show today's date, the drawing's name and so on, and stay up to date.
+- Double-click a text (or ED) to change it. The Properties panel shows its content, font, height, angle and frame.
+
+**Leaders and balloons** (LE, BALLOON)
+- An arrow and lines to a note; the note can sit in a box or in a circle (an item balloon).
+
+**Centre marks and centre lines** (CM, CL)
+- Centre lines across circles and arcs, or midway between two lines, in the CENTER line type.
+
+**Hatching and fill** (H, FILL)
+- Click inside an area: Feather CAD finds its outline, with the islands inside it left empty (holes, text boxes). Or select closed objects.
+- Patterns ANSI31 to ANSI38, NET, LINE, DOTS, BRICK, CROSS, EARTH, HONEY, and SOLID fill; scale and angle.
+- ★ **Associative**: the hatch follows its outline when that is stretched, trimmed or moved. Moved on its own, it lets go.
+
+**Blocks** (B, I, ATT, ATE, PU)
+- BLOCK makes a named block from objects (with a base point); INSERT places it again, at any scale and angle. Changing a block's definition (BLOCK with the same name) changes every copy.
+- **Attributes** (ATTDEF): values asked for each time a block is placed, such as a part number or size. ATTEDIT, or the Properties panel, changes them. EXPLODE takes a block apart; PURGE removes unused ones.
+- Objects on layer 0 and "by block" colours take the colour and layer of each copy.
+- (★ Dynamic blocks, with stretch and flip grips, come in Phase F.)
+
+**More dimensions**
+
+| Command | Short name | What it does |
+|---------|------------|--------------|
+| DIMORDINATE | DOR | Ordinate (coordinate) dimension: the X or Y of a point from the origin. |
+| DIMANGCOORD | DAC | ★ Angular coordinate dimension: the angle of points about a centre, from a 0° direction. |
+| DIMDRIVEN | DDR | Driven dimensions only report (shown in brackets); they never change the drawing. Again: driving. Also in the Properties panel. |
+| DIMSPACE | DSP | Spaces parallel dimensions evenly from a base one (Auto, or a distance). |
+
+**Also**
+- ★ **Revision clouds** (RC): round a rectangle, a polygon or an existing closed object.
+- **Area** (AA): area and perimeter of picked points, a closed object, or the area around a point (arcs measured exactly), with a running total (Add / Subtract).
+- DXF import now brings in text (single and multi-line, with fonts), hatches (patterns and solid fills) and blocks with their attributes, kept as blocks. DXF export writes text, blocks with attributes, solid fills and hatch patterns.
+
 ## Coming in later phases
 
 | Phase | Contents |
 |-------|----------|
-| C     | Annotation: text, leaders, hatching and blocks |
 | D     | Sheets, printing and PDF |
 | E     | Engineering (constraints, GD&T, parts lists) |
 | F     | Professional extras |

@@ -10,7 +10,10 @@
 
 #include "Geometry.h"
 
-enum class EntityType : uint8_t { Line, Circle, Arc, Polyline, Array, Ellipse, Spline, Point, Dimension };
+enum class EntityType : uint8_t {
+    Line, Circle, Arc, Polyline, Array, Ellipse, Spline, Point, Dimension,
+    Text, Leader, Hatch, Insert  // annotations and block references (Annot.h)
+};
 
 struct Vertex {
     Vec2 p;
@@ -19,6 +22,7 @@ struct Vertex {
 
 struct ArrayData;
 struct DimData;  // Dimension.h
+struct Annot;    // Annot.h
 
 struct Entity {
     uint64_t id = 0;  // set by the Document; also the drawing order
@@ -45,6 +49,10 @@ struct Entity {
     // so copies of an array entity (undo history) cost nothing.
     std::shared_ptr<const ArrayData> array;
     std::shared_ptr<const DimData> dim;  // Dimension: shared the same way
+    // Text (p0: where it is), leader, hatch, block reference (p0: where it
+    // is placed, radius: its scale, startAngle: its rotation, closed:
+    // mirrored): shared the same way.
+    std::shared_ptr<const Annot> annot;
 
     static Entity Line(Vec2 a, Vec2 b);
     static Entity Circle(Vec2 centre, double r);

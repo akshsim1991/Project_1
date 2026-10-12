@@ -1029,7 +1029,7 @@ const std::vector<CommandInfo>& AllCommands() {
         {L"BREAK", {L"BR"}, L"Break", L"Remove the part of an object between two points"},
         {L"BREAKATPOINT", {}, L"Break at point", L"Split an object in two at a point"},
         {L"JOIN", {L"J"}, L"Join", L"Join lines, arcs and polylines whose ends meet"},
-        {L"EXPLODE", {L"X"}, L"Explode", L"Split a polyline or array into separate objects"},
+        {L"EXPLODE", {L"X"}, L"Explode", L"Split a polyline, array, block, leader or hatch into separate objects"},
         {L"LENGTHEN", {L"LEN"}, L"Lengthen", L"Change the length of lines and arcs"},
         {L"ARRAY", {L"AR"}, L"Array", L"Copies in a grid, around a centre or along a path"},
         {L"ARRAYRECT", {}, L"Rectangular array", L"Copies in rows and columns that stay linked"},
@@ -1045,8 +1045,27 @@ const std::vector<CommandInfo>& AllCommands() {
         {L"DIMANGULAR", {L"DAN"}, L"Angular dimension", L"Angle between two lines, of an arc, or by three points"},
         {L"DIMCONTINUE", {L"DCO"}, L"Continue dimension", L"Chain of dimensions from the last one"},
         {L"DIMBASELINE", {L"DBA"}, L"Baseline dimension", L"Stack of dimensions from the same base line"},
+        {L"DIMORDINATE", {L"DOR", L"DIMORD"}, L"Ordinate dimension", L"X or Y of a point, measured from the origin (coordinate dimension)"},
+        {L"DIMANGCOORD", {L"DAC"}, L"Angular coordinate dimension", L"Angles of points about a centre, from a 0\x00B0 direction"},
+        {L"DIMSPACE", {L"DSP"}, L"Dimension spacing", L"Space parallel dimensions evenly from a base one"},
+        {L"DIMDRIVEN", {L"DDR"}, L"Driven dimension", L"Make dimensions only report (in brackets), or drive the geometry again"},
         {L"DIMEDIT", {L"DED"}, L"Edit dimension", L"New value (the geometry changes to it) or new text (double-click a dimension)"},
         {L"DIMSTYLE", {L"D", L"DST"}, L"Dimension style", L"Text height, arrows and decimals of dimensions", true},
+        {L"TEXT", {L"T", L"DT", L"MTEXT", L"MT"}, L"Text", L"Write text: several lines, any font, symbols (\x00B0 \x00D8 \x00B1 \x2104) and fields (date, file name)"},
+        {L"TEXTEDIT", {L"ED", L"DDEDIT"}, L"Edit text", L"Change a text or a leader's note (or double-click it)"},
+        {L"LEADER", {L"LE", L"QLEADER", L"MLEADER"}, L"Leader", L"An arrow and lines to a note (Frame: in a box or a circle)"},
+        {L"BALLOON", {L"CALLOUT"}, L"Balloon", L"A leader to a note in a circle (item numbers)"},
+        {L"CENTERMARK", {L"CM", L"CENTREMARK"}, L"Centre mark", L"Centre lines across circles and arcs"},
+        {L"CENTERLINE", {L"CL", L"CENTRELINE"}, L"Centre line", L"A centre line between two lines"},
+        {L"HATCH", {L"H", L"BHATCH"}, L"Hatch", L"Fill an area with a pattern: click inside it (follows its outline when it changes)"},
+        {L"FILL", {L"SOLIDFILL"}, L"Fill", L"Fill an area with solid colour: click inside it"},
+        {L"BLOCK", {L"B"}, L"Make block", L"Make a named block from objects, to place many times"},
+        {L"INSERT", {L"I"}, L"Insert block", L"Place a block (scale, rotation, attribute values)"},
+        {L"ATTDEF", {L"ATT"}, L"Attribute definition", L"A value asked for each time a block is placed (part number, size...)"},
+        {L"ATTEDIT", {L"ATE", L"EATTEDIT"}, L"Edit attributes", L"Change the attribute values of a placed block"},
+        {L"PURGE", {L"PU"}, L"Purge", L"Remove blocks that are not used"},
+        {L"REVCLOUD", {L"RC"}, L"Revision cloud", L"A cloud of arcs around a change (rectangle, polygon or an object)"},
+        {L"AREA", {L"AA"}, L"Area", L"Area and perimeter of points, an object or the area around a point"},
         {L"COPYCLIP", {}, L"Copy to clipboard", L"Copy objects to paste them elsewhere, also into another drawing (Ctrl+C)"},
         {L"CUTCLIP", {}, L"Cut to clipboard", L"Remove objects to paste them elsewhere (Ctrl+X)"},
         {L"PASTECLIP", {}, L"Paste", L"Paste copied objects at a point (Ctrl+V)"},
@@ -1090,6 +1109,7 @@ std::unique_ptr<Command> CreateCommand(const std::wstring& name) {
     if (auto cmd = CreateModifyCommand(name)) return cmd;
     if (auto cmd = CreateDrawCommand(name)) return cmd;
     if (auto cmd = CreateDimCommand(name)) return cmd;
+    if (auto cmd = CreateAnnotCommand(name)) return cmd;
     if (name == L"LINE") return std::make_unique<LineCmd>();
     if (name == L"PLINE") return std::make_unique<PlineCmd>();
     if (name == L"TANLINE") return std::make_unique<TanLineCmd>();

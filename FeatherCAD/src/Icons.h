@@ -30,6 +30,9 @@ enum CadIcon : int {
     kIconSpline,
     kIconDimension,
     kIconLayers,
+    kIconText,
+    kIconHatch,
+    kIconBlock,
 };
 
 // Draws `icon` centred in `rc` (a 20x20 DIP design) in `ink`, with key

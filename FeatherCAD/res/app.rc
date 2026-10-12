@@ -120,6 +120,44 @@ BEGIN
     PUSHBUTTON      "Cancel", IDCANCEL, 200, 128, 50, 14
 END
 
+IDD_TEXTEDIT DIALOGEX 0, 0, 330, 206
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Text"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "&Text (Enter starts a new line):", -1, 10, 8, 200, 10
+    EDITTEXT        IDC_TE_TEXT, 10, 20, 310, 78, ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL | WS_TABSTOP
+    PUSHBUTTON      "", 1130, 10, 104, 18, 14
+    PUSHBUTTON      "", 1131, 30, 104, 18, 14
+    PUSHBUTTON      "", 1132, 50, 104, 18, 14
+    PUSHBUTTON      "", 1133, 70, 104, 18, 14
+    PUSHBUTTON      "", 1134, 90, 104, 18, 14
+    PUSHBUTTON      "", 1135, 110, 104, 18, 14
+    PUSHBUTTON      "", 1136, 130, 104, 18, 14
+    PUSHBUTTON      "", 1137, 150, 104, 18, 14
+    PUSHBUTTON      "", 1138, 170, 104, 18, 14
+    PUSHBUTTON      "", 1139, 190, 104, 18, 14
+    PUSHBUTTON      "", 1140, 210, 104, 18, 14
+    PUSHBUTTON      "", 1141, 230, 104, 18, 14
+    PUSHBUTTON      "", 1142, 250, 104, 18, 14
+    PUSHBUTTON      "", 1143, 270, 104, 18, 14
+    PUSHBUTTON      "F&ield...", IDC_TE_FIELD, 290, 104, 30, 14
+    LTEXT           "&Font:", -1, 10, 128, 40, 10
+    COMBOBOX        IDC_TE_FONT, 56, 126, 110, 200, CBS_DROPDOWN | CBS_SORT | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "&Height:", -1, 178, 128, 40, 10
+    EDITTEXT        IDC_TE_HEIGHT, 222, 126, 40, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "&Rotation:", -1, 10, 148, 40, 10
+    EDITTEXT        IDC_TE_ROTATION, 56, 146, 40, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "&Width:", -1, 106, 148, 30, 10
+    EDITTEXT        IDC_TE_WIDTH, 136, 146, 30, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "&Justify:", -1, 178, 148, 40, 10
+    COMBOBOX        IDC_TE_JUSTIFY, 222, 146, 98, 200, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "Fra&me:", -1, 10, 168, 40, 10
+    COMBOBOX        IDC_TE_FRAME, 56, 166, 110, 100, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    DEFPUSHBUTTON   "OK", IDOK, 214, 186, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 270, 186, 50, 14
+END
+
 IDD_LAYERS DIALOGEX 0, 0, 480, 252
 STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "Layers"
@@ -188,8 +226,8 @@ BEGIN
 END
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 1,4,0,0
- PRODUCTVERSION 1,4,0,0
+ FILEVERSION 1,5,0,0
+ PRODUCTVERSION 1,5,0,0
  FILEFLAGSMASK 0x3fL
  FILEFLAGS 0x0L
  FILEOS VOS_NT_WINDOWS32
@@ -202,12 +240,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "Akshaya Simha"
             VALUE "FileDescription", "Feather CAD"
-            VALUE "FileVersion", "1.4.0.0"
+            VALUE "FileVersion", "1.5.0.0"
             VALUE "InternalName", "FeatherCAD"
             VALUE "LegalCopyright", "\251 2026 Akshaya Simha"
             VALUE "OriginalFilename", "FeatherCAD.exe"
             VALUE "ProductName", "Feather CAD"
-            VALUE "ProductVersion", "1.4.0.0"
+            VALUE "ProductVersion", "1.5.0.0"
         END
     END
     BLOCK "VarFileInfo"

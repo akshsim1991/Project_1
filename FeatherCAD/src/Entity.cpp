@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <functional>
 
+#include "Annot.h"
 #include "Curve.h"
 #include "Dimension.h"
 #include "Spline.h"
@@ -193,6 +194,10 @@ const wchar_t* TypeName(EntityType type) {
         case EntityType::Spline: return L"Spline";
         case EntityType::Point: return L"Point";
         case EntityType::Dimension: return L"Dimension";
+        case EntityType::Text: return L"Text";
+        case EntityType::Leader: return L"Leader";
+        case EntityType::Hatch: return L"Hatch";
+        case EntityType::Insert: return L"Block";
     }
     return L"Object";
 }
@@ -329,6 +334,12 @@ void Primitives(const Entity& e, std::vector<Prim>& out) {
         case EntityType::Dimension:
             DimPrimitives(e, out);
             break;
+        case EntityType::Text:
+        case EntityType::Leader:
+        case EntityType::Hatch:
+        case EntityType::Insert:
+            AnnotPrimitives(e, out);
+            break;
     }
 }
 
@@ -349,6 +360,7 @@ Box Bounds(const Entity& e) {
 
 double DistanceTo(const Entity& e, Vec2 p) {
     if (e.type == EntityType::Dimension) return DimDistance(e, p);
+    if (IsAnnotType(e.type)) return AnnotDistance(e, p);
     std::vector<Prim> prims;
     Primitives(e, prims);
     double best = std::numeric_limits<double>::infinity();
@@ -361,6 +373,7 @@ bool InsideBox(const Entity& e, const Box& box) { return box.Contains(Bounds(e))
 bool TouchesBox(const Entity& e, const Box& box) {
     if (!Bounds(e).Intersects(box)) return false;
     if (e.type == EntityType::Dimension) return DimTouchesBox(e, box);
+    if (IsAnnotType(e.type)) return AnnotTouchesBox(e, box);
     std::vector<Prim> prims;
     Primitives(e, prims);
     for (const Prim& p : prims)
@@ -369,7 +382,7 @@ bool TouchesBox(const Entity& e, const Box& box) {
 }
 
 double LengthOf(const Entity& e) {
-    if (e.type == EntityType::Dimension) return 0;
+    if (IsAnnotation(e)) return 0;
     std::vector<Prim> prims;
     Primitives(e, prims);
     double len = 0;
@@ -382,6 +395,10 @@ double LengthOf(const Entity& e) {
 // ---------------------------------------------------------------------------
 
 void Translate(Entity& e, Vec2 d) {
+    if (IsAnnotType(e.type)) {
+        AnnotMap(e, [&](Vec2 p) { return p + d; }, [](Vec2 v) { return v; }, false, 1);
+        return;
+    }
     if (e.type == EntityType::Dimension) {
         DimMap(e, [&](Vec2 p) { return p + d; }, [](Vec2 v) { return v; });
         return;
@@ -400,6 +417,11 @@ void Translate(Entity& e, Vec2 d) {
 }
 
 void Rotate(Entity& e, Vec2 centre, double angle) {
+    if (IsAnnotType(e.type)) {
+        AnnotMap(e, [&](Vec2 p) { return RotateAround(p, centre, angle); },
+                 [&](Vec2 v) { return RotateAround(v, {0, 0}, angle); }, false, 1);
+        return;
+    }
     if (e.type == EntityType::Dimension) {
         DimMap(e, [&](Vec2 p) { return RotateAround(p, centre, angle); },
                [&](Vec2 v) { return RotateAround(v, {0, 0}, angle); });
@@ -434,6 +456,10 @@ void Rotate(Entity& e, Vec2 centre, double angle) {
 
 void Scale(Entity& e, Vec2 base, double f) {
     auto sp = [&](Vec2 p) { return base + (p - base) * f; };
+    if (IsAnnotType(e.type)) {
+        AnnotMap(e, sp, [](Vec2 v) { return v; }, false, f);
+        return;
+    }
     if (e.type == EntityType::Dimension) {
         DimMap(e, sp, [](Vec2 v) { return v; });
         return;
@@ -463,6 +489,10 @@ void Scale(Entity& e, Vec2 base, double f) {
 void Mirror(Entity& e, Vec2 a, Vec2 b) {
     const Vec2 u = Normalized(b - a);
     const double phi = AngleOf(u);
+    if (IsAnnotType(e.type)) {
+        AnnotMap(e, [&](Vec2 p) { return Reflect(p, a, u); }, [&](Vec2 v) { return ReflectVector(v, u); }, true, 1);
+        return;
+    }
     if (e.type == EntityType::Dimension) {
         DimMap(e, [&](Vec2 p) { return Reflect(p, a, u); }, [&](Vec2 v) { return ReflectVector(v, u); });
         return;
@@ -512,6 +542,14 @@ bool OnEllipse(const Entity& e, double t) { return e.closed || AngleInSweep(t, e
 namespace {
 template <class Fn>
 bool ForArrayCopies(const Entity& e, std::vector<Vec2>& out, Fn fn) {
+    if (e.type == EntityType::Insert) {  // a block: its objects
+        std::vector<Entity> parts;
+        ExpandBlock(e, parts);
+        for (const Entity& c : parts)
+            if (!IsAnnotation(c)) fn(c, out);
+        return true;
+    }
+    if (IsAnnotation(e)) return true;  // no snap points
     if (e.type != EntityType::Array) return false;
     std::vector<Entity> copies;
     ExpandArray(e, copies);

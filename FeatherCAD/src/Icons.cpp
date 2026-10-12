@@ -1,6 +1,7 @@
 // Icons.cpp - see Icons.h.
 #include "Icons.h"
 
+#include <algorithm>
 #include <cmath>
 
 #include "GdiPlusInc.h"
@@ -215,6 +216,37 @@ void DrawCadIcon(HDC dc, int icon, const RECT& rc, COLORREF ink, COLORREF accent
                 g.FillPolygon(&fill, sheet, 4);
                 g.DrawPolygon(&pen, sheet, 4);
             }
+            break;
+        }
+        case kIconText:
+            // A capital A on its baseline.
+            g.DrawLine(&pen, 4.0f, 17.0f, 10.0f, 3.0f);
+            g.DrawLine(&pen, 10.0f, 3.0f, 16.0f, 17.0f);
+            g.DrawLine(&pen, 6.6f, 11.5f, 13.4f, 11.5f);
+            {
+                Pen base(C(accent), 1.5f);
+                g.DrawLine(&base, 2.0f, 18.5f, 18.0f, 18.5f);
+            }
+            break;
+        case kIconHatch: {
+            // A square filled with slanted lines.
+            g.DrawRectangle(&pen, 3.0f, 3.0f, 14.0f, 14.0f);
+            Pen hatch(C(accent), 1.2f);
+            for (int k = 0; k < 5; ++k) {
+                const REAL d = 10.0f + k * 5.0f;  // the line x + y = d, inside the square
+                const REAL xa = std::max(3.0f, d - 17.0f), xb = std::min(17.0f, d - 3.0f);
+                g.DrawLine(&hatch, xa, d - xa, xb, d - xb);
+            }
+            break;
+        }
+        case kIconBlock: {
+            // A shape in a dashed box, hanging from its base point.
+            Pen dash(C(ink), 1.0f);
+            dash.SetDashStyle(DashStyleDash);
+            g.DrawRectangle(&dash, 2.5f, 2.5f, 15.0f, 15.0f);
+            g.DrawEllipse(&pen, 6.0f, 6.0f, 8.0f, 8.0f);
+            g.DrawLine(&pen, 5.0f, 10.0f, 15.0f, 10.0f);
+            point(2.5f, 17.5f);
             break;
         }
         default:

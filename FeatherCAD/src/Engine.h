@@ -93,6 +93,13 @@ public:
         text = m_clip;
         return !text.empty();
     }
+    // A text editor (content, font, size, symbols, fields). 1: changed,
+    // 0: cancelled, -1: there is none (the command line asks instead).
+    virtual int EditText(TextData& text, const std::wstring& title) {
+        (void)text;
+        (void)title;
+        return -1;
+    }
 
 private:
     std::string m_clip;
@@ -179,6 +186,10 @@ public:
     int lastSides = 4;
     bool lastInscribed = true;
     uint64_t lastDim = 0;  // the last linear or aligned dimension (DIMCONTINUE, DIMBASELINE)
+    TextData lastText;     // settings of the last text (TEXT)
+    HatchData lastHatch;   // pattern, scale and angle of the last hatch
+    std::wstring lastBlock;
+    double lastCloudArc = 15;
 
 private:
     bool ParsePoint(const std::wstring& text, Vec2& out) const;

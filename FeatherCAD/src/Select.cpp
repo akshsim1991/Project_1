@@ -1,6 +1,7 @@
 // Select.cpp - see Select.h.
 #include "Select.h"
 
+#include "Annot.h"
 #include "Curve.h"
 
 const wchar_t* QPropName(QProp p) {
@@ -67,7 +68,7 @@ bool PropertyOf(const Entity& e, QProp prop, double& value) {
             value = 0;
             return true;
         case QProp::Length:
-            if (e.type == EntityType::Point || e.type == EntityType::Array || e.type == EntityType::Dimension)
+            if (e.type == EntityType::Point || e.type == EntityType::Array || IsAnnotation(e) || e.type == EntityType::Insert)
                 return false;
             value = IsCurve(e) ? CurveLength(e) : LengthOf(e);
             return true;

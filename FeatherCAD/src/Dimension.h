@@ -1,5 +1,5 @@
 // Dimension.h - dimensions: linear (horizontal, vertical or rotated),
-// aligned, radius, diameter and angular.
+// aligned, radius, diameter, angular, ordinate and angular coordinate.
 //
 // A dimension remembers the points it measures and, when they were picked
 // on objects, which object and which of its grips each point came from.
@@ -45,12 +45,16 @@ struct DimRef {
 };
 
 struct DimData {
-    enum Kind : uint8_t { Linear, Aligned, Radius, Diameter, Angular } kind = Aligned;
+    enum Kind : uint8_t { Linear, Aligned, Radius, Diameter, Angular, Ordinate, AngularCoord } kind = Aligned;
     // Linear, aligned: pts[0] and pts[1] are measured.
     // Radius, diameter: pts[0] is the centre, pts[1] a point on the circle.
     // Angular: the lines pts[0]-pts[1] and pts[2]-pts[3]. With `rays`,
     //   the angle is between the rays from where they meet towards pts[1]
     //   and pts[3] (three points, or an arc's angle).
+    // Ordinate: pts[0] is measured from the origin pts[1], along `angle`
+    //   (0: its X, pi/2: its Y).
+    // Angular coordinate: the angle about pts[0] from pts[1] (0 degrees)
+    //   counter-clockwise to pts[2].
     std::array<Vec2, 4> pts{};
     std::array<DimRef, 4> refs{};
     double angle = 0;   // Linear: the direction measured (0 horizontal, pi/2 vertical)
@@ -61,6 +65,7 @@ struct DimData {
     Vec2 loc;
     std::wstring text;  // replaces the value; "<>" in it stands for the value
     DimStyle style;
+    bool driven = false;  // reports only (shown in brackets): never changes the geometry
 };
 
 Entity MakeDimension(DimData d);

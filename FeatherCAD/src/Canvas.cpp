@@ -8,6 +8,7 @@
 
 #include <windowsx.h>
 
+#include "Annot.h"
 #include "Dimension.h"
 #include "Spline.h"
 #include "Theme.h"
@@ -63,6 +64,7 @@ Canvas::~Canvas() {
     SafeRelease(m_dashed);
     SafeRelease(m_textFormat);
     SafeRelease(m_dimFormat);
+    for (auto& kv : m_fonts) SafeRelease(kv.second);
     SafeRelease(m_dwrite);
     SafeRelease(m_factory);
 }
@@ -520,6 +522,21 @@ ID2D1PathGeometry* Canvas::BuildGeometry(const std::vector<const Entity*>& entit
                 }
                 break;
             }
+            case EntityType::Text:
+            case EntityType::Leader:
+            case EntityType::Hatch: {
+                AnnotGraphics g;
+                AnnotLayout(*e, &m_fields, g);
+                const double dot = Px(1) / m_scale;
+                for (const Prim& p : g.lines) {
+                    if (p.kind == Prim::Arc) arc(p);
+                    else if (Near(p.a, p.b, 1e-12)) line(p.a, p.a + Vec2{dot, 0});  // a pattern's dot
+                    else line(p.a, p.b);
+                }
+                break;
+            }
+            case EntityType::Insert:  // drawn as its objects (Flatten)
+                break;
             case EntityType::Circle:
             case EntityType::Arc:
                 prims.clear();
@@ -563,8 +580,47 @@ ID2D1PathGeometry* Canvas::BuildGeometry(const std::vector<const Entity*>& entit
     return geo;
 }
 
-void Canvas::DrawEntities(ID2D1RenderTarget* rt, const std::vector<const Entity*>& ents, D2D1_COLOR_F color,
+std::vector<const Entity*> Canvas::Flatten(const std::vector<const Entity*>& ents, std::deque<Entity>& store) const {
+    std::vector<const Entity*> out;
+    out.reserve(ents.size());
+    const Box cull = ViewBox().Inflated(Px(4) / m_scale);
+    std::vector<Entity> parts;
+    for (const Entity* e : ents) {
+        if (e->type != EntityType::Insert && e->type != EntityType::Array) {
+            out.push_back(e);
+            continue;
+        }
+        if (!Bounds(*e).Intersects(cull)) continue;
+        parts.clear();
+        if (e->type == EntityType::Insert) {
+            ExpandBlock(*e, parts);
+        } else {
+            ExpandArray(*e, parts);
+            std::vector<Entity> inner;
+            for (const Entity& x : parts) {
+                if (x.type == EntityType::Insert) ExpandBlock(x, inner);
+                else inner.push_back(x);
+            }
+            parts.swap(inner);
+        }
+        for (Entity& x : parts) {
+            store.push_back(std::move(x));
+            out.push_back(&store.back());
+        }
+    }
+    return out;
+}
+
+void Canvas::SetFields(const FieldValues& f) {
+    m_fields = f;
+    m_layerValid = false;
+}
+
+void Canvas::DrawEntities(ID2D1RenderTarget* rt, const std::vector<const Entity*>& entsIn, D2D1_COLOR_F color,
                           float width, ID2D1StrokeStyle* style, const std::vector<float>* dashes) {
+    if (entsIn.empty()) return;
+    std::deque<Entity> store;
+    const std::vector<const Entity*> ents = Flatten(entsIn, store);
     if (ents.empty()) return;
     ID2D1PathGeometry* geo = BuildGeometry(ents, dashes);
     if (!geo) return;
@@ -601,7 +657,10 @@ std::vector<float> Canvas::DashPattern(int lt, double scale, bool screen) const 
     return out;
 }
 
-void Canvas::DrawStyled(ID2D1RenderTarget* rt, const std::vector<const Entity*>& ents) {
+void Canvas::DrawStyled(ID2D1RenderTarget* rt, const std::vector<const Entity*>& entsIn) {
+    // Blocks' objects have colours of their own.
+    std::deque<Entity> store;
+    const std::vector<const Entity*> ents = Flatten(entsIn, store);
     // Objects that look alike are drawn together.
     struct Key {
         uint32_t rgb;
@@ -638,11 +697,36 @@ void Canvas::DrawStyled(ID2D1RenderTarget* rt, const std::vector<const Entity*>&
 }
 
 void Canvas::DrawDimensionParts(ID2D1RenderTarget* rt, const std::vector<const Entity*>& ents, ID2D1Brush* brush) {
-    std::vector<const Entity*> dims;
+    std::vector<const Entity*> dims, annots;
     const Box cull = ViewBox().Inflated(Px(4) / m_scale);
-    for (const Entity* e : ents)
+    for (const Entity* e : ents) {
         if (e->type == EntityType::Dimension && e->dim && Bounds(*e).Intersects(cull)) dims.push_back(e);
-    if (dims.empty()) return;
+        if ((e->type == EntityType::Text || e->type == EntityType::Leader || e->type == EntityType::Hatch) && e->annot &&
+            Bounds(*e).Intersects(cull))
+            annots.push_back(e);
+    }
+    if (dims.empty() && annots.empty()) return;
+    std::vector<AnnotGraphics> ag(annots.size());
+    for (size_t i = 0; i < annots.size(); ++i) AnnotLayout(*annots[i], &m_fields, ag[i]);
+    // Solid fills: each one even-odd (islands stay empty).
+    for (const AnnotGraphics& g : ag) {
+        if (!g.solid || g.fills.empty()) continue;
+        ID2D1PathGeometry* fill = nullptr;
+        ID2D1GeometrySink* fs = nullptr;
+        if (SUCCEEDED(m_factory->CreatePathGeometry(&fill)) && SUCCEEDED(fill->Open(&fs))) {
+            fs->SetFillMode(D2D1_FILL_MODE_ALTERNATE);
+            for (const auto& loop : g.fills) {
+                if (loop.size() < 3) continue;
+                fs->BeginFigure(ToScreen(loop[0]), D2D1_FIGURE_BEGIN_FILLED);
+                for (size_t k = 1; k < loop.size(); ++k) fs->AddLine(ToScreen(loop[k]));
+                fs->EndFigure(D2D1_FIGURE_END_CLOSED);
+            }
+            fs->Close();
+            fs->Release();
+            rt->FillGeometry(fill, brush);
+        }
+        SafeRelease(fill);
+    }
     // Filled arrows, all in one geometry.
     ID2D1PathGeometry* geo = nullptr;
     ID2D1GeometrySink* sink = nullptr;
@@ -658,11 +742,22 @@ void Canvas::DrawDimensionParts(ID2D1RenderTarget* rt, const std::vector<const E
                 sink->EndFigure(D2D1_FIGURE_END_CLOSED);
             }
         }
+        for (const AnnotGraphics& g : ag) {  // leader arrows
+            if (g.solid) continue;
+            for (const auto& f : g.fills) {
+                if (f.size() < 3) continue;
+                sink->BeginFigure(ToScreen(f[0]), D2D1_FIGURE_BEGIN_FILLED);
+                for (size_t k = 1; k < f.size(); ++k) sink->AddLine(ToScreen(f[k]));
+                sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+            }
+        }
         sink->Close();
         sink->Release();
         rt->FillGeometry(geo, brush);
     }
     SafeRelease(geo);
+    for (const AnnotGraphics& g : ag)
+        for (const TextItem& t : g.texts) DrawTextItem(rt, t, brush);
     // Text: laid out once at a fixed size, then scaled and turned into place.
     if (!m_dimFormat) return;
     D2D1_MATRIX_3X2_F saved;
@@ -691,6 +786,44 @@ void Canvas::DrawDimensionParts(ID2D1RenderTarget* rt, const std::vector<const E
         layout->Release();
     }
     rt->SetTransform(saved);
+}
+
+IDWriteTextFormat* Canvas::FontFormat(const std::wstring& font) {
+    if (font.empty() || font == L"Arial") return m_dimFormat;
+    auto it = m_fonts.find(font);
+    if (it != m_fonts.end()) return it->second ? it->second : m_dimFormat;
+    IDWriteTextFormat* f = nullptr;
+    m_dwrite->CreateTextFormat(font.c_str(), nullptr, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
+                               DWRITE_FONT_STRETCH_NORMAL, kDimFontPx, L"", &f);
+    if (f) f->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+    m_fonts[font] = f;
+    return f ? f : m_dimFormat;
+}
+
+void Canvas::DrawTextItem(ID2D1RenderTarget* rt, const TextItem& t, ID2D1Brush* brush) {
+    const double px = t.height * m_scale;
+    if (t.text.empty() || px < 1.5 || px > 5000) return;  // too small to read, or absurdly big
+    IDWriteTextFormat* format = FontFormat(t.font);
+    if (!format) return;
+    IDWriteTextLayout* layout = nullptr;
+    if (FAILED(m_dwrite->CreateTextLayout(t.text.c_str(), (UINT32)t.text.size(), format, 100000, 1000, &layout))) return;
+    DWRITE_TEXT_METRICS tm{};
+    layout->GetMetrics(&tm);
+    DWRITE_LINE_METRICS lm{};
+    UINT32 lines = 0;
+    layout->GetLineMetrics(&lm, 1, &lines);
+    const float k = (float)(FontSizeForHeight(t.height) * m_scale / kDimFontPx);
+    const float wf = (float)(t.widthFactor > 0 ? t.widthFactor : 1);
+    const float capMiddle = lm.baseline - (float)(0.716 * kDimFontPx / 2);
+    const float x = t.align == 0 ? -tm.left : t.align == 1 ? -tm.width / 2 - tm.left : -tm.width - tm.left;
+    D2D1_MATRIX_3X2_F saved;
+    rt->GetTransform(&saved);
+    const D2D1_POINT_2F at = ToScreen(t.pos);
+    rt->SetTransform(D2D1::Matrix3x2F::Scale(k * wf, k) * D2D1::Matrix3x2F::Rotation((float)-ToDegrees(t.angle)) *
+                     D2D1::Matrix3x2F::Translation(at.x, at.y) * saved);
+    rt->DrawTextLayout(D2D1::Point2F(x, -capMiddle), layout, brush);
+    rt->SetTransform(saved);
+    layout->Release();
 }
 
 void Canvas::DrawGrid(ID2D1RenderTarget* rt) {
@@ -1206,12 +1339,13 @@ LRESULT Canvas::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             }
             return 0;
         case WM_LBUTTONDBLCLK: {
-            // Double-clicking a dimension edits it.
+            // Double-clicking a dimension, text, leader or block edits it.
             const int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
             if (!m_engine->Active() || m_engine->ActiveName() == L"GRIP") {
                 const uint64_t id = PickAt(ToWorld(x, y));
                 const Entity* e = id ? m_doc->Find(id) : nullptr;
-                if (e && e->type == EntityType::Dimension) {
+                if (e && (e->type == EntityType::Dimension || e->type == EntityType::Text || e->type == EntityType::Leader ||
+                          e->type == EntityType::Insert)) {
                     if (m_engine->Active()) m_engine->Cancel();
                     if (m_windowOn) {
                         m_windowOn = false;

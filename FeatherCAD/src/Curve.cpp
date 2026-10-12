@@ -115,9 +115,7 @@ std::vector<CurvePiece> CurvePieces(const Entity& e) {
             for (size_t i = 0; i + 1 < pts.size(); ++i) line(pts[i], pts[i + 1]);
             break;
         }
-        case EntityType::Array:
-        case EntityType::Point:
-        case EntityType::Dimension:
+        default:  // arrays, points and annotations are not curves
             break;
     }
     return out;
@@ -257,9 +255,7 @@ bool SubCurve(const Entity& e, double s0, double s1, Entity& out) {
             out.endAngle = f1;
             return true;
         }
-        case EntityType::Array:
-        case EntityType::Point:
-        case EntityType::Dimension:
+        default:
             return false;
     }
     return false;

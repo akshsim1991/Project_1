@@ -39,6 +39,7 @@ public:
     void DraftingChanged() override;
     void SetClipboard(const std::string& text) override;
     bool GetClipboard(std::string& text) override;
+    int EditText(TextData& text, const std::wstring& title) override;
 
 private:
     // One open drawing.
@@ -105,6 +106,9 @@ private:
 
     // dimensions and the clipboard
     void EditDimension(uint64_t id);
+    // Double-click: the dimension, text, leader or block's own editor.
+    void EditObject(uint64_t id);
+    void UpdateFields();
     void DimensionStyle();
     void ClipboardCommand(int id);
 
@@ -112,6 +116,9 @@ private:
     void ShowLayers();
     void UpdateLayerCombo();
     void UpdateProperties(bool force = false);
+    void AnnotationRows(const Entity& e, std::vector<PropertiesPanel::Row>& rows);
+    void AnnotPointRows(std::vector<PropertiesPanel::Row>& rows, const Entity& e, const wchar_t* lx, const wchar_t* ly, Vec2 p,
+                   std::function<void(Entity&, Vec2)> set);
     // Changes every selected object (one undo step).
     void ChangeSelected(const wchar_t* stepName, const std::function<void(Entity&)>& change);
 
@@ -145,4 +152,5 @@ private:
     int m_untitledCount = 0;
     std::wstring m_shownTitle;
     UINT m_clipFormat = 0;
+    FieldValues m_fields;  // shown in texts' {fields}
 };
