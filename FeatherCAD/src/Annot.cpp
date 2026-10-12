@@ -447,12 +447,12 @@ void LabelLayout(Sketch& k, const std::wstring& text) {
     double baseEnd = x, end = x;
     for (const LabelPart& p : parts) {
         if (p.prime) {  // a short slanted stroke at the top right of the letter
-            const double px = baseEnd + h * 0.1;
+            const double px = baseEnd + h * 0.02;  // the width estimate runs a little wide
             k.Seg({px + h * 0.04, h * 0.2}, {px + h * 0.22, h * 0.78});
             end = std::max(end, px + h * 0.32);
         } else if (p.sub) {
-            k.Text(p.text, {baseEnd, -h * 0.42}, 0, hs);
-            end = std::max(end, baseEnd + TextWidth(p.text, hs));
+            k.Text(p.text, {baseEnd - h * 0.06, -h * 0.42}, 0, hs);
+            end = std::max(end, baseEnd - h * 0.06 + TextWidth(p.text, hs));
         } else {
             const double at = std::max(end, baseEnd);
             k.Text(p.text, {at, 0}, 0, h);
