@@ -123,10 +123,25 @@ bool ClosedOutline(const Entity& e, std::vector<Vec2>& loop);
 void Tessellate(const Entity& e, std::vector<Vec2>& pts);
 
 // ---- blocks ------------------------------------------------------------------
+// A dynamic block's adjustable part (block coordinates).
+struct BlockParam {
+    enum Kind { Stretch, Flip } kind = Stretch;
+    std::wstring name;          // "Length", "Flip"
+    Vec2 base, dir{1, 0};       // Stretch: from base along dir (unit); Flip: the mirror line through base
+    double value = 0;           // Stretch: the distance as drawn (its grip at base + dir * value)
+    Box frame;                  // Stretch: points inside it move
+    std::vector<double> sizes;  // Stretch: the sizes allowed (empty: any)
+    bool operator==(const BlockParam& o) const {
+        return kind == o.kind && name == o.name && base == o.base && dir == o.dir && value == o.value && sizes == o.sizes &&
+               frame.minX == o.frame.minX && frame.minY == o.frame.minY && frame.maxX == o.frame.maxX && frame.maxY == o.frame.maxY;
+    }
+};
+
 struct BlockData {
     std::wstring name;
     Vec2 base;                  // where it hangs from when placed
     std::vector<Entity> items;  // attribute definitions are texts with a tag
+    std::vector<BlockParam> params;  // a dynamic block's stretches and flips
 };
 
 // A parts list (bill of materials): the blocks placed, grouped by their
@@ -160,6 +175,7 @@ struct Annot {
     HatchData hatch;                   // Hatch
     std::shared_ptr<const BlockData> block;  // Insert
     std::vector<std::wstring> values;  // Insert: its attributes' values, in order
+    std::vector<double> dyn;           // Insert of a dynamic block: each parameter's value (missing: as drawn)
     // Viewport (p0, p1: its corners on the sheet): the drawing point at its
     // centre, sheet millimetres per drawing unit, and whether it is locked.
     Vec2 viewCentre;
@@ -175,6 +191,14 @@ struct Annot {
         Cache& operator=(const Cache&) { segs.reset(); tooDense = false; return *this; }
     } cache;
 };
+
+// A dynamic block reference's value for parameter k (Stretch: the distance;
+// Flip: 0 or 1), and setting it (a Stretch to the nearest allowed size).
+double ParamValue(const Entity& insert, size_t k);
+bool SetParamValue(Entity& insert, size_t k, double value);
+// Drawing point <-> block point through a block reference.
+Vec2 InsertToBlock(const Entity& insert, Vec2 p);
+Vec2 BlockToInsert(const Entity& insert, Vec2 p);
 
 Entity MakeText(Vec2 at, TextData t);
 Entity MakeLeader(std::vector<Vec2> pts, TextData t, double arrow);

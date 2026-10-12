@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <charconv>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <cwctype>
 #include <functional>
@@ -1168,6 +1169,7 @@ void WriteEntity(const Entity& e, std::string& out, const Ordinals* ordinals = n
             num(e.p0.x); num(e.p0.y); num(e.radius); num(ToDegrees(e.startAngle)); num(e.closed ? 1 : 0);
             out += " name=" + EncodeWord(a.block ? a.block->name : L"?");
             for (const std::wstring& v : a.values) out += " v=" + EncodeWord(v);
+            for (double d : a.dyn) out += " d=" + FormatNumber(d);
             break;
         }
         case EntityType::Array: {
@@ -1240,10 +1242,25 @@ std::string DxfText(const std::wstring& w) {
 
 void WriteBlock(const BlockData& b, std::string& out) {
     out += "block " + FormatNumber(b.base.x) + " " + FormatNumber(b.base.y) + " " + std::to_string(b.items.size()) +
-           " name=" + EncodeWord(b.name) + "\n";
+           " name=" + EncodeWord(b.name) + (b.params.empty() ? "" : " params=" + std::to_string(b.params.size())) + "\n";
     for (const Entity& e : b.items) {
         WriteStyled(e, out, nullptr);
         out += '\n';
+    }
+    // A dynamic block's parameters: kind, base, direction, value, frame, name, sizes.
+    for (const BlockParam& p : b.params) {
+        out += "bparam " + std::to_string((int)p.kind);
+        const bool f = !p.frame.Empty();
+        for (double x : {p.base.x, p.base.y, p.dir.x, p.dir.y, p.value, f ? p.frame.minX : 0, f ? p.frame.minY : 0,
+                         f ? p.frame.maxX : 0, f ? p.frame.maxY : 0})
+            out += " " + FormatNumber(x);
+        out += " name=" + EncodeWord(p.name);
+        if (!p.sizes.empty()) {
+            std::wstring s;
+            for (double x : p.sizes) s += (s.empty() ? L"" : L",") + TextFromUtf8(FormatNumber(x));
+            out += " sizes=" + EncodeWord(s);
+        }
+        out += "\n";
     }
 }
 
@@ -1497,11 +1514,17 @@ struct Reader {
             if (!need(5)) return Fail(L"a block reference needs 5 numbers");
             auto b = std::make_shared<BlockData>();  // only its name: the block is found later
             std::vector<std::wstring> values;
+            std::vector<double> dyn;
             for (const std::string& word : w) {
                 if (word.compare(0, 5, "name=") == 0) b->name = DecodeWord(word.substr(5));
                 else if (word.compare(0, 2, "v=") == 0) values.push_back(DecodeWord(word.substr(2)));
+                else if (word.compare(0, 2, "d=") == 0) {
+                    double d;
+                    if (ParseNumber(word.substr(2), d)) dyn.push_back(d);
+                }
             }
             out = MakeInsert(b, {v[0], v[1]}, v[2], ToRadians(v[3]), std::move(values), v[4] != 0);
+            if (!dyn.empty()) EditAnnot(out).dyn = std::move(dyn);
             return true;
         }
         if (key == "line") {
@@ -1757,6 +1780,37 @@ bool Document::FromText(const std::string& text, std::wstring& error) {
                     return false;
                 }
                 if (k) b->items.push_back(std::move(item));
+            }
+            size_t nParams = 0;
+            for (const std::string& word : w)
+                if (word.compare(0, 7, "params=") == 0) nParams = (size_t)std::max(0, std::min(1000, std::atoi(word.c_str() + 7)));
+            for (size_t i = 0; i < nParams; ++i) {
+                std::vector<std::string> pw;
+                std::vector<double> pv;
+                if (!r.Next(pw) || pw.empty() || pw[0] != "bparam" || !r.Numbers(pw, 1, pv) || pv.size() < 10) {
+                    error = L"The block \"" + b->name + L"\" has a damaged parameter.";
+                    return false;
+                }
+                BlockParam p;
+                p.kind = pv[0] == 1 ? BlockParam::Flip : BlockParam::Stretch;
+                p.base = {pv[1], pv[2]};
+                p.dir = Normalized(Vec2{pv[3], pv[4]});
+                p.value = pv[5];
+                if (p.kind == BlockParam::Stretch) p.frame = Box({pv[6], pv[7]}, {pv[8], pv[9]});
+                for (const std::string& word : pw) {
+                    if (word.compare(0, 5, "name=") == 0) p.name = DecodeWord(word.substr(5));
+                    if (word.compare(0, 6, "sizes=") == 0) {
+                        const std::string list = TextToUtf8(DecodeWord(word.substr(6)));
+                        size_t at = 0;
+                        while (at <= list.size()) {
+                            const size_t comma = std::min(list.find(',', at), list.size());
+                            double d;
+                            if (ParseNumber(list.substr(at, comma - at), d) && d > 0) p.sizes.push_back(d);
+                            at = comma + 1;
+                        }
+                    }
+                }
+                b->params.push_back(p);
             }
             rawBlocks.push_back(std::move(b));
         } else if (key == "dimstyle") {
@@ -2338,6 +2392,17 @@ std::string Document::ToDxf(const Document* paper, Vec2 paperSize) const {
             case EntityType::Insert: {
                 if (!e.annot || !e.annot->block) break;
                 const BlockData& b = *e.annot->block;
+                // A dynamic block changed from how it was drawn: DXF cannot say how,
+                // so its objects are written as they look.
+                bool adjusted = false;
+                for (size_t k = 0; k < b.params.size(); ++k)
+                    adjusted |= ParamValue(e, k) != (b.params[k].kind == BlockParam::Stretch ? b.params[k].value : 0);
+                if (adjusted) {
+                    std::vector<Entity> parts;
+                    ExpandBlock(e, parts);
+                    for (const Entity& c : parts) write(c);
+                    break;
+                }
                 const std::vector<const TextData*> defs = AttributeDefs(b);
                 group(0, "INSERT");
                 common(e);

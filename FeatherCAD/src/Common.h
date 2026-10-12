@@ -211,6 +211,7 @@ enum : int {
     ID_PARTSLIST,
     // Version 1.8
     ID_SKETCH,
+    ID_BPARAM,
     // Help
     ID_COMMAND_LIST,
     ID_ABOUT,

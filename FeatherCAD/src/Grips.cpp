@@ -87,8 +87,15 @@ void GripsOf(const Entity& e, std::vector<Grip>& out) {
         case EntityType::Text:
         case EntityType::Leader:
         case EntityType::Hatch:
-        case EntityType::Insert:
         case EntityType::Relation:
+            break;
+        case EntityType::Insert:  // only a dynamic block's grips (moving is MOVE's job)
+            if (e.annot && e.annot->block && !e.annot->block->params.empty()) {
+                std::vector<std::pair<int, Vec2>> g;
+                AnnotGrips(e, g);
+                for (const auto& x : g)
+                    if (x.first >= 100) add(x.first, x.second);
+            }
             break;
         case EntityType::Viewport: {
             std::vector<std::pair<int, Vec2>> g;

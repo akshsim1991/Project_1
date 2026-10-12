@@ -162,6 +162,7 @@ const IdCommand kIdCommands[] = {
     {ID_WELD, L"WELD", nullptr},
     {ID_PARTSLIST, L"PARTSLIST", nullptr},
     {ID_SKETCH, L"SKETCH", nullptr},
+    {ID_BPARAM, L"BPARAM", nullptr},
     {ID_CIRCLE_TTR, L"CIRCLE", L"T"},
     {ID_LAYERS, L"LAYER", nullptr},
     {ID_PROPERTIES, L"PROPERTIES", nullptr},
@@ -1434,6 +1435,7 @@ HMENU MainWindow::BuildMenu(int menuId) {
             Append(m, ID_INSERT, L"&Insert block\tI");
             Append(m, ID_ATTDEF, L"&Attribute definition\tATT");
             Append(m, ID_ATTEDIT, L"Edit attri&butes\tATE");
+            Append(m, ID_BPARAM, L"Make a block a&djustable (stretch, flip)\tBPARAM");
             Append(m, ID_PURGE, L"&Purge unused blocks\tPU");
             break;
         case ID_MENU_FORMAT:
@@ -2358,6 +2360,35 @@ void MainWindow::AnnotationRows(const Entity& e, std::vector<PropertiesPanel::Ro
         m.label = L"Mirrored";
         m.checked = e.closed;
         add(m, [](Entity& x, const Row& ed) { return x.closed = ed.checked, true; });
+        // A dynamic block's adjustable parts.
+        if (!a.block->params.empty()) {
+            Row h;
+            h.heading = true;
+            h.label = L"Adjustable";
+            rows.push_back(h);
+        }
+        for (size_t k = 0; k < a.block->params.size(); ++k) {
+            const BlockParam& p = a.block->params[k];
+            const double scale = e.radius > 0 ? e.radius : 1;
+            if (p.kind == BlockParam::Flip) {
+                Row f;
+                f.kind = Row::Check;
+                f.label = p.name;
+                f.checked = ParamValue(e, k) != 0;
+                add(f, [k](Entity& x, const Row& ed) { return SetParamValue(x, k, ed.checked ? 1 : 0); });
+            } else if (!p.sizes.empty()) {
+                std::vector<std::wstring> names;
+                int now = -1;
+                for (size_t i = 0; i < p.sizes.size(); ++i) {
+                    names.push_back(Eng().Len(p.sizes[i] * scale));
+                    if (std::fabs(p.sizes[i] - ParamValue(e, k)) < 1e-9) now = (int)i;
+                }
+                const std::vector<double> sizes = p.sizes;
+                choice(p.name.c_str(), names, now, [k, sizes](Entity& x, int i) { return SetParamValue(x, k, sizes[(size_t)i]); });
+            } else {
+                number(p.name.c_str(), ParamValue(e, k) * scale, [k, scale](Entity& x, double v) { return SetParamValue(x, k, v / scale); });
+            }
+        }
         const std::vector<const TextData*> defs = AttributeDefs(*a.block);
         if (!defs.empty()) {
             Row h;

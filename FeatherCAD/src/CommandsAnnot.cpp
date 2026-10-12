@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cwctype>
+#include <sstream>
 
 #include "CommandUtil.h"
 #include "Curve.h"
@@ -1694,7 +1695,166 @@ public:
 };
 }  // namespace
 
+// ---------------------------------------------------------------------------
+// BPARAM: make a block adjustable (a dynamic block): a part that stretches,
+// with a list of sizes if wanted, or a flip about a line.
+// ---------------------------------------------------------------------------
+namespace {
+class BlockParamCmd : public Command {
+    enum Step { PickBlock, Kind, Base, Grip, Corner1, Corner2, Name, Sizes, Flip1, Flip2 } m_step = PickBlock;
+    uint64_t m_ins = 0;
+    BlockParam m_p;
+    Vec2 m_a, m_b, m_c1;
+    double m_scale = 1;
+
+    const Entity* Ins() const { return E->Doc().Find(m_ins); }
+    void Ask() {
+        switch (m_step) {
+            case PickBlock: return E->Ask(Pick(L"Select the placed block to make adjustable", kAcceptEmpty));
+            case Kind:
+                return E->Ask(P(L"What should change", kAcceptKeyword | kAcceptEmpty, {{L"S", L"Stretch"}, {L"F", L"Flip"}}, L"Stretch"));
+            case Base: return E->Ask(P(L"Specify the point that stays put", kAcceptPoint));
+            case Grip: return E->Ask(From(P(L"Specify the point that moves (its grip goes there)", kAcceptPoint), m_a));
+            case Corner1: return E->Ask(P(L"Specify a corner of a box round the part that moves", kAcceptPoint));
+            case Corner2: return E->Ask(From(P(L"Specify the opposite corner", kAcceptPoint), m_c1));
+            case Name:
+                return E->Ask(TextPrompt(L"Enter a name for it", 0, m_p.kind == BlockParam::Flip ? L"Flip" : L"Length"));
+            case Sizes: return E->Ask(TextPrompt(L"Enter the sizes allowed, such as 50 75 100 (Enter: any size)"));
+            case Flip1: return E->Ask(P(L"Specify a point on the line it flips about", kAcceptPoint));
+            case Flip2: return E->Ask(From(P(L"Specify another point on that line", kAcceptPoint), m_a));
+        }
+    }
+    void Make() {
+        const Entity* ins = Ins();
+        if (!ins || !ins->annot || !ins->annot->block) return E->Finish();
+        BlockData b = *ins->annot->block;
+        b.params.push_back(m_p);
+        Document& d = E->Doc();
+        d.BeginChange(L"Adjustable block");
+        d.DefineBlock(b);
+        d.EndChange();
+        E->Msg(m_p.kind == BlockParam::Flip
+                   ? L"Block \"" + b.name + L"\" can now be flipped: select it and click its flip grip."
+                   : L"Block \"" + b.name + L"\" can now be stretched: select it and drag its grip (or change " + m_p.name +
+                         L" in the Properties panel).");
+        E->Finish();
+    }
+
+public:
+    void Start() override { Ask(); }
+    void OnPoint(Vec2 p) override {
+        switch (m_step) {
+            case PickBlock: {
+                const uint64_t id = E->PickEntity(p, false);
+                const Entity* e = id ? E->Doc().Find(id) : nullptr;
+                if (!e || e->type != EntityType::Insert || !e->annot || !e->annot->block) return E->Msg(L"Pick a placed block.");
+                m_ins = id;
+                m_scale = e->radius > 0 ? e->radius : 1;
+                m_step = Kind;
+                return Ask();
+            }
+            case Base:
+                m_a = p;
+                m_step = Grip;
+                return Ask();
+            case Grip:
+                if (Near(p, m_a, 1e-9)) return;
+                m_b = p;
+                m_step = Corner1;
+                return Ask();
+            case Corner1:
+                m_c1 = p;
+                m_step = Corner2;
+                return Ask();
+            case Corner2: {
+                const Entity* ins = Ins();
+                if (!ins) return E->Finish();
+                m_p.kind = BlockParam::Stretch;
+                m_p.base = InsertToBlock(*ins, m_a);
+                const Vec2 g = InsertToBlock(*ins, m_b);
+                m_p.dir = Normalized(g - m_p.base);
+                m_p.value = Dist(g, m_p.base);
+                Box f;  // the box, in the block's own directions
+                for (Vec2 c : {m_c1, Vec2{m_c1.x, p.y}, p, Vec2{p.x, m_c1.y}}) f.Add(InsertToBlock(*ins, c));
+                m_p.frame = f;
+                m_step = Name;
+                return Ask();
+            }
+            case Flip1:
+                m_a = p;
+                m_step = Flip2;
+                return Ask();
+            case Flip2: {
+                const Entity* ins = Ins();
+                if (!ins || Near(p, m_a, 1e-9)) return;
+                m_p.kind = BlockParam::Flip;
+                m_p.base = InsertToBlock(*ins, m_a);
+                m_p.dir = Normalized(InsertToBlock(*ins, p) - m_p.base);
+                m_step = Name;
+                return Ask();
+            }
+            default:
+                return;
+        }
+    }
+    void OnKeyword(const std::wstring& k) override {
+        if (m_step != Kind) return;
+        m_step = k == L"F" ? Flip1 : Base;
+        Ask();
+    }
+    bool OnText(const std::wstring& s) override {
+        if (m_step == Name) {
+            m_p.name = s;
+            if (m_p.kind == BlockParam::Flip) {
+                Make();
+                return true;
+            }
+            m_step = Sizes;
+            Ask();
+            return true;
+        }
+        if (m_step == Sizes) {
+            std::string list = TextToUtf8(s);
+            for (char& c : list)
+                if (c == ',' || c == ';') c = ' ';
+            std::istringstream in(list);
+            std::string word;
+            while (in >> word) {
+                double v;
+                if (!ParseNumber(word, v) || v <= 0) {
+                    E->Msg(L"Sizes are numbers greater than 0, such as 50 75 100.");
+                    return true;
+                }
+                m_p.sizes.push_back(v / m_scale);  // the block's own units
+            }
+            std::sort(m_p.sizes.begin(), m_p.sizes.end());
+            Make();
+            return true;
+        }
+        return false;
+    }
+    void OnEnter() override {
+        switch (m_step) {
+            case PickBlock: return E->Finish();
+            case Kind: return OnKeyword(L"S");
+            case Name: OnText(m_p.kind == BlockParam::Flip ? L"Flip" : L"Length"); return;
+            case Sizes: return Make();
+            default: return;
+        }
+    }
+    void GetPreview(Vec2 c, Preview& out) override {
+        if (m_step == Corner2) {
+            Entity r = Entity::Rectangle(m_c1, c);
+            out.entities.push_back(r);
+        } else if (m_step == Grip || m_step == Flip2) {
+            out.guides.push_back({m_a, c});
+        }
+    }
+};
+}  // namespace
+
 std::unique_ptr<Command> CreateAnnotCommand(const std::wstring& name) {
+    if (name == L"BPARAM") return std::make_unique<BlockParamCmd>();
     if (name == L"FCF") return std::make_unique<SymbolCmd>(kFrameControl);
     if (name == L"DATUM") return std::make_unique<SymbolCmd>(kFrameDatum);
     if (name == L"SURFACE") return std::make_unique<SymbolCmd>(kFrameSurface);

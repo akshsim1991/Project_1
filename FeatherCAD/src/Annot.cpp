@@ -9,6 +9,7 @@
 #include <unordered_map>
 
 #include "Dimension.h"
+#include "Modify.h"
 #include "Spline.h"
 #include "Style.h"
 
@@ -1019,6 +1020,54 @@ bool BlockUses(const BlockData& b, const std::wstring& name, int depth) {
     return false;
 }
 
+double ParamValue(const Entity& ins, size_t k) {
+    if (ins.type != EntityType::Insert || !ins.annot || !ins.annot->block || k >= ins.annot->block->params.size()) return 0;
+    const BlockParam& p = ins.annot->block->params[k];
+    if (k < ins.annot->dyn.size()) return ins.annot->dyn[k];
+    return p.kind == BlockParam::Stretch ? p.value : 0;
+}
+
+bool SetParamValue(Entity& ins, size_t k, double v) {
+    if (ins.type != EntityType::Insert || !ins.annot || !ins.annot->block || k >= ins.annot->block->params.size()) return false;
+    const BlockParam& p = ins.annot->block->params[k];
+    if (p.kind == BlockParam::Flip) {
+        v = v != 0 ? 1 : 0;
+    } else {
+        if (!p.sizes.empty()) {
+            double best = p.sizes[0];
+            for (double s : p.sizes)
+                if (std::fabs(s - v) < std::fabs(best - v)) best = s;
+            v = best;
+        }
+        if (!(v > 1e-9)) return false;  // a length stays positive
+    }
+    Annot& a = EditAnnot(ins);
+    const auto& params = a.block->params;
+    if (a.dyn.size() < params.size())
+        for (size_t i = a.dyn.size(); i < params.size(); ++i) a.dyn.push_back(params[i].kind == BlockParam::Stretch ? params[i].value : 0);
+    a.dyn[k] = v;
+    return true;
+}
+
+Vec2 BlockToInsert(const Entity& ref, Vec2 p) {
+    const Vec2 base = ref.annot && ref.annot->block ? ref.annot->block->base : Vec2{0, 0};
+    Vec2 q = p - base;
+    if (ref.closed) q.x = -q.x;
+    q = q * (ref.radius > 0 ? ref.radius : 1);
+    const double c = std::cos(ref.startAngle), s = std::sin(ref.startAngle);
+    return ref.p0 + Vec2{q.x * c - q.y * s, q.x * s + q.y * c};
+}
+
+Vec2 InsertToBlock(const Entity& ref, Vec2 p) {
+    const Vec2 base = ref.annot && ref.annot->block ? ref.annot->block->base : Vec2{0, 0};
+    const Vec2 d = p - ref.p0;
+    const double c = std::cos(ref.startAngle), s = std::sin(ref.startAngle);
+    Vec2 q{d.x * c + d.y * s, -d.x * s + d.y * c};
+    q = q * (1 / (ref.radius > 0 ? ref.radius : 1));
+    if (ref.closed) q.x = -q.x;
+    return q + base;
+}
+
 void ExpandBlock(const Entity& ref, std::vector<Entity>& out, int depth, bool deep) {
     if (ref.type != EntityType::Insert || !ref.annot || !ref.annot->block || depth > 16) return;
     const BlockData& b = *ref.annot->block;
@@ -1027,6 +1076,16 @@ void ExpandBlock(const Entity& ref, std::vector<Entity>& out, int depth, bool de
     for (const Entity& item : b.items) {
         Entity x = item;
         x.id = ref.id;
+        // A dynamic block's stretches, then its flips, in block coordinates.
+        for (size_t k = 0; k < b.params.size(); ++k) {
+            const BlockParam& p = b.params[k];
+            const double v = ParamValue(ref, k);
+            if (p.kind == BlockParam::Stretch && v != p.value) StretchEntity(x, p.frame, p.dir * (v - p.value));
+        }
+        for (size_t k = 0; k < b.params.size(); ++k) {
+            const BlockParam& p = b.params[k];
+            if (p.kind == BlockParam::Flip && ParamValue(ref, k) != 0) Mirror(x, p.base, p.base + p.dir);
+        }
         if (x.type == EntityType::Text && x.annot && !x.annot->text.tag.empty()) {
             Annot& a = EditAnnot(x);
             if (attr < ref.annot->values.size()) a.text.content = ref.annot->values[attr];
@@ -1440,8 +1499,20 @@ void AnnotGrips(const Entity& e, std::vector<std::pair<int, Vec2>>& out) {
     if (!e.annot) return;
     switch (e.type) {
         case EntityType::Text:
+            out.push_back({0, e.p0});
+            break;
         case EntityType::Insert:
             out.push_back({0, e.p0});
+            // A dynamic block's grips: where each stretch ends, and each flip line.
+            if (e.annot->block)
+                for (size_t k = 0; k < e.annot->block->params.size(); ++k) {
+                    const BlockParam& p = e.annot->block->params[k];
+                    if (p.kind == BlockParam::Stretch) {
+                        out.push_back({100 + (int)k, BlockToInsert(e, p.base + p.dir * ParamValue(e, k))});
+                    } else {
+                        out.push_back({200 + (int)k, BlockToInsert(e, p.base)});  // on the flip line
+                    }
+                }
             break;
         case EntityType::Leader:
             for (size_t i = 0; i < e.annot->pts.size(); ++i) out.push_back({(int)i, e.annot->pts[i]});
@@ -1472,6 +1543,15 @@ bool DragAnnotGrip(Entity& e, int index, Vec2 from, Vec2 to) {
         a.pts[(size_t)index] = to;
         e.p0 = a.pts[0];
         return true;
+    }
+    if (e.type == EntityType::Insert && index >= 100 && e.annot->block) {
+        const size_t k = (size_t)(index % 100);
+        if (k >= e.annot->block->params.size()) return false;
+        const BlockParam& p = e.annot->block->params[k];
+        if (index >= 200) return SetParamValue(e, k, ParamValue(e, k) != 0 ? 0 : 1);  // a flip grip: flip over
+        // Later stretches move this one's grip; earlier flips are not undone here: the
+        // grip's distance is measured in the block as drawn.
+        return SetParamValue(e, k, Dot(InsertToBlock(e, to) - p.base, p.dir));
     }
     if (e.type == EntityType::Viewport && index >= 0 && index < 4) {
         // A corner: the opposite one stays; the drawing stays where it is on the sheet.

@@ -120,6 +120,20 @@ void Engine::Run(const std::wstring& name) {
 void Engine::StartGripEdit(const Grip& hot) {
     DeferredDelete guard{g_dead};
     if (m_cmd || m_selection.empty()) return;
+    // A dynamic block's flip grip: one click flips it over.
+    if (hot.index >= 200) {
+        const Entity* e = m_doc.Find(hot.id);
+        if (e && e->type == EntityType::Insert) {
+            Entity x = *e;
+            const size_t k = (size_t)(hot.index - 200);
+            if (SetParamValue(x, k, ParamValue(x, k) != 0 ? 0 : 1)) {
+                m_doc.BeginChange(L"Flip");
+                m_doc.Replace(x);
+                m_doc.EndChange();
+            }
+            return;
+        }
+    }
     m_cmd = CreateGripEdit({m_selection.begin(), m_selection.end()}, hot);
     m_cmdName = L"GRIP";
     m_cmd->E = this;

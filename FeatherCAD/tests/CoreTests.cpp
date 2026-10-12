@@ -2918,6 +2918,75 @@ void TestFreeSketch() {
     CHECK(!e.Active());
 }
 
+void TestDynamicBlocks() {
+    Document doc;
+    TestHost host;
+    Engine e(doc, host);
+    BlockData plate;
+    plate.name = L"PLATE";
+    plate.items.push_back(Entity::Rectangle({0, 0}, {100, 20}));
+    plate.items.push_back(Entity::Circle({90, 10}, 4));  // a hole near the right end
+    const auto def = doc.DefineBlock(plate);
+    const uint64_t ins = doc.Add(MakeInsert(def, {200, 0}, 1, 0, {}));
+    // BPARAM: the right end stretches, in sizes 150 or 200.
+    Type(e, {L"bparam"});
+    e.Point({250, 0});
+    Type(e, {L"", L"200,10", L"300,10", L"280,-5", L"310,25", L"", L"150 200"});
+    CHECK(!e.Active());
+    const Entity* in = doc.Find(ins);
+    CHECK(in && in->annot->block->params.size() == 1 && in->annot->block->params[0].sizes.size() == 2);
+    CHECK(Close(ParamValue(*in, 0), 100));
+    // Its grip, dragged to 160: the nearest size allowed, 150.
+    std::vector<Grip> grips;
+    GripsOf(*in, grips);
+    CHECK(grips.size() == 1 && grips[0].index == 100 && Close(grips[0].p, {300, 10}));
+    Entity x = *in;
+    CHECK(DragGrip(x, 100, {300, 10}, {360, 12}));
+    CHECK(Close(ParamValue(x, 0), 150));
+    std::vector<Entity> parts;
+    ExpandBlock(x, parts);
+    Box b;
+    for (const Entity& p : parts) b.Add(Bounds(p));
+    CHECK(Close(b.maxX, 350) && Close(b.minX, 200));
+    bool holeMoved = false;
+    for (const Entity& p : parts) holeMoved |= p.type == EntityType::Circle && Close(p.p0, {340, 10});
+    CHECK(holeMoved);
+    doc.BeginChange(L"Stretch");
+    doc.Replace(x);
+    doc.EndChange();
+    // A flip about the plate's middle, upright.
+    Type(e, {L"bparam"});
+    e.Point({200, 5});
+    Type(e, {L"f", L"275,0", L"275,20", L"Turn"});
+    in = doc.Find(ins);
+    CHECK(in->annot->block->params.size() == 2 && in->annot->block->params[1].name == L"Turn");
+    CHECK(Close(ParamValue(*in, 0), 150) && ParamValue(*in, 1) == 0);
+    x = *in;
+    CHECK(SetParamValue(x, 1, 1));
+    parts.clear();
+    ExpandBlock(x, parts);
+    holeMoved = false;  // the hole (stretched to block x 140), mirrored about block x 75: block x 10, drawing 210
+    for (const Entity& p : parts) holeMoved |= p.type == EntityType::Circle && Close(p.p0, {210, 10});
+    CHECK(holeMoved);
+    // A stretch that is not a size allowed is refused; a negative one too.
+    Entity y = *in;
+    CHECK(SetParamValue(y, 0, 199) && Close(ParamValue(y, 0), 200));
+    // Kept in the file.
+    doc.BeginChange(L"Flip");
+    doc.Replace(x);
+    doc.EndChange();
+    const std::string text = doc.ToText();
+    Document back;
+    std::wstring err;
+    CHECK(back.FromText(text, err) && back.ToText() == text);
+    const Entity* bi = FirstOf(back, EntityType::Insert);
+    CHECK(bi && bi->annot->block->params.size() == 2 && Close(ParamValue(*bi, 0), 150) && ParamValue(*bi, 1) == 1);
+    CHECK(bi && bi->annot->block->params[0].sizes == std::vector<double>({150, 200}));
+    // DXF: an adjusted block is written as the objects it shows.
+    const std::string dxf = doc.ToDxf();
+    CHECK(dxf.find("\nINSERT\n") == std::string::npos && dxf.find("CIRCLE") != std::string::npos);
+}
+
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);  // failures show even if a later check crashes
     TestAngles();
@@ -2958,6 +3027,7 @@ int main() {
     TestSymbols();
     TestEasierUse();
     TestFreeSketch();
+    TestDynamicBlocks();
     std::printf("%d checks, %d failed\n", g_checks, g_failures);
     return g_failures;
 }
