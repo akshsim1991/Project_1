@@ -5,7 +5,9 @@
 
 #include "CommandUtil.h"
 #include "Dimension.h"
+#include "FreeSketch.h"
 #include "Grips.h"
+#include "Relate.h"
 #include "Select.h"
 #include "Spline.h"
 
@@ -569,7 +571,97 @@ public:
 };
 }  // namespace
 
+// ---------------------------------------------------------------------------
+// SKETCH (FreeSketch): draw with the mouse button held; each stroke becomes a
+// line, arc, circle or polyline, its ends joined to what is near them.
+// ---------------------------------------------------------------------------
+namespace {
+class SketchCmd : public Command {
+    // The nearest end, middle or centre of another object within `r` of p.
+    bool NearPoint(Vec2 p, double r, Vec2& out, bool centresOnly = false) const {
+        double best = r;
+        bool found = false;
+        std::vector<Grip> grips;
+        for (const auto& kv : E->Doc().Entities()) {
+            const Entity& o = kv.second;
+            if (IsAnnotation(o) || o.type == EntityType::Insert || o.type == EntityType::Array || !E->Doc().Visible(o)) continue;
+            if (!Bounds(o).Inflated(r).Contains(p)) continue;
+            grips.clear();
+            GripsOf(o, grips);
+            for (const Grip& g : grips) {
+                if (centresOnly && !((o.type == EntityType::Circle || o.type == EntityType::Arc) && g.index == 0)) continue;
+                if (const double d = Dist(g.p, p); d < best) best = d, out = g.p, found = true;
+            }
+        }
+        return found;
+    }
+
+public:
+    void Start() override {
+        Prompt p = P(L"Hold the left mouse button down and draw: lines, arcs and circles are tidied up for you",
+                     kAcceptPoint | kAcceptEmpty);
+        p.freehand = true;
+        E->Ask(p);
+    }
+    void OnPoint(Vec2) override { E->Msg(L"Keep the left button held down while you draw, then let go."); }
+    void OnStroke(const std::vector<Vec2>& stroke) override {
+        const double pick = E->Host().PickRadius();
+        StrokeOptions o;
+        o.tol = pick * 1.5;
+        std::vector<Entity> made = RecognizeStroke(stroke, o);
+        if (made.empty()) return;
+        const double join = pick * 2.5;
+        for (Entity& e : made) {
+            Vec2 q;
+            switch (e.type) {
+                case EntityType::Line: {
+                    const bool level = std::fabs(e.p0.y - e.p1.y) < 1e-9, upright = std::fabs(e.p0.x - e.p1.x) < 1e-9;
+                    const bool a = NearPoint(e.p0, join, q);
+                    if (a) e.p0 = q;
+                    const bool b = NearPoint(e.p1, join, q);
+                    if (b) e.p1 = q;
+                    if (a != b) {  // one end joined: the line stays level or upright
+                        if (level) (a ? e.p1.y : e.p0.y) = a ? e.p0.y : e.p1.y;
+                        if (upright) (a ? e.p1.x : e.p0.x) = a ? e.p0.x : e.p1.x;
+                    }
+                    break;
+                }
+                case EntityType::Circle:
+                    if (NearPoint(e.p0, join, q, true)) e.p0 = q;  // on another centre
+                    break;
+                case EntityType::Polyline:
+                    if (!e.closed && e.verts.size() >= 2) {
+                        if (NearPoint(e.verts.front().p, join, q)) e.verts.front().p = q;
+                        if (NearPoint(e.verts.back().p, join, q)) e.verts.back().p = q;
+                    }
+                    break;
+                default:
+                    break;
+            }
+        }
+        Document& d = E->Doc();
+        d.BeginChange(L"Sketch");
+        std::wstring what;
+        for (Entity& e : made) {
+            if (e.type == EntityType::Line && Near(e.p0, e.p1, 1e-9)) continue;
+            const uint64_t id = d.Add(e);
+            if (e.type == EntityType::Line && d.Settings().autoRelations) AutoRelate(d, id);
+            switch (e.type) {
+                case EntityType::Line: what = L"a line " + E->Len(Dist(e.p0, e.p1)) + L" long"; break;
+                case EntityType::Circle: what = L"a circle, radius " + E->Len(e.radius); break;
+                case EntityType::Arc: what = L"an arc, radius " + E->Len(e.radius); break;
+                default: what = e.closed ? L"a closed shape of " + std::to_wstring(e.verts.size()) + L" sides"
+                                         : L"a polyline of " + std::to_wstring(e.verts.size() - 1) + L" pieces";
+            }
+        }
+        d.EndChange();
+        if (!what.empty()) E->Msg(L"Sketched " + what + L". Draw the next one, or click Done.");
+    }
+};
+}  // namespace
+
 std::unique_ptr<Command> CreateDrawCommand(const std::wstring& name) {
+    if (name == L"SKETCH") return std::make_unique<SketchCmd>();
     if (name == L"MATCHPROP") return std::make_unique<MatchPropCmd>();
     if (name == L"CONSTRUCTION") return std::make_unique<ConstructionCmd>();
     if (name == L"ORIGIN") return std::make_unique<OriginCmd>();

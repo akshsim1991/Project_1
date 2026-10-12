@@ -1083,6 +1083,7 @@ const std::vector<CommandInfo>& AllCommands() {
         {L"SURFACE", {L"SURFTEXT", L"ROUGHNESS"}, L"Surface texture", L"A surface texture symbol with its roughness (Ra)"},
         {L"WELD", {L"WELDSYMBOL"}, L"Weld symbol", L"A weld symbol on a leader: fillet, square, V, bevel, plug or spot, size and length"},
         {L"PARTSLIST", {L"BOM"}, L"Parts list", L"A table of the parts (blocks) placed, counted; run it again to bring it up to date"},
+        {L"SKETCH", {L"FREESKETCH", L"FS"}, L"FreeSketch", L"Draw freehand with the mouse: lines, arcs, circles and shapes are tidied up for you"},
         {L"HORIZONTAL", {L"HOR"}, L"Horizontal", L"Keep a line horizontal (a relationship)"},
         {L"VERTICAL", {L"VER"}, L"Vertical", L"Keep a line vertical (a relationship)"},
         {L"PARALLEL", {L"PAR"}, L"Parallel", L"Keep two lines parallel (the second one turns)"},

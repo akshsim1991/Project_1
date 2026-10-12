@@ -12,6 +12,7 @@
 #include "DxfImport.h"
 #include "Engine.h"
 #include "Expr.h"
+#include "FreeSketch.h"
 #include "Grips.h"
 #include "Modify.h"
 #include "Plot.h"
@@ -2832,6 +2833,91 @@ void TestEasierUse() {
     CHECK(Close(ScreenLineWidth(kDefaultLineWeight), 1) && Close(ScreenLineWidth(kLwDefault), 1) && ScreenLineWidth(50) >= 3);
 }
 
+// A hand-drawn stroke: points along a path with a small wobble.
+std::vector<Vec2> Wobbly(const std::function<Vec2(double)>& path, int n, double wobble) {
+    std::vector<Vec2> pts;
+    for (int i = 0; i <= n; ++i) {
+        const double t = (double)i / n;
+        const Vec2 p = path(t);
+        pts.push_back(p + Vec2{wobble * std::sin(i * 1.7), wobble * std::cos(i * 2.3)});
+    }
+    return pts;
+}
+
+void TestFreeSketch() {
+    StrokeOptions o;
+    o.tol = 1.5;
+    // A nearly level line: exactly level.
+    auto r = RecognizeStroke(Wobbly([](double t) { return Vec2{100 * t, 3 * t}; }, 40, 0.6), o);
+    CHECK(r.size() == 1 && r[0].type == EntityType::Line && Close(r[0].p0.y, r[0].p1.y) && Close(Dist(r[0].p0, r[0].p1), 100, 1.5));
+    // A slanted line stays slanted.
+    r = RecognizeStroke(Wobbly([](double t) { return Vec2{60 * t, 60 * t}; }, 40, 0.5), o);
+    CHECK(r.size() == 1 && r[0].type == EntityType::Line && Close(AngleOf(r[0].p1 - r[0].p0), kPi / 4, 0.05));
+    // A circle drawn round once.
+    r = RecognizeStroke(Wobbly([](double t) { return Polar({50, 50}, 30, t * kTau * 1.02); }, 80, 1.0), o);
+    CHECK(r.size() == 1 && r[0].type == EntityType::Circle && Close(r[0].p0, {50, 50}, 1.5) && Close(r[0].radius, 30, 1.5));
+    // Half a circle: an arc, counter-clockwise from 0 to 180 degrees.
+    r = RecognizeStroke(Wobbly([](double t) { return Polar({0, 0}, 40, t * kPi); }, 60, 0.6), o);
+    CHECK(r.size() == 1 && r[0].type == EntityType::Arc && Close(r[0].radius, 40, 1.5));
+    CHECK(r.size() == 1 && Close(r[0].startAngle, 0, 0.05) && Close(r[0].endAngle, kPi, 0.05));
+    // The same drawn the other way round is the same arc.
+    r = RecognizeStroke(Wobbly([](double t) { return Polar({0, 0}, 40, kPi - t * kPi); }, 60, 0.6), o);
+    CHECK(r.size() == 1 && r[0].type == EntityType::Arc && Close(r[0].startAngle, 0, 0.05) && Close(r[0].endAngle, kPi, 0.05));
+    // An L: a polyline of two lines, level and upright.
+    r = RecognizeStroke(Wobbly([](double t) { return t < 0.5 ? Vec2{0, 80 - 160 * t} : Vec2{(t - 0.5) * 200, 1}; }, 60, 0.5), o);
+    CHECK(r.size() == 1 && r[0].type == EntityType::Polyline && r[0].verts.size() == 3 && !r[0].closed);
+    if (r.size() == 1 && r[0].verts.size() == 3) {
+        CHECK(Close(r[0].verts[0].p.x, r[0].verts[1].p.x) && Close(r[0].verts[1].p.y, r[0].verts[2].p.y));
+        CHECK(Close(r[0].verts[1].p, {0, 0}, 3));
+    }
+    // A rectangle drawn in one go: a closed polyline of four, square.
+    auto rect = [](double t) {
+        const double s = t * 4;
+        if (s < 1) return Vec2{100 * s, 0};
+        if (s < 2) return Vec2{100, 60 * (s - 1)};
+        if (s < 3) return Vec2{100 - 100 * (s - 2), 60};
+        return Vec2{0, 60 - 60 * (s - 3)};
+    };
+    r = RecognizeStroke(Wobbly(rect, 120, 0.6), o);
+    CHECK(r.size() == 1 && r[0].type == EntityType::Polyline && r[0].closed && r[0].verts.size() == 4);
+    if (r.size() == 1 && r[0].verts.size() == 4) {
+        const auto& v = r[0].verts;
+        for (size_t i = 0; i < 4; ++i) {
+            const Vec2 d = v[(i + 1) % 4].p - v[i].p;
+            CHECK(Close(d.x, 0) || Close(d.y, 0));
+        }
+    }
+    // A line then a bend: a line and an arc in one polyline.
+    r = RecognizeStroke(Wobbly([](double t) { return t < 0.5 ? Vec2{200 * t, 0} : Polar({100, 40}, 40, -kPi / 2 + (t - 0.5) * 2 * kPi / 2); }, 80, 0.4), o);
+    CHECK(r.size() == 1 && r[0].type == EntityType::Polyline && r[0].verts.size() == 3);
+    if (r.size() == 1 && r[0].verts.size() == 3) CHECK(r[0].verts[0].bulge == 0 && r[0].verts[1].bulge > 0.2);
+    // Too short: nothing.
+    CHECK(RecognizeStroke({{0, 0}, {0.5, 0}}, o).empty());
+
+    // The SKETCH command: strokes added, ends joined to what is near.
+    Document doc;
+    TestHost host;  // pick radius 0.5
+    Engine e(doc, host);
+    Type(e, {L"autorel"});
+    Type(e, {L"fs"});
+    CHECK(e.Active() && e.WantsStroke());
+    e.Stroke(Wobbly([](double t) { return Vec2{100 * t, 0.8 * t}; }, 60, 0.15));
+    CHECK(doc.Count() >= 2 && FirstOf(doc, EntityType::Line) && CountOf(doc, EntityType::Relation) == 1);  // level
+    // An upright stroke starting near the line's end joins it there.
+    e.Stroke(Wobbly([](double t) { return Vec2{100.6 + 0.5 * t, 0.7 + 50 * t}; }, 60, 0.15));
+    const Entity& up = Last(doc).type == EntityType::Line ? Last(doc) : *FirstOf(doc, EntityType::Line);
+    size_t lines = 0;
+    for (const auto& kv : doc.Entities()) lines += kv.second.type == EntityType::Line;
+    CHECK(lines == 2);
+    std::vector<const Entity*> ls;
+    for (const auto& kv : doc.Entities())
+        if (kv.second.type == EntityType::Line) ls.push_back(&kv.second);
+    CHECK(ls.size() == 2 && Close(ls[1]->p0, ls[0]->p1) && Close(ls[1]->p0.x, ls[1]->p1.x) && Close(ls[0]->p0.y, ls[0]->p1.y));
+    (void)up;
+    e.Enter();  // Done
+    CHECK(!e.Active());
+}
+
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);  // failures show even if a later check crashes
     TestAngles();
@@ -2871,6 +2957,7 @@ int main() {
     TestRelations();
     TestSymbols();
     TestEasierUse();
+    TestFreeSketch();
     std::printf("%d checks, %d failed\n", g_checks, g_failures);
     return g_failures;
 }

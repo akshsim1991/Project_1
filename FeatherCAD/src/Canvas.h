@@ -170,6 +170,9 @@ private:
     SnapResult m_snapHit;
     uint64_t m_hover = 0;
     bool m_panning = false;
+    bool m_stroking = false;          // a FreeSketch stroke is being drawn
+    std::vector<Vec2> m_stroke;       // its points (drawing coordinates)
+    POINT m_strokeStart{};
     POINT m_panLast{};
     bool m_windowOn = false, m_windowDragged = false;
     POINT m_windowStart{};

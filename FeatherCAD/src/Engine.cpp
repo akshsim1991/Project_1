@@ -204,6 +204,12 @@ void Engine::Point(Vec2 p, bool shift) {
     Accepted(p);
 }
 
+void Engine::Stroke(const std::vector<Vec2>& pts) {
+    DeferredDelete guard{g_dead};
+    if (!WantsStroke()) return;
+    m_cmd->OnStroke(pts);
+}
+
 uint64_t Engine::PickEntity(Vec2 p, bool lockedToo) const {
     const double tol = m_host.PickRadius();
     const Box box = Box(p, p).Inflated(tol);

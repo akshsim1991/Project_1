@@ -209,6 +209,8 @@ enum : int {
     ID_SURFACE,
     ID_WELD,
     ID_PARTSLIST,
+    // Version 1.8
+    ID_SKETCH,
     // Help
     ID_COMMAND_LIST,
     ID_ABOUT,

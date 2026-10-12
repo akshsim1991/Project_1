@@ -161,6 +161,7 @@ const IdCommand kIdCommands[] = {
     {ID_SURFACE, L"SURFACE", nullptr},
     {ID_WELD, L"WELD", nullptr},
     {ID_PARTSLIST, L"PARTSLIST", nullptr},
+    {ID_SKETCH, L"SKETCH", nullptr},
     {ID_CIRCLE_TTR, L"CIRCLE", L"T"},
     {ID_LAYERS, L"LAYER", nullptr},
     {ID_PROPERTIES, L"PROPERTIES", nullptr},
@@ -1305,6 +1306,8 @@ HMENU MainWindow::BuildMenu(int menuId) {
             break;
         }
         case ID_MENU_DRAW: {
+            Append(m, ID_SKETCH, L"&FreeSketch (draw by hand)\tFS");
+            Separator(m);
             Append(m, ID_LINE, L"&Line\tL");
             Append(m, ID_PLINE, L"&Polyline\tPL");
             Append(m, ID_TANLINE, L"&Tangent line (two circles)\tTL");

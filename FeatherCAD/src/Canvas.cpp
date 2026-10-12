@@ -1082,6 +1082,11 @@ void Canvas::RenderOverlay() {
         for (const Entity& e : m_preview.entities) ptrs.push_back(&e);
         DrawEntities(rt, ptrs, m_previewInk, 1.0f, nullptr);
     }
+    // A FreeSketch stroke as it is drawn.
+    if (m_stroking && m_stroke.size() >= 2) {
+        m_brush->SetColor(m_previewInk);
+        for (size_t i = 1; i < m_stroke.size(); ++i) rt->DrawLine(ToScreen(m_stroke[i - 1]), ToScreen(m_stroke[i]), m_brush, 2.0f);
+    }
     for (const auto& g : m_preview.guides) {
         m_brush->SetColor(m_guide);
         rt->DrawLine(ToScreen(g.first), ToScreen(g.second), m_brush, 1.0f, m_dashed);
@@ -1183,6 +1188,12 @@ void Canvas::OnMouseMove(int x, int y, WPARAM keys) {
     }
     m_mouse = {x, y};
     m_raw = ToWorld(x, y);
+    if (m_stroking) {  // FreeSketch: follow the hand, no snapping
+        if (m_stroke.empty() || Dist(m_stroke.back(), m_raw) * m_scale >= 1.5) m_stroke.push_back(m_raw);
+        m_tracked = m_raw;
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
     m_snapHit = SnapResult{};
     m_hover = 0;
     const bool shift = (keys & MK_SHIFT) || (GetKeyState(VK_SHIFT) < 0);
@@ -1274,6 +1285,14 @@ void Canvas::OnLeftDown(int x, int y, WPARAM keys) {
         SetCapture(m_hwnd);
         return;
     }
+    if (m_engine->WantsStroke()) {
+        m_stroking = true;
+        m_stroke.clear();
+        m_strokeStart = {x, y};
+        m_stroke.push_back(ToWorld(x, y));
+        SetCapture(m_hwnd);
+        return;
+    }
     if (m_engine->WantsPoint()) {
         OnMouseMove(x, y, keys);
         m_engine->Point(m_tracked, shift);
@@ -1313,6 +1332,19 @@ void Canvas::OnLeftDown(int x, int y, WPARAM keys) {
 }
 
 void Canvas::OnLeftUp(int x, int y, WPARAM keys) {
+    if (m_stroking) {
+        m_stroking = false;
+        if (GetCapture() == m_hwnd) ReleaseCapture();
+        std::vector<Vec2> stroke;
+        stroke.swap(m_stroke);
+        stroke.push_back(ToWorld(x, y));
+        const bool click = std::abs(x - m_strokeStart.x) + std::abs(y - m_strokeStart.y) < 4 && stroke.size() < 6;
+        if (click) m_engine->Point(stroke.front(), false);
+        else m_engine->Stroke(stroke);
+        Notify();
+        Refresh();
+        return;
+    }
     if (m_panning && m_engine->PanMode()) {
         m_panning = false;
         ReleaseCapture();
@@ -1449,6 +1481,10 @@ LRESULT Canvas::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         case WM_CAPTURECHANGED:
             if ((HWND)lp != m_hwnd) {
                 m_panning = false;
+                if (m_stroking) {  // lost the mouse part way: the stroke is dropped
+                    m_stroking = false;
+                    m_stroke.clear();
+                }
                 if (m_windowOn && m_windowDragged) m_windowOn = false;
             }
             return 0;

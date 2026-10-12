@@ -41,6 +41,7 @@ struct Prompt {
     Vec2 base;
     bool pickObject = false;  // the click picks an object (pick box, no object snaps)
     bool spaces = false;      // typed text may contain spaces (space does not act as Enter)
+    bool freehand = false;    // dragging with the button held draws a stroke (FreeSketch)
     std::wstring FullText() const;  // "Specify next point or [Close/Undo] <10.00>:"
 };
 
@@ -130,6 +131,7 @@ public:
     void StartGripEdit(const Grip& hot);
     void Text(const std::wstring& typed);  // Enter in the command line
     void Point(Vec2 p, bool shift = false);  // a click in the drawing (Shift held?)
+    void Stroke(const std::vector<Vec2>& pts);  // a freehand stroke (prompt.freehand)
     void Enter();                          // Enter / Space / right-click "Enter"
     void Cancel();                         // Esc
     void Keyword(const std::wstring& key); // an option chosen from a menu
@@ -139,6 +141,7 @@ public:
     std::wstring ActiveName() const { return m_cmdName; }
     const Prompt& CurrentPrompt() const { return m_prompt; }
     bool WantsPoint() const { return m_cmd && (m_prompt.accept & kAcceptPoint); }
+    bool WantsStroke() const { return WantsPoint() && m_prompt.freehand; }
     // Clicks pick objects (while selecting for a command, or with no command).
     bool WantsSelection() const { return !m_cmd || m_selecting; }
     bool PanMode() const { return m_panMode; }
@@ -235,6 +238,7 @@ public:
     virtual bool OnText(const std::wstring&) { return false; }
     virtual void OnCancel() {}  // before the engine ends the command
     virtual void GetPreview(Vec2, Preview&) {}
+    virtual void OnStroke(const std::vector<Vec2>&) {}
 
     Engine* E = nullptr;
 };
