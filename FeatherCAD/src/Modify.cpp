@@ -815,7 +815,7 @@ bool Explode(const Entity& e, std::vector<Entity>& out) {
         }
         return true;
     }
-    if (e.type == EntityType::Text && e.annot) {  // one text per line
+    if (e.type == EntityType::Text && e.annot && e.annot->text.frame < kFrameControl) {  // one text per line
         AnnotGraphics g;
         LayoutText(e.annot->text, e.p0, nullptr, g);
         if (g.texts.size() < 2) return false;

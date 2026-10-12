@@ -23,7 +23,9 @@ struct TextData {
     double widthFactor = 1;      // wider (> 1) or narrower letters
     double lineSpacing = 1;      // times the normal spacing (1.6667 x height)
     int justify = 0;             // 0 top left, 1 top centre, 2 top right, 3-5 middle, 6-8 bottom
-    int frame = 0;               // 0 none, 1 box, 2 circle (a balloon)
+    // 0 none, 1 box, 2 circle (a balloon); symbols made of the content:
+    // 3 feature control frame, 4 datum, 5 surface texture, 6 weld.
+    int frame = 0;
     std::wstring tag, prompt;    // an attribute definition: its tag and question
     bool operator==(const TextData& o) const {
         return content == o.content && font == o.font && height == o.height && rotation == o.rotation &&
@@ -57,6 +59,16 @@ struct AnnotGraphics {
     std::vector<TextItem> texts;
     std::vector<std::array<Vec2, 4>> boxes;  // around each text (for picking)
 };
+
+// Geometric tolerance characteristics, for feature control frames.
+struct GdtSymbol {
+    const wchar_t* name;       // POSITION
+    const wchar_t* shortName;  // POS
+    const wchar_t* description;
+};
+const std::vector<GdtSymbol>& GdtSymbols();
+int FindGdtSymbol(const std::wstring& name);  // -1 if none
+enum : int { kFrameNone, kFrameBox, kFrameCircle, kFrameControl, kFrameDatum, kFrameSurface, kFrameWeld };
 
 // Text laid out at `at` (its insertion point).
 void LayoutText(const TextData& t, Vec2 at, const FieldValues* fields, AnnotGraphics& g);
@@ -116,6 +128,17 @@ struct BlockData {
     Vec2 base;                  // where it hangs from when placed
     std::vector<Entity> items;  // attribute definitions are texts with a tag
 };
+
+// A parts list (bill of materials): the blocks placed, grouped by their
+// PN (or PART) attribute or else their name, with DESC and MATERIAL.
+struct PartsRow {
+    std::wstring part, description, material;
+    int qty = 1;
+};
+class Document;
+std::vector<PartsRow> CountParts(const Document& doc);
+// The table as a block (PARTS_LIST) hanging from its top left corner.
+BlockData PartsListBlock(const std::vector<PartsRow>& rows, double textHeight);
 
 // ---- relationships (Relate.h) ---------------------------------------------------
 enum class RelKind : uint8_t {

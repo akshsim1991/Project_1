@@ -1007,7 +1007,7 @@ void ReadTextWords(const std::vector<std::string>& w, TextData& t) {
         else if (key == "tw" && isNum && v > 0) t.widthFactor = v;
         else if (key == "tl" && isNum && v > 0) t.lineSpacing = v;
         else if (key == "tj" && isNum) t.justify = std::clamp((int)v, 0, 8);
-        else if (key == "tf" && isNum) t.frame = std::clamp((int)v, 0, 2);
+        else if (key == "tf" && isNum) t.frame = std::clamp((int)v, 0, 6);
         else if (key == "font") t.font = DecodeWord(val);
         else if (key == "tag") t.tag = DecodeWord(val);
         else if (key == "prompt") t.prompt = DecodeWord(val);

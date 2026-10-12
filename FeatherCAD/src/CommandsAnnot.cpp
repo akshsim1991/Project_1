@@ -1299,7 +1299,407 @@ public:
 };
 }  // namespace
 
+// ---------------------------------------------------------------------------
+// FCF (feature control frames), DATUM, SURFACE (texture) and WELD symbols
+// ---------------------------------------------------------------------------
+namespace {
+class SymbolCmd : public Command {
+    int m_frame;
+    std::vector<std::wstring> m_rows;  // FCF: the rows; others: the answers
+    std::wstring m_char, m_tol;
+    int m_step = 0;
+    bool m_place = false, m_leader = false;
+    std::vector<Vec2> m_pts;
+    Vec2 m_at;
+    bool m_haveAt = false;
+
+    TextData Data() const {
+        TextData t = E->lastText;
+        t.height = E->Doc().Settings().dimStyle.textHeight;
+        t.frame = m_frame;
+        t.rotation = 0;
+        t.justify = m_frame == kFrameControl ? 3 : 0;
+        t.tag.clear();
+        t.prompt.clear();
+        t.content = Content();
+        return t;
+    }
+    std::wstring Content() const {
+        std::wstring c;
+        if (m_frame == kFrameControl) {
+            for (size_t i = 0; i < m_rows.size(); ++i) c += (i ? L"\n" : L"") + m_rows[i];
+        } else if (m_frame == kFrameWeld) {
+            for (size_t i = 0; i < m_rows.size(); ++i) c += (i ? L"|" : L"") + m_rows[i];
+        } else {
+            for (const auto& r : m_rows) c += r;
+        }
+        return c;
+    }
+    std::wstring NextDatum() const {
+        std::wstring used;
+        for (const auto& kv : E->Doc().Entities())
+            if (const TextData* t = TextOf(kv.second); t && t->frame == kFrameDatum && !t->content.empty()) used += t->content[0];
+        for (wchar_t c = L'A'; c <= L'Z'; ++c)
+            if (c != L'I' && c != L'O' && c != L'Q' && used.find(c) == std::wstring::npos) return std::wstring(1, c);
+        return L"A";
+    }
+    void Ask() {
+        if (m_place) {
+            if (m_leader || m_frame == kFrameWeld) {
+                if (m_pts.empty()) return E->Ask(P(L"Specify arrow point", kAcceptPoint));
+                return E->Ask(From(P(L"Specify next point (Enter: done)", kAcceptPoint | kAcceptEmpty, {{L"U", L"Undo"}}), m_pts.back()));
+            }
+            if (m_frame == kFrameDatum && m_haveAt)
+                return E->Ask(From(P(L"Specify the direction to the letter's box", kAcceptPoint | kAcceptEmpty, {}, L"up"), m_at));
+            const wchar_t* q = m_frame == kFrameDatum    ? L"Specify the point on the feature"
+                               : m_frame == kFrameSurface ? L"Specify the point on the surface"
+                                                          : L"Specify location";
+            return E->Ask(P(q, kAcceptPoint, m_frame == kFrameDatum ? std::vector<Keyword>{} : std::vector<Keyword>{{L"L", L"Leader"}}));
+        }
+        switch (m_frame) {
+            case kFrameControl:
+                if (m_step == 0)
+                    return E->Ask(P(m_rows.empty() ? L"Enter characteristic: POSITION, FLATNESS, PERPENDICULARITY... (? lists them)"
+                                                   : L"Enter characteristic of the next row (Enter: place the frame)",
+                                    kAcceptEmpty));
+                if (m_step == 1) return E->Ask(P(L"Enter tolerance, such as %%c0.1(M)", kAcceptEmpty));
+                return E->Ask(P(L"Enter datums, such as A B C (Enter: none)", kAcceptEmpty));
+            case kFrameDatum: return E->Ask(P(L"Enter datum letter", kAcceptEmpty, {}, NextDatum()));
+            case kFrameSurface:
+                if (m_step == 0)
+                    return E->Ask(P(L"Machining", kAcceptKeyword | kAcceptEmpty,
+                                    {{L"A", L"Any process"}, {L"R", L"Removal required"}, {L"N", L"No removal"}}, L"Removal required"));
+                return E->Ask(P(L"Enter roughness, such as Ra 1.6 (Enter: none)", kAcceptEmpty));
+            default:
+                switch (m_step) {
+                    case 0:
+                        return E->Ask(P(L"Weld", kAcceptKeyword | kAcceptEmpty,
+                                        {{L"F", L"Fillet"}, {L"S", L"Square"}, {L"V", L"V"}, {L"B", L"Bevel"}, {L"P", L"Plug"}, {L"SP", L"Spot"}},
+                                        L"Fillet"));
+                    case 1: return E->Ask(P(L"Enter weld size (Enter: none)", kAcceptEmpty | kAcceptNumber));
+                    case 2: return E->Ask(P(L"Enter weld length (Enter: none)", kAcceptEmpty | kAcceptNumber));
+                    case 3:
+                        return E->Ask(P(L"Side", kAcceptKeyword | kAcceptEmpty, {{L"A", L"Arrow side"}, {L"O", L"Other side"}, {L"B", L"Both sides"}},
+                                        L"Arrow side"));
+                    default:
+                        return E->Ask(P(L"All round", kAcceptKeyword | kAcceptEmpty, {{L"Y", L"Yes"}, {L"N", L"No"}}, L"No"));
+                }
+        }
+    }
+    void Answer(const std::wstring& v) {
+        switch (m_frame) {
+            case kFrameControl:
+                if (m_step == 0) {
+                    if (v.empty()) {
+                        if (m_rows.empty()) return E->Finish();
+                        m_place = true;
+                        return Ask();
+                    }
+                    if (v == L"?") {
+                        std::wstring l;
+                        for (const GdtSymbol& g : GdtSymbols()) l += (l.empty() ? L"" : L", ") + std::wstring(g.name) + L" (" + g.shortName + L")";
+                        E->Msg(l + L".");
+                        return Ask();
+                    }
+                    if (FindGdtSymbol(v) < 0) {
+                        E->Msg(L"Unknown characteristic \"" + v + L"\" (? lists them).");
+                        return Ask();
+                    }
+                    m_char = v;
+                    for (wchar_t& c : m_char) c = (wchar_t)std::towupper(c);
+                } else if (m_step == 1) {
+                    m_tol = v;
+                } else {
+                    std::wstring row = m_char + L"|" + m_tol, cur;
+                    for (wchar_t c : v + L" ") {
+                        if (c == L' ' || c == L',' || c == L'|') {
+                            if (!cur.empty()) row += L"|" + cur;
+                            cur.clear();
+                        } else {
+                            cur += c;
+                        }
+                    }
+                    m_rows.push_back(row);
+                    m_step = 0;
+                    return Ask();
+                }
+                ++m_step;
+                return Ask();
+            case kFrameDatum:
+                m_rows = {v.empty() ? NextDatum() : v};
+                m_place = true;
+                return Ask();
+            case kFrameSurface:
+                m_rows.push_back(m_step == 1 && !m_rows.empty() && !m_rows[0].empty() && !v.empty() ? L" " + v : v);
+                m_place = ++m_step >= 2;
+                return Ask();
+            default:
+                m_rows.push_back(v);
+                if (++m_step >= 5) {
+                    m_rows.resize(4);
+                    m_place = true;
+                }
+                return Ask();
+        }
+    }
+    void Make() {
+        Document& d = E->Doc();
+        TextData t = Data();
+        if (m_frame == kFrameDatum) t.rotation = m_rot;
+        d.BeginChange(m_frame == kFrameControl ? L"Feature control frame"
+                      : m_frame == kFrameDatum ? L"Datum"
+                      : m_frame == kFrameSurface ? L"Surface texture" : L"Weld symbol");
+        if (m_leader || m_frame == kFrameWeld) {
+            d.Add(MakeLeader(m_pts, t, d.Settings().dimStyle.arrowSize));
+        } else {
+            d.Add(MakeText(m_at, t));
+        }
+        d.EndChange();
+        E->Finish();
+    }
+
+public:
+    explicit SymbolCmd(int frame) : m_frame(frame) {}
+    void Start() override { Ask(); }
+    bool OnText(const std::wstring& s) override {
+        if (m_place) return false;
+        // Keywords of the surface and weld questions.
+        if ((m_frame == kFrameSurface && m_step == 0) || (m_frame == kFrameWeld && (m_step == 0 || m_step >= 3))) return false;
+        Answer(s);
+        return true;
+    }
+    void OnNumber(double v) override {
+        if (!m_place) Answer(TextFromUtf8(FormatNumber(v)));
+    }
+    void OnKeyword(const std::wstring& k) override {
+        if (m_place) {
+            if (k == L"L") {
+                m_leader = true;
+                Ask();
+            } else if (k == L"U" && !m_pts.empty()) {
+                m_pts.pop_back();
+                Ask();
+            }
+            return;
+        }
+        if (m_frame == kFrameSurface) return Answer(k == L"R" ? L"*" : k == L"N" ? L"#" : L"");
+        if (m_step == 0) {
+            const std::pair<const wchar_t*, const wchar_t*> kinds[] = {{L"F", L"FILLET"}, {L"S", L"SQUARE"}, {L"V", L"V"},
+                                                                       {L"B", L"BEVEL"},  {L"P", L"PLUG"},   {L"SP", L"SPOT"}};
+            for (const auto& x : kinds)
+                if (k == x.first) return Answer(x.second);
+            return;
+        }
+        if (m_step == 3) return Answer(k == L"O" ? L"O" : k == L"B" ? L"B" : L"");
+        if (m_step == 4) {
+            std::wstring o = m_rows.size() > 3 ? m_rows[3] : L"";
+            m_rows.resize(3);
+            ++m_step;
+            m_rows.push_back(o + (k == L"Y" ? L"R" : L""));
+            m_place = true;
+            Ask();
+        }
+    }
+    void OnEnter() override {
+        if (m_place) {
+            if (m_leader || m_frame == kFrameWeld) {
+                if (m_pts.size() < 2) return E->Finish();
+                return Make();
+            }
+            if (m_frame == kFrameDatum && m_haveAt) return Make();
+            return;
+        }
+        // Defaults of the keyword questions.
+        if (m_frame == kFrameSurface && m_step == 0) return Answer(L"*");
+        if (m_frame == kFrameWeld && m_step == 0) return Answer(L"FILLET");
+        if (m_frame == kFrameWeld && m_step == 4) return OnKeyword(L"N");
+        if (m_frame == kFrameDatum) return Answer(L"");
+        Answer(L"");
+    }
+    void OnPoint(Vec2 p) override {
+        if (!m_place) return;
+        if (m_leader || m_frame == kFrameWeld) {
+            if (!m_pts.empty() && Near(p, m_pts.back(), 1e-12)) return;
+            m_pts.push_back(p);
+            return Ask();
+        }
+        if (m_frame == kFrameDatum && m_haveAt) {
+            if (Near(p, m_at, 1e-12)) return Make();
+            m_rot = NormalizeAngle(AngleOf(p - m_at) - kPi / 2);
+            return Make();
+        }
+        m_at = p;
+        m_haveAt = true;
+        if (m_frame == kFrameDatum) return Ask();
+        Make();
+    }
+    void GetPreview(Vec2 c, Preview& out) override {
+        if (!m_place) return;
+        TextData t = Data();
+        if (m_leader || m_frame == kFrameWeld) {
+            if (m_pts.empty()) return;
+            std::vector<Vec2> pts = m_pts;
+            pts.push_back(c);
+            out.entities.push_back(MakeLeader(pts, t, E->Doc().Settings().dimStyle.arrowSize));
+            return;
+        }
+        if (m_frame == kFrameDatum && m_haveAt) {
+            if (!Near(c, m_at, 1e-9)) t.rotation = NormalizeAngle(AngleOf(c - m_at) - kPi / 2);
+            out.entities.push_back(MakeText(m_at, t));
+            return;
+        }
+        out.entities.push_back(MakeText(c, t));
+    }
+
+private:
+    double m_rot = 0;
+};
+}  // namespace
+
+// ---------------------------------------------------------------------------
+// PARTSLIST: a table of the blocks placed (parts), counted
+// ---------------------------------------------------------------------------
+namespace {
+const wchar_t kPartsList[] = L"PARTS_LIST";
+
+std::wstring AttributeOf(const Entity& ins, std::initializer_list<const wchar_t*> tags) {
+    if (!ins.annot || !ins.annot->block) return L"";
+    const std::vector<const TextData*> defs = AttributeDefs(*ins.annot->block);
+    for (const wchar_t* tag : tags)
+        for (size_t i = 0; i < defs.size(); ++i)
+            if (SameName(defs[i]->tag, tag)) {
+                if (i < ins.annot->values.size() && !ins.annot->values[i].empty()) return ins.annot->values[i];
+                if (!defs[i]->content.empty()) return defs[i]->content;
+            }
+    return L"";
+}
+}  // namespace
+
+std::vector<PartsRow> CountParts(const Document& doc) {
+    std::vector<PartsRow> rows;
+    for (const auto& kv : doc.Entities()) {
+        const Entity& e = kv.second;
+        if (e.type != EntityType::Insert || !e.annot || !e.annot->block) continue;
+        const std::wstring& bn = e.annot->block->name;
+        if (SameName(bn, kPartsList) || SameName(bn, L"Title block")) continue;
+        PartsRow r;
+        r.part = AttributeOf(e, {L"PN", L"PART", L"PARTNO", L"PART_NUMBER", L"PARTNUMBER", L"NUMBER"});
+        if (r.part.empty()) r.part = bn;
+        r.description = AttributeOf(e, {L"DESC", L"DESCRIPTION", L"NAME", L"TITLE"});
+        r.material = AttributeOf(e, {L"MATERIAL", L"MAT"});
+        auto it = std::find_if(rows.begin(), rows.end(), [&](const PartsRow& x) { return SameName(x.part, r.part); });
+        if (it != rows.end()) {
+            ++it->qty;
+            if (it->description.empty()) it->description = r.description;
+            if (it->material.empty()) it->material = r.material;
+        } else {
+            rows.push_back(r);
+        }
+    }
+    std::stable_sort(rows.begin(), rows.end(), [](const PartsRow& a, const PartsRow& b) { return a.part < b.part; });
+    return rows;
+}
+
+BlockData PartsListBlock(const std::vector<PartsRow>& rows, double h) {
+    BlockData b;
+    b.name = kPartsList;
+    bool mat = false;
+    for (const auto& r : rows) mat |= !r.material.empty();
+    std::vector<std::vector<std::wstring>> cells;
+    cells.push_back({L"ITEM", L"PART NUMBER", L"DESCRIPTION"});
+    if (mat) cells.back().push_back(L"MATERIAL");
+    cells.back().push_back(L"QTY");
+    for (size_t i = 0; i < rows.size(); ++i) {
+        std::vector<std::wstring> c = {std::to_wstring(i + 1), rows[i].part, rows[i].description};
+        if (mat) c.push_back(rows[i].material);
+        c.push_back(std::to_wstring(rows[i].qty));
+        cells.push_back(c);
+    }
+    const size_t nc = cells[0].size();
+    std::vector<double> w(nc, 0);
+    for (const auto& row : cells)
+        for (size_t j = 0; j < nc; ++j) w[j] = std::max(w[j], TextWidth(row[j], h) + 2 * h);
+    const double H = 2 * h;
+    double total = 0;
+    for (double x : w) total += x;
+    const double height = H * (double)cells.size();
+    auto line = [&](Vec2 a, Vec2 c, bool thick) {
+        Entity l = Entity::Line(a, c);
+        l.layer = 0;
+        if (thick) l.lineweight = 50;
+        b.items.push_back(l);
+    };
+    // The frame, the line under the heading, row lines and columns.
+    line({0, 0}, {total, 0}, true);
+    line({total, 0}, {total, -height}, true);
+    line({total, -height}, {0, -height}, true);
+    line({0, -height}, {0, 0}, true);
+    for (size_t i = 1; i < cells.size(); ++i) line({0, -H * (double)i}, {total, -H * (double)i}, i == 1);
+    double x = 0;
+    for (size_t j = 0; j + 1 < nc; ++j) {
+        x += w[j];
+        line({x, 0}, {x, -height}, false);
+    }
+    for (size_t i = 0; i < cells.size(); ++i) {
+        x = 0;
+        for (size_t j = 0; j < nc; ++j) {
+            TextData t;
+            t.content = cells[i][j];
+            t.height = h;
+            const bool centred = j == 0 || j + 1 == nc || i == 0;
+            t.justify = centred ? 4 : 3;
+            Entity te = MakeText({centred ? x + w[j] / 2 : x + h, -H * ((double)i + 0.5)}, t);
+            te.layer = 0;
+            b.items.push_back(te);
+            x += w[j];
+        }
+    }
+    return b;
+}
+
+namespace {
+class PartsListCmd : public Command {
+    BlockData m_block;
+
+public:
+    void Start() override {
+        const Document& parts = E->model ? *E->model : E->Doc();
+        const std::vector<PartsRow> rows = CountParts(parts);
+        if (rows.empty()) {
+            E->Msg(L"There are no blocks placed in the drawing to list (make parts as blocks, with PN and DESC attributes).");
+            return E->Finish();
+        }
+        m_block = PartsListBlock(rows, E->Doc().Settings().dimStyle.textHeight);
+        // Already placed: brought up to date where it is.
+        if (E->Doc().FindBlock(kPartsList) && E->Doc().BlockUse(kPartsList) > 0) {
+            E->Doc().BeginChange(L"Parts list");
+            E->Doc().DefineBlock(m_block);
+            E->Doc().EndChange();
+            E->Msg(L"Parts list brought up to date: " + std::to_wstring(rows.size()) + L" part(s).");
+            return E->Finish();
+        }
+        E->Msg(std::to_wstring(rows.size()) + L" different part(s).");
+        E->Ask(P(L"Specify the parts list's top left corner", kAcceptPoint));
+    }
+    void OnPoint(Vec2 p) override {
+        E->Doc().BeginChange(L"Parts list");
+        const auto def = E->Doc().DefineBlock(m_block);
+        E->Doc().Add(MakeInsert(def, p, 1, 0, {}));
+        E->Doc().EndChange();
+        E->Finish();
+    }
+    void GetPreview(Vec2 c, Preview& out) override {
+        out.entities.push_back(MakeInsert(std::make_shared<const BlockData>(m_block), c, 1, 0, {}));
+    }
+};
+}  // namespace
+
 std::unique_ptr<Command> CreateAnnotCommand(const std::wstring& name) {
+    if (name == L"FCF") return std::make_unique<SymbolCmd>(kFrameControl);
+    if (name == L"DATUM") return std::make_unique<SymbolCmd>(kFrameDatum);
+    if (name == L"SURFACE") return std::make_unique<SymbolCmd>(kFrameSurface);
+    if (name == L"WELD") return std::make_unique<SymbolCmd>(kFrameWeld);
+    if (name == L"PARTSLIST") return std::make_unique<PartsListCmd>();
     if (name == L"TEXT") return std::make_unique<TextCmd>();
     if (name == L"TEXTEDIT") return std::make_unique<TextEditCmd>();
     if (name == L"LEADER") return std::make_unique<LeaderCmd>(0);

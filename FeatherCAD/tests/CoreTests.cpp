@@ -2713,6 +2713,101 @@ void TestRelations() {
     }
 }
 
+void TestSymbols() {
+    Document doc;
+    TestHost host;
+    Engine e(doc, host);
+    auto texts = [](const AnnotGraphics& g) {
+        std::wstring all;
+        for (const TextItem& t : g.texts) all += t.text + L";";
+        return all;
+    };
+    // A feature control frame: position, diameter 0.1 at MMC, datums A B C.
+    Type(e, {L"fcf", L"pos", L"%%c0.1(M)", L"A B C", L"", L"10,10"});
+    CHECK(!e.Active());
+    const Entity* f = FirstOf(doc, EntityType::Text);
+    CHECK(f && f->annot->text.frame == kFrameControl && f->annot->text.content == L"POS|%%c0.1(M)|A|B|C");
+    AnnotGraphics g;
+    AnnotLayout(*f, nullptr, g);
+    CHECK(texts(g) == L"\x00D8" L"0.1;M;A;B;C;");
+    CHECK(g.lines.size() == 5 * 4 + 3 + 1);  // cells, the position symbol, the circled M
+    Box b;
+    for (const Prim& p : g.lines) b.Add(p.Bounds());
+    CHECK(Close(b.minX, 10) && Close((b.minY + b.maxY) / 2, 10) && Close(b.Height(), 2 * f->annot->text.height));
+    CHECK(FindGdtSymbol(L"Perpendicularity") == 7 && FindGdtSymbol(L"ROUNDNESS") == 2 && FindGdtSymbol(L"Bolt") < 0);
+    // Two rows; an unknown characteristic is asked again.
+    Type(e, {L"tol", L"bogus", L"flat", L"0.05", L"", L"par", L"0.1", L"A", L"", L"100,10"});
+    CHECK(Last(doc).annot->text.content == L"FLAT|0.05\nPAR|0.1|A");
+
+    // Datums get the next letter.
+    Type(e, {L"datum", L"", L"0,0", L""});
+    Type(e, {L"datum", L"", L"50,0", L"50,-10"});
+    CHECK(Last(doc).annot->text.content == L"B" && Last(doc).annot->text.frame == kFrameDatum);
+    CHECK(Close(Last(doc).annot->text.rotation, kPi));
+    g = {};
+    AnnotLayout(Last(doc), nullptr, g);
+    CHECK(g.fills.size() == 1 && texts(g) == L"B;");
+
+    // Surface texture, material removal required.
+    Type(e, {L"surface", L"", L"Ra 1.6", L"50,50"});
+    CHECK(Last(doc).annot->text.content == L"* Ra 1.6" && Last(doc).annot->text.frame == kFrameSurface);
+    g = {};
+    AnnotLayout(Last(doc), nullptr, g);
+    CHECK(g.lines.size() == 4 && texts(g) == L"Ra 1.6;");
+
+    // A fillet weld both sides, all round, on a leader.
+    Type(e, {L"weld", L"", L"6", L"", L"b", L"y", L"0,0", L"20,20", L""});
+    const Entity& w = Last(doc);
+    CHECK(w.type == EntityType::Leader && w.annot->text.content == L"FILLET|6||BR" && w.annot->text.frame == kFrameWeld);
+    g = {};
+    AnnotLayout(w, nullptr, g);
+    CHECK(texts(g) == L"6;6;");
+    CHECK(g.lines.size() == 1 + 1 + 1 + 2 + 2 + 1);  // leader, landing, reference line, two fillets, all round
+
+    // Kept in the file.
+    const std::string text = doc.ToText();
+    Document back;
+    std::wstring err;
+    CHECK(back.FromText(text, err) && back.ToText() == text);
+
+    // PARTSLIST: blocks with PN and DESC attributes, counted.
+    Document parts;
+    Engine pe(parts, host);
+    BlockData bolt;
+    bolt.name = L"BOLT";
+    bolt.items.push_back(Entity::Circle({0, 0}, 3));
+    TextData pn, desc;
+    pn.tag = L"PN";
+    desc.tag = L"DESC";
+    bolt.items.push_back(MakeText({5, 0}, pn));
+    bolt.items.push_back(MakeText({5, -5}, desc));
+    BlockData plate;
+    plate.name = L"PLATE";
+    plate.items.push_back(Entity::Rectangle({0, 0}, {50, 20}));
+    const auto bd = parts.DefineBlock(bolt), pd = parts.DefineBlock(plate);
+    parts.Add(MakeInsert(bd, {0, 0}, 1, 0, {L"B-1", L"Bolt M6"}));
+    parts.Add(MakeInsert(bd, {10, 0}, 1, 0, {L"B-1", L"Bolt M6"}));
+    parts.Add(MakeInsert(bd, {20, 0}, 1, 0, {L"B-2", L"Bolt M8"}));
+    parts.Add(MakeInsert(pd, {0, 50}, 1, 0, {}));
+    std::vector<PartsRow> rows = CountParts(parts);
+    CHECK(rows.size() == 3 && rows[0].part == L"B-1" && rows[0].qty == 2 && rows[0].description == L"Bolt M6");
+    CHECK(rows[2].part == L"PLATE" && rows[2].qty == 1 && rows[2].description.empty());
+    Type(pe, {L"bom", L"0,200"});
+    CHECK(!pe.Active() && parts.FindBlock(L"PARTS_LIST") && parts.BlockUse(L"PARTS_LIST") == 1);
+    auto cellTexts = [&]() {
+        std::wstring all;
+        for (const Entity& x : parts.FindBlock(L"PARTS_LIST")->items)
+            if (x.type == EntityType::Text) all += x.annot->text.content + L";";
+        return all;
+    };
+    CHECK(cellTexts() == L"ITEM;PART NUMBER;DESCRIPTION;QTY;1;B-1;Bolt M6;2;2;B-2;Bolt M8;1;3;PLATE;;1;");
+    // Run again after another bolt: brought up to date where it is.
+    parts.Add(MakeInsert(bd, {30, 0}, 1, 0, {L"B-2", L"Bolt M8"}));
+    Type(pe, {L"partslist"});
+    CHECK(!pe.Active() && parts.BlockUse(L"PARTS_LIST") == 1);
+    CHECK(cellTexts().find(L"2;B-2;Bolt M8;2;") != std::wstring::npos);
+}
+
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);  // failures show even if a later check crashes
     TestAngles();
@@ -2750,6 +2845,7 @@ int main() {
     TestDxfAnnotations();
     TestSheets();
     TestRelations();
+    TestSymbols();
     std::printf("%d checks, %d failed\n", g_checks, g_failures);
     return g_failures;
 }

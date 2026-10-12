@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cwchar>
 #include <cwctype>
 #include <numeric>
 #include <unordered_map>
@@ -98,7 +99,346 @@ void Frame(const TextData& t, const std::vector<TextItem>& items, double angle, 
 }
 }  // namespace
 
+namespace {
+// A symbol drawn in its own coordinates (x along the text, y up, h the
+// text height), then turned and moved into place.
+struct Sketch {
+    struct Txt {
+        std::wstring text;
+        Vec2 pos;
+        int align;
+        double height;
+    };
+    double h;
+    std::vector<Prim> lines;
+    std::vector<std::vector<Vec2>> fills;
+    std::vector<Txt> texts;
+
+    void Seg(Vec2 a, Vec2 b) { lines.push_back(Prim::Seg(a, b)); }
+    void Poly(std::initializer_list<Vec2> p, bool closed) {
+        const std::vector<Vec2> v(p);
+        for (size_t i = 0; i + 1 < v.size(); ++i) Seg(v[i], v[i + 1]);
+        if (closed && v.size() > 2) Seg(v.back(), v.front());
+    }
+    void Circle(Vec2 c, double r) { lines.push_back(Prim::Circle(c, r)); }
+    void Fill(std::initializer_list<Vec2> p) { fills.emplace_back(p); }
+    void Text(const std::wstring& s, Vec2 pos, int align, double height = 0) {
+        texts.push_back({s, pos, align, height > 0 ? height : h});
+    }
+    void ArrowTo(Vec2 from, Vec2 tip) {
+        Seg(from, tip);
+        const auto a = Arrow(tip, Normalized(tip - from), h * 0.6);
+        fills.push_back({a.begin(), a.end()});
+    }
+    Box Bounds() const {
+        Box b;
+        for (const Prim& p : lines) b.Add(p.Bounds());
+        for (const auto& f : fills)
+            for (Vec2 v : f) b.Add(v);
+        for (const Txt& t : texts) {
+            const double w = TextWidth(t.text, t.height);
+            const double x0 = t.align == 0 ? 0 : t.align == 1 ? -w / 2 : -w;
+            b.Add(t.pos + Vec2{x0, -t.height * 0.85});
+            b.Add(t.pos + Vec2{x0 + w, t.height * 0.75});
+        }
+        return b;
+    }
+    // Into the drawing: local (0,0) + shift goes to `at`; mirrored left-right if asked.
+    void Place(Vec2 at, double angle, Vec2 shift, bool mirror, const TextData& t, AnnotGraphics& g) const {
+        const Vec2 u{std::cos(angle), std::sin(angle)}, n = Perp(u);
+        auto f = [&](Vec2 p) {
+            const double x = mirror ? -p.x : p.x;
+            return at + u * (x + shift.x) + n * (p.y + shift.y);
+        };
+        for (const Prim& p : lines) {
+            if (p.kind == Prim::Segment) {
+                g.lines.push_back(Prim::Seg(f(p.a), f(p.b)));
+            } else {
+                double start = p.start;
+                if (mirror) start = kPi - (p.start + p.sweep);
+                g.lines.push_back(Prim::ArcCCW(f(p.c), p.r, start + angle, p.sweep));
+            }
+        }
+        for (const auto& fl : fills) {
+            std::vector<Vec2> v;
+            for (Vec2 q : fl) v.push_back(f(q));
+            g.fills.push_back(std::move(v));
+        }
+        for (const Txt& x : texts) {
+            TextItem it;
+            it.text = x.text;
+            it.pos = f(x.pos);
+            it.align = mirror ? 2 - x.align : x.align;
+            it.angle = angle;
+            it.height = x.height;
+            it.widthFactor = t.widthFactor > 0 ? t.widthFactor : 1;
+            it.width = TextWidth(it.text, it.height) * it.widthFactor;
+            it.font = t.font;
+            g.texts.push_back(std::move(it));
+        }
+        Box b = Bounds();
+        if (!b.Empty()) {
+            const Vec2 c[4] = {{b.minX, b.minY}, {b.maxX, b.minY}, {b.maxX, b.maxY}, {b.minX, b.maxY}};
+            g.boxes.push_back({f(c[0]), f(c[1]), f(c[2]), f(c[3])});
+        }
+    }
+};
+
+std::wstring Upper(std::wstring s) {
+    for (wchar_t& c : s) c = (wchar_t)std::towupper(c);
+    s.erase(std::remove_if(s.begin(), s.end(), [](wchar_t c) { return c == L' ' || c == L'_' || c == L'-'; }), s.end());
+    return s;
+}
+}  // namespace
+
+const std::vector<GdtSymbol>& GdtSymbols() {
+    static const std::vector<GdtSymbol> list = {
+        {L"STRAIGHTNESS", L"STR", L"Straightness"},     {L"FLATNESS", L"FLAT", L"Flatness"},
+        {L"CIRCULARITY", L"CIRC", L"Circularity (roundness)"}, {L"CYLINDRICITY", L"CYL", L"Cylindricity"},
+        {L"PROFILELINE", L"PROF", L"Profile of a line"}, {L"PROFILESURFACE", L"PSURF", L"Profile of a surface"},
+        {L"ANGULARITY", L"ANG", L"Angularity"},         {L"PERPENDICULARITY", L"PERP", L"Perpendicularity"},
+        {L"PARALLELISM", L"PAR", L"Parallelism"},       {L"POSITION", L"POS", L"Position"},
+        {L"CONCENTRICITY", L"CONC", L"Concentricity (coaxiality)"}, {L"SYMMETRY", L"SYM", L"Symmetry"},
+        {L"RUNOUT", L"RUN", L"Circular runout"},        {L"TOTALRUNOUT", L"TRUN", L"Total runout"},
+    };
+    return list;
+}
+
+int FindGdtSymbol(const std::wstring& name) {
+    const std::wstring u = Upper(name);
+    if (u.empty()) return -1;
+    const auto& l = GdtSymbols();
+    for (size_t i = 0; i < l.size(); ++i)
+        if (u == l[i].name || u == l[i].shortName) return (int)i;
+    if (u == L"ROUNDNESS") return 2;
+    if (u == L"COAXIALITY") return 10;
+    if (u == L"PROFILE") return 4;
+    return -1;
+}
+
+namespace {
+// A characteristic's symbol, about c, s high.
+void GdtGlyph(Sketch& k, int which, Vec2 c, double s) {
+    auto P = [&](double x, double y) { return c + Vec2{x * s, y * s}; };
+    switch (which) {
+        case 0: k.Seg(P(-0.6, 0), P(0.6, 0)); break;
+        case 1: k.Poly({P(-0.6, -0.3), P(0.3, -0.3), P(0.6, 0.3), P(-0.3, 0.3)}, true); break;
+        case 2: k.Circle(c, 0.45 * s); break;
+        case 3: {
+            k.Circle(c, 0.35 * s);
+            const Vec2 d{std::cos(ToRadians(60)), std::sin(ToRadians(60))}, nn = Perp(d);
+            for (double side : {-1.0, 1.0}) k.Seg(c + nn * (side * 0.35 * s) - d * (0.6 * s), c + nn * (side * 0.35 * s) + d * (0.6 * s));
+            break;
+        }
+        case 4:
+        case 5:
+            k.lines.push_back(Prim::ArcCCW(P(0, -0.25), 0.55 * s, 0, kPi));
+            if (which == 5) k.Seg(P(-0.55, -0.25), P(0.55, -0.25));
+            break;
+        case 6: k.Poly({P(0.6, 0.45), P(-0.6, -0.35), P(0.6, -0.35)}, false); break;
+        case 7:
+            k.Seg(P(-0.6, -0.45), P(0.6, -0.45));
+            k.Seg(P(0, -0.45), P(0, 0.55));
+            break;
+        case 8:
+            k.Seg(P(-0.5, -0.5), P(0.0, 0.5));
+            k.Seg(P(0.0, -0.5), P(0.5, 0.5));
+            break;
+        case 9:
+            k.Circle(c, 0.35 * s);
+            k.Seg(P(-0.6, 0), P(0.6, 0));
+            k.Seg(P(0, -0.6), P(0, 0.6));
+            break;
+        case 10:
+            k.Circle(c, 0.22 * s);
+            k.Circle(c, 0.5 * s);
+            break;
+        case 11:
+            k.Seg(P(-0.6, 0), P(0.6, 0));
+            k.Seg(P(-0.35, 0.3), P(0.35, 0.3));
+            k.Seg(P(-0.35, -0.3), P(0.35, -0.3));
+            break;
+        case 12: k.ArrowTo(P(-0.4, -0.55), P(0.35, 0.55)); break;
+        case 13:
+            k.ArrowTo(P(-0.6, -0.55), P(0.05, 0.55));
+            k.ArrowTo(P(-0.05, -0.55), P(0.6, 0.55));
+            k.Seg(P(-0.6, -0.55), P(-0.05, -0.55));
+            break;
+        default: break;
+    }
+}
+
+// A feature control frame: rows (lines) of cells separated by "|"; the
+// first cell may name a characteristic (POSITION, FLATNESS...), drawn as
+// its symbol; "(M)", "(L)"... are drawn as circled letters.
+void FeatureFrame(Sketch& k, const std::vector<std::wstring>& rows) {
+    const double h = k.h, H = 2 * h, pad = 0.45 * h;
+    for (size_t r = 0; r < rows.size(); ++r) {
+        const double yc = -(double)r * H, y0 = yc - H / 2, y1 = yc + H / 2;
+        double x = 0;
+        std::vector<std::wstring> cells;
+        std::wstring cur;
+        for (wchar_t c : rows[r]) {
+            if (c == L'|') cells.push_back(cur), cur.clear();
+            else cur += c;
+        }
+        cells.push_back(cur);
+        for (size_t i = 0; i < cells.size(); ++i) {
+            std::wstring cell = cells[i];
+            while (!cell.empty() && cell.front() == L' ') cell.erase(cell.begin());
+            while (!cell.empty() && cell.back() == L' ') cell.pop_back();
+            const int glyph = i == 0 ? FindGdtSymbol(cell) : -1;
+            double w;
+            if (glyph >= 0) {
+                w = H;
+                GdtGlyph(k, glyph, {x + H / 2, yc}, h * 1.1);
+            } else {
+                // Text and circled modifiers.
+                double cx = x + pad;
+                std::wstring run;
+                auto flush = [&]() {
+                    if (run.empty()) return;
+                    k.Text(run, {cx, yc}, 0);
+                    cx += TextWidth(run, h);
+                    run.clear();
+                };
+                for (size_t j = 0; j < cell.size(); ++j) {
+                    if (cell[j] == L'(' && j + 2 < cell.size() && cell[j + 2] == L')' &&
+                        std::wcschr(L"MLSPFTUEmlspftue", cell[j + 1])) {
+                        flush();
+                        const double r0 = 0.62 * h;
+                        cx += 0.1 * h;
+                        k.Circle({cx + r0, yc}, r0);
+                        k.Text(std::wstring(1, (wchar_t)std::towupper(cell[j + 1])), {cx + r0, yc}, 1, h * 0.8);
+                        cx += 2 * r0 + 0.1 * h;
+                        j += 2;
+                        continue;
+                    }
+                    run += cell[j];
+                }
+                flush();
+                w = std::max(cx + pad - x, H * 0.75);
+            }
+            k.Poly({{x, y0}, {x + w, y0}, {x + w, y1}, {x, y1}}, true);
+            x += w;
+        }
+    }
+}
+
+// A datum feature symbol: the letter in a box on a stem, a filled triangle
+// with its base at (0,0).
+void DatumSymbol(Sketch& k, const std::wstring& letter) {
+    const double h = k.h;
+    k.Fill({{-0.7 * h, 0}, {0.7 * h, 0}, {0, 1.2 * h}});
+    k.Seg({0, 1.2 * h}, {0, 2 * h});
+    const double w = std::max(2 * h, TextWidth(letter, h) + h);
+    k.Poly({{-w / 2, 2 * h}, {w / 2, 2 * h}, {w / 2, 4 * h}, {-w / 2, 4 * h}}, true);
+    k.Text(letter, {0, 3 * h}, 1);
+}
+
+// A surface texture symbol with its point at (0,0). The first line may
+// start with "*" (material must be removed) or "#" (must not be removed);
+// the lines are written under its bar.
+void SurfaceSymbol(Sketch& k, std::vector<std::wstring> lines) {
+    const double h = k.h;
+    int mode = 0;
+    if (!lines.empty() && !lines[0].empty() && (lines[0][0] == L'*' || lines[0][0] == L'#')) {
+        mode = lines[0][0] == L'*' ? 1 : 2;
+        lines[0].erase(lines[0].begin());
+        while (!lines[0].empty() && lines[0][0] == L' ') lines[0].erase(lines[0].begin());
+    }
+    const Vec2 d{std::cos(ToRadians(60)), std::sin(ToRadians(60))};
+    const Vec2 shortEnd = Vec2{-d.x, d.y} * (1.6 * h), longEnd = d * (3.4 * h);
+    k.Seg({0, 0}, shortEnd);
+    k.Seg({0, 0}, longEnd);
+    if (mode == 1) k.Seg(shortEnd, {shortEnd.y / d.y * d.x, shortEnd.y});
+    if (mode == 2) k.Circle({0, 0.9 * h}, 0.45 * h);
+    double w = 0;
+    for (const auto& l : lines) w = std::max(w, TextWidth(l, h));
+    if (w <= 0) return;
+    k.Seg(longEnd, longEnd + Vec2{w + 0.8 * h, 0});
+    for (size_t i = 0; i < lines.size(); ++i)
+        k.Text(lines[i], longEnd + Vec2{0.4 * h, -0.9 * h - (double)i * 1.6667 * h}, 0);
+}
+
+// A weld symbol on a reference line from (0,0): cells "kind|size|length|options"
+// with kind FILLET, SQUARE, V, BEVEL, PLUG or SPOT and options B (both
+// sides), O (other side), R (all round), F (field weld).
+void WeldSymbol(Sketch& k, const std::wstring& content) {
+    const double h = k.h;
+    std::vector<std::wstring> cells(1);
+    for (wchar_t c : content) {
+        if (c == L'|') cells.emplace_back();
+        else if (c != L'\n' && c != L'\r') cells.back() += c;
+    }
+    cells.resize(4);
+    for (auto& c : cells) {
+        while (!c.empty() && c.front() == L' ') c.erase(c.begin());
+        while (!c.empty() && c.back() == L' ') c.pop_back();
+    }
+    const std::wstring kind = Upper(cells[0]), opts = Upper(cells[3]);
+    const bool both = opts.find(L'B') != std::wstring::npos, other = opts.find(L'O') != std::wstring::npos;
+    const double sw = TextWidth(cells[1], h), lw = TextWidth(cells[2], h);
+    const double xs = 2.5 * h + sw, S = 1.4 * h;
+    const double L = std::max(8 * h, xs + S + 0.5 * h + lw + 1.5 * h);
+    k.Seg({0, 0}, {L, 0});
+    auto side = [&](double sg) {  // sg -1: arrow side (below), +1: other side
+        auto P = [&](double x, double y) { return Vec2{xs + x, sg * y}; };
+        if (kind == L"SQUARE" || kind == L"BUTT") {
+            k.Seg(P(0.3 * h, 0), P(0.3 * h, S));
+            k.Seg(P(0.9 * h, 0), P(0.9 * h, S));
+        } else if (kind == L"V") {
+            k.Poly({P(0, S), P(S / 2, 0), P(S, S)}, false);
+        } else if (kind == L"BEVEL") {
+            k.Poly({P(0, S), P(0, 0), P(S, S)}, false);
+        } else if (kind == L"PLUG" || kind == L"SLOT") {
+            k.Poly({P(0, 0), P(0, 0.8 * h), P(S, 0.8 * h), P(S, 0)}, false);
+        } else if (kind == L"SPOT") {
+            k.Circle(P(S / 2, 0.7 * h), 0.7 * h);
+        } else {  // fillet
+            k.Poly({P(0, 0), P(0, S), P(S, 0)}, false);
+        }
+        if (!cells[1].empty()) k.Text(cells[1], P(-0.3 * h, 0.75 * h), 2);
+        if (!cells[2].empty()) k.Text(cells[2], P(S + 0.4 * h, 0.75 * h), 0);
+    };
+    if (both || !other) side(-1);
+    if (both || other) side(1);
+    if (opts.find(L'R') != std::wstring::npos) k.Circle({0, 0}, 0.6 * h);
+    if (opts.find(L'F') != std::wstring::npos) {
+        k.Seg({0, 0}, {0, 2.4 * h});
+        k.Fill({{0, 2.4 * h}, {1.3 * h, 2.0 * h}, {0, 1.6 * h}});
+    }
+}
+
+void SymbolLayout(const TextData& t, Vec2 at, const FieldValues* fields, AnnotGraphics& g) {
+    Sketch k;
+    k.h = t.height > 0 ? t.height : 2.5;
+    const std::wstring text = ExpandText(t.content, fields);
+    const std::vector<std::wstring> lines = SplitLines(text);
+    const int row = std::clamp(t.justify, 0, 8) / 3, col = std::clamp(t.justify, 0, 8) % 3;
+    Vec2 shift{0, 0};
+    bool mirror = false;
+    switch (t.frame) {
+        case 3: {
+            FeatureFrame(k, lines);
+            const Box b = k.Bounds();  // placed by its justification
+            shift.x = -(col == 0 ? b.minX : col == 1 ? (b.minX + b.maxX) / 2 : b.maxX);
+            shift.y = -(row == 0 ? b.maxY : row == 1 ? (b.minY + b.maxY) / 2 : b.minY);
+            break;
+        }
+        case 4: DatumSymbol(k, lines.empty() ? L"" : lines[0]); break;
+        case 5: SurfaceSymbol(k, lines); break;
+        default:
+            WeldSymbol(k, text);
+            mirror = col == 2;
+            break;
+    }
+    k.Place(at, t.rotation, shift, mirror, t, g);
+}
+}  // namespace
+
 void LayoutText(const TextData& t, Vec2 at, const FieldValues* fields, AnnotGraphics& g) {
+    if (t.frame >= 3 && t.tag.empty()) return SymbolLayout(t, at, fields, g);
     // An attribute definition shows its tag (in a block reference, the value shows).
     const std::vector<std::wstring> lines = SplitLines(ExpandText(t.tag.empty() ? t.content : t.tag, fields));
     const double h = t.height > 0 ? t.height : 2.5;
@@ -840,7 +1180,7 @@ bool LeaderNote(const Entity& e, const FieldValues* fields, TextData& note, Vec2
         return true;
     }
     note.justify = dir > 0 ? 3 : 5;
-    at = land + Vec2{dir * (t.frame == 1 ? h * 0.4 : h * 0.5), 0};
+    at = t.frame >= kFrameControl ? land : land + Vec2{dir * (t.frame == 1 ? h * 0.4 : h * 0.5), 0};
     return true;
 }
 
