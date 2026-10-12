@@ -5,6 +5,16 @@
 #include <cmath>
 #include <cstdio>
 #include <cwctype>
+#include <map>
+
+namespace {
+ImageReader& Reader() {
+    static ImageReader r;
+    return r;
+}
+}  // namespace
+void SetImageReader(ImageReader reader) { Reader() = std::move(reader); }
+const ImageReader& GetImageReader() { return Reader(); }
 
 PlotStyle StyleOf(const SheetSetup& s) {
     PlotStyle p;
@@ -33,12 +43,13 @@ public:
         m_map = map;
         m_clip = clip;
         m_fields = fields;
-        for (const auto& kv : doc.Entities()) {
-            const Entity& e = kv.second;
-            if (!Printable(e)) continue;
-            if (cull && !Bounds(e).Intersects(*cull)) continue;
-            Object(e, nullptr, 0);
-        }
+        for (int pass = 0; pass < 2; ++pass)  // pictures first, under the lines
+            for (const auto& kv : doc.Entities()) {
+                const Entity& e = kv.second;
+                if ((e.type == EntityType::Image) != (pass == 0) || !Printable(e)) continue;
+                if (cull && !Bounds(e).Intersects(*cull)) continue;
+                Object(e, nullptr, 0);
+            }
     }
 
 private:
@@ -92,6 +103,13 @@ private:
                 else
                     for (const auto& f : g.fills) Fill({f});
                 for (const TextItem& t : g.texts) Text(t);
+                return;
+            }
+            case EntityType::Image: {
+                PlotItem it = Base(PlotItem::Image);
+                it.pts = {m_map(e.p0), m_map(e.p1)};
+                it.image = e.annot ? e.annot->image : L"";
+                m_page.items.push_back(std::move(it));
                 return;
             }
             case EntityType::Point: {
@@ -378,7 +396,7 @@ int FontOf(const std::wstring& font, double& capHeight) {
     return 1;
 }
 
-std::string PageContent(const PlotPage& page) {
+std::string PageContent(const PlotPage& page, const std::map<std::wstring, int>& images) {
     std::string c = "1 J 1 j\n";
     c += Num(kPt) + " 0 0 " + Num(kPt) + " 0 0 cm\n";  // millimetres from here on
     int clip = -1;
@@ -413,6 +431,19 @@ std::string PageContent(const PlotPage& page) {
                 }
                 c += "f*\n";
                 break;
+            case PlotItem::Image: {
+                if (it.pts.size() < 2) break;
+                const Vec2 a = it.pts[0], b = it.pts[1];
+                auto im = images.find(it.image);
+                if (im != images.end()) {
+                    c += "q " + Num(b.x - a.x) + " 0 0 " + Num(b.y - a.y) + " " + Num(a.x) + " " + Num(a.y) + " cm /Im" +
+                         std::to_string(im->second) + " Do Q\n";
+                } else {  // the picture cannot be read: its frame
+                    c += Colour(it.rgb, "RG") + "0.2 w\n" + Num(a.x) + " " + Num(a.y) + " " + Num(b.x - a.x) + " " + Num(b.y - a.y) +
+                         " re S\n";
+                }
+                break;
+            }
             case PlotItem::Text: {
                 const TextItem& t = it.text;
                 double cap;
@@ -450,14 +481,41 @@ std::string WritePdf(const std::vector<PlotPage>& pages, const std::wstring& tit
     for (const char* f : {"Helvetica", "Times-Roman", "Courier"})
         object(std::string("<< /Type /Font /Subtype /Type1 /BaseFont /") + f + " /Encoding /WinAnsiEncoding >>");
     object("<< /Title " + PdfString(title) + " /Producer (Feather CAD) /Creator (Feather CAD) >>");
+    // The pictures that can be read, each once, after the pages.
+    struct Pic {
+        int w = 0, h = 0;
+        std::vector<uint8_t> rgb;
+    };
+    std::map<std::wstring, int> names;
+    std::vector<Pic> pics;
+    for (const PlotPage& p : pages)
+        for (const PlotItem& it : p.items) {
+            if (it.kind != PlotItem::Image || names.count(it.image) || !GetImageReader()) continue;
+            Pic pic;
+            if (!GetImageReader()(it.image, pic.w, pic.h, pic.rgb) || pic.w <= 0 || pic.h <= 0 ||
+                pic.rgb.size() != (size_t)pic.w * (size_t)pic.h * 3)
+                continue;
+            names[it.image] = (int)pics.size() + 1;
+            pics.push_back(std::move(pic));
+        }
+    std::string xobjects;
+    if (!pics.empty()) {
+        xobjects = " /XObject <<";
+        for (size_t k = 0; k < pics.size(); ++k) xobjects += " /Im" + std::to_string(k + 1) + " " + std::to_string(7 + 2 * n + k) + " 0 R";
+        xobjects += " >>";
+    }
     for (size_t i = 0; i < n; ++i) {
         const PlotPage& p = pages[i];
         object("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 " + Num(p.width * kPt) + " " + Num(p.height * kPt) +
-               "] /Resources << /Font << /F1 3 0 R /F2 4 0 R /F3 5 0 R >> >> /Contents " + std::to_string(8 + 2 * i) +
-               " 0 R >>");
-        const std::string content = PageContent(p);
+               "] /Resources << /Font << /F1 3 0 R /F2 4 0 R /F3 5 0 R >>" + xobjects + " >> /Contents " +
+               std::to_string(8 + 2 * i) + " 0 R >>");
+        const std::string content = PageContent(p, names);
         object("<< /Length " + std::to_string(content.size()) + " >>\nstream\n" + content + "endstream");
     }
+    for (const Pic& pic : pics)
+        object("<< /Type /XObject /Subtype /Image /Width " + std::to_string(pic.w) + " /Height " + std::to_string(pic.h) +
+               " /ColorSpace /DeviceRGB /BitsPerComponent 8 /Length " + std::to_string(pic.rgb.size()) + " >>\nstream\n" +
+               std::string(pic.rgb.begin(), pic.rgb.end()) + "\nendstream");
     const size_t xref = out.size();
     out += "xref\n0 " + std::to_string(offsets.size() + 1) + "\n0000000000 65535 f \n";
     for (size_t off : offsets) {

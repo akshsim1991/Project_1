@@ -7,19 +7,22 @@
 // Plain C++ (no Windows).
 #pragma once
 #include <array>
+#include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
 #include "Sheet.h"
 
 struct PlotItem {
-    enum Kind : uint8_t { Path, Fill, Text } kind = Path;
+    enum Kind : uint8_t { Path, Fill, Text, Image } kind = Path;
     uint32_t rgb = 0;
     double width = 0;                      // Path: millimetres (0: as thin as the printer draws)
     std::vector<Vec2> pts;                 // Path
     bool closed = false;
     std::vector<std::vector<Vec2>> loops;  // Fill: inside where an odd number enclose
     TextItem text;                         // Text: position and height in millimetres
+    std::wstring image;                    // Image: the picture's file (pts: bottom left, top right)
     int clip = -1;                         // index into PlotPage::clips (a viewport), -1: none
 };
 
@@ -47,6 +50,12 @@ void PlotSheet(const Sheet& sheet, const Document& model, const FieldValues& fie
 // centred on the page.
 void PlotDrawing(const Document& model, const Box& area, double paperW, double paperH, double margin, double scale,
                  const PlotStyle& style, const FieldValues& fields, PlotPage& out);
+
+// Reads a picture file as 8-bit RGB, top row first (the program supplies
+// this: Windows reads PNG, JPEG, BMP...). Unset: pictures print as frames.
+using ImageReader = std::function<bool(const std::wstring& path, int& width, int& height, std::vector<uint8_t>& rgb)>;
+void SetImageReader(ImageReader reader);
+const ImageReader& GetImageReader();
 
 // The pages as a PDF document (lines, fills and text stay sharp at any zoom).
 std::string WritePdf(const std::vector<PlotPage>& pages, const std::wstring& title);

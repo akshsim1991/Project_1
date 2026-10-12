@@ -102,6 +102,11 @@ public:
         (void)title;
         return -1;
     }
+    // A picture file chosen by the user, with its size in pixels. False: none.
+    virtual bool ChooseImage(std::wstring& path, int& width, int& height) {
+        (void)path, (void)width, (void)height;
+        return false;
+    }
 
 private:
     std::string m_clip;

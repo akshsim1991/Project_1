@@ -580,9 +580,9 @@ INT_PTR CALLBACK TextEditProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
                 SendDlgItemMessageW(dlg, IDC_TE_JUSTIFY, CB_ADDSTRING, 0, (LPARAM)j);
             SendDlgItemMessageW(dlg, IDC_TE_JUSTIFY, CB_SETCURSEL, (WPARAM)std::clamp(t.justify, 0, 8), 0);
             for (const wchar_t* f : {L"None", L"Box", L"Circle (balloon)", L"Feature control frame (POS|0.1|A)", L"Datum (letter)",
-                                     L"Surface texture (*Ra 1.6)", L"Weld (FILLET|6|50|B)"})
+                                     L"Surface texture (*Ra 1.6)", L"Weld (FILLET|6|50|B)", L"Table (cells | rows on lines)"})
                 SendDlgItemMessageW(dlg, IDC_TE_FRAME, CB_ADDSTRING, 0, (LPARAM)f);
-            SendDlgItemMessageW(dlg, IDC_TE_FRAME, CB_SETCURSEL, (WPARAM)std::clamp(t.frame, 0, 6), 0);
+            SendDlgItemMessageW(dlg, IDC_TE_FRAME, CB_SETCURSEL, (WPARAM)std::clamp(t.frame, 0, 7), 0);
             SetFocus(GetDlgItem(dlg, IDC_TE_TEXT));
             SendDlgItemMessageW(dlg, IDC_TE_TEXT, EM_SETSEL, 0, -1);
             return FALSE;

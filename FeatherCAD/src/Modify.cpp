@@ -928,6 +928,10 @@ bool StretchEntity(Entity& e, const Box& w, Vec2 d) {
         case EntityType::Viewport:
         case EntityType::Relation:
             return false;
+        case EntityType::Image:  // moves when wholly inside the window
+            if (!w.Contains(e.p0) || !w.Contains(e.p1)) return false;
+            Translate(e, d);
+            return true;
     }
     return false;
 }

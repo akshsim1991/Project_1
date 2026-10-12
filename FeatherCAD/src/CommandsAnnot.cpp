@@ -1576,6 +1576,21 @@ std::wstring AttributeOf(const Entity& ins, std::initializer_list<const wchar_t*
 }
 }  // namespace
 
+std::wstring PartKey(const Entity& ins) {
+    if (ins.type != EntityType::Insert || !ins.annot || !ins.annot->block) return L"";
+    std::wstring pn = AttributeOf(ins, {L"PN", L"PART", L"PARTNO", L"PART_NUMBER", L"PARTNUMBER", L"NUMBER"});
+    return pn.empty() ? ins.annot->block->name : pn;
+}
+
+void AddPartFields(const Document& doc, FieldValues& fields) {
+    const std::vector<PartsRow> rows = CountParts(doc);
+    for (size_t i = 0; i < rows.size(); ++i) {
+        std::wstring key = L"item:" + rows[i].part;
+        for (wchar_t& c : key) c = (wchar_t)std::towlower(c);
+        fields[key] = std::to_wstring(i + 1);
+    }
+}
+
 std::vector<PartsRow> CountParts(const Document& doc) {
     std::vector<PartsRow> rows;
     for (const auto& kv : doc.Entities()) {
@@ -1584,8 +1599,7 @@ std::vector<PartsRow> CountParts(const Document& doc) {
         const std::wstring& bn = e.annot->block->name;
         if (SameName(bn, kPartsList) || SameName(bn, L"Title block")) continue;
         PartsRow r;
-        r.part = AttributeOf(e, {L"PN", L"PART", L"PARTNO", L"PART_NUMBER", L"PARTNUMBER", L"NUMBER"});
-        if (r.part.empty()) r.part = bn;
+        r.part = PartKey(e);
         r.description = AttributeOf(e, {L"DESC", L"DESCRIPTION", L"NAME", L"TITLE"});
         r.material = AttributeOf(e, {L"MATERIAL", L"MAT"});
         auto it = std::find_if(rows.begin(), rows.end(), [&](const PartsRow& x) { return SameName(x.part, r.part); });
@@ -1853,7 +1867,109 @@ public:
 };
 }  // namespace
 
+// ---------------------------------------------------------------------------
+// TABLE: a grid of cells (a text whose lines are rows, cells split by "|")
+// PARTBALLOON: a balloon on a leader showing a part's item number from the
+// parts list ({item:PN}, kept up to date as parts are added)
+// ---------------------------------------------------------------------------
+namespace {
+class TableCmd : public Command {
+    int m_cols = 3, m_rows = 4, m_step = 0;
+
+public:
+    void Start() override { E->Ask(P(L"Enter the number of columns", kAcceptNumber | kAcceptEmpty, {}, L"3")); }
+    void OnNumber(double v) override {
+        const int n = (int)std::lround(v);
+        if (n < 1 || n > 50) return E->Msg(L"Between 1 and 50, please.");
+        if (m_step == 0) {
+            m_cols = n;
+            m_step = 1;
+            E->Ask(P(L"Enter the number of rows (with the heading)", kAcceptNumber | kAcceptEmpty, {}, L"4"));
+        } else if (m_step == 1) {
+            m_rows = n;
+            m_step = 2;
+            E->Ask(P(L"Specify where its top left corner goes", kAcceptPoint));
+        }
+    }
+    void OnEnter() override {
+        if (m_step < 2) OnNumber(m_step == 0 ? m_cols : m_rows);
+    }
+    TextData Make() const {
+        TextData t = E->lastText;
+        t.height = E->Doc().Settings().dimStyle.textHeight;
+        t.frame = kFrameTable;
+        t.rotation = 0;
+        t.justify = 0;
+        t.tag.clear();
+        t.prompt.clear();
+        std::wstring c;
+        for (int i = 0; i < m_rows; ++i) {
+            for (int j = 0; j < m_cols; ++j) c += (j ? L"|" : L"") + (i == 0 ? L"Heading " + std::to_wstring(j + 1) : L"");
+            if (i + 1 < m_rows) c += L"\n";
+        }
+        t.content = c;
+        return t;
+    }
+    void OnPoint(Vec2 p) override {
+        if (m_step != 2) return;
+        E->Doc().BeginChange(L"Table");
+        E->Doc().Add(MakeText(p, Make()));
+        E->Doc().EndChange();
+        E->Msg(L"Double-click the table to type in it: one row per line, cells separated by | (a table copied from a spreadsheet can be pasted).");
+        E->Finish();
+    }
+    void GetPreview(Vec2 c, Preview& out) override {
+        if (m_step == 2) out.entities.push_back(MakeText(c, Make()));
+    }
+};
+
+class PartBalloonCmd : public Command {
+    std::wstring m_part;
+    std::vector<Vec2> m_pts;
+
+public:
+    void Start() override { E->Ask(Pick(L"Select the part (a placed block) to number")); }
+    void OnPoint(Vec2 p) override {
+        if (m_part.empty()) {
+            const uint64_t id = E->PickEntity(p, true);
+            const Entity* e = id ? E->Doc().Find(id) : nullptr;
+            if (!e || e->type != EntityType::Insert) return E->Msg(L"Pick a part: a placed block.");
+            m_part = PartKey(*e);
+            m_pts.push_back(p);
+            E->Ask(From(P(L"Specify where the balloon goes", kAcceptPoint), p));
+            return;
+        }
+        if (Near(p, m_pts.back(), 1e-9)) return;
+        m_pts.push_back(p);
+        TextData t = E->lastText;
+        t.content = L"{item:" + m_part + L"}";
+        t.height = E->Doc().Settings().dimStyle.textHeight;
+        t.frame = kFrameCircle;
+        t.rotation = 0;
+        t.tag.clear();
+        t.prompt.clear();
+        E->Doc().BeginChange(L"Part balloon");
+        E->Doc().Add(MakeLeader(m_pts, t, E->Doc().Settings().dimStyle.arrowSize));
+        E->Doc().EndChange();
+        // Ready for the next part.
+        m_part.clear();
+        m_pts.clear();
+        Start();
+    }
+    void GetPreview(Vec2 c, Preview& out) override {
+        if (m_pts.empty()) return;
+        TextData t;
+        t.content = L"?";
+        t.frame = kFrameCircle;
+        t.height = E->Doc().Settings().dimStyle.textHeight;
+        out.entities.push_back(MakeLeader({m_pts[0], c}, t, E->Doc().Settings().dimStyle.arrowSize));
+    }
+};
+}  // namespace
+
 std::unique_ptr<Command> CreateAnnotCommand(const std::wstring& name) {
+    if (name == L"TABLE") return std::make_unique<TableCmd>();
+    if (name == L"PARTBALLOON") return std::make_unique<PartBalloonCmd>();
     if (name == L"BPARAM") return std::make_unique<BlockParamCmd>();
     if (name == L"FCF") return std::make_unique<SymbolCmd>(kFrameControl);
     if (name == L"DATUM") return std::make_unique<SymbolCmd>(kFrameDatum);

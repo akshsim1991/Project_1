@@ -283,6 +283,11 @@ struct TestHost : EngineHost {
     void ZoomPrevious() override {}
     void ZoomFactor(double) override {}
     void DraftingChanged() override {}
+    bool ChooseImage(std::wstring& path, int& w, int& h) override {
+        path = L"C:\\pics\\photo.png";
+        w = 200, h = 100;
+        return true;
+    }
 };
 
 void Type(Engine& e, std::initializer_list<const wchar_t*> inputs) {
@@ -2987,6 +2992,92 @@ void TestDynamicBlocks() {
     CHECK(dxf.find("\nINSERT\n") == std::string::npos && dxf.find("CIRCLE") != std::string::npos);
 }
 
+void TestTablesAndBalloons() {
+    Document doc;
+    TestHost host;
+    Engine e(doc, host);
+    // TABLE: 2 columns, 3 rows, placed at 0,0 (top left).
+    Type(e, {L"table", L"2", L"3", L"0,0"});
+    CHECK(!e.Active());
+    const Entity* t = FirstOf(doc, EntityType::Text);
+    CHECK(t && t->annot->text.frame == kFrameTable && t->annot->text.content == L"Heading 1|Heading 2\n|\n|");
+    // Typed in, as pasted from a spreadsheet (tabs) or with |.
+    Entity x = *t;
+    EditAnnot(x).text.content = L"Part\tQty\nBolt|4\nNut|12";
+    AnnotGraphics g;
+    AnnotLayout(x, nullptr, g);
+    std::wstring all;
+    for (const TextItem& it : g.texts) all += it.text + L";";
+    CHECK(all == L"Part;Qty;Bolt;4;Nut;12;");
+    Box b;
+    for (const Prim& p : g.lines) b.Add(p.Bounds());
+    const double h = x.annot->text.height;
+    CHECK(Close(b.maxY, 0) && Close(b.minX, 0) && Close(b.minY, -3 * 2 * h));  // hangs from its top left, 3 rows
+    CHECK(g.lines.size() == 4 + 2 + 1 + 1);  // frame, row lines, heading rule, column line
+
+    // PARTBALLOON: item numbers from the parts list, as fields.
+    BlockData bolt;
+    bolt.name = L"BOLT";
+    bolt.items.push_back(Entity::Circle({0, 0}, 3));
+    TextData pn;
+    pn.tag = L"PN";
+    bolt.items.push_back(MakeText({5, 0}, pn));
+    BlockData nut;
+    nut.name = L"NUT";
+    nut.items.push_back(Entity::Circle({0, 0}, 2));
+    const auto bd = doc.DefineBlock(bolt), nd = doc.DefineBlock(nut);
+    doc.Add(MakeInsert(nd, {100, 0}, 1, 0, {}));
+    doc.Add(MakeInsert(bd, {200, 0}, 1, 0, {L"Z-9"}));
+    Type(e, {L"pb"});
+    e.Point({203, 0});  // on the bolt's circle
+    e.Point({230, 30});
+    e.Cancel();
+    const Entity* ld = FirstOf(doc, EntityType::Leader);
+    CHECK(ld && ld->annot->text.content == L"{item:Z-9}" && ld->annot->text.frame == kFrameCircle);
+    FieldValues f;
+    AddPartFields(doc, f);
+    CHECK(f[L"item:nut"] == L"1" && f[L"item:z-9"] == L"2");  // the parts list's order
+    CHECK(ExpandText(ld->annot->text.content, &f) == L"2");
+    CHECK(PartKey(*FirstOf(doc, EntityType::Insert)) == L"NUT");
+}
+
+void TestImages() {
+    Document doc;
+    TestHost host;
+    Engine e(doc, host);
+    Type(e, {L"image", L"10,20", L"50"});
+    CHECK(!e.Active());
+    const Entity* im = FirstOf(doc, EntityType::Image);
+    CHECK(im && Close(im->p0, {10, 20}) && Close(im->p1, {60, 45}) && im->annot->image == L"C:\\pics\\photo.png");
+    // Picked anywhere on it; a corner grip resizes it keeping its shape.
+    CHECK(Close(DistanceTo(*im, {30, 30}), 0));
+    Entity x = *im;
+    CHECK(DragGrip(x, 2, {60, 45}, {110, 50}));
+    CHECK(Close(x.p0, {10, 20}) && Close(x.p1, {110, 70}));
+    Rotate(x, {0, 0}, kPi / 2);  // stays upright: the box round it
+    CHECK(Close(x.p1.x - x.p0.x, 50) && Close(x.p1.y - x.p0.y, 100));
+    // Kept in the file.
+    const std::string text = doc.ToText();
+    Document back;
+    std::wstring err;
+    CHECK(back.FromText(text, err) && back.ToText() == text);
+    // Printed under the lines; in a PDF as a picture when it can be read.
+    doc.Add(Entity::Line({0, 0}, {100, 100}));
+    PlotPage page;
+    PlotDrawing(doc, Box({0, 0}, {100, 100}), 297, 210, 10, 1, PlotStyle{}, {}, page);
+    CHECK(!page.items.empty() && page.items[0].kind == PlotItem::Image);
+    std::string pdf = WritePdf({page}, L"t");
+    CHECK(pdf.find("/Subtype /Image") == std::string::npos && pdf.find(" re S") != std::string::npos);  // no reader: a frame
+    SetImageReader([](const std::wstring&, int& w, int& h, std::vector<uint8_t>& rgb) {
+        w = 2, h = 1;
+        rgb = {255, 0, 0, 0, 0, 255};
+        return true;
+    });
+    pdf = WritePdf({page}, L"t");
+    CHECK(pdf.find("/Subtype /Image /Width 2 /Height 1") != std::string::npos && pdf.find("/Im1 Do") != std::string::npos);
+    SetImageReader(nullptr);
+}
+
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);  // failures show even if a later check crashes
     TestAngles();
@@ -3028,6 +3119,8 @@ int main() {
     TestEasierUse();
     TestFreeSketch();
     TestDynamicBlocks();
+    TestTablesAndBalloons();
+    TestImages();
     std::printf("%d checks, %d failed\n", g_checks, g_failures);
     return g_failures;
 }

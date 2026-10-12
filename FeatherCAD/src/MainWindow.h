@@ -172,6 +172,7 @@ private:
     void DeleteSheet(int index);
     void DrawingProps();
     void ShowVariables();
+    bool ChooseImage(std::wstring& path, int& width, int& height) override;
     void TitleBlock();
     std::vector<PlotPage> BuildPages(const struct PlotRequest& r);
     void Plot();

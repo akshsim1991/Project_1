@@ -411,6 +411,54 @@ void WeldSymbol(Sketch& k, const std::wstring& content) {
     }
 }
 
+// A table: one row per line, cells separated by "|" (or tabs, as pasted
+// from a spreadsheet). Columns as wide as their widest cell; the first row
+// is the heading, ruled off with a heavier line. Hangs from its top left.
+void TableLayout(Sketch& k, const std::vector<std::wstring>& lines) {
+    const double h = k.h, H = 2 * h, pad = h * 0.6;
+    std::vector<std::vector<std::wstring>> rows;
+    size_t cols = 1;
+    for (const std::wstring& l : lines) {
+        std::vector<std::wstring> cells(1);
+        for (wchar_t c : l) {
+            if (c == L'|' || c == L'\t') cells.emplace_back();
+            else cells.back() += c;
+        }
+        for (auto& c : cells) {
+            while (!c.empty() && c.front() == L' ') c.erase(c.begin());
+            while (!c.empty() && c.back() == L' ') c.pop_back();
+        }
+        cols = std::max(cols, cells.size());
+        rows.push_back(std::move(cells));
+    }
+    std::vector<double> w(cols, 4 * h);
+    for (const auto& r : rows)
+        for (size_t j = 0; j < r.size(); ++j) w[j] = std::max(w[j], TextWidth(r[j], h) + 2 * pad);
+    double total = 0;
+    for (double x : w) total += x;
+    const double height = H * (double)rows.size();
+    k.Poly({{0, 0}, {total, 0}, {total, -height}, {0, -height}}, true);
+    for (size_t i = 1; i < rows.size(); ++i) {
+        k.Seg({0, -H * (double)i}, {total, -H * (double)i});
+        if (i == 1) k.Seg({0, -H + h * 0.12}, {total, -H + h * 0.12});  // the heading's heavier rule
+    }
+    double x = 0;
+    for (size_t j = 0; j + 1 < cols; ++j) {
+        x += w[j];
+        k.Seg({x, 0}, {x, -height});
+    }
+    for (size_t i = 0; i < rows.size(); ++i) {
+        x = 0;
+        for (size_t j = 0; j < cols; ++j) {
+            if (j < rows[i].size() && !rows[i][j].empty()) {
+                if (i == 0) k.Text(rows[i][j], {x + w[j] / 2, -H * ((double)i + 0.5)}, 1);  // headings centred
+                else k.Text(rows[i][j], {x + pad, -H * ((double)i + 0.5)}, 0);
+            }
+            x += w[j];
+        }
+    }
+}
+
 void SymbolLayout(const TextData& t, Vec2 at, const FieldValues* fields, AnnotGraphics& g) {
     Sketch k;
     k.h = t.height > 0 ? t.height : 2.5;
@@ -429,6 +477,7 @@ void SymbolLayout(const TextData& t, Vec2 at, const FieldValues* fields, AnnotGr
         }
         case 4: DatumSymbol(k, lines.empty() ? L"" : lines[0]); break;
         case 5: SurfaceSymbol(k, lines); break;
+        case 7: TableLayout(k, lines); break;
         default:
             WeldSymbol(k, text);
             mirror = col == 2;
@@ -1125,7 +1174,7 @@ void ExpandBlock(const Entity& ref, std::vector<Entity>& out, int depth, bool de
 
 bool IsAnnotType(EntityType t) {
     return t == EntityType::Text || t == EntityType::Leader || t == EntityType::Hatch || t == EntityType::Insert ||
-           t == EntityType::Viewport || t == EntityType::Relation;
+           t == EntityType::Viewport || t == EntityType::Relation || t == EntityType::Image;
 }
 
 Entity MakeViewport(Vec2 a, Vec2 b, Vec2 centre, double scale, bool locked) {
@@ -1358,9 +1407,20 @@ void AnnotLayout(const Entity& e, const FieldValues* fields, AnnotGraphics& g) {
     }
 }
 
+Entity MakeImage(Vec2 a, Vec2 b, const std::wstring& path) {
+    Entity e;
+    e.type = EntityType::Image;
+    e.p0 = {std::min(a.x, b.x), std::min(a.y, b.y)};
+    e.p1 = {std::max(a.x, b.x), std::max(a.y, b.y)};
+    auto an = std::make_shared<Annot>();
+    an->image = path;
+    e.annot = std::move(an);
+    return e;
+}
+
 void AnnotPrimitives(const Entity& e, std::vector<Prim>& out) {
     if (!e.annot) return;
-    if (e.type == EntityType::Viewport) {  // its border
+    if (e.type == EntityType::Viewport || e.type == EntityType::Image) {  // its border
         const Vec2 c[4] = {e.p0, {e.p1.x, e.p0.y}, e.p1, {e.p0.x, e.p1.y}};
         for (int i = 0; i < 4; ++i) out.push_back(Prim::Seg(c[i], c[(i + 1) % 4]));
         return;
@@ -1395,8 +1455,9 @@ double AnnotDistance(const Entity& e, Vec2 p) {
         return best;
     }
     if (e.type == EntityType::Hatch && InsideLoops(e.annot->hatch.loops, p)) return 0;
+    if (e.type == EntityType::Image && Box(e.p0, e.p1).Contains(p)) return 0;  // a picture is picked anywhere on it
     AnnotGraphics g;
-    if (e.type != EntityType::Hatch && e.type != EntityType::Viewport) {  // texts and marks: inside their boxes
+    if (e.type != EntityType::Hatch && e.type != EntityType::Viewport && e.type != EntityType::Image) {  // texts and marks: inside their boxes
         AnnotLayout(e, nullptr, g);
         for (const auto& b : g.boxes)
             if (InLoop({b.begin(), b.end()}, p)) return 0;
@@ -1424,6 +1485,7 @@ bool AnnotTouchesBox(const Entity& e, const Box& box) {
     // The window inside a text or a hatch.
     const Vec2 c = box.Center();
     if (e.type == EntityType::Viewport) return false;
+    if (e.type == EntityType::Image) return Box(e.p0, e.p1).Contains(c);
     if (e.type == EntityType::Hatch) return InsideLoops(e.annot->hatch.loops, c);
     AnnotGraphics g;
     AnnotLayout(e, nullptr, g);
@@ -1445,6 +1507,14 @@ void AnnotMap(Entity& e, const std::function<Vec2(Vec2)>& point, const std::func
               double factor) {
     if (!e.annot) return;
     Annot& a = EditAnnot(e);
+    if (e.type == EntityType::Image) {  // stays upright: the box round its moved corners
+        const Vec2 c[4] = {point(e.p0), point({e.p1.x, e.p0.y}), point(e.p1), point({e.p0.x, e.p1.y})};
+        Box b;
+        for (Vec2 q : c) b.Add(q);
+        e.p0 = {b.minX, b.minY};
+        e.p1 = {b.maxX, b.maxY};
+        return;
+    }
     if (e.type == EntityType::Viewport) {
         // It stays square to the sheet: its centre moves, its size (and the
         // drawing in it) scales.
@@ -1518,6 +1588,7 @@ void AnnotGrips(const Entity& e, std::vector<std::pair<int, Vec2>>& out) {
             for (size_t i = 0; i < e.annot->pts.size(); ++i) out.push_back({(int)i, e.annot->pts[i]});
             break;
         case EntityType::Viewport:
+        case EntityType::Image:
             out.push_back({0, e.p0});
             out.push_back({1, {e.p1.x, e.p0.y}});
             out.push_back({2, e.p1});
@@ -1552,6 +1623,19 @@ bool DragAnnotGrip(Entity& e, int index, Vec2 from, Vec2 to) {
         // Later stretches move this one's grip; earlier flips are not undone here: the
         // grip's distance is measured in the block as drawn.
         return SetParamValue(e, k, Dot(InsertToBlock(e, to) - p.base, p.dir));
+    }
+    if (e.type == EntityType::Image && index >= 0 && index < 4) {
+        // A corner: the opposite one stays, the picture keeps its shape.
+        const Vec2 corners[4] = {e.p0, {e.p1.x, e.p0.y}, e.p1, {e.p0.x, e.p1.y}};
+        const Vec2 fixed = corners[(index + 2) % 4];
+        const double w = e.p1.x - e.p0.x, h = e.p1.y - e.p0.y;
+        const double f = std::max(std::fabs(to.x - fixed.x) / w, std::fabs(to.y - fixed.y) / h);
+        if (!(f > 1e-6)) return false;
+        const Vec2 dir{to.x >= fixed.x ? 1.0 : -1.0, to.y >= fixed.y ? 1.0 : -1.0};
+        const Vec2 other = fixed + Vec2{dir.x * w * f, dir.y * h * f};
+        e.p0 = {std::min(fixed.x, other.x), std::min(fixed.y, other.y)};
+        e.p1 = {std::max(fixed.x, other.x), std::max(fixed.y, other.y)};
+        return true;
     }
     if (e.type == EntityType::Viewport && index >= 0 && index < 4) {
         // A corner: the opposite one stays; the drawing stays where it is on the sheet.

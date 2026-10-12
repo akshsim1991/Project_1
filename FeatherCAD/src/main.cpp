@@ -8,6 +8,8 @@
 #include <shellapi.h>
 
 #include "GdiPlusInc.h"
+#include "ImageFile.h"
+#include "Plot.h"
 #include "MainWindow.h"
 #include "Util.h"
 
@@ -57,6 +59,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int showCmd) {
     Gdiplus::GdiplusStartupInput gdiInput;
     ULONG_PTR gdiToken = 0;
     Gdiplus::GdiplusStartup(&gdiToken, &gdiInput, nullptr);
+    SetImageReader(ReadImageRgb);  // pictures in prints and PDFs
 
     int result = 0;
     {

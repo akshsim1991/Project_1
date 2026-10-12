@@ -24,7 +24,7 @@ struct TextData {
     double lineSpacing = 1;      // times the normal spacing (1.6667 x height)
     int justify = 0;             // 0 top left, 1 top centre, 2 top right, 3-5 middle, 6-8 bottom
     // 0 none, 1 box, 2 circle (a balloon); symbols made of the content:
-    // 3 feature control frame, 4 datum, 5 surface texture, 6 weld.
+    // 3 feature control frame, 4 datum, 5 surface texture, 6 weld, 7 table.
     int frame = 0;
     std::wstring tag, prompt;    // an attribute definition: its tag and question
     bool operator==(const TextData& o) const {
@@ -68,7 +68,7 @@ struct GdtSymbol {
 };
 const std::vector<GdtSymbol>& GdtSymbols();
 int FindGdtSymbol(const std::wstring& name);  // -1 if none
-enum : int { kFrameNone, kFrameBox, kFrameCircle, kFrameControl, kFrameDatum, kFrameSurface, kFrameWeld };
+enum : int { kFrameNone, kFrameBox, kFrameCircle, kFrameControl, kFrameDatum, kFrameSurface, kFrameWeld, kFrameTable };
 
 // Text laid out at `at` (its insertion point).
 void LayoutText(const TextData& t, Vec2 at, const FieldValues* fields, AnnotGraphics& g);
@@ -152,6 +152,10 @@ struct PartsRow {
 };
 class Document;
 std::vector<PartsRow> CountParts(const Document& doc);
+// The part a block reference is (its PN attribute, or the block's name).
+std::wstring PartKey(const Entity& insert);
+// The fields {item:PN} giving each part's item number in the parts list.
+void AddPartFields(const Document& doc, FieldValues& fields);
 // The table as a block (PARTS_LIST) hanging from its top left corner.
 BlockData PartsListBlock(const std::vector<PartsRow>& rows, double textHeight);
 
@@ -182,6 +186,7 @@ struct Annot {
     double viewScale = 1;
     bool viewLocked = false;
     RelationData rel;  // Relation (pts: where its marks are shown)
+    std::wstring image;  // Image: the picture's file
     // A hatch's pattern lines, worked out once (not copied with it).
     struct Cache {
         mutable std::shared_ptr<std::vector<std::pair<Vec2, Vec2>>> segs;
@@ -199,6 +204,9 @@ bool SetParamValue(Entity& insert, size_t k, double value);
 // Drawing point <-> block point through a block reference.
 Vec2 InsertToBlock(const Entity& insert, Vec2 p);
 Vec2 BlockToInsert(const Entity& insert, Vec2 p);
+
+// A picture from corner a to corner b (any two opposite corners).
+Entity MakeImage(Vec2 a, Vec2 b, const std::wstring& path);
 
 Entity MakeText(Vec2 at, TextData t);
 Entity MakeLeader(std::vector<Vec2> pts, TextData t, double arrow);

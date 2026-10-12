@@ -1,5 +1,6 @@
 // Canvas.cpp - the drawing area (see Canvas.h).
 #include "Canvas.h"
+#include "ImageFile.h"
 
 #include <algorithm>
 #include <cmath>
@@ -340,6 +341,8 @@ bool Canvas::EnsureTarget() {
 }
 
 void Canvas::ReleaseTarget() {
+    for (auto& kv : m_images) SafeRelease(kv.second);
+    m_images.clear();
     SafeRelease(m_layer);
     SafeRelease(m_brush);
     SafeRelease(m_target);
@@ -541,6 +544,7 @@ ID2D1PathGeometry* Canvas::BuildGeometry(const std::vector<const Entity*>& entit
             case EntityType::Insert:  // drawn as its objects (Flatten)
                 break;
             case EntityType::Viewport:  // its edge
+            case EntityType::Image:
                 line(e->p0, {e->p1.x, e->p0.y});
                 line({e->p1.x, e->p0.y}, e->p1);
                 line(e->p1, {e->p0.x, e->p1.y});
@@ -666,10 +670,42 @@ std::vector<float> Canvas::DashPattern(int lt, double scale, bool screen) const 
     return out;
 }
 
+void Canvas::DrawImages(ID2D1RenderTarget* rt, const std::vector<const Entity*>& ents) {
+    for (const Entity* e : ents) {
+        if (e->type != EntityType::Image || !e->annot) continue;
+        const std::wstring& path = e->annot->image;
+        auto it = m_images.find(path);
+        if (it == m_images.end()) {
+            ID2D1Bitmap* bmp = nullptr;
+            int w = 0, h = 0;
+            std::vector<uint8_t> px;
+            if (ReadImageBgra(path, w, h, px)) {
+                // Premultiplied alpha, as Direct2D wants it.
+                for (size_t i = 0; i < px.size(); i += 4)
+                    for (int c = 0; c < 3; ++c) px[i + c] = (uint8_t)(px[i + c] * px[i + 3] / 255);
+                const D2D1_BITMAP_PROPERTIES props =
+                    D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+                if (FAILED(rt->CreateBitmap(D2D1::SizeU((UINT32)w, (UINT32)h), px.data(), (UINT32)w * 4, props, &bmp))) bmp = nullptr;
+            }
+            it = m_images.emplace(path, bmp).first;
+        }
+        const D2D1_POINT_2F a = ToScreen(e->p0), b = ToScreen(e->p1);
+        const D2D1_RECT_F r = D2D1::RectF(std::min(a.x, b.x), std::min(a.y, b.y), std::max(a.x, b.x), std::max(a.y, b.y));
+        if (it->second) {
+            rt->DrawBitmap(it->second, r, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        } else {  // missing: a grey cross where it would be
+            m_brush->SetColor(D2D1::ColorF(0.5f, 0.5f, 0.5f, 0.6f));
+            rt->DrawLine({r.left, r.top}, {r.right, r.bottom}, m_brush, 1.0f);
+            rt->DrawLine({r.left, r.bottom}, {r.right, r.top}, m_brush, 1.0f);
+        }
+    }
+}
+
 void Canvas::DrawStyled(ID2D1RenderTarget* rt, const std::vector<const Entity*>& entsIn) {
     // Blocks' objects have colours of their own.
     std::deque<Entity> store;
     const std::vector<const Entity*> ents = Flatten(entsIn, store);
+    DrawImages(rt, ents);  // pictures under the lines
     // Objects that look alike are drawn together.
     struct Key {
         uint32_t rgb;

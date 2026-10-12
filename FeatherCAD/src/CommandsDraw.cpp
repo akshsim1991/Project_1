@@ -6,6 +6,7 @@
 #include "CommandUtil.h"
 #include "Dimension.h"
 #include "FreeSketch.h"
+#include "Annot.h"
 #include "Grips.h"
 #include "Relate.h"
 #include "Select.h"
@@ -660,7 +661,64 @@ public:
 };
 }  // namespace
 
+// ---------------------------------------------------------------------------
+// IMAGE: a picture (photo, scan) to trace over or show
+// ---------------------------------------------------------------------------
+namespace {
+class ImageCmd : public Command {
+    std::wstring m_path;
+    double m_aspect = 1;  // height / width
+    double m_default = 100;
+    bool m_haveCorner = false;
+    Vec2 m_corner;
+
+    Entity Make(double w) const { return MakeImage(m_corner, m_corner + Vec2{w, w * m_aspect}, m_path); }
+    void Add(double w) {
+        if (!(w > 1e-9)) return;
+        E->Doc().BeginChange(L"Image");
+        E->Doc().Add(Make(w));
+        E->Doc().EndChange();
+        E->Msg(L"Picture placed. Drag its corner grips to resize it; draw over it to trace it.");
+        E->Finish();
+    }
+
+public:
+    void Start() override {
+        int w = 0, h = 0;
+        if (!E->Host().ChooseImage(m_path, w, h) || w <= 0 || h <= 0) {
+            E->Msg(L"No picture was chosen.");
+            return E->Finish();
+        }
+        m_aspect = (double)h / w;
+        m_default = w * 0.25;  // a quarter of a unit per pixel to start with
+        E->Ask(P(L"Specify where its bottom left corner goes", kAcceptPoint));
+    }
+    void OnPoint(Vec2 p) override {
+        if (!m_haveCorner) {
+            m_corner = p;
+            m_haveCorner = true;
+            E->Ask(From(P(L"Specify its width", kAcceptPoint | kAcceptNumber | kAcceptEmpty, {}, E->Len(m_default)), p));
+            return;
+        }
+        Add(std::fabs(p.x - m_corner.x));
+    }
+    void OnNumber(double v) override {
+        if (m_haveCorner) Add(v);
+    }
+    void OnEnter() override {
+        if (m_haveCorner) Add(m_default);
+        else E->Finish();
+    }
+    void GetPreview(Vec2 c, Preview& out) override {
+        if (!m_haveCorner) return;
+        const double w = std::fabs(c.x - m_corner.x);
+        if (w > 1e-9) out.entities.push_back(Entity::Rectangle(m_corner, m_corner + Vec2{w, w * m_aspect}));
+    }
+};
+}  // namespace
+
 std::unique_ptr<Command> CreateDrawCommand(const std::wstring& name) {
+    if (name == L"IMAGE") return std::make_unique<ImageCmd>();
     if (name == L"SKETCH") return std::make_unique<SketchCmd>();
     if (name == L"MATCHPROP") return std::make_unique<MatchPropCmd>();
     if (name == L"CONSTRUCTION") return std::make_unique<ConstructionCmd>();

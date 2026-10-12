@@ -382,11 +382,28 @@ The symbols are text objects with a frame: their contents can be changed like an
 - The cursor tip reads "Length 42.00  Angle 30.00°"; the status bar buttons have names (Obj snap, End, Mid, Cross, Centre, Track...) and explain themselves when the mouse rests on them.
 - Prompts say "Click" and "Type" instead of "Specify" and "Enter"; Trim and Extend explain what a click does.
 
-## Coming in later phases
+## Version 1.8 (Phase F): FreeSketch, adjustable blocks, tables and pictures
 
-| Phase | Contents |
-|-------|----------|
-| F     | Professional extras (FreeSketch, dynamic blocks, Options bar for relationships) |
+**FreeSketch** ★ (Draw > FreeSketch, or FS)
+- Hold the left mouse button down and draw. Each stroke is tidied up: a wobbly line becomes a straight line (exactly level or upright when it nearly is), a round stroke a circle, a bend an arc, and a stroke with corners a polyline - a rectangle drawn in one go comes out square.
+- Ends that finish near another object's end, middle or centre join it exactly. With Relate > Add relationships while drawing, the lines get their horizontal, vertical and connect relationships too.
+- Done (or Enter) finishes; each stroke can be undone on its own.
+
+**Adjustable (dynamic) blocks** ★ (Annotate > Make a block adjustable, or BPARAM)
+- Pick a placed block, then **Stretch**: click the point that stays, the point that moves, and draw a box round the part that moves; give it a name (Length) and, if wanted, the sizes allowed (50 75 100).
+- Or **Flip**: two points on the line it flips about.
+- Select the block: drag its stretch grip (it jumps to the nearest size allowed) or click its flip grip. The values are in the Properties panel too (a list of the sizes). Every copy of the block has its own values.
+
+**Tables** (Annotate > Table, or TB)
+- Columns and rows, placed by their top left corner. Double-click the table to type in it: one row per line, cells separated by |. A table copied from a spreadsheet can be pasted straight in. The first row is the heading.
+
+**Part balloons** (Annotate > Part balloon, or PB)
+- Pick a part (a placed block) and where the balloon goes: the balloon shows its item number in the parts list, and stays right when parts are added or the list is renumbered.
+
+**Pictures** (Draw > Picture, or IMAGE)
+- A photo or scan (PNG, JPEG, BMP, GIF, TIFF) placed by its corner and width, to trace over or to show on a sheet. Corner grips resize it keeping its shape. It prints and goes into PDFs; in DXF only its frame is written.
+
+**Also**: the guide strip above the drawing (since 1.7.1) gives every command's choices as buttons - the "Options bar" planned for this phase.
 
 ## Building
 

@@ -59,7 +59,7 @@ jobs:
           $null = $shell.AppActivate($p.Id)
           Start-Sleep -Milliseconds 500
           foreach ($k in @("rec{ENTER}", "0,0{ENTER}", "200,120{ENTER}", "c{ENTER}", "100,60{ENTER}", "40{ENTER}",
-                       "dli{ENTER}", "0,0{ENTER}", "200,0{ENTER}", "100,-20{ENTER}", "^n", "l{ENTER}", "{ESC}", "hor{ENTER}", "{ESC}", "fcf{ENTER}", "pos{ENTER}", "0.1{ENTER}", "{ENTER}", "{ENTER}", "{ESC}", "sheetnew{ENTER}", "mv{ENTER}", "{ESC}", "^w", "n")) {
+                       "dli{ENTER}", "0,0{ENTER}", "200,0{ENTER}", "100,-20{ENTER}", "^n", "l{ENTER}", "{ESC}", "hor{ENTER}", "{ESC}", "fs{ENTER}", "{ESC}", "tb{ENTER}", "{ESC}", "fcf{ENTER}", "pos{ENTER}", "0.1{ENTER}", "{ENTER}", "{ENTER}", "{ESC}", "sheetnew{ENTER}", "mv{ENTER}", "{ESC}", "^w", "n")) {
             [System.Windows.Forms.SendKeys]::SendWait($k); Start-Sleep -Milliseconds 300
           }
           Start-Sleep -Seconds 1

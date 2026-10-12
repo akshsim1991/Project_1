@@ -81,6 +81,38 @@ void DrawPlotPage(HDC dc, const PlotPage& page, double k, double x, double y) {
                 Polyline(dc, pts.data(), (int)pts.size());
                 break;
             }
+            case PlotItem::Image: {
+                if (it.pts.size() < 2) break;
+                const POINT a = pt({it.pts[0].x, it.pts[1].y}), b = pt({it.pts[1].x, it.pts[0].y});  // top left, bottom right
+                int w = 0, h = 0;
+                std::vector<uint8_t> rgb;
+                if (GetImageReader() && GetImageReader()(it.image, w, h, rgb)) {
+                    // A bottom-up 24-bit DIB: rows padded to 4 bytes, BGR.
+                    const int stride = (w * 3 + 3) & ~3;
+                    std::vector<uint8_t> dib((size_t)stride * h);
+                    for (int yy = 0; yy < h; ++yy)
+                        for (int xx = 0; xx < w; ++xx) {
+                            const uint8_t* s = &rgb[((size_t)(h - 1 - yy) * w + xx) * 3];
+                            uint8_t* d = &dib[(size_t)yy * stride + (size_t)xx * 3];
+                            d[0] = s[2], d[1] = s[1], d[2] = s[0];
+                        }
+                    BITMAPINFO bi{};
+                    bi.bmiHeader.biSize = sizeof(bi.bmiHeader);
+                    bi.bmiHeader.biWidth = w;
+                    bi.bmiHeader.biHeight = h;
+                    bi.bmiHeader.biPlanes = 1;
+                    bi.bmiHeader.biBitCount = 24;
+                    bi.bmiHeader.biCompression = BI_RGB;
+                    SetStretchBltMode(dc, HALFTONE);
+                    SetBrushOrgEx(dc, 0, 0, nullptr);
+                    StretchDIBits(dc, a.x, a.y, b.x - a.x, b.y - a.y, 0, 0, w, h, dib.data(), &bi, DIB_RGB_COLORS, SRCCOPY);
+                } else {  // cannot be read: its frame
+                    SelectObject(dc, pens.Pen(it.rgb, 1));
+                    SelectObject(dc, GetStockObject(NULL_BRUSH));
+                    Rectangle(dc, a.x, a.y, b.x, b.y);
+                }
+                break;
+            }
             case PlotItem::Fill: {
                 pts.clear();
                 std::vector<INT> counts;

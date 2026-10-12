@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cwctype>
+#include <iterator>
 
 #include <commdlg.h>
 #include <shellapi.h>
@@ -17,6 +18,7 @@
 #include "Plot.h"
 #include "Print.h"
 #include "Expr.h"
+#include "ImageFile.h"
 #include "Relate.h"
 #include "Theme.h"
 #include "Util.h"
@@ -163,6 +165,9 @@ const IdCommand kIdCommands[] = {
     {ID_PARTSLIST, L"PARTSLIST", nullptr},
     {ID_SKETCH, L"SKETCH", nullptr},
     {ID_BPARAM, L"BPARAM", nullptr},
+    {ID_TABLE, L"TABLE", nullptr},
+    {ID_PARTBALLOON, L"PARTBALLOON", nullptr},
+    {ID_IMAGE, L"IMAGE", nullptr},
     {ID_CIRCLE_TTR, L"CIRCLE", L"T"},
     {ID_LAYERS, L"LAYER", nullptr},
     {ID_PROPERTIES, L"PROPERTIES", nullptr},
@@ -687,6 +692,24 @@ void MainWindow::DrawingProps() {
     UpdateFields();
     m_canvas.Refresh();
     AfterInput();
+}
+
+bool MainWindow::ChooseImage(std::wstring& path, int& width, int& height) {
+    wchar_t file[MAX_PATH] = L"";
+    OPENFILENAMEW ofn{sizeof(ofn)};
+    ofn.hwndOwner = m_hwnd;
+    ofn.lpstrFilter = L"Pictures (PNG, JPEG, BMP, GIF, TIFF)\0*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.tif;*.tiff\0All files\0*.*\0";
+    ofn.lpstrFile = file;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.lpstrTitle = L"Choose a picture";
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY;
+    if (!GetOpenFileNameW(&ofn)) return false;
+    if (!ImageFileSize(file, width, height)) {
+        MessageBoxW(m_hwnd, L"That file could not be read as a picture.", APP_NAME, MB_ICONWARNING);
+        return false;
+    }
+    path = file;
+    return true;
 }
 
 void MainWindow::ShowVariables() {
@@ -1333,6 +1356,8 @@ HMENU MainWindow::BuildMenu(int menuId) {
             }
             Append(m, ID_SPLINE, L"&Spline\tSPL");
             Append(m, ID_POINT, L"P&oint\tPO");
+            Separator(m);
+            Append(m, ID_IMAGE, L"P&icture (photo, scan)...\tIMAGE");
             break;
         }
         case ID_MENU_MODIFY:
@@ -1427,6 +1452,8 @@ HMENU MainWindow::BuildMenu(int menuId) {
             Append(m, ID_SURFACE, L"&Surface texture\tSURFACE");
             Append(m, ID_WELD, L"&Weld symbol\tWELD");
             Append(m, ID_PARTSLIST, L"Parts &list\tBOM");
+            Append(m, ID_PARTBALLOON, L"Part balloon (item number)\tPB");
+            Append(m, ID_TABLE, L"T&able\tTB");
             Separator(m);
             Append(m, ID_HATCH, L"&Hatch\tH");
             Append(m, ID_FILL, L"&Fill\tFILL");
@@ -2006,6 +2033,7 @@ FieldValues MainWindow::FieldsFor(int space) const {
     DWORD n = 128;
     if (GetUserNameW(buf, &n)) f[L"author"] = buf;
     for (const auto& kv : Cur().doc.Properties()) f[kv.first] = kv.second;
+    AddPartFields(Cur().doc, f);  // part balloons: {item:PN}
     if (space >= 0) f = SheetFields(Cur().doc, Cur().sheets, (size_t)space, f);
     return f;
 }
@@ -2304,7 +2332,7 @@ void MainWindow::AnnotationRows(const Entity& e, std::vector<PropertiesPanel::Ro
         }
         number(L"Width factor", t.widthFactor, [](Entity& x, double v) { return v > 0 && (EditAnnot(x).text.widthFactor = v, true); });
         number(L"Line spacing", t.lineSpacing, [](Entity& x, double v) { return v > 0 && (EditAnnot(x).text.lineSpacing = v, true); });
-        choice(L"Frame", {L"None", L"Box", L"Circle", L"Feature control frame", L"Datum", L"Surface texture", L"Weld"}, t.frame,
+        choice(L"Frame", {L"None", L"Box", L"Circle", L"Feature control frame", L"Datum", L"Surface texture", L"Weld", L"Table"}, t.frame,
                [](Entity& x, int i) { return EditAnnot(x).text.frame = i, true; });
         if (e.type == EntityType::Leader)
             number(L"Arrow size", a.arrow, [](Entity& x, double v) { return v >= 0 && (EditAnnot(x).arrow = v, true); });
@@ -2844,6 +2872,23 @@ void MainWindow::UpdateProperties(bool force) {
             case EntityType::Viewport:
                 AnnotationRows(e, rows);
                 break;
+            case EntityType::Image: {
+                if (!e.annot) break;
+                info(L"File", e.annot->image);
+                pointRows(L"Corner X", L"Corner Y", e.p0, [](Entity& x, Vec2 p) { Translate(x, p - x.p0); });
+                const double aspect = (e.p1.y - e.p0.y) / std::max(1e-12, e.p1.x - e.p0.x);
+                number(L"Width", e.p1.x - e.p0.x, [aspect](Entity& x, double v) {
+                    if (!(v > 0)) return false;
+                    x.p1 = x.p0 + Vec2{v, v * aspect};  // keeps its shape
+                    return true;
+                });
+                number(L"Height", e.p1.y - e.p0.y, [aspect](Entity& x, double v) {
+                    if (!(v > 0)) return false;
+                    x.p1 = x.p0 + Vec2{v / aspect, v};
+                    return true;
+                });
+                break;
+            }
             case EntityType::Array:
                 info(L"Kind", e.array && e.array->kind == ArrayData::Rect    ? L"Rectangular"
                               : e.array && e.array->kind == ArrayData::Polar ? L"Polar"

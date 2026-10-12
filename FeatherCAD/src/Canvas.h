@@ -80,6 +80,7 @@ private:
     // rendering
     bool EnsureTarget();
     void ReleaseTarget();
+    void DrawImages(ID2D1RenderTarget* rt, const std::vector<const Entity*>& ents);
     void Paint();
     void RenderLayer();
     void RenderOverlay();
@@ -135,7 +136,8 @@ private:
     IDWriteFactory* m_dwrite = nullptr;
     IDWriteTextFormat* m_textFormat = nullptr;
     IDWriteTextFormat* m_dimFormat = nullptr;  // dimension text, drawn scaled
-    std::map<std::wstring, IDWriteTextFormat*> m_fonts;  // text in other fonts, the same way
+    std::map<std::wstring, IDWriteTextFormat*> m_fonts;
+    std::map<std::wstring, ID2D1Bitmap*> m_images;  // pictures, read once (nullptr: cannot be read)  // text in other fonts, the same way
     FieldValues m_fields;
     const struct Sheet* m_sheet = nullptr;
     const Document* m_model = nullptr;

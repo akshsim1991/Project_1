@@ -1021,7 +1021,7 @@ void ReadTextWords(const std::vector<std::string>& w, TextData& t) {
         else if (key == "tw" && isNum && v > 0) t.widthFactor = v;
         else if (key == "tl" && isNum && v > 0) t.lineSpacing = v;
         else if (key == "tj" && isNum) t.justify = std::clamp((int)v, 0, 8);
-        else if (key == "tf" && isNum) t.frame = std::clamp((int)v, 0, 6);
+        else if (key == "tf" && isNum) t.frame = std::clamp((int)v, 0, 7);
         else if (key == "font") t.font = DecodeWord(val);
         else if (key == "tag") t.tag = DecodeWord(val);
         else if (key == "prompt") t.prompt = DecodeWord(val);
@@ -1156,6 +1156,11 @@ void WriteEntity(const Entity& e, std::string& out, const Ordinals* ordinals = n
             num(a.arrow);
             break;
         }
+        case EntityType::Image:
+            out += "image";
+            num(e.p0.x); num(e.p0.y); num(e.p1.x); num(e.p1.y);
+            out += " path=" + EncodeWord(e.annot->image);
+            break;
         case EntityType::Viewport: {
             const Annot& a = *e.annot;
             out += "viewport";
@@ -1503,6 +1508,14 @@ struct Reader {
             a->rel.param = v[7];
             a->arrow = v[8] > 0 ? v[8] : 2.5;
             out.annot = std::move(a);
+            return true;
+        }
+        if (key == "image") {
+            if (!need(4) || v[2] <= v[0] || v[3] <= v[1]) return Fail(L"an image needs two corners");
+            std::wstring path;
+            for (const std::string& word : w)
+                if (word.compare(0, 5, "path=") == 0) path = DecodeWord(word.substr(5));
+            out = MakeImage({v[0], v[1]}, {v[2], v[3]}, path);
             return true;
         }
         if (key == "viewport") {
@@ -2386,6 +2399,12 @@ std::string Document::ToDxf(const Document* paper, Vec2 paperSize) const {
             }
             case EntityType::Relation:  // not in DXF
                 break;
+            case EntityType::Image: {  // its frame (the picture stays with Feather CAD)
+                Entity r = Entity::Rectangle(e.p0, e.p1);
+                r.layer = e.layer, r.color = e.color, r.linetype = e.linetype, r.lineweight = e.lineweight;
+                write(r);
+                break;
+            }
             case EntityType::Viewport:
                 if (src != this && e.annot) writeViewport(e.p0, e.p1, e.annot->viewCentre, (e.p1.y - e.p0.y) / e.annot->viewScale, e);
                 break;
