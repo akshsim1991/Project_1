@@ -1066,6 +1066,16 @@ const std::vector<CommandInfo>& AllCommands() {
         {L"PURGE", {L"PU"}, L"Purge", L"Remove blocks that are not used"},
         {L"REVCLOUD", {L"RC"}, L"Revision cloud", L"A cloud of arcs around a change (rectangle, polygon or an object)"},
         {L"AREA", {L"AA"}, L"Area", L"Area and perimeter of points, an object or the area around a point"},
+        {L"SHEETNEW", {L"LAYOUT", L"NEWSHEET"}, L"New sheet", L"A new drawing sheet (paper, border, title block and a viewport)", true},
+        {L"PAGESETUP", {L"SHEETSETUP"}, L"Page setup", L"Paper size, orientation, margins and how the sheet prints", true},
+        {L"TITLEBLOCK", {L"BORDER"}, L"Border and title block", L"Put the border and title block on the sheet again (for its paper)", true},
+        {L"DRAWINGPROPS", {L"DWGPROPS"}, L"Drawing properties", L"Title, drawing number, drawn by... shown in title blocks", true},
+        {L"MVIEW", {L"MV", L"VIEWPORT"}, L"Viewport", L"A window on a sheet showing the drawing at a scale"},
+        {L"VPSCALE", {L"VPS"}, L"Viewport scale", L"Change a viewport's scale (1:2, 2:1, Fit)"},
+        {L"VPPAN", {L"VPP"}, L"Pan viewport", L"Move the drawing inside a viewport"},
+        {L"VPLOCK", {}, L"Lock viewport", L"Lock viewports so their scale and view cannot change (again: unlock)"},
+        {L"PLOT", {L"PRINT"}, L"Print", L"Print sheets or the drawing, with a preview (Ctrl+P)", true},
+        {L"EXPORTPDF", {L"PDF"}, L"Export PDF", L"Save the sheets as one PDF (or the drawing, if it has no sheets)", true},
         {L"COPYCLIP", {}, L"Copy to clipboard", L"Copy objects to paste them elsewhere, also into another drawing (Ctrl+C)"},
         {L"CUTCLIP", {}, L"Cut to clipboard", L"Remove objects to paste them elsewhere (Ctrl+X)"},
         {L"PASTECLIP", {}, L"Paste", L"Paste copied objects at a point (Ctrl+V)"},
@@ -1110,6 +1120,7 @@ std::unique_ptr<Command> CreateCommand(const std::wstring& name) {
     if (auto cmd = CreateDrawCommand(name)) return cmd;
     if (auto cmd = CreateDimCommand(name)) return cmd;
     if (auto cmd = CreateAnnotCommand(name)) return cmd;
+    if (auto cmd = CreateSheetCommand(name)) return cmd;
     if (name == L"LINE") return std::make_unique<LineCmd>();
     if (name == L"PLINE") return std::make_unique<PlineCmd>();
     if (name == L"TANLINE") return std::make_unique<TanLineCmd>();

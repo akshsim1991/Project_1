@@ -203,6 +203,22 @@ public:
             return false;
         }
         for (const Raw& r : m_entities) Convert(r, Affine{}, 0, nullptr);
+        // Paper space: a sheet for each layout (R12 has one).
+        m_paperPass = true;
+        for (const Raw& r : m_entities) {
+            if (r.Int(67) != 1) continue;
+            std::wstring name = Text(r.Str(410));
+            if (name.empty()) name = L"Sheet1";
+            auto it = std::find_if(m_out.layouts.begin(), m_out.layouts.end(), [&](const DxfResult::Layout& l) { return l.name == name; });
+            if (it == m_out.layouts.end()) {
+                m_out.layouts.push_back({name, {}});
+                it = m_out.layouts.end() - 1;
+            }
+            m_target = &it->entities;
+            Convert(r, Affine{}, 0, nullptr);
+        }
+        m_target = &m_out.entities;
+        m_paperPass = false;
         return true;
     }
 
@@ -257,6 +273,10 @@ private:
                 m_out.ltscale = v;
             } else if (var == "$CLAYER" && g.code == 8) {
                 m_out.currentLayer = Text(g.value);
+            } else if (isNum && (var == "$PLIMMIN" || var == "$PLIMMAX") && (g.code == 10 || g.code == 20)) {
+                Vec2& p = var == "$PLIMMIN" ? m_plim[0] : m_plim[1];
+                (g.code == 10 ? p.x : p.y) = v;
+                m_out.paperLimits = Box(m_plim[0], m_plim[1]);
             } else if (isNum && var == "$DIMSCALE" && v > 0) {
                 dimScale = v;
             }
@@ -675,6 +695,32 @@ private:
 
     static double Size(const Affine& M) { return std::sqrt(std::fabs(M.Det())); }
 
+    // A paper space viewport: where it is on the sheet and what it shows
+    // (R2000 and later: groups 12, 22 and 45; R12: ACAD MVIEW extended data).
+    void AddViewport(const Raw& r) {
+        if (r.Int(69) == 1) return;  // the page itself
+        const Vec2 c = r.Pt(10);
+        const double w = r.Num(40), h = r.Num(41);
+        if (w <= 0 || h <= 0) return;
+        Vec2 view = r.Pt(12);
+        double viewHeight = r.Num(45);
+        if (!r.Has(45)) {
+            std::vector<double> x;
+            bool mview = false;
+            for (const Group& g : r.g) {
+                if (g.code == 1000 && g.value == "MVIEW") mview = true;
+                double v;
+                if (mview && g.code == 1040 && ParseNumber(g.value, v)) x.push_back(v);
+            }
+            if (x.size() >= 4) {
+                viewHeight = x[1];
+                view = {x[2], x[3]};
+            }
+        }
+        if (!(viewHeight > 0)) return;
+        Add(MakeViewport(c - Vec2{w / 2, h / 2}, c + Vec2{w / 2, h / 2}, view, h / viewHeight));
+    }
+
     void AddText(const Raw& r, const Affine& M, bool mtext) {
         TextData t;
         t.font = FontOf(r);
@@ -1005,7 +1051,7 @@ private:
     }
 
     void Convert(const Raw& r, const Affine& M, int depth, const Props* parent) {
-        if (r.Int(67) == 1) return;  // paper space
+        if (r.Int(67) == 1 && !m_paperPass) return;  // paper space: its own pass
         struct Keep {  // the style of the object being converted, put back after it
             Props& p;
             Props saved;
@@ -1106,7 +1152,9 @@ private:
             }
             const Props dimProps = m_props;
             for (const Raw& e : it->second.ents) Convert(e, M, depth + 1, &dimProps);
-        } else if (t == "VIEWPORT" || t == "SEQEND") {
+        } else if (t == "VIEWPORT") {
+            if (m_paperPass) AddViewport(r);
+        } else if (t == "SEQEND") {
             // nothing to draw
         } else {
             Skipped(t);
@@ -1123,6 +1171,8 @@ private:
     size_t m_count = 0;
     std::map<std::wstring, std::wstring> m_fonts;                     // text style -> font
     bool m_utf8 = false;
+    bool m_paperPass = false;
+    Vec2 m_plim[2];
     Props m_props;
     std::map<std::wstring, int> m_layerIds;  // lower-case name -> id
 };

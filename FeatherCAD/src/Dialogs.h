@@ -6,6 +6,7 @@
 #include "Document.h"
 #include "Engine.h"
 #include "History.h"
+#include "Plot.h"
 #include "Select.h"
 
 // Units and precision. `forNew` (in/out): also use them for new drawings.
@@ -41,6 +42,27 @@ bool DimEditDialog(HWND owner, const DimData& d, bool attached, DimEditResult& o
 void LayerDialog(HWND owner, Document& doc, const std::function<void()>& changed);
 // The text editor: content (several lines), symbols, fields, font, size, angle, justification, frame.
 bool TextEditDialog(HWND owner, TextData& text, const std::wstring& title);
+
+// A sheet's paper, margins and printing. `redoBorder`: the user wants the
+// border and title block made again (for a new paper).
+bool PageSetupDialog(HWND owner, SheetSetup& setup, bool& redoBorder);
+// The drawing's title block fields (DrawingPropertyKeys), in that order.
+bool DrawingPropsDialog(HWND owner, std::vector<std::wstring>& values);
+
+// What to print, and how.
+struct PlotRequest {
+    enum What { ThisSheet, AllSheets, DrawingView, DrawingAll } what = DrawingAll;
+    std::wstring paper = L"A3";  // for the drawing (sheets have their own)
+    bool landscape = true;
+    double ratio = 0;            // for the drawing: paper size : real size (0: fit)
+    int colourMode = 0;
+    bool lineWeights = true;
+    bool fit = false;            // to the printer's paper
+};
+// The print dialog with a preview of the pages `build` makes. Returns 0
+// (closed), 1 (print) or 2 (save as PDF).
+int PlotDialog(HWND owner, PlotRequest& request, bool hasSheets, bool onSheet,
+               const std::function<std::vector<PlotPage>(const PlotRequest&)>& build);
 // A colour chosen from a menu at the cursor (named colours, or any colour
 // with the Windows colour picker). `allowBy`: ByLayer and ByBlock too.
 // False if nothing was chosen.

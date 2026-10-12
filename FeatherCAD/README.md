@@ -300,11 +300,42 @@ Arrays are saved in the `.fcad` file. They are exported to DXF as their separate
 - **Area** (AA): area and perimeter of picked points, a closed object, or the area around a point (arcs measured exactly), with a running total (Add / Subtract).
 - DXF import now brings in text (single and multi-line, with fonts), hatches (patterns and solid fills) and blocks with their attributes, kept as blocks. DXF export writes text, blocks with attributes, solid fills and hatch patterns.
 
+## Version 1.6 (Phase D): sheets, printing and PDF
+
+**Sheets** (the tabs under the drawing; + for a new one)
+- A sheet is a page of paper: A4 to A0, Letter, Legal, ANSI B to E or any size, portrait or landscape, with a margin.
+- A new sheet comes with an ISO-style **border and title block** and a viewport showing the whole drawing at a usual scale (1:1, 1:2, 1:5... or 2:1, 5:1...).
+- The title block fills itself in: title, drawing number, drawn by, checked by, company, material and revision come from **File > Drawing properties**; the date, file name, scale and "sheet 2 / 3" are worked out. Any text can use these fields too ({title}, {scale}, {sheet}...).
+- Notes, dimensions and other objects can be drawn on the sheet itself, in millimetres.
+- Right-click a sheet tab: page setup (name, paper, orientation, margin, printing), border and title block again, print, delete.
+
+**Viewports**
+
+| Command | Short name | What it does |
+|---------|------------|--------------|
+| MVIEW | MV | A viewport: two corners, then a scale (1:2, 2:1...) or Fit. Several on one sheet, each at its own scale. |
+| VPSCALE | VPS | Changes a viewport's scale. |
+| VPPAN | VPP | Moves the drawing inside a viewport. |
+| VPLOCK | | ★ Locks viewports so their scale and view cannot change by mistake. |
+
+Viewports can also be resized with their corner grips, and their scale, view centre and lock changed in the Properties panel.
+
+**Printing** (Ctrl+P)
+- Print this sheet, all sheets, or the drawing itself (as on screen, or all of it) on any paper at a scale or fitted.
+- A preview of every page; colour, black (monochrome) or shades of grey; line weights on or off; fit to the printer's paper or real size.
+- **Pens**: a line weight for each of the nine standard colours, as with AutoCAD's colour-dependent plot styles (page setup).
+- Viewport edges and construction geometry are not printed, nor layers set not to print.
+
+**PDF** (File > Export PDF)
+- ★ All the sheets in one PDF, one page each, at their real size: lines, fills and text stay sharp at any zoom.
+
+**DXF**
+- The first sheet is written as AutoCAD's paper space, with its viewports (DXF R12 has one paper space). Paper space layouts in DXF files come in as sheets.
+
 ## Coming in later phases
 
 | Phase | Contents |
 |-------|----------|
-| D     | Sheets, printing and PDF |
 | E     | Engineering (constraints, GD&T, parts lists) |
 | F     | Professional extras |
 

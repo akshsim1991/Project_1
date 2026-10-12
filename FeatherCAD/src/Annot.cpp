@@ -725,8 +725,34 @@ void ExpandBlock(const Entity& ref, std::vector<Entity>& out, int depth, bool de
 // ---------------------------------------------------------------------------
 
 bool IsAnnotType(EntityType t) {
-    return t == EntityType::Text || t == EntityType::Leader || t == EntityType::Hatch || t == EntityType::Insert;
+    return t == EntityType::Text || t == EntityType::Leader || t == EntityType::Hatch || t == EntityType::Insert ||
+           t == EntityType::Viewport;
 }
+
+Entity MakeViewport(Vec2 a, Vec2 b, Vec2 centre, double scale, bool locked) {
+    Entity e;
+    e.type = EntityType::Viewport;
+    e.p0 = {std::min(a.x, b.x), std::min(a.y, b.y)};
+    e.p1 = {std::max(a.x, b.x), std::max(a.y, b.y)};
+    auto an = std::make_shared<Annot>();
+    an->viewCentre = centre;
+    an->viewScale = scale > 0 ? scale : 1;
+    an->viewLocked = locked;
+    e.annot = std::move(an);
+    return e;
+}
+
+Vec2 ViewportToModel(const Entity& vp, Vec2 p) {
+    const Vec2 c = Lerp(vp.p0, vp.p1, 0.5);
+    return vp.annot->viewCentre + (p - c) / vp.annot->viewScale;
+}
+
+Vec2 ViewportToSheet(const Entity& vp, Vec2 m) {
+    const Vec2 c = Lerp(vp.p0, vp.p1, 0.5);
+    return c + (m - vp.annot->viewCentre) * vp.annot->viewScale;
+}
+
+Box ViewportModelBox(const Entity& vp) { return Box(ViewportToModel(vp, vp.p0), ViewportToModel(vp, vp.p1)); }
 
 bool IsAnnotation(const Entity& e) {
     return e.type == EntityType::Text || e.type == EntityType::Leader || e.type == EntityType::Hatch ||
@@ -876,6 +902,11 @@ void AnnotLayout(const Entity& e, const FieldValues* fields, AnnotGraphics& g) {
 
 void AnnotPrimitives(const Entity& e, std::vector<Prim>& out) {
     if (!e.annot) return;
+    if (e.type == EntityType::Viewport) {  // its border
+        const Vec2 c[4] = {e.p0, {e.p1.x, e.p0.y}, e.p1, {e.p0.x, e.p1.y}};
+        for (int i = 0; i < 4; ++i) out.push_back(Prim::Seg(c[i], c[(i + 1) % 4]));
+        return;
+    }
     if (e.type == EntityType::Insert) {
         std::vector<Entity> parts;
         ExpandBlock(e, parts);
@@ -907,7 +938,7 @@ double AnnotDistance(const Entity& e, Vec2 p) {
     }
     if (e.type == EntityType::Hatch && InsideLoops(e.annot->hatch.loops, p)) return 0;
     AnnotGraphics g;
-    if (e.type != EntityType::Hatch) {
+    if (e.type != EntityType::Hatch && e.type != EntityType::Viewport) {
         AnnotLayout(e, nullptr, g);
         for (const auto& b : g.boxes)
             if (InLoop({b.begin(), b.end()}, p)) return 0;
@@ -934,6 +965,7 @@ bool AnnotTouchesBox(const Entity& e, const Box& box) {
         if (PrimTouchesBox(p, box)) return true;
     // The window inside a text or a hatch.
     const Vec2 c = box.Center();
+    if (e.type == EntityType::Viewport) return false;
     if (e.type == EntityType::Hatch) return InsideLoops(e.annot->hatch.loops, c);
     AnnotGraphics g;
     AnnotLayout(e, nullptr, g);
@@ -955,6 +987,16 @@ void AnnotMap(Entity& e, const std::function<Vec2(Vec2)>& point, const std::func
               double factor) {
     if (!e.annot) return;
     Annot& a = EditAnnot(e);
+    if (e.type == EntityType::Viewport) {
+        // It stays square to the sheet: its centre moves, its size (and the
+        // drawing in it) scales.
+        const Vec2 c = point(Lerp(e.p0, e.p1, 0.5));
+        const Vec2 half = (e.p1 - e.p0) * (factor / 2);
+        e.p0 = c - half;
+        e.p1 = c + half;
+        a.viewScale *= factor;
+        return;
+    }
     e.p0 = point(e.p0);
     switch (e.type) {
         case EntityType::Text:
@@ -1005,6 +1047,12 @@ void AnnotGrips(const Entity& e, std::vector<std::pair<int, Vec2>>& out) {
         case EntityType::Leader:
             for (size_t i = 0; i < e.annot->pts.size(); ++i) out.push_back({(int)i, e.annot->pts[i]});
             break;
+        case EntityType::Viewport:
+            out.push_back({0, e.p0});
+            out.push_back({1, {e.p1.x, e.p0.y}});
+            out.push_back({2, e.p1});
+            out.push_back({3, {e.p0.x, e.p1.y}});
+            break;
         case EntityType::Hatch: {
             Box b;
             for (const auto& l : e.annot->hatch.loops)
@@ -1024,6 +1072,18 @@ bool DragAnnotGrip(Entity& e, int index, Vec2 from, Vec2 to) {
         if (index < 0 || (size_t)index >= a.pts.size()) return false;
         a.pts[(size_t)index] = to;
         e.p0 = a.pts[0];
+        return true;
+    }
+    if (e.type == EntityType::Viewport && index >= 0 && index < 4) {
+        // A corner: the opposite one stays; the drawing stays where it is on the sheet.
+        const Vec2 corners[4] = {e.p0, {e.p1.x, e.p0.y}, e.p1, {e.p0.x, e.p1.y}};
+        const Vec2 fixed = corners[(index + 2) % 4];
+        if (std::fabs(to.x - fixed.x) < 1e-9 || std::fabs(to.y - fixed.y) < 1e-9) return false;
+        const Vec2 anchor = ViewportToModel(e, fixed);
+        Annot& a = EditAnnot(e);
+        e.p0 = {std::min(fixed.x, to.x), std::min(fixed.y, to.y)};
+        e.p1 = {std::max(fixed.x, to.x), std::max(fixed.y, to.y)};
+        a.viewCentre = anchor + (Lerp(e.p0, e.p1, 0.5) - fixed) / a.viewScale;
         return true;
     }
     Translate(e, to - from);

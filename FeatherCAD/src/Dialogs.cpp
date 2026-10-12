@@ -1,6 +1,7 @@
 // Dialogs.cpp - see Dialogs.h.
 #include "Dialogs.h"
 
+#include <cmath>
 #include <cstring>
 #include <iterator>
 #include <string_view>
@@ -9,6 +10,7 @@
 #include <commctrl.h>
 #include <commdlg.h>
 
+#include "Print.h"
 #include "Theme.h"
 #include "Util.h"
 #include "resource.h"
@@ -629,6 +631,265 @@ INT_PTR CALLBACK TextEditProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
     return FALSE;
 }
 
+// ---- page setup ------------------------------------------------------------------
+struct PageSetupData {
+    SheetSetup* s;
+    bool* redo;
+};
+
+void FillPens(HWND dlg, const SheetSetup& s) {
+    for (int c = 1; c <= 9; ++c) {
+        SetDlgItemTextW(dlg, 1170 + c, (std::to_wstring(c) + L" " + ColorName(c)).c_str());
+        HWND combo = GetDlgItem(dlg, IDC_PS_PEN + c);
+        SendMessageW(combo, CB_ADDSTRING, 0, (LPARAM)L"Its own");
+        int sel = 0;
+        for (size_t i = 0; i < LineWeights().size(); ++i) {
+            SendMessageW(combo, CB_ADDSTRING, 0, (LPARAM)LineWeightName(LineWeights()[i]).c_str());
+            if (LineWeights()[i] == s.pens[(size_t)c]) sel = (int)i + 1;
+        }
+        SendMessageW(combo, CB_SETCURSEL, (WPARAM)sel, 0);
+    }
+}
+
+void FillColourModes(HWND dlg, int id, int mode) {
+    for (const wchar_t* m : {L"In colour", L"Black (monochrome)", L"Shades of grey"})
+        SendDlgItemMessageW(dlg, id, CB_ADDSTRING, 0, (LPARAM)m);
+    SendDlgItemMessageW(dlg, id, CB_SETCURSEL, (WPARAM)std::clamp(mode, 0, 2), 0);
+}
+
+void PaperChanged(HWND dlg) {
+    const int i = (int)SendDlgItemMessageW(dlg, IDC_PS_PAPER, CB_GETCURSEL, 0, 0);
+    const bool custom = i < 0 || (size_t)i >= PaperSizes().size();
+    EnableWindow(GetDlgItem(dlg, IDC_PS_WIDTH), custom);
+    EnableWindow(GetDlgItem(dlg, IDC_PS_HEIGHT), custom);
+    if (custom) return;
+    SheetSetup s;
+    s.paper = PaperSizes()[(size_t)i].name;
+    s.landscape = SendDlgItemMessageW(dlg, IDC_PS_ORIENT, CB_GETCURSEL, 0, 0) == 1;
+    ApplyPaper(s);
+    SetDlgItemTextW(dlg, IDC_PS_WIDTH, FormatDecimal(s.width, 1).c_str());
+    SetDlgItemTextW(dlg, IDC_PS_HEIGHT, FormatDecimal(s.height, 1).c_str());
+}
+
+INT_PTR CALLBACK PageSetupProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
+    auto* d = (PageSetupData*)GetWindowLongPtrW(dlg, DWLP_USER);
+    switch (msg) {
+        case WM_INITDIALOG: {
+            SetWindowLongPtrW(dlg, DWLP_USER, lp);
+            d = (PageSetupData*)lp;
+            InitDialog(dlg);
+            const SheetSetup& s = *d->s;
+            SetDlgItemTextW(dlg, IDC_PS_NAME, s.name.c_str());
+            int sel = (int)PaperSizes().size();
+            for (size_t i = 0; i < PaperSizes().size(); ++i) {
+                SendDlgItemMessageW(dlg, IDC_PS_PAPER, CB_ADDSTRING, 0, (LPARAM)PaperSizes()[i].name);
+                if (SameName(PaperSizes()[i].name, s.paper)) sel = (int)i;
+            }
+            SendDlgItemMessageW(dlg, IDC_PS_PAPER, CB_ADDSTRING, 0, (LPARAM)L"Custom");
+            SendDlgItemMessageW(dlg, IDC_PS_PAPER, CB_SETCURSEL, (WPARAM)sel, 0);
+            SendDlgItemMessageW(dlg, IDC_PS_ORIENT, CB_ADDSTRING, 0, (LPARAM)L"Portrait");
+            SendDlgItemMessageW(dlg, IDC_PS_ORIENT, CB_ADDSTRING, 0, (LPARAM)L"Landscape");
+            SendDlgItemMessageW(dlg, IDC_PS_ORIENT, CB_SETCURSEL, s.landscape ? 1 : 0, 0);
+            SetDlgItemTextW(dlg, IDC_PS_WIDTH, FormatDecimal(s.width, 1).c_str());
+            SetDlgItemTextW(dlg, IDC_PS_HEIGHT, FormatDecimal(s.height, 1).c_str());
+            SetDlgItemTextW(dlg, IDC_PS_MARGIN, FormatDecimal(s.margin, 1).c_str());
+            PaperChanged(dlg);
+            FillColourModes(dlg, IDC_PS_COLOUR, s.colourMode);
+            Check(dlg, IDC_PS_LW, s.lineWeights);
+            Check(dlg, IDC_PS_BORDER, false);
+            FillPens(dlg, s);
+            return TRUE;
+        }
+        case WM_COMMAND:
+            if ((LOWORD(wp) == IDC_PS_PAPER || LOWORD(wp) == IDC_PS_ORIENT) && HIWORD(wp) == CBN_SELCHANGE) {
+                PaperChanged(dlg);
+                Check(dlg, IDC_PS_BORDER, true);  // a new paper: a new border, most likely
+            } else if (LOWORD(wp) == IDOK) {
+                SheetSetup s = *d->s;
+                double w, h, m;
+                if (!ReadPositive(dlg, IDC_PS_WIDTH, w) || !ReadPositive(dlg, IDC_PS_HEIGHT, h)) return TRUE;
+                if (!ParseNumber(WideToUtf8(GetText(dlg, IDC_PS_MARGIN)), m) || m < 0 || m * 3 > std::min(w, h)) {
+                    MessageBoxW(dlg, L"The margin must fit on the paper.", APP_NAME, MB_ICONWARNING);
+                    return TRUE;
+                }
+                s.name = GetText(dlg, IDC_PS_NAME);
+                if (s.name.empty()) s.name = d->s->name;
+                const int p = (int)SendDlgItemMessageW(dlg, IDC_PS_PAPER, CB_GETCURSEL, 0, 0);
+                s.paper = p >= 0 && (size_t)p < PaperSizes().size() ? PaperSizes()[(size_t)p].name : L"Custom";
+                s.landscape = SendDlgItemMessageW(dlg, IDC_PS_ORIENT, CB_GETCURSEL, 0, 0) == 1;
+                s.width = w;
+                s.height = h;
+                s.margin = m;
+                s.colourMode = std::max(0, (int)SendDlgItemMessageW(dlg, IDC_PS_COLOUR, CB_GETCURSEL, 0, 0));
+                s.lineWeights = Checked(dlg, IDC_PS_LW);
+                for (int c = 1; c <= 9; ++c) {
+                    const int i = (int)SendDlgItemMessageW(dlg, IDC_PS_PEN + c, CB_GETCURSEL, 0, 0);
+                    s.pens[(size_t)c] = i <= 0 ? -1 : LineWeights()[(size_t)i - 1];
+                }
+                *d->s = s;
+                *d->redo = Checked(dlg, IDC_PS_BORDER);
+                EndDialog(dlg, IDOK);
+            } else if (LOWORD(wp) == IDCANCEL) {
+                EndDialog(dlg, IDCANCEL);
+            }
+            return TRUE;
+    }
+    return FALSE;
+}
+
+// ---- drawing properties --------------------------------------------------------------
+INT_PTR CALLBACK DrawingPropsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
+    auto* v = (std::vector<std::wstring>*)GetWindowLongPtrW(dlg, DWLP_USER);
+    switch (msg) {
+        case WM_INITDIALOG:
+            SetWindowLongPtrW(dlg, DWLP_USER, lp);
+            v = (std::vector<std::wstring>*)lp;
+            InitDialog(dlg);
+            for (size_t i = 0; i < DrawingPropertyKeys().size() && i < 7; ++i) {
+                SetDlgItemTextW(dlg, IDC_DP_FIRST + 10 + (int)i, (std::wstring(DrawingPropertyKeys()[i].label) + L":").c_str());
+                if (i < v->size()) SetDlgItemTextW(dlg, IDC_DP_FIRST + (int)i, (*v)[i].c_str());
+            }
+            return TRUE;
+        case WM_COMMAND:
+            if (LOWORD(wp) == IDOK) {
+                v->resize(DrawingPropertyKeys().size());
+                for (size_t i = 0; i < v->size() && i < 7; ++i) (*v)[i] = GetText(dlg, IDC_DP_FIRST + (int)i);
+                EndDialog(dlg, IDOK);
+            } else if (LOWORD(wp) == IDCANCEL) {
+                EndDialog(dlg, IDCANCEL);
+            }
+            return TRUE;
+    }
+    return FALSE;
+}
+
+// ---- print -------------------------------------------------------------------------
+struct PlotData {
+    PlotRequest* req;
+    bool hasSheets, onSheet;
+    const std::function<std::vector<PlotPage>(const PlotRequest&)>* build;
+    std::vector<PlotRequest::What> whats;
+    std::vector<PlotPage> pages;
+    size_t shown = 0;
+};
+
+const double kPlotRatios[] = {0, 10, 5, 2, 1, 0.5, 0.2, 0.1, 0.05, 0.02, 0.01};
+
+void ReadPlot(HWND dlg, PlotData& d) {
+    PlotRequest& r = *d.req;
+    const int w = (int)SendDlgItemMessageW(dlg, IDC_PL_WHAT, CB_GETCURSEL, 0, 0);
+    if (w >= 0 && (size_t)w < d.whats.size()) r.what = d.whats[(size_t)w];
+    const int p = (int)SendDlgItemMessageW(dlg, IDC_PL_PAPER, CB_GETCURSEL, 0, 0);
+    if (p >= 0 && (size_t)p < PaperSizes().size()) r.paper = PaperSizes()[(size_t)p].name;
+    r.landscape = Checked(dlg, IDC_PL_LANDSCAPE);
+    const int s = (int)SendDlgItemMessageW(dlg, IDC_PL_SCALE, CB_GETCURSEL, 0, 0);
+    if (s >= 0 && s < (int)std::size(kPlotRatios)) r.ratio = kPlotRatios[s];
+    r.colourMode = std::max(0, (int)SendDlgItemMessageW(dlg, IDC_PL_COLOUR, CB_GETCURSEL, 0, 0));
+    r.lineWeights = Checked(dlg, IDC_PL_LW);
+    r.fit = Checked(dlg, IDC_PL_FIT);
+    const bool drawing = r.what == PlotRequest::DrawingView || r.what == PlotRequest::DrawingAll;
+    for (int id : {IDC_PL_PAPER, IDC_PL_LANDSCAPE, IDC_PL_SCALE}) EnableWindow(GetDlgItem(dlg, id), drawing);
+}
+
+void RebuildPlot(HWND dlg, PlotData& d) {
+    ReadPlot(dlg, d);
+    d.pages = (*d.build)(*d.req);
+    if (d.shown >= d.pages.size()) d.shown = 0;
+    std::wstring info;
+    if (d.pages.empty()) {
+        info = L"Nothing to print.";
+    } else {
+        const PlotPage& p = d.pages[d.shown];
+        info = L"Page " + std::to_wstring(d.shown + 1) + L" of " + std::to_wstring(d.pages.size()) + L": " + p.name + L"\n" +
+               FormatDecimal(p.width, 1) + L" x " + FormatDecimal(p.height, 1) + L" mm";
+    }
+    SetDlgItemTextW(dlg, IDC_PL_INFO, info.c_str());
+    EnableWindow(GetDlgItem(dlg, IDC_PL_PREV), d.shown > 0);
+    EnableWindow(GetDlgItem(dlg, IDC_PL_NEXT), d.shown + 1 < d.pages.size());
+    EnableWindow(GetDlgItem(dlg, IDC_PL_PRINT), !d.pages.empty());
+    EnableWindow(GetDlgItem(dlg, IDC_PL_PDF), !d.pages.empty());
+    InvalidateRect(GetDlgItem(dlg, IDC_PL_PREVIEW), nullptr, TRUE);
+}
+
+INT_PTR CALLBACK PlotProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
+    auto* d = (PlotData*)GetWindowLongPtrW(dlg, DWLP_USER);
+    switch (msg) {
+        case WM_INITDIALOG: {
+            SetWindowLongPtrW(dlg, DWLP_USER, lp);
+            d = (PlotData*)lp;
+            InitDialog(dlg);
+            const PlotRequest& r = *d->req;
+            auto what = [&](PlotRequest::What w, const wchar_t* label) {
+                d->whats.push_back(w);
+                SendDlgItemMessageW(dlg, IDC_PL_WHAT, CB_ADDSTRING, 0, (LPARAM)label);
+            };
+            if (d->onSheet) what(PlotRequest::ThisSheet, L"This sheet");
+            if (d->hasSheets) what(PlotRequest::AllSheets, L"All sheets");
+            what(PlotRequest::DrawingView, L"The drawing, as on screen");
+            what(PlotRequest::DrawingAll, L"The drawing, all of it");
+            int sel = 0;
+            for (size_t i = 0; i < d->whats.size(); ++i)
+                if (d->whats[i] == r.what) sel = (int)i;
+            SendDlgItemMessageW(dlg, IDC_PL_WHAT, CB_SETCURSEL, (WPARAM)sel, 0);
+            int psel = 1;
+            for (size_t i = 0; i < PaperSizes().size(); ++i) {
+                SendDlgItemMessageW(dlg, IDC_PL_PAPER, CB_ADDSTRING, 0, (LPARAM)PaperSizes()[i].name);
+                if (SameName(PaperSizes()[i].name, r.paper)) psel = (int)i;
+            }
+            SendDlgItemMessageW(dlg, IDC_PL_PAPER, CB_SETCURSEL, (WPARAM)psel, 0);
+            Check(dlg, IDC_PL_LANDSCAPE, r.landscape);
+            int ssel = 0;
+            for (int i = 0; i < (int)std::size(kPlotRatios); ++i) {
+                SendDlgItemMessageW(dlg, IDC_PL_SCALE, CB_ADDSTRING, 0, (LPARAM)(i == 0 ? std::wstring(L"Fit to the paper") : ScaleText(kPlotRatios[i])).c_str());
+                if (std::fabs(kPlotRatios[i] - r.ratio) < 1e-12) ssel = i;
+            }
+            SendDlgItemMessageW(dlg, IDC_PL_SCALE, CB_SETCURSEL, (WPARAM)ssel, 0);
+            FillColourModes(dlg, IDC_PL_COLOUR, r.colourMode);
+            Check(dlg, IDC_PL_LW, r.lineWeights);
+            Check(dlg, IDC_PL_FIT, r.fit);
+            RebuildPlot(dlg, *d);
+            return TRUE;
+        }
+        case WM_DRAWITEM: {
+            auto* di = (DRAWITEMSTRUCT*)lp;
+            if (di->CtlID != IDC_PL_PREVIEW) break;
+            const RECT rc = di->rcItem;
+            HBRUSH bg = CreateSolidBrush(RGB(150, 155, 164));
+            FillRect(di->hDC, &rc, bg);
+            DeleteObject(bg);
+            if (d && d->shown < d->pages.size()) {
+                const PlotPage& p = d->pages[d->shown];
+                const double k = std::min((rc.right - rc.left - 16) / p.width, (rc.bottom - rc.top - 16) / p.height);
+                const double x = rc.left + (rc.right - rc.left - p.width * k) / 2, y = rc.top + (rc.bottom - rc.top - p.height * k) / 2;
+                RECT page = {(LONG)x, (LONG)y, (LONG)(x + p.width * k), (LONG)(y + p.height * k)};
+                FillRect(di->hDC, &page, (HBRUSH)GetStockObject(WHITE_BRUSH));
+                DrawPlotPage(di->hDC, p, k, x, y);
+            }
+            return TRUE;
+        }
+        case WM_COMMAND: {
+            const int id = LOWORD(wp);
+            if ((id == IDC_PL_WHAT || id == IDC_PL_PAPER || id == IDC_PL_SCALE || id == IDC_PL_COLOUR) && HIWORD(wp) == CBN_SELCHANGE) {
+                d->shown = 0;
+                RebuildPlot(dlg, *d);
+            } else if (id == IDC_PL_LANDSCAPE || id == IDC_PL_LW || id == IDC_PL_FIT) {
+                RebuildPlot(dlg, *d);
+            } else if (id == IDC_PL_PREV || id == IDC_PL_NEXT) {
+                if (id == IDC_PL_PREV && d->shown > 0) --d->shown;
+                if (id == IDC_PL_NEXT && d->shown + 1 < d->pages.size()) ++d->shown;
+                RebuildPlot(dlg, *d);
+            } else if (id == IDC_PL_PRINT || id == IDC_PL_PDF) {
+                ReadPlot(dlg, *d);
+                EndDialog(dlg, id == IDC_PL_PRINT ? 1 : 2);
+            } else if (id == IDCANCEL) {
+                EndDialog(dlg, 0);
+            }
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
 // ---- colours and layers ---------------------------------------------------------
 UINT PopupAtCursor(HWND owner, HMENU m) {
     POINT pt;
@@ -959,6 +1220,22 @@ bool DimEditDialog(HWND owner, const DimData& dim, bool attached, DimEditResult&
     DimEditData d{&dim, attached, &out, L""};
     return DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_DIMEDIT), owner, DimEditProc, (LPARAM)&d) ==
            IDOK;
+}
+
+bool PageSetupDialog(HWND owner, SheetSetup& setup, bool& redoBorder) {
+    PageSetupData d{&setup, &redoBorder};
+    return DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_PAGESETUP), owner, PageSetupProc, (LPARAM)&d) == IDOK;
+}
+
+bool DrawingPropsDialog(HWND owner, std::vector<std::wstring>& values) {
+    return DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_DWGPROPS), owner, DrawingPropsProc, (LPARAM)&values) ==
+           IDOK;
+}
+
+int PlotDialog(HWND owner, PlotRequest& request, bool hasSheets, bool onSheet,
+               const std::function<std::vector<PlotPage>(const PlotRequest&)>& build) {
+    PlotData d{&request, hasSheets, onSheet, &build, {}, {}, 0};
+    return (int)DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_PLOT), owner, PlotProc, (LPARAM)&d);
 }
 
 bool TextEditDialog(HWND owner, TextData& text, const std::wstring& title) {

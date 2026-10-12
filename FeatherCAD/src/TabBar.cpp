@@ -30,7 +30,10 @@ TabBar::~TabBar() {
     if (m_font) DeleteObject(m_font);
 }
 
-bool TabBar::Create(HWND parent, HWND target) {
+bool TabBar::Create(HWND parent, HWND target) { return Create(parent, target, Ids{}); }
+
+bool TabBar::Create(HWND parent, HWND target, const Ids& ids) {
+    m_ids = ids;
     static bool registered = false;
     if (!registered) {
         WNDCLASSEXW wc{sizeof(wc)};
@@ -116,6 +119,7 @@ void TabBar::Layout() {
 }
 
 RECT TabBar::CloseRect(const RECT& tab) const {
+    if (!m_ids.closeFirst) return {tab.right, tab.top, tab.right, tab.top};  // none
     const int s = Dpi(kCloseDip, m_dpi);
     const int cy = (tab.top + tab.bottom) / 2;
     const int right = tab.right - Dpi(6, m_dpi);
@@ -126,7 +130,7 @@ TabBar::Hit TabBar::HitTest(POINT pt) const {
     for (size_t i = 0; i < m_rects.size(); ++i) {
         if (!PtInRect(&m_rects[i], pt)) continue;
         const RECT c = CloseRect(m_rects[i]);
-        if (PtInRect(&c, pt)) return {TabClose, (int)i};
+        if (m_ids.closeFirst && PtInRect(&c, pt)) return {TabClose, (int)i};
         return {TabBody, (int)i};
     }
     if (PtInRect(&m_plus, pt)) return {Plus, -1};
@@ -147,7 +151,8 @@ void TabBar::Paint(HDC dc) {
         if (active) Fill(dc, r, th.barBg);
         else if (hot) Fill(dc, r, th.tabHover);
         if (active) {
-            RECT line = {r.left, r.top, r.right, r.top + Dpi(2, m_dpi)};
+            RECT line = m_ids.bottom ? RECT{r.left, r.bottom - Dpi(2, m_dpi), r.right, r.bottom}
+                                     : RECT{r.left, r.top, r.right, r.top + Dpi(2, m_dpi)};
             Fill(dc, line, th.accent);
         }
         // A thin divider between inactive tabs.
@@ -161,7 +166,7 @@ void TabBar::Paint(HDC dc) {
         RECT text = {r.left + Dpi(kPadDip, m_dpi), r.top, close.left - Dpi(4, m_dpi), r.bottom};
         SetTextColor(dc, active ? th.barText : Mix(th.barText, th.tabStripBg, 0.3));
         DrawTextW(dc, label.c_str(), (int)label.size(), &text, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
-        if (active || hot) {
+        if (m_ids.closeFirst && (active || hot)) {
             if (m_hot.part == TabClose && m_hot.index == (int)i) Fill(dc, close, th.barPressed);
             HPEN pen = CreatePen(PS_SOLID, std::max(1, Dpi(1, m_dpi)), th.barText);
             HGDIOBJ oldPen = SelectObject(dc, pen);
@@ -187,8 +192,8 @@ void TabBar::Paint(HDC dc) {
         SelectObject(dc, oldPen);
         DeleteObject(pen);
     }
-    // Bottom edge where the drawing area starts.
-    RECT bottom = {rc.left, rc.bottom - 1, rc.right, rc.bottom};
+    // The edge where the drawing area is.
+    RECT bottom = m_ids.bottom ? RECT{rc.left, rc.top, rc.right, rc.top + 1} : RECT{rc.left, rc.bottom - 1, rc.right, rc.bottom};
     Fill(dc, bottom, th.barBorder);
     SelectObject(dc, oldFont);
 }
@@ -252,14 +257,23 @@ LRESULT TabBar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         case WM_LBUTTONDOWN:
         case WM_LBUTTONDBLCLK: {
             const Hit h = HitTest({GET_X_LPARAM(lp), GET_Y_LPARAM(lp)});
-            if (h.part == TabBody) SendMessageW(m_target, WM_COMMAND, ID_TAB_FIRST + h.index, 0);
-            else if (h.part == TabClose) SendMessageW(m_target, WM_COMMAND, ID_TAB_CLOSE_FIRST + h.index, 0);
-            else if (h.part == Plus || (msg == WM_LBUTTONDBLCLK && h.part == None)) SendMessageW(m_target, WM_COMMAND, ID_NEW, 0);
+            if (h.part == TabBody) SendMessageW(m_target, WM_COMMAND, m_ids.tabFirst + h.index, 0);
+            else if (h.part == TabClose) SendMessageW(m_target, WM_COMMAND, m_ids.closeFirst + h.index, 0);
+            else if (h.part == Plus || (msg == WM_LBUTTONDBLCLK && h.part == None)) SendMessageW(m_target, WM_COMMAND, m_ids.plus, 0);
             return 0;
         }
         case WM_MBUTTONUP: {
             const Hit h = HitTest({GET_X_LPARAM(lp), GET_Y_LPARAM(lp)});
-            if (h.part == TabBody || h.part == TabClose) SendMessageW(m_target, WM_COMMAND, ID_TAB_CLOSE_FIRST + h.index, 0);
+            if (m_ids.closeFirst && (h.part == TabBody || h.part == TabClose))
+                SendMessageW(m_target, WM_COMMAND, m_ids.closeFirst + h.index, 0);
+            return 0;
+        }
+        case WM_RBUTTONUP: {
+            const Hit h = HitTest({GET_X_LPARAM(lp), GET_Y_LPARAM(lp)});
+            if (m_ids.menuFirst && h.part == TabBody) {
+                SendMessageW(m_target, WM_COMMAND, m_ids.tabFirst + h.index, 0);
+                SendMessageW(m_target, WM_COMMAND, m_ids.menuFirst + h.index, 0);
+            }
             return 0;
         }
         case WM_NOTIFY: {
@@ -268,7 +282,7 @@ LRESULT TabBar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
                 auto* di = (NMTTDISPINFOW*)lp;
                 static std::wstring text;
                 text.clear();
-                if (m_hot.part == Plus) text = L"New drawing (Ctrl+N)";
+                if (m_hot.part == Plus) text = m_ids.plusTip;
                 else if (m_hot.part == TabClose) text = L"Close (Ctrl+W)";
                 else if (m_hot.index >= 0 && m_hot.index < (int)m_tabs.size()) text = m_tabs[(size_t)m_hot.index].tip;
                 di->lpszText = const_cast<wchar_t*>(text.c_str());

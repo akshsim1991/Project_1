@@ -76,3 +76,4 @@ std::unique_ptr<Command> CreateModifyCommand(const std::wstring& name);
 std::unique_ptr<Command> CreateDrawCommand(const std::wstring& name);
 std::unique_ptr<Command> CreateDimCommand(const std::wstring& name);
 std::unique_ptr<Command> CreateAnnotCommand(const std::wstring& name);
+std::unique_ptr<Command> CreateSheetCommand(const std::wstring& name);

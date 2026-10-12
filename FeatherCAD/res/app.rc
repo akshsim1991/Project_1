@@ -158,6 +158,99 @@ BEGIN
     PUSHBUTTON      "Cancel", IDCANCEL, 270, 186, 50, 14
 END
 
+IDD_PAGESETUP DIALOGEX 0, 0, 330, 240
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Page setup"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "&Name:", -1, 10, 12, 50, 10
+    EDITTEXT        IDC_PS_NAME, 70, 10, 150, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "&Paper:", -1, 10, 32, 50, 10
+    COMBOBOX        IDC_PS_PAPER, 70, 30, 150, 200, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "&Orientation:", -1, 10, 52, 50, 10
+    COMBOBOX        IDC_PS_ORIENT, 70, 50, 150, 60, CBS_DROPDOWNLIST | WS_TABSTOP
+    LTEXT           "Size (mm):", -1, 10, 72, 50, 10
+    EDITTEXT        IDC_PS_WIDTH, 70, 70, 50, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "x", -1, 124, 72, 8, 10
+    EDITTEXT        IDC_PS_HEIGHT, 134, 70, 50, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "&Margin (mm):", -1, 10, 92, 55, 10
+    EDITTEXT        IDC_PS_MARGIN, 70, 90, 50, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    AUTOCHECKBOX    "Make the &border and title block again for this paper", IDC_PS_BORDER, 10, 110, 300, 12
+    LTEXT           "Printing", -1, 10, 128, 100, 10
+    COMBOBOX        IDC_PS_COLOUR, 70, 126, 110, 60, CBS_DROPDOWNLIST | WS_TABSTOP
+    AUTOCHECKBOX    "Print &line weights", IDC_PS_LW, 190, 127, 120, 12
+    LTEXT           "Pens: line weight for each colour", -1, 10, 140, 300, 10
+    LTEXT           "", 1171, 10, 152, 46, 10
+    COMBOBOX        1161, 58, 150, 54, 200, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "", 1172, 114, 152, 46, 10
+    COMBOBOX        1162, 162, 150, 54, 200, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "", 1173, 218, 152, 46, 10
+    COMBOBOX        1163, 266, 150, 54, 200, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "", 1174, 10, 170, 46, 10
+    COMBOBOX        1164, 58, 168, 54, 200, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "", 1175, 114, 170, 46, 10
+    COMBOBOX        1165, 162, 168, 54, 200, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "", 1176, 218, 170, 46, 10
+    COMBOBOX        1166, 266, 168, 54, 200, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "", 1177, 10, 188, 46, 10
+    COMBOBOX        1167, 58, 186, 54, 200, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "", 1178, 114, 188, 46, 10
+    COMBOBOX        1168, 162, 186, 54, 200, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "", 1179, 218, 188, 46, 10
+    COMBOBOX        1169, 266, 186, 54, 200, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    DEFPUSHBUTTON   "OK", IDOK, 214, 218, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 270, 218, 50, 14
+END
+
+IDD_PLOT DIALOGEX 0, 0, 470, 270
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Print"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "&What:", -1, 10, 12, 40, 10
+    COMBOBOX        IDC_PL_WHAT, 52, 10, 118, 120, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "&Paper:", -1, 10, 32, 40, 10
+    COMBOBOX        IDC_PL_PAPER, 52, 30, 118, 200, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    AUTOCHECKBOX    "&Landscape", IDC_PL_LANDSCAPE, 52, 47, 100, 12
+    LTEXT           "&Scale:", -1, 10, 64, 40, 10
+    COMBOBOX        IDC_PL_SCALE, 52, 62, 118, 200, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "&Colours:", -1, 10, 84, 40, 10
+    COMBOBOX        IDC_PL_COLOUR, 52, 82, 118, 60, CBS_DROPDOWNLIST | WS_TABSTOP
+    AUTOCHECKBOX    "Print line &weights", IDC_PL_LW, 52, 100, 118, 12
+    AUTOCHECKBOX    "&Fit to the printer's paper", IDC_PL_FIT, 52, 114, 118, 12
+    LTEXT           "", IDC_PL_INFO, 10, 134, 160, 30
+    PUSHBUTTON      "&Print...", IDC_PL_PRINT, 10, 226, 76, 16
+    PUSHBUTTON      "Save P&DF...", IDC_PL_PDF, 94, 226, 76, 16
+    PUSHBUTTON      "Close", IDCANCEL, 94, 246, 76, 14
+    CONTROL         "", IDC_PL_PREVIEW, "Static", SS_OWNERDRAW, 180, 10, 280, 230
+    PUSHBUTTON      "<", IDC_PL_PREV, 180, 246, 20, 14
+    PUSHBUTTON      ">", IDC_PL_NEXT, 204, 246, 20, 14
+END
+
+IDD_DWGPROPS DIALOGEX 0, 0, 280, 190
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Drawing properties"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "Shown in title blocks as {title}, {number}, {drawnby}...", -1, 10, 8, 260, 10
+    LTEXT           "", 1210, 10, 26, 70, 10
+    EDITTEXT        1200, 84, 24, 186, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "", 1211, 10, 46, 70, 10
+    EDITTEXT        1201, 84, 44, 186, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "", 1212, 10, 66, 70, 10
+    EDITTEXT        1202, 84, 64, 186, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "", 1213, 10, 86, 70, 10
+    EDITTEXT        1203, 84, 84, 186, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "", 1214, 10, 106, 70, 10
+    EDITTEXT        1204, 84, 104, 186, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "", 1215, 10, 126, 70, 10
+    EDITTEXT        1205, 84, 124, 186, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "", 1216, 10, 146, 70, 10
+    EDITTEXT        1206, 84, 144, 186, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    DEFPUSHBUTTON   "OK", IDOK, 164, 168, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 220, 168, 50, 14
+END
+
 IDD_LAYERS DIALOGEX 0, 0, 480, 252
 STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "Layers"
@@ -226,8 +319,8 @@ BEGIN
 END
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 1,5,0,0
- PRODUCTVERSION 1,5,0,0
+ FILEVERSION 1,6,0,0
+ PRODUCTVERSION 1,6,0,0
  FILEFLAGSMASK 0x3fL
  FILEFLAGS 0x0L
  FILEOS VOS_NT_WINDOWS32
@@ -240,12 +333,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "Akshaya Simha"
             VALUE "FileDescription", "Feather CAD"
-            VALUE "FileVersion", "1.5.0.0"
+            VALUE "FileVersion", "1.6.0.0"
             VALUE "InternalName", "FeatherCAD"
             VALUE "LegalCopyright", "\251 2026 Akshaya Simha"
             VALUE "OriginalFilename", "FeatherCAD.exe"
             VALUE "ProductName", "Feather CAD"
-            VALUE "ProductVersion", "1.5.0.0"
+            VALUE "ProductVersion", "1.6.0.0"
         END
     END
     BLOCK "VarFileInfo"

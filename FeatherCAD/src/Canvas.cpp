@@ -10,6 +10,7 @@
 
 #include "Annot.h"
 #include "Dimension.h"
+#include "Sheet.h"
 #include "Spline.h"
 #include "Theme.h"
 #include "Util.h"
@@ -174,7 +175,7 @@ void Canvas::ZoomWindow(const Box& box, bool remember) {
 }
 
 void Canvas::ZoomExtents() {
-    Box ext = m_doc->Extents();
+    Box ext = m_sheet ? Box({0, 0}, {m_sheet->setup.width, m_sheet->setup.height}) : m_doc->Extents();
     if (ext.Empty()) {
         // An empty drawing: show an A3 sheet's worth of space from the origin.
         const bool imperial = m_doc->Settings().units == Units::Inches || m_doc->Settings().units == Units::Feet;
@@ -276,7 +277,7 @@ void Canvas::OnDpiChanged() {
 }
 
 void Canvas::LoadColours() {
-    if (CurrentTheme().dark) {
+    if (CurrentTheme().dark && !m_sheet) {  // a sheet is white paper whatever the theme
         m_bg = Rgb(33, 38, 46);
         m_fg = Rgb(236, 239, 244);
         m_gridMinor = Rgb(44, 50, 60);
@@ -309,6 +310,7 @@ void Canvas::LoadColours() {
         m_removeInk = Rgb(220, 30, 30);
         m_constructionInk = Rgb(110, 140, 190, 0.8f);
     }
+    m_outside = CurrentTheme().dark ? Rgb(64, 70, 80) : Rgb(150, 155, 164);
     m_gripFill = Rgb(40, 110, 255);
     m_gripHover = Rgb(255, 120, 150);
     m_gripHot = Rgb(235, 40, 40);
@@ -536,6 +538,12 @@ ID2D1PathGeometry* Canvas::BuildGeometry(const std::vector<const Entity*>& entit
                 break;
             }
             case EntityType::Insert:  // drawn as its objects (Flatten)
+                break;
+            case EntityType::Viewport:  // its edge
+                line(e->p0, {e->p1.x, e->p0.y});
+                line({e->p1.x, e->p0.y}, e->p1);
+                line(e->p1, {e->p0.x, e->p1.y});
+                line({e->p0.x, e->p1.y}, e->p0);
                 break;
             case EntityType::Circle:
             case EntityType::Arc:
@@ -826,6 +834,54 @@ void Canvas::DrawTextItem(ID2D1RenderTarget* rt, const TextItem& t, ID2D1Brush* 
     layout->Release();
 }
 
+void Canvas::SetSheet(const Sheet* sheet, const Document* model) {
+    m_sheet = sheet;
+    m_model = model;
+    LoadColours();
+    m_layerValid = false;
+}
+
+void Canvas::DrawPaper(ID2D1RenderTarget* rt) {
+    rt->Clear(m_outside);
+    const SheetSetup& s = m_sheet->setup;
+    const D2D1_POINT_2F a = ToScreen({0, s.height}), b = ToScreen({s.width, 0});
+    // The page with a soft shadow, and its printable edge (dotted).
+    const float sh = (float)Px(4);
+    m_brush->SetColor(D2D1::ColorF(0, 0, 0, 0.25f));
+    rt->FillRectangle(D2D1::RectF(a.x + sh, a.y + sh, b.x + sh, b.y + sh), m_brush);
+    m_brush->SetColor(m_bg);
+    rt->FillRectangle(D2D1::RectF(a.x, a.y, b.x, b.y), m_brush);
+    const D2D1_POINT_2F ma = ToScreen({s.margin, s.height - s.margin}), mb = ToScreen({s.width - s.margin, s.margin});
+    m_brush->SetColor(Rgb(190, 195, 205));
+    rt->DrawRectangle(D2D1::RectF(ma.x, ma.y, mb.x, mb.y), m_brush, 1.0f, m_dashed);
+    if (!m_model) return;
+    // The drawing through each viewport, cut off at its edges.
+    std::vector<const Entity*> model;
+    for (const auto& kv : m_model->Entities())
+        if (m_model->Visible(kv.second)) model.push_back(&kv.second);
+    for (const auto& kv : m_doc->Entities()) {
+        const Entity& vp = kv.second;
+        if (vp.type != EntityType::Viewport || !vp.annot || !m_doc->Visible(vp)) continue;
+        const D2D1_POINT_2F p = ToScreen(vp.p0), q = ToScreen(vp.p1);
+        const D2D1_RECT_F clip = D2D1::RectF(std::min(p.x, q.x), std::min(p.y, q.y), std::max(p.x, q.x), std::max(p.y, q.y));
+        if (clip.right < 0 || clip.bottom < 0 || clip.left > m_width || clip.top > m_height) continue;
+        rt->PushAxisAlignedClip(clip, D2D1_ANTIALIAS_MODE_ALIASED);
+        // Seen through it, the drawing is a view of its own.
+        const Vec2 savedCentre = m_centre;
+        const double savedScale = m_scale;
+        Document* savedDoc = m_doc;
+        const Vec2 c = Lerp(vp.p0, vp.p1, 0.5);
+        m_centre = vp.annot->viewCentre + (m_centre - c) / vp.annot->viewScale;
+        m_scale *= vp.annot->viewScale;
+        m_doc = const_cast<Document*>(m_model);
+        DrawStyled(rt, model);
+        m_doc = savedDoc;
+        m_centre = savedCentre;
+        m_scale = savedScale;
+        rt->PopAxisAlignedClip();
+    }
+}
+
 void Canvas::DrawGrid(ID2D1RenderTarget* rt) {
     const Drafting& d = m_engine->Draft();
     double spacing = d.gridSpacing;
@@ -887,15 +943,19 @@ void Canvas::RenderLayer() {
     ID2D1BitmapRenderTarget* rt = m_layer;
     rt->BeginDraw();
     rt->SetTransform(D2D1::Matrix3x2F::Identity());
-    rt->Clear(m_bg);
     const Drafting& d = m_engine->Draft();
-    if (d.gridOn) DrawGrid(rt);
-    // Axes through the origin.
-    const D2D1_POINT_2F o = ToScreen(m_doc->Settings().origin);
-    m_brush->SetColor(D2D1::ColorF(m_axisX.r, m_axisX.g, m_axisX.b, 0.45f));
-    rt->DrawLine(D2D1::Point2F(0, o.y), D2D1::Point2F((float)m_width, o.y), m_brush, 1.0f);
-    m_brush->SetColor(D2D1::ColorF(m_axisY.r, m_axisY.g, m_axisY.b, 0.45f));
-    rt->DrawLine(D2D1::Point2F(o.x, 0), D2D1::Point2F(o.x, (float)m_height), m_brush, 1.0f);
+    if (m_sheet) {
+        DrawPaper(rt);
+    } else {
+        rt->Clear(m_bg);
+        if (d.gridOn) DrawGrid(rt);
+        // Axes through the origin.
+        const D2D1_POINT_2F o = ToScreen(m_doc->Settings().origin);
+        m_brush->SetColor(D2D1::ColorF(m_axisX.r, m_axisX.g, m_axisX.b, 0.45f));
+        rt->DrawLine(D2D1::Point2F(0, o.y), D2D1::Point2F((float)m_width, o.y), m_brush, 1.0f);
+        m_brush->SetColor(D2D1::ColorF(m_axisY.r, m_axisY.g, m_axisY.b, 0.45f));
+        rt->DrawLine(D2D1::Point2F(o.x, 0), D2D1::Point2F(o.x, (float)m_height), m_brush, 1.0f);
+    }
 
     std::vector<const Entity*> normal, selected;
     normal.reserve(m_doc->Count());

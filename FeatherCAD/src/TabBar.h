@@ -17,8 +17,19 @@ public:
         bool operator==(const Tab& o) const { return title == o.title && tip == o.tip && modified == o.modified; }
     };
 
+    // The commands a tab bar sends (the drawing tabs' by default).
+    struct Ids {
+        int tabFirst = ID_TAB_FIRST;         // + index: switch to it
+        int closeFirst = ID_TAB_CLOSE_FIRST; // + index: close it (0: tabs have no close button)
+        int plus = ID_NEW;                   // the + button
+        int menuFirst = 0;                   // + index: right click on a tab (0: none)
+        const wchar_t* plusTip = L"New drawing (Ctrl+N)";
+        bool bottom = false;                 // under the drawing (the edge and marker below)
+    };
+
     ~TabBar();
-    bool Create(HWND parent, HWND commandTarget);
+    bool Create(HWND parent, HWND commandTarget);  // drawing tabs
+    bool Create(HWND parent, HWND commandTarget, const Ids& ids);
     HWND Hwnd() const { return m_hwnd; }
     int Height() const;
     void SetTabs(const std::vector<Tab>& tabs, int active);  // repaints only if something changed
@@ -40,6 +51,7 @@ private:
     RECT CloseRect(const RECT& tab) const;
 
     HWND m_hwnd = nullptr, m_target = nullptr, m_tooltip = nullptr;
+    Ids m_ids;
     HFONT m_font = nullptr;
     int m_dpi = 96;
     std::vector<Tab> m_tabs;

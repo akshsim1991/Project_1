@@ -87,7 +87,8 @@ void GripsOf(const Entity& e, std::vector<Grip>& out) {
         case EntityType::Text:
         case EntityType::Leader:
         case EntityType::Hatch:
-        case EntityType::Insert: {
+        case EntityType::Insert:
+        case EntityType::Viewport: {
             std::vector<std::pair<int, Vec2>> g;
             AnnotGrips(e, g);
             for (const auto& x : g) add(x.first, x.second);
@@ -172,6 +173,7 @@ bool DragGrip(Entity& e, int index, Vec2 from, Vec2 to) {
         case EntityType::Leader:
         case EntityType::Hatch:
         case EntityType::Insert:
+        case EntityType::Viewport:
             return DragAnnotGrip(e, index, from, to);
     }
     return false;

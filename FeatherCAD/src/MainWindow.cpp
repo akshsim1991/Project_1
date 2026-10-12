@@ -14,6 +14,8 @@
 #include "Curve.h"
 #include "Select.h"
 #include "Icons.h"
+#include "Plot.h"
+#include "Print.h"
 #include "Theme.h"
 #include "Util.h"
 #include "resource.h"
@@ -122,6 +124,16 @@ const IdCommand kIdCommands[] = {
     {ID_DIM_ANGCOORD, L"DIMANGCOORD", nullptr},
     {ID_DIM_SPACE, L"DIMSPACE", nullptr},
     {ID_DIM_DRIVEN, L"DIMDRIVEN", nullptr},
+    {ID_SHEET_NEW, L"SHEETNEW", nullptr},
+    {ID_PAGESETUP, L"PAGESETUP", nullptr},
+    {ID_TITLEBLOCK, L"TITLEBLOCK", nullptr},
+    {ID_DWGPROPS, L"DRAWINGPROPS", nullptr},
+    {ID_MVIEW, L"MVIEW", nullptr},
+    {ID_VPSCALE, L"VPSCALE", nullptr},
+    {ID_VPPAN, L"VPPAN", nullptr},
+    {ID_VPLOCK, L"VPLOCK", nullptr},
+    {ID_PLOT, L"PLOT", nullptr},
+    {ID_EXPORT_PDF, L"EXPORTPDF", nullptr},
     {ID_TANLINE, L"TANLINE", nullptr},
     {ID_CIRCLE_TTR, L"CIRCLE", L"T"},
     {ID_LAYERS, L"LAYER", nullptr},
@@ -264,6 +276,16 @@ void MainWindow::CreateChildren() {
     m_tools.AddIconButton(ID_DIST, kIconDistance, L"Measure a distance (DI)");
 
     m_tabs.Create(m_hwnd, m_hwnd);
+    {
+        TabBar::Ids ids;
+        ids.tabFirst = ID_SHEET_TAB_FIRST;
+        ids.closeFirst = 0;
+        ids.plus = ID_SHEET_NEW;
+        ids.menuFirst = ID_SHEET_MENU_FIRST;
+        ids.plusTip = L"New sheet: paper with a border, title block and a view of the drawing";
+        ids.bottom = true;
+        m_sheetTabs.Create(m_hwnd, m_hwnd, ids);
+    }
     m_canvas.Create(m_hwnd, &Eng(), &Doc());
     m_props.Create(m_hwnd);
     ShowWindow(m_props.Hwnd(), m_settings.propertiesOn ? SW_SHOW : SW_HIDE);
@@ -288,6 +310,7 @@ void MainWindow::CreateAccelerators() {
         {FVIRTKEY | FCONTROL, 'X', ID_CUTCLIP},
         {FVIRTKEY | FCONTROL, 'V', ID_PASTECLIP},
         {FVIRTKEY | FCONTROL, 'W', ID_CLOSE_DRAWING},
+        {FVIRTKEY | FCONTROL, 'P', ID_PLOT},
         {FVIRTKEY | FCONTROL, VK_F4, ID_CLOSE_DRAWING},
         {FVIRTKEY | FCONTROL, VK_TAB, ID_NEXT_DRAWING},
         {FVIRTKEY | FCONTROL | FSHIFT, VK_TAB, ID_PREV_DRAWING},
@@ -321,17 +344,18 @@ void MainWindow::Layout() {
     RECT rc;
     GetClientRect(m_hwnd, &rc);
     const int menuH = m_menuBar.Height(), toolH = m_tools.Height(), tabH = m_tabs.Height();
-    const int statusH = m_status.Height(), cmdH = m_cmdline.Height();
-    HDWP dwp = BeginDeferWindowPos(7);
+    const int statusH = m_status.Height(), cmdH = m_cmdline.Height(), sheetH = m_sheetTabs.Height();
+    HDWP dwp = BeginDeferWindowPos(8);
     dwp = DeferWindowPos(dwp, m_menuBar.Hwnd(), nullptr, 0, 0, rc.right, menuH, SWP_NOZORDER);
     dwp = DeferWindowPos(dwp, m_tools.Hwnd(), nullptr, 0, menuH, rc.right, toolH, SWP_NOZORDER);
     dwp = DeferWindowPos(dwp, m_tabs.Hwnd(), nullptr, 0, menuH + toolH, rc.right, tabH, SWP_NOZORDER);
     const int canvasTop = menuH + toolH + tabH;
-    const int canvasH = std::max(10, (int)rc.bottom - canvasTop - cmdH - statusH);
+    const int canvasH = std::max(10, (int)rc.bottom - canvasTop - cmdH - statusH - sheetH);
     const int panelW = m_settings.propertiesOn ? std::min(m_props.Width(), (int)rc.right / 2) : 0;
     dwp = DeferWindowPos(dwp, m_canvas.Hwnd(), nullptr, 0, canvasTop, rc.right - panelW, canvasH, SWP_NOZORDER);
     dwp = DeferWindowPos(dwp, m_props.Hwnd(), nullptr, rc.right - panelW, canvasTop, panelW, canvasH, SWP_NOZORDER);
-    dwp = DeferWindowPos(dwp, m_cmdline.Hwnd(), nullptr, 0, canvasTop + canvasH, rc.right, cmdH, SWP_NOZORDER);
+    dwp = DeferWindowPos(dwp, m_sheetTabs.Hwnd(), nullptr, 0, canvasTop + canvasH, rc.right, sheetH, SWP_NOZORDER);
+    dwp = DeferWindowPos(dwp, m_cmdline.Hwnd(), nullptr, 0, canvasTop + canvasH + sheetH, rc.right, cmdH, SWP_NOZORDER);
     dwp = DeferWindowPos(dwp, m_status.Hwnd(), nullptr, 0, rc.bottom - statusH, rc.right, statusH, SWP_NOZORDER);
     EndDeferWindowPos(dwp);
 }
@@ -370,6 +394,12 @@ bool MainWindow::HostCommand(const std::wstring& name) {
     else if (name == L"CLOSE") CloseDrawing(m_active);
     else if (name == L"DIMSTYLE") DimensionStyle();
     else if (name == L"LAYER") ShowLayers();
+    else if (name == L"SHEETNEW") NewSheetTab();
+    else if (name == L"PAGESETUP") PageSetup();
+    else if (name == L"TITLEBLOCK") TitleBlock();
+    else if (name == L"DRAWINGPROPS") DrawingProps();
+    else if (name == L"PLOT") Plot();
+    else if (name == L"EXPORTPDF") ExportPdf();
     else if (name == L"PROPERTIES") {
         m_settings.propertiesOn = !m_settings.propertiesOn;
         ShowWindow(m_props.Hwnd(), m_settings.propertiesOn ? SW_SHOW : SW_HIDE);
@@ -451,10 +481,258 @@ void MainWindow::UpdateTabs() {
         TabBar::Tab t;
         t.title = DrawingName(*d);
         t.tip = !d->path.empty() ? d->path : !d->suggestedPath.empty() ? d->suggestedPath + L"  (not saved yet)" : t.title + L"  (not saved yet)";
-        t.modified = d->doc.Modified();
+        t.modified = d->Modified();
         tabs.push_back(std::move(t));
     }
     m_tabs.SetTabs(tabs, (int)m_active);
+    UpdateSheetTabs();
+}
+
+// ---------------------------------------------------------------------------
+// Sheets
+// ---------------------------------------------------------------------------
+
+void MainWindow::SetSheets(Drawing& d, SheetList sheets) {
+    d.space = -1;
+    d.sheets.clear();
+    d.spaces.clear();
+    for (auto& s : sheets) d.AddSheet(std::move(s), *this);
+}
+
+void MainWindow::AttachCanvas() {
+    Drawing& d = Cur();
+    m_canvas.SetSheet(d.space >= 0 ? d.sheets[(size_t)d.space].get() : nullptr, &d.doc);
+    m_canvas.SetDrawing(&Eng(), &Doc());
+    m_fields.clear();
+    UpdateFields();
+    m_canvas.SetView(d.ActiveView());
+    UpdateSheetTabs();
+}
+
+void MainWindow::UpdateSheetTabs() {
+    if (!m_ready) return;
+    std::vector<TabBar::Tab> tabs;
+    TabBar::Tab model;
+    model.title = L"Drawing";
+    model.tip = L"The drawing itself (model), at full size";
+    tabs.push_back(model);
+    for (const auto& s : Cur().sheets) {
+        TabBar::Tab t;
+        t.title = s->setup.name;
+        t.tip = s->setup.paper + (s->setup.landscape ? L" landscape" : L" portrait") + L" sheet. Right-click: page setup, delete";
+        tabs.push_back(t);
+    }
+    m_sheetTabs.SetTabs(tabs, Cur().space + 1);
+}
+
+void MainWindow::ShowSpace(int space) {
+    Drawing& d = Cur();
+    if (space < -1 || space >= (int)d.sheets.size()) return;
+    if (space != d.space) {
+        Eng().Cancel();  // a command belongs to its sheet
+        d.ActiveView() = m_canvas.GetView();
+        const Drafting draft = Eng().Draft();
+        d.space = space;
+        Eng().Draft() = draft;
+        AttachCanvas();
+    }
+    AfterInput();
+    FocusCommandLine();
+}
+
+void MainWindow::NewSheetTab() {
+    Drawing& d = Cur();
+    Eng().Cancel();
+    const Units u = d.doc.Settings().units;
+    const bool imperial = u == Units::Inches || u == Units::Feet;
+    std::wstring name;
+    for (size_t n = d.sheets.size() + 1;; ++n) {
+        name = L"Sheet" + std::to_wstring(n);
+        if (std::none_of(d.sheets.begin(), d.sheets.end(), [&](const auto& s) { return SameName(s->setup.name, name); })) break;
+    }
+    d.AddSheet(NewSheet(d.doc, name, imperial ? L"ANSI B (Tabloid)" : L"A3", true), *this);
+    d.sheetsChanged = true;
+    ShowSpace((int)d.sheets.size() - 1);
+    const Entity* vp = nullptr;
+    for (const auto& kv : d.sheets.back()->doc.Entities())
+        if (kv.second.type == EntityType::Viewport) vp = &kv.second;
+    Message(L"New sheet \x201C" + name + L"\x201D: " + d.sheets.back()->setup.paper + L" landscape, with a border, title block and the drawing at " +
+            (vp ? ScaleText(ViewportRatio(*vp, d.doc)) : L"1:1") +
+            L". Right-click the tab for page setup; MV adds viewports, VPS changes a scale; Ctrl+P prints.");
+}
+
+void MainWindow::SheetMenu(int index) {
+    Drawing& d = Cur();
+    if (index < 0 || index >= (int)d.sheets.size()) return;
+    HMENU m = CreatePopupMenu();
+    AppendMenuW(m, MF_STRING, 1, L"&Page setup (name, paper)...");
+    AppendMenuW(m, MF_STRING, 2, L"&Border and title block again");
+    AppendMenuW(m, MF_STRING, 3, L"Pr&int...");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_STRING, 4, L"&Delete sheet");
+    POINT pt;
+    GetCursorPos(&pt);
+    const int id = (int)TrackPopupMenu(m, TPM_RETURNCMD | TPM_NONOTIFY | TPM_LEFTALIGN | TPM_BOTTOMALIGN, pt.x, pt.y, 0, m_hwnd, nullptr);
+    DestroyMenu(m);
+    if (id == 1) PageSetup();
+    else if (id == 2) TitleBlock();
+    else if (id == 3) Plot();
+    else if (id == 4) DeleteSheet(index);
+}
+
+void MainWindow::PageSetup() {
+    Drawing& d = Cur();
+    if (d.space < 0) {
+        Message(L"Page setup belongs to a sheet: click a sheet tab under the drawing (or + for a new sheet).");
+        return;
+    }
+    Eng().Cancel();
+    Sheet& sh = *d.sheets[(size_t)d.space];
+    SheetSetup s = sh.setup;
+    bool redo = false;
+    if (!PageSetupDialog(m_hwnd, s, redo)) return;
+    const bool resized = s.width != sh.setup.width || s.height != sh.setup.height;
+    sh.setup = s;
+    d.sheetsChanged = true;
+    if (redo) AddBorder(sh);
+    AttachCanvas();
+    if (resized) m_canvas.ZoomExtents();
+    AfterInput();
+}
+
+void MainWindow::TitleBlock() {
+    Drawing& d = Cur();
+    if (d.space < 0) {
+        Message(L"The border and title block go on a sheet: click a sheet tab under the drawing first.");
+        return;
+    }
+    Eng().Cancel();
+    AddBorder(*d.sheets[(size_t)d.space]);
+    Message(L"Border and title block made for " + d.sheets[(size_t)d.space]->setup.paper +
+            L". Its fields come from File > Drawing properties.");
+    AfterInput();
+}
+
+void MainWindow::DeleteSheet(int index) {
+    Drawing& d = Cur();
+    if (index < 0 || index >= (int)d.sheets.size()) return;
+    const std::wstring q = L"Delete sheet \x201C" + d.sheets[(size_t)index]->setup.name + L"\x201D? This cannot be undone.";
+    if (MessageBoxW(m_hwnd, q.c_str(), APP_NAME, MB_OKCANCEL | MB_ICONWARNING | MB_DEFBUTTON2) != IDOK) return;
+    ShowSpace(-1);
+    d.sheets.erase(d.sheets.begin() + index);
+    d.spaces.erase(d.spaces.begin() + index);
+    d.sheetsChanged = true;
+    UpdateSheetTabs();
+    AfterInput();
+}
+
+void MainWindow::DrawingProps() {
+    Drawing& d = Cur();
+    std::vector<std::wstring> v;
+    for (const PropertyKey& k : DrawingPropertyKeys()) {
+        auto it = d.doc.Properties().find(k.key);
+        v.push_back(it == d.doc.Properties().end() ? L"" : it->second);
+    }
+    if (!DrawingPropsDialog(m_hwnd, v)) return;
+    for (size_t i = 0; i < v.size() && i < DrawingPropertyKeys().size(); ++i) d.doc.SetProperty(DrawingPropertyKeys()[i].key, v[i]);
+    UpdateFields();
+    m_canvas.Refresh();
+    AfterInput();
+}
+
+std::vector<PlotPage> MainWindow::BuildPages(const PlotRequest& r) {
+    Drawing& d = Cur();
+    std::vector<PlotPage> pages;
+    PlotStyle style;
+    style.colourMode = r.colourMode;
+    style.lineWeights = r.lineWeights;
+    auto sheet = [&](size_t i) {
+        PlotStyle st = StyleOf(d.sheets[i]->setup);
+        st.colourMode = r.colourMode;
+        st.lineWeights = r.lineWeights;
+        PlotPage p;
+        PlotSheet(*d.sheets[i], d.doc, FieldsFor((int)i), p, &st);
+        pages.push_back(std::move(p));
+    };
+    if (r.what == PlotRequest::ThisSheet && d.space >= 0) {
+        sheet((size_t)d.space);
+    } else if (r.what == PlotRequest::AllSheets) {
+        for (size_t i = 0; i < d.sheets.size(); ++i) sheet(i);
+    } else {
+        Box area = d.doc.Extents();
+        if (r.what == PlotRequest::DrawingView && d.space < 0) area = m_canvas.ViewBox();
+        if (area.Empty()) return pages;
+        if (r.what == PlotRequest::DrawingAll) area = area.Inflated(std::max(area.Width(), area.Height()) * 0.01);
+        SheetSetup s;
+        s.paper = r.paper;
+        s.landscape = r.landscape;
+        ApplyPaper(s);
+        PlotPage p;
+        PlotDrawing(d.doc, area, s.width, s.height, 10, r.ratio * MmPerUnit(d.doc.Settings().units), style, FieldsFor(-1), p);
+        p.name = DrawingName() + (r.ratio > 0 ? L" at " + ScaleText(r.ratio) : L"");
+        pages.push_back(std::move(p));
+    }
+    return pages;
+}
+
+void MainWindow::Plot() {
+    Drawing& d = Cur();
+    Eng().Cancel();
+    static PlotRequest r;
+    r.what = d.space >= 0 ? PlotRequest::ThisSheet : d.sheets.empty() ? PlotRequest::DrawingView : PlotRequest::AllSheets;
+    if (d.space >= 0) {
+        r.colourMode = d.sheets[(size_t)d.space]->setup.colourMode;
+        r.lineWeights = d.sheets[(size_t)d.space]->setup.lineWeights;
+    }
+    const int action = PlotDialog(m_hwnd, r, !d.sheets.empty(), d.space >= 0, [this](const PlotRequest& q) { return BuildPages(q); });
+    if (action == 0) return;
+    const std::vector<PlotPage> pages = BuildPages(r);
+    if (pages.empty()) {
+        Message(L"There is nothing to print.");
+        return;
+    }
+    if (action == 2) {
+        ExportPdf(&pages);
+        return;
+    }
+    std::wstring error;
+    if (PrintPages(m_hwnd, pages, r.fit, DrawingName(), error))
+        Message(L"Sent " + std::to_wstring(pages.size()) + L" page(s) to the printer.");
+    else if (!error.empty())
+        MessageBoxW(m_hwnd, error.c_str(), APP_NAME, MB_ICONERROR);
+}
+
+void MainWindow::ExportPdf(const std::vector<PlotPage>* given) {
+    Drawing& d = Cur();
+    std::vector<PlotPage> pages;
+    if (given) {
+        pages = *given;
+    } else {
+        PlotRequest r;
+        r.what = d.sheets.empty() ? PlotRequest::DrawingAll : PlotRequest::AllSheets;
+        pages = BuildPages(r);
+    }
+    if (pages.empty()) {
+        Message(L"There is nothing to put in a PDF: the drawing is empty.");
+        return;
+    }
+    wchar_t file[MAX_PATH * 4] = L"";
+    const std::wstring base = !d.path.empty() ? d.path : !d.suggestedPath.empty() ? d.suggestedPath : d.untitledName;
+    wcsncpy_s(file, (StripExtension(base) + L".pdf").c_str(), _TRUNCATE);
+    OPENFILENAMEW ofn{sizeof(ofn)};
+    ofn.hwndOwner = m_hwnd;
+    ofn.lpstrFilter = L"PDF document (*.pdf)\0*.pdf\0";
+    ofn.lpstrFile = file;
+    ofn.nMaxFile = (DWORD)std::size(file);
+    ofn.lpstrDefExt = L"pdf";
+    ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY;
+    if (!GetSaveFileNameW(&ofn)) return;
+    std::wstring error;
+    if (!WriteFileSafely(file, WritePdf(pages, DrawingName()), &error)) {
+        MessageBoxW(m_hwnd, (L"Could not save\n" + std::wstring(file) + L"\n\n" + error).c_str(), APP_NAME, MB_ICONERROR);
+        return;
+    }
+    Message(L"Saved " + std::to_wstring(pages.size()) + L" page(s) as " + file + L".");
 }
 
 void MainWindow::UpdatePrompt() {
@@ -489,7 +767,7 @@ std::wstring MainWindow::DrawingName(const Drawing& d) const {
 
 void MainWindow::UpdateTitle() {
     UpdateFields();
-    const std::wstring title = DrawingName() + (Doc().Modified() ? L"*" : L"") + L" - " + APP_NAME;
+    const std::wstring title = DrawingName() + (Cur().Modified() ? L"*" : L"") + L" - " + APP_NAME;
     if (title != m_shownTitle) {
         m_shownTitle = title;
         SetWindowTextW(m_hwnd, title.c_str());
@@ -564,6 +842,14 @@ void MainWindow::OnCommand(int id) {
         }
         AfterInput();
         FocusCommandLine();
+        return;
+    }
+    if (id >= ID_SHEET_TAB_FIRST && id < ID_SHEET_MENU_FIRST) {
+        ShowSpace(id - ID_SHEET_TAB_FIRST - 1);
+        return;
+    }
+    if (id >= ID_SHEET_MENU_FIRST && id < ID_SHEET_MENU_FIRST + 100) {
+        SheetMenu(id - ID_SHEET_MENU_FIRST - 1);
         return;
     }
     if (id >= ID_TAB_FIRST && id < ID_TAB_FIRST + kMaxTabs) {
@@ -719,6 +1005,11 @@ HMENU MainWindow::BuildMenu(int menuId) {
             Append(m, ID_SAVE, L"&Save\tCtrl+S");
             Append(m, ID_SAVE_AS, L"Save &as...\tCtrl+Shift+S");
             Append(m, ID_EXPORT_DXF, L"&Export DXF (for AutoCAD and others)...");
+            Append(m, ID_EXPORT_PDF, L"Export P&DF...");
+            Separator(m);
+            Append(m, ID_PLOT, L"&Print...\tCtrl+P");
+            Append(m, ID_PAGESETUP, L"Pa&ge setup...", Cur().space >= 0);
+            Append(m, ID_DWGPROPS, L"Drawing pro&perties (title block)...");
             Separator(m);
             Append(m, ID_HISTORY, L"&Version history...");
             Append(m, ID_RECOVER, L"Re&cover drawings...");
@@ -753,6 +1044,19 @@ HMENU MainWindow::BuildMenu(int menuId) {
             Separator(m);
             Append(m, ID_NEXT_DRAWING, L"&Next drawing\tCtrl+Tab", m_drawings.size() > 1);
             Append(m, ID_PREV_DRAWING, L"Pre&vious drawing\tCtrl+Shift+Tab", m_drawings.size() > 1);
+            Separator(m);
+            {
+                HMENU sh = CreatePopupMenu();
+                Append(sh, ID_SHEET_NEW, L"&New sheet");
+                Append(sh, ID_PAGESETUP, L"&Page setup...", Cur().space >= 0);
+                Append(sh, ID_TITLEBLOCK, L"&Border and title block", Cur().space >= 0);
+                Separator(sh);
+                Append(sh, ID_MVIEW, L"&Viewport\tMV", Cur().space >= 0);
+                Append(sh, ID_VPSCALE, L"Viewport &scale\tVPS", Cur().space >= 0);
+                Append(sh, ID_VPPAN, L"P&an viewport\tVPP", Cur().space >= 0);
+                Append(sh, ID_VPLOCK, L"&Lock viewport\tVPLOCK", Cur().space >= 0);
+                Submenu(m, sh, L"&Sheets");
+            }
             Separator(m);
             HMENU theme = CreatePopupMenu();
             Append(theme, ID_THEME_SYSTEM, L"Follow &Windows", true, m_settings.themeMode == 0);
@@ -1042,7 +1346,7 @@ std::unique_ptr<MainWindow::Drawing> MainWindow::MakeDrawing() {
     d->doc.MarkSaved();
     d->untitledName = L"Drawing" + std::to_wstring(++m_untitledCount);
     d->history.SetDrawing(L"", d->untitledName);
-    d->autosavedRevision = d->doc.Revision();
+    d->autosavedRevision = d->Revision();
     d->lastAutosave = GetTickCount64();
     if (!m_drawings.empty()) d->engine.Draft() = Eng().Draft();  // drafting settings are the same everywhere
     return d;
@@ -1053,8 +1357,7 @@ void MainWindow::AddDrawing(std::unique_ptr<Drawing> d) {
     if (Cur().Pristine() && !Eng().Active()) {
         // The empty drawing nobody used yet makes room.
         m_drawings[m_active] = std::move(d);
-        m_canvas.SetDrawing(&Eng(), &Doc());
-        m_canvas.SetView(Cur().view);
+        AttachCanvas();
     } else {
         if (m_drawings.size() >= (size_t)kMaxTabs) {
             MessageBoxW(m_hwnd, L"Too many drawings are open. Close some first.", APP_NAME, MB_ICONINFORMATION);
@@ -1070,12 +1373,11 @@ void MainWindow::SwitchTo(size_t index) {
     if (index >= m_drawings.size()) return;
     if (index != m_active) {
         Eng().Cancel();  // a command belongs to its drawing
-        Cur().view = m_canvas.GetView();
+        Cur().ActiveView() = m_canvas.GetView();
         const Drafting draft = Eng().Draft();
         m_active = index;
         Eng().Draft() = draft;
-        m_canvas.SetDrawing(&Eng(), &Doc());
-        m_canvas.SetView(Cur().view);
+        AttachCanvas();
     }
     AfterInput();
     FocusCommandLine();
@@ -1091,15 +1393,13 @@ bool MainWindow::CloseDrawing(size_t index) {
         const Drafting draft = Eng().Draft();
         m_drawings[0] = MakeDrawing();
         m_drawings[0]->engine.Draft() = draft;
-        m_canvas.SetDrawing(&Eng(), &Doc());
-        m_canvas.SetView(Cur().view);
+        AttachCanvas();
     } else {
         const Drafting draft = Eng().Draft();
         m_drawings.erase(m_drawings.begin() + (ptrdiff_t)index);
         m_active = std::min(index, m_drawings.size() - 1);
         Eng().Draft() = draft;
-        m_canvas.SetDrawing(&Eng(), &Doc());
-        m_canvas.SetView(Cur().view);
+        AttachCanvas();
     }
     AfterInput();
     return true;
@@ -1113,7 +1413,7 @@ int MainWindow::FindOpen(const std::wstring& path) const {
 
 bool MainWindow::ConfirmDiscard(size_t index) {
     Drawing& d = *m_drawings[index];
-    if (!d.doc.Modified()) return true;
+    if (!d.Modified()) return true;
     if (index != m_active) SwitchTo(index);
     const std::wstring q = L"Save changes to \x201C" + DrawingName(d) + L"\x201D?";
     const int r = MessageBoxW(m_hwnd, q.c_str(), APP_NAME, MB_YESNOCANCEL | MB_ICONWARNING);
@@ -1185,7 +1485,9 @@ bool MainWindow::OpenFile(const std::wstring& pathIn) {
     --m_untitledCount;  // it has a name of its own
     std::wstring error, notes;
     const bool dxf = LooksLikeDxf(path, text);
-    const bool ok = dxf ? d->doc.FromDxf(text, error, notes) : d->doc.FromText(text, error);
+    SheetList sheets;
+    const bool ok = dxf ? DrawingFromDxf(text, d->doc, sheets, error, notes) : DrawingFromText(text, d->doc, sheets, error);
+    if (ok) SetSheets(*d, std::move(sheets));
     if (!ok) {
         Message(L"Could not read " + FileNameFromPath(path) + L": " + error);
         MessageBoxW(m_hwnd, (L"Could not read \x201C" + FileNameFromPath(path) + L"\x201D.\n\n" + error).c_str(),
@@ -1201,7 +1503,7 @@ bool MainWindow::OpenFile(const std::wstring& pathIn) {
         d->path = path;
         d->history.SetDrawing(path, FileNameFromPath(path));
     }
-    d->autosavedRevision = d->doc.Revision();
+    d->autosavedRevision = d->Revision();
     d->lastAutosave = GetTickCount64();
     m_settings.AddRecent(path);
     const size_t count = d->doc.Count();
@@ -1239,13 +1541,13 @@ bool MainWindow::Save(bool saveAs) {
     if (!SaveTo(path)) return false;
     if (newPath) {
         Cur().history.SetDrawing(path, FileNameFromPath(path));
-        Cur().history.AddVersion(Doc().ToText(), false, m_settings.keepVersions);
+        Cur().history.AddVersion(DrawingToText(Cur().doc, Cur().sheets), false, m_settings.keepVersions);
     }
     return true;
 }
 
 bool MainWindow::SaveTo(const std::wstring& path) {
-    const std::string text = Doc().ToText();
+    const std::string text = DrawingToText(Cur().doc, Cur().sheets);
     std::wstring error;
     if (!WriteFileSafely(path, text, &error)) {
         Message(L"Could not save " + path + L": " + error);
@@ -1255,10 +1557,10 @@ bool MainWindow::SaveTo(const std::wstring& path) {
     const bool samePath = !Cur().path.empty() && SamePath(path, Cur().path);
     Cur().path = path;
     Cur().suggestedPath.clear();
-    Doc().MarkSaved();
+    Cur().MarkSaved();
     m_settings.AddRecent(path);
     if (samePath) Cur().history.AddVersion(text, false, m_settings.keepVersions);
-    Cur().autosavedRevision = Doc().Revision();
+    Cur().autosavedRevision = Cur().Revision();
     Message(L"Saved " + path);
     AfterInput();
     return true;
@@ -1277,12 +1579,13 @@ void MainWindow::ExportDxf() {
     ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY;
     if (!GetSaveFileNameW(&ofn)) return;
     std::wstring error;
-    if (!WriteFileSafely(file, Doc().ToDxf(), &error)) {
+    if (!WriteFileSafely(file, DrawingToDxf(Cur().doc, Cur().sheets), &error)) {
         MessageBoxW(m_hwnd, (L"Could not export\n" + std::wstring(file) + L"\n\n" + error).c_str(), APP_NAME,
                     MB_ICONERROR);
         return;
     }
-    Message(L"Exported " + std::to_wstring(Doc().Count()) + L" objects to " + file +
+    Message(L"Exported " + std::to_wstring(Cur().doc.Count()) + L" objects" +
+            (Cur().sheets.empty() ? L"" : L" and sheet \x201C" + Cur().sheets[0]->setup.name + L"\x201D (as paper space)") + L" to " + file +
             L" (DXF R12: opens in AutoCAD, LibreCAD, DraftSight and others).");
 }
 
@@ -1304,6 +1607,7 @@ void MainWindow::ImportDxf() {
         return;
     }
     const size_t n = r.entities.size();
+    ShowSpace(-1);  // into the drawing (not a sheet)
     Doc().BeginChange(L"Import DXF");
     const std::vector<uint64_t> ids = Doc().AddForeign(std::move(r.entities), r.layers, r.blocks);
     Doc().EndChange();
@@ -1324,15 +1628,20 @@ void MainWindow::ShowHistory() {
     if (i < 0 || i >= (int)versions.size()) return;
     std::string text;
     Document copy;
+    SheetList copySheets;
     std::wstring error;
-    if (!ReadWholeFile(versions[(size_t)i].file, text) || !copy.FromText(text, error)) {
+    if (!ReadWholeFile(versions[(size_t)i].file, text) || !DrawingFromText(text, copy, copySheets, error)) {
         MessageBoxW(m_hwnd, (L"That version could not be read.\n\n" + error).c_str(), APP_NAME, MB_ICONERROR);
         return;
     }
     std::vector<Entity> ents;
     for (const auto& kv : copy.Entities()) ents.push_back(kv.second);
+    ShowSpace(-1);
     Eng().ClearSelection();
     Doc().ReplaceAll(std::move(ents), L"Restore version", &copy.Blocks());
+    SetSheets(Cur(), std::move(copySheets));
+    Cur().sheetsChanged = true;
+    AttachCanvas();
     Message(L"Restored the version from " + FormatFileTime(versions[(size_t)i].time) +
             L". Undo (Ctrl+Z) brings back what was there before.");
     m_canvas.ZoomExtents();
@@ -1348,13 +1657,15 @@ void MainWindow::Recover(bool afterCrash) {
     std::wstring error;
     auto d = MakeDrawing();
     --m_untitledCount;
-    if (!ReadWholeFile(h.latest.file, text) || !d->doc.FromText(text, error)) {
+    SheetList sheets;
+    if (!ReadWholeFile(h.latest.file, text) || !DrawingFromText(text, d->doc, sheets, error)) {
         MessageBoxW(m_hwnd, (L"The copy could not be read.\n\n" + error).c_str(), APP_NAME, MB_ICONERROR);
         return;
     }
     d->suggestedPath = h.source;
     d->untitledName = L"Recovered " + StripExtension(h.title);
     d->history.SetDrawing(h.source, h.title);
+    SetSheets(*d, std::move(sheets));
     d->doc.MarkModified();
     d->lastAutosave = GetTickCount64();
     AddDrawing(std::move(d));
@@ -1367,10 +1678,10 @@ void MainWindow::Autosave() {
     if (m_settings.autosaveMinutes <= 0) return;
     const ULONGLONG now = GetTickCount64();
     for (auto& d : m_drawings) {
-        if (!d->doc.Modified() || d->doc.Revision() == d->autosavedRevision) continue;
+        if (!d->Modified() || d->Revision() == d->autosavedRevision) continue;
         if (now - d->lastAutosave < (ULONGLONG)m_settings.autosaveMinutes * 60000) continue;
-        if (d->history.AddVersion(d->doc.ToText(), true, m_settings.keepVersions)) {
-            d->autosavedRevision = d->doc.Revision();
+        if (d->history.AddVersion(DrawingToText(d->doc, d->sheets), true, m_settings.keepVersions)) {
+            d->autosavedRevision = d->Revision();
             d->lastAutosave = now;
         }
     }
@@ -1410,7 +1721,7 @@ void MainWindow::EditObject(uint64_t id) {
     }
 }
 
-void MainWindow::UpdateFields() {
+FieldValues MainWindow::FieldsFor(int space) const {
     FieldValues f;
     f[L"filename"] = DrawingName();
     wchar_t buf[128] = L"";
@@ -1418,6 +1729,13 @@ void MainWindow::UpdateFields() {
     if (GetTimeFormatEx(LOCALE_NAME_USER_DEFAULT, TIME_NOSECONDS, nullptr, nullptr, buf, 128)) f[L"time"] = buf;
     DWORD n = 128;
     if (GetUserNameW(buf, &n)) f[L"author"] = buf;
+    for (const auto& kv : Cur().doc.Properties()) f[kv.first] = kv.second;
+    if (space >= 0) f = SheetFields(Cur().doc, Cur().sheets, (size_t)space, f);
+    return f;
+}
+
+void MainWindow::UpdateFields() {
+    const FieldValues f = FieldsFor(Cur().space);
     if (f != m_fields) {
         m_fields = f;
         m_canvas.SetFields(f);
@@ -1731,6 +2049,30 @@ void MainWindow::AnnotationRows(const Entity& e, std::vector<PropertiesPanel::Ro
         info(L"Area", Eng().Len(HatchArea(h)));
         info(L"Outlines", std::to_wstring(h.loops.size()));
         info(L"Associative", h.refs.empty() ? L"No" : L"Yes (follows its outline)");
+    } else if (e.type == EntityType::Viewport) {
+        const Document& model = Cur().doc;
+        const double mm = MmPerUnit(model.Settings().units);
+        const double ratio = ViewportRatio(e, model);
+        std::vector<std::wstring> scales;
+        int now = -1;
+        for (double r : StandardScales()) {
+            if (std::fabs(r - ratio) < 1e-9 * r) now = (int)scales.size();
+            scales.push_back(ScaleText(r));
+        }
+        if (now < 0) scales.push_back(ScaleText(ratio)), now = (int)scales.size() - 1;
+        choice(L"Scale", scales, now, [mm](Entity& x, int i) {
+            if ((size_t)i >= StandardScales().size() || x.annot->viewLocked) return false;
+            EditAnnot(x).viewScale = StandardScales()[(size_t)i] * mm;
+            return true;
+        });
+        info(L"Size on paper", Eng().Len(e.p1.x - e.p0.x) + L" x " + Eng().Len(e.p1.y - e.p0.y) + L" mm");
+        number(L"View centre X", a.viewCentre.x, [](Entity& x, double v) { return !x.annot->viewLocked && (EditAnnot(x).viewCentre.x = v, true); });
+        number(L"View centre Y", a.viewCentre.y, [](Entity& x, double v) { return !x.annot->viewLocked && (EditAnnot(x).viewCentre.y = v, true); });
+        Row lock;
+        lock.kind = Row::Check;
+        lock.label = L"Locked";
+        lock.checked = a.viewLocked;
+        add(lock, [](Entity& x, const Row& ed) { return EditAnnot(x).viewLocked = ed.checked, true; });
     } else if (e.type == EntityType::Insert && a.block) {
         info(L"Block", a.block->name);
         AnnotPointRows(rows, e, L"Position X", L"Position Y", e.p0, [](Entity& x, Vec2 p) { Translate(x, p - x.p0); });
@@ -2149,6 +2491,7 @@ void MainWindow::UpdateProperties(bool force) {
             case EntityType::Leader:
             case EntityType::Hatch:
             case EntityType::Insert:
+            case EntityType::Viewport:
                 AnnotationRows(e, rows);
                 break;
             case EntityType::Array:

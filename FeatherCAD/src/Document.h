@@ -38,6 +38,7 @@ struct DrawingSettings {
 struct Look {
     uint32_t rgb = 0;
     bool foreground = false;  // colour 7: black or white, whichever shows
+    int32_t color = 7;        // the colour number (ACI) or true colour it came from
     int linetype = 0;
     int lineweight = kDefaultLineWeight;  // hundredths of a millimetre
     double ltscale = 1;
@@ -116,6 +117,10 @@ public:
     Look LookOf(const Entity& e, const Entity* block = nullptr) const;
     size_t LayerUse(int id) const;  // objects on it
 
+    // ---- drawing properties (title, drawing number...: title block fields) ----
+    const std::map<std::wstring, std::wstring>& Properties() const { return m_props; }
+    void SetProperty(const std::wstring& key, const std::wstring& value);  // empty: removed
+
     // ---- blocks -------------------------------------------------------------
     const BlockTable& Blocks() const { return m_blocks; }
     std::shared_ptr<const BlockData> FindBlock(const std::wstring& name) const;  // not case sensitive
@@ -138,10 +143,14 @@ public:
     // document is unchanged and `error` says why.
     bool FromText(const std::string& text, std::wstring& error);
     // AutoCAD DXF, release 12 (read by every CAD program).
-    std::string ToDxf() const;
+    // With `paper`: that sheet as AutoCAD's paper space (its viewports as
+    // viewports), on a page of `paperSize` millimetres.
+    std::string ToDxf(const Document* paper = nullptr, Vec2 paperSize = {}) const;
     // Opens a DXF drawing (any release, ASCII) in place of this one. What
     // could not be brought in is listed in `notes`.
     bool FromDxf(const std::string& text, std::wstring& error, std::wstring& notes);
+    // As FromDxf, also giving the paper space layouts (DxfImport.h).
+    bool FromDxf(const std::string& text, std::wstring& error, std::wstring& notes, struct DxfResult& result);
     // Objects as text, and back (copy and paste between drawings).
     std::string ObjectsToText(const std::vector<Entity>& entities) const;  // with their layers
     static bool ObjectsFromText(const std::string& text, std::vector<Entity>& out, std::vector<Layer>* layers = nullptr,
@@ -192,7 +201,12 @@ private:
     CurrentStyle m_current;
     std::vector<LayerState> m_states;
     BlockTable m_blocks;
+    std::map<std::wstring, std::wstring> m_props;
 };
+
+// Text as one word of the file format (spaces and = escaped), and back.
+std::string FcadEncode(const std::wstring& w);
+std::wstring FcadDecode(const std::string& s);
 
 // UTF-8 text (without Windows), for files.
 std::string TextToUtf8(const std::wstring& w);

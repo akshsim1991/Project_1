@@ -124,6 +124,11 @@ struct Annot {
     HatchData hatch;                   // Hatch
     std::shared_ptr<const BlockData> block;  // Insert
     std::vector<std::wstring> values;  // Insert: its attributes' values, in order
+    // Viewport (p0, p1: its corners on the sheet): the drawing point at its
+    // centre, sheet millimetres per drawing unit, and whether it is locked.
+    Vec2 viewCentre;
+    double viewScale = 1;
+    bool viewLocked = false;
     // A hatch's pattern lines, worked out once (not copied with it).
     struct Cache {
         mutable std::shared_ptr<std::vector<std::pair<Vec2, Vec2>>> segs;
@@ -137,6 +142,14 @@ struct Annot {
 Entity MakeText(Vec2 at, TextData t);
 Entity MakeLeader(std::vector<Vec2> pts, TextData t, double arrow);
 Entity MakeHatch(HatchData h);
+// A viewport from corner a to corner b of a sheet, showing the drawing
+// around `centre`, `scale` sheet units per drawing unit.
+Entity MakeViewport(Vec2 a, Vec2 b, Vec2 centre, double scale, bool locked = false);
+// Sheet point <-> drawing point through a viewport.
+Vec2 ViewportToModel(const Entity& vp, Vec2 sheetPoint);
+Vec2 ViewportToSheet(const Entity& vp, Vec2 modelPoint);
+// The part of the drawing a viewport shows.
+Box ViewportModelBox(const Entity& vp);
 // A block placed at `at`, `scale` times its size, turned by `rotation`
 // (radians), mirrored left to right first if `mirrored`.
 Entity MakeInsert(std::shared_ptr<const BlockData> b, Vec2 at, double scale, double rotation,

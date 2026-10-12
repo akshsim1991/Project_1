@@ -13,6 +13,7 @@
 #include "Engine.h"
 #include "Grips.h"
 #include "Modify.h"
+#include "Plot.h"
 #include "Select.h"
 #include "Spline.h"
 #include "Snap.h"
@@ -1507,7 +1508,7 @@ void TestDxfImport() {
     CHECK(ds2.size() == 2);
     CHECK(ds2[0]->dim->kind == DimData::Aligned && Close(DimMeasure(*ds2[0]->dim), 50) && ds2[0]->dim->text.empty());
     CHECK(ds2[1]->dim->kind == DimData::Radius && DimDisplayText(*ds2[1]->dim) == L"\x00D8" L"R10.00");
-    // Paper space is left out: only the stretched block's line.
+    // Paper space is not in the drawing (it becomes a sheet): only the stretched block's line.
     CHECK(byType[(int)EntityType::Line].size() == 1);
 
     Document bad;
@@ -2319,6 +2320,140 @@ void TestDxfAnnotations() {
     CHECK(bi && bi->annot->values == std::vector<std::wstring>{L"7"});
 }
 
+void TestSheets() {
+    Document model;
+    model.Add(Entity::Rectangle({0, 0}, {300, 200}));  // 300 x 200 mm
+    model.Add(Entity::Circle({150, 100}, 50));
+    model.SetProperty(L"title", L"Bracket");
+    // A new A3 sheet: border, title block and a viewport at a usual scale.
+    SheetList sheets;
+    sheets.push_back(NewSheet(model, L"Sheet1", L"A3", true));
+    Sheet& sh = *sheets[0];
+    CHECK(Close(sh.setup.width, 420) && Close(sh.setup.height, 297));
+    const Entity* vp = FirstOf(sh.doc, EntityType::Viewport);
+    CHECK(vp && Close(ViewportRatio(*vp, model), 1) && Close(vp->annot->viewCentre, {150, 100}));  // 300 x 200 fits at 1:1
+    CHECK(FirstOf(sh.doc, EntityType::Insert) && sh.doc.FindBlock(L"Title block"));
+    CHECK(Close(ViewportToSheet(*vp, ViewportToModel(*vp, {100, 100})), {100, 100}));
+    FieldValues f = SheetFields(model, sheets, 0, {{L"date", L"today"}});
+    CHECK(f[L"title"] == L"Bracket" && f[L"scale"] == L"1:1" && f[L"sheet"] == L"1" && f[L"sheets"] == L"1" && f[L"number"].empty());
+    CHECK(ScaleText(0.5) == L"1:2" && ScaleText(2) == L"2:1" && ScaleText(0.02) == L"1:50");
+    CHECK(Close(FitScale(Box({0, 0}, {1000, 500}), 380, 200, Units::Millimetres), 0.2));
+    CHECK(Close(FitScale(Box({0, 0}, {10, 5}), 380, 200, Units::Inches), 1));  // 254 mm wide
+
+    // Viewport grips: a corner resizes it; the drawing stays put on the sheet.
+    Entity v = *vp;
+    const Vec2 fixedModel = ViewportToModel(v, v.p0);
+    CHECK(DragGrip(v, 2, v.p1, v.p1 + Vec2{20, 10}));
+    CHECK(Close(ViewportToModel(v, v.p0), fixedModel, 1e-9) && Close(v.p1.x - v.p0.x, vp->p1.x - vp->p0.x + 20));
+    Scale(v, {0, 0}, 2);  // twice the size, the drawing in it too
+    CHECK(Close(v.annot->viewScale, 2 * vp->annot->viewScale));
+
+    // The file keeps the sheets and the drawing's properties.
+    const std::string text = DrawingToText(model, sheets);
+    Document model2;
+    SheetList sheets2;
+    std::wstring err;
+    CHECK(DrawingFromText(text, model2, sheets2, err));
+    CHECK(sheets2.size() == 1 && sheets2[0]->setup.name == L"Sheet1" && Close(sheets2[0]->setup.width, 420));
+    CHECK(model2.Properties().at(L"title") == L"Bracket" && model2.Count() == 2 && sheets2[0]->doc.Count() == sh.doc.Count());
+    CHECK(!sheets2[0]->doc.Modified() && sheets2[0]->doc.Blocks().size() == 1);
+    Document plain;  // an older reader just sees the drawing
+    CHECK(plain.FromText(text, err) && plain.Count() == 2);
+
+    // Plot: the viewport's objects clipped to it, the sheet's on top; text with fields.
+    PlotPage page;
+    PlotSheet(sh, model, f, page);
+    CHECK(Close(page.width, 420) && page.clips.size() == 1);
+    size_t clipped = 0, texts = 0;
+    bool title = false;
+    for (const PlotItem& it : page.items) {
+        clipped += it.clip == 0;
+        if (it.kind == PlotItem::Text) {
+            ++texts;
+            title |= it.text.text == L"Bracket";
+        }
+    }
+    CHECK(clipped >= 2 && texts > 10 && title);
+    // The circle at 1:1: its points are 50 mm from its centre on paper.
+    const Vec2 c = ViewportToSheet(*vp, {150, 100});
+    bool circle = false;
+    for (const PlotItem& it : page.items)
+        if (it.kind == PlotItem::Path && it.clip == 0 && it.pts.size() > 20)
+            circle |= std::all_of(it.pts.begin(), it.pts.end(), [&](Vec2 p) { return std::fabs(Dist(p, c) - 50) < 0.02; });
+    CHECK(circle);
+    // Dashed lines are cut into dashes; black and white prints everything black.
+    Document d2;
+    Entity dl = Entity::Line({0, 0}, {100, 0});
+    dl.linetype = (int16_t)FindLineType(L"DASHED");
+    dl.color = 1;
+    dl.layer = 0;  // keeps its own colour and line type
+    d2.Add(dl);
+    PlotStyle st;
+    PlotPage p2;
+    PlotDrawing(d2, Box({0, -10}, {100, 10}), 297, 210, 10, 1, st, {}, p2);
+    CHECK(p2.items.size() > 5 && p2.items[0].rgb == 0xFF0000);
+    st.colourMode = 1;
+    st.pens[1] = 70;  // red prints 0.7 mm
+    PlotDrawing(d2, Box({0, -10}, {100, 10}), 297, 210, 10, 1, st, {}, p2);
+    CHECK(p2.items[0].rgb == 0 && Close(p2.items[0].width, 0.7));
+    // PDF: one page per sheet, with a correct cross-reference table.
+    const std::string pdf = WritePdf({page, p2}, L"Test");
+    CHECK(pdf.compare(0, 8, "%PDF-1.4") == 0 && pdf.find("/Count 2") != std::string::npos);
+    CHECK(pdf.find("(Bracket) Tj") != std::string::npos && pdf.find(" re W n") != std::string::npos);
+    const size_t sx = pdf.rfind("startxref\n");
+    CHECK(sx != std::string::npos && pdf.compare(std::stoul(pdf.substr(sx + 10)), 4, "xref") == 0);
+    const size_t o3 = pdf.find("3 0 obj");
+    CHECK(o3 != std::string::npos && pdf.find(std::to_string(1000000000 + o3).substr(1)) != std::string::npos);
+
+    // Commands on a sheet: a viewport at 1:2, its scale and its view.
+    TestHost host;
+    Engine e(sh.doc, host);
+    e.model = &model;
+    Type(e, {L"mv", L"20,20", L"220,170", L"1:2"});
+    const Entity& nv = Last(sh.doc);
+    CHECK(nv.type == EntityType::Viewport && Close(ViewportRatio(nv, model), 0.5));
+    const uint64_t nid = nv.id;
+    Type(e, {L"vps"});
+    e.Point({20, 100});  // its left edge
+    Type(e, {L"5:1"});
+    CHECK(Close(ViewportRatio(*sh.doc.Find(nid), model), 5));
+    const Vec2 before = sh.doc.Find(nid)->annot->viewCentre;
+    Type(e, {L"vpp"});
+    e.Point({100, 100});
+    Type(e, {L"0,0", L"10,0"});
+    CHECK(Close(sh.doc.Find(nid)->annot->viewCentre, before - Vec2{2, 0}));  // 10 mm on paper at 5:1
+    e.ClearSelection();
+    e.AddToSelection({nid});
+    Type(e, {L"vplock", L"vps"});
+    e.Point({20, 100});
+    CHECK(Said(host, L"locked"));
+    e.Cancel();
+    Engine em(model, host);
+    Type(em, {L"mv"});
+    CHECK(Said(host, L"sheet tab") && !em.Active());
+
+    // DXF: the first sheet goes out as paper space with its viewports, and comes back as a sheet.
+    const std::string dxf = DrawingToDxf(model, sheets);
+    CHECK(dxf.find("$PLIMMAX") != std::string::npos && dxf.find("MVIEW") != std::string::npos);
+    Document dm;
+    SheetList ds;
+    std::wstring notes;
+    CHECK(DrawingFromDxf(dxf, dm, ds, err, notes));
+    CHECK(ds.size() == 1 && ds[0]->setup.paper == L"A3" && ds[0]->setup.landscape);
+    size_t vps = 0;
+    for (const auto& kv : ds[0]->doc.Entities())
+        if (kv.second.type == EntityType::Viewport) {
+            ++vps;
+            const Entity* orig = FirstOf(sh.doc, EntityType::Viewport);
+            if (Close(kv.second.p0, orig->p0, 1e-6)) CHECK(Close(kv.second.annot->viewScale, orig->annot->viewScale, 1e-9) &&
+                                                           Close(kv.second.annot->viewCentre, orig->annot->viewCentre, 1e-9));
+        }
+    size_t had = 0;
+    for (const auto& kv : sh.doc.Entities()) had += kv.second.type == EntityType::Viewport;
+    CHECK(vps == had && had == 2 && FirstOf(ds[0]->doc, EntityType::Insert) && FirstOf(ds[0]->doc, EntityType::Insert)->annot->block);
+    CHECK(dm.Count() == 2);
+}
+
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);  // failures show even if a later check crashes
     TestAngles();
@@ -2354,6 +2489,7 @@ int main() {
     TestAnnotations();
     TestAnnotCommands();
     TestDxfAnnotations();
+    TestSheets();
     std::printf("%d checks, %d failed\n", g_checks, g_failures);
     return g_failures;
 }

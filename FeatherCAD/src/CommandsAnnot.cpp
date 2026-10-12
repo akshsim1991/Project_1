@@ -4,10 +4,12 @@
 // REVCLOUD and AREA.
 #include <algorithm>
 #include <cmath>
+#include <cwctype>
 
 #include "CommandUtil.h"
 #include "Curve.h"
 #include "Modify.h"
+#include "Sheet.h"
 
 namespace {
 const wchar_t* const kJustifyKeys[] = {L"TL", L"TC", L"TR", L"ML", L"MC", L"MR", L"BL", L"BC", L"BR"};
@@ -1317,5 +1319,219 @@ std::unique_ptr<Command> CreateAnnotCommand(const std::wstring& name) {
     if (name == L"DIMDRIVEN") return std::make_unique<DimDrivenCmd>();
     if (name == L"REVCLOUD") return std::make_unique<RevCloudCmd>();
     if (name == L"AREA") return std::make_unique<AreaCmd>();
+    return nullptr;
+}
+
+// ---------------------------------------------------------------------------
+// Sheets: MVIEW, VPSCALE, VPPAN, VPLOCK, TITLEBLOCK
+// ---------------------------------------------------------------------------
+namespace {
+// "1:2", "2:1", "1/2" or a plain ratio (0.5).
+bool ParseScale(const std::wstring& s, double& ratio) {
+    const size_t sep = s.find_first_of(L":/");
+    auto num = [](const std::wstring& t, double& v) { return ParseNumber(TextToUtf8(t), v); };
+    double a, b;
+    if (sep == std::wstring::npos) {
+        if (!num(s, a) || a <= 0) return false;
+        ratio = a;
+        return true;
+    }
+    if (!num(s.substr(0, sep), a) || !num(s.substr(sep + 1), b) || a <= 0 || b <= 0) return false;
+    ratio = a / b;
+    return true;
+}
+
+std::wstring Up(std::wstring s) {
+    for (wchar_t& c : s) c = (wchar_t)std::towupper(c);
+    return s;
+}
+
+bool OnSheet(Engine* E) {
+    if (E->model) return true;
+    E->Msg(L"Viewports belong on sheets: click a sheet tab at the bottom of the drawing (or + for a new sheet) first.");
+    E->Finish();
+    return false;
+}
+
+// The viewport picked at p (the topmost), or nullptr.
+const Entity* PickedViewport(Engine* E, Vec2 p) {
+    const uint64_t id = E->PickEntity(p);
+    const Entity* e = id ? E->Doc().Find(id) : nullptr;
+    if (e && e->type == EntityType::Viewport && e->annot) return e;
+    // Inside one also counts.
+    for (auto it = E->Doc().Entities().rbegin(); it != E->Doc().Entities().rend(); ++it)
+        if (it->second.type == EntityType::Viewport && Box(it->second.p0, it->second.p1).Contains(p)) return &it->second;
+    return nullptr;
+}
+
+const wchar_t* const kScaleHelp = L"Specify scale (1:2, 2:1 or a number) or [Fit]";
+
+class MViewCmd : public Command {
+    enum Step { First, Second, Scale } m_step = First;
+    Vec2 m_a, m_b;
+
+    void Make(double ratio) {
+        const Box ext = E->model->Extents();
+        const double mm = MmPerUnit(E->model->Settings().units);
+        if (ratio <= 0) ratio = FitScale(ext, std::fabs(m_b.x - m_a.x), std::fabs(m_b.y - m_a.y), E->model->Settings().units);
+        Entity vp = MakeViewport(m_a, m_b, ext.Empty() ? Vec2{} : ext.Center(), ratio * mm);
+        vp.layer = -1;
+        E->Doc().BeginChange(L"Viewport");
+        E->Doc().Add(vp);
+        E->Doc().EndChange();
+        E->Msg(L"Viewport at " + ScaleText(ratio) + L". VPSCALE changes the scale, VPPAN moves the drawing in it.");
+        E->Finish();
+    }
+
+public:
+    void Start() override {
+        if (!OnSheet(E)) return;
+        E->Ask(P(L"Specify first corner of viewport", kAcceptPoint));
+    }
+    void OnPoint(Vec2 p) override {
+        if (m_step == First) {
+            m_a = p;
+            m_step = Second;
+            E->Ask(From(P(L"Specify opposite corner", kAcceptPoint), p));
+        } else if (m_step == Second) {
+            if (std::fabs(p.x - m_a.x) < 1 || std::fabs(p.y - m_a.y) < 1) return E->Msg(L"Make it at least 1 mm each way.");
+            m_b = p;
+            m_step = Scale;
+            E->Ask(P(kScaleHelp, kAcceptEmpty, {{L"F", L"Fit"}}, L"Fit"));
+        }
+    }
+    bool OnText(const std::wstring& s) override {
+        if (m_step != Scale) return false;
+        double r;
+        if (Up(s) == L"F" || Up(s) == L"FIT") return Make(0), true;
+        if (!ParseScale(s, r)) return E->Msg(L"Type a scale such as 1:2, 1:50 or 2:1."), true;
+        Make(r);
+        return true;
+    }
+    void OnKeyword(const std::wstring&) override { Make(0); }
+    void OnEnter() override {
+        if (m_step == Scale) return Make(0);
+        E->Finish();
+    }
+    void GetPreview(Vec2 c, Preview& out) override {
+        if (m_step == Second) out.entities.push_back(Entity::Rectangle(m_a, c));
+    }
+};
+
+class VpScaleCmd : public Command {
+    uint64_t m_id = 0;
+
+    void Apply(double ratio) {
+        Entity e = *E->Doc().Find(m_id);
+        Annot& a = EditAnnot(e);
+        if (ratio <= 0) {
+            const Box ext = E->model->Extents();
+            ratio = FitScale(ext, e.p1.x - e.p0.x, e.p1.y - e.p0.y, E->model->Settings().units);
+            if (!ext.Empty()) a.viewCentre = ext.Center();
+        }
+        a.viewScale = ratio * MmPerUnit(E->model->Settings().units);
+        E->Doc().BeginChange(L"Viewport scale");
+        E->Doc().Replace(e);
+        E->Doc().EndChange();
+        E->Msg(L"Viewport scale " + ScaleText(ratio) + L".");
+        E->Finish();
+    }
+
+public:
+    void Start() override {
+        if (!OnSheet(E)) return;
+        E->Ask(Pick(L"Select a viewport"));
+    }
+    void OnPoint(Vec2 p) override {
+        if (m_id) return;
+        const Entity* vp = PickedViewport(E, p);
+        if (!vp) return E->Msg(L"Pick a viewport's edge (or click inside it).");
+        if (vp->annot->viewLocked) return E->Msg(L"That viewport is locked (VPLOCK unlocks it).");
+        m_id = vp->id;
+        Prompt pr = P(kScaleHelp, kAcceptEmpty, {{L"F", L"Fit"}}, ScaleText(ViewportRatio(*vp, *E->model)));
+        E->Ask(pr);
+    }
+    bool OnText(const std::wstring& s) override {
+        if (!m_id) return false;
+        double r;
+        if (Up(s) == L"F" || Up(s) == L"FIT") return Apply(0), true;
+        if (!ParseScale(s, r)) return E->Msg(L"Type a scale such as 1:2, 1:50 or 2:1."), true;
+        Apply(r);
+        return true;
+    }
+    void OnKeyword(const std::wstring&) override { Apply(0); }
+};
+
+class VpPanCmd : public Command {
+    uint64_t m_id = 0;
+    bool m_have = false;
+    Vec2 m_from;
+
+public:
+    void Start() override {
+        if (!OnSheet(E)) return;
+        E->Ask(Pick(L"Select a viewport"));
+    }
+    void OnPoint(Vec2 p) override {
+        if (!m_id) {
+            const Entity* vp = PickedViewport(E, p);
+            if (!vp) return E->Msg(L"Pick a viewport's edge (or click inside it).");
+            if (vp->annot->viewLocked) return E->Msg(L"That viewport is locked (VPLOCK unlocks it).");
+            m_id = vp->id;
+            E->Ask(P(L"Specify base point", kAcceptPoint));
+            return;
+        }
+        if (!m_have) {
+            m_from = p;
+            m_have = true;
+            E->Ask(From(P(L"Specify where it goes", kAcceptPoint), p));
+            return;
+        }
+        Entity e = *E->Doc().Find(m_id);
+        Annot& a = EditAnnot(e);
+        a.viewCentre -= (p - m_from) / a.viewScale;
+        E->Doc().BeginChange(L"Pan viewport");
+        E->Doc().Replace(e);
+        E->Doc().EndChange();
+        E->Finish();
+    }
+};
+
+class VpLockCmd : public Command {
+public:
+    void Start() override {
+        if (!OnSheet(E)) return;
+        E->AskSelection();
+    }
+    void OnSelected() override {
+        std::vector<Entity> vps;
+        bool anyOpen = false;
+        for (uint64_t id : SelectionIds(E))
+            if (const Entity* e = E->Doc().Find(id); e && e->type == EntityType::Viewport && e->annot) {
+                vps.push_back(*e);
+                anyOpen |= !e->annot->viewLocked;
+            }
+        if (vps.empty()) {
+            E->Msg(L"No viewports selected.");
+            return E->Finish();
+        }
+        E->Doc().BeginChange(anyOpen ? L"Lock viewports" : L"Unlock viewports");
+        for (Entity& e : vps) {
+            EditAnnot(e).viewLocked = anyOpen;
+            E->Doc().Replace(e);
+        }
+        E->Doc().EndChange();
+        E->Msg(std::to_wstring(vps.size()) + (anyOpen ? L" viewport(s) locked: their scale and view stay as they are."
+                                                       : L" viewport(s) unlocked."));
+        E->Finish();
+    }
+};
+}  // namespace
+
+std::unique_ptr<Command> CreateSheetCommand(const std::wstring& name) {
+    if (name == L"MVIEW") return std::make_unique<MViewCmd>();
+    if (name == L"VPSCALE") return std::make_unique<VpScaleCmd>();
+    if (name == L"VPPAN") return std::make_unique<VpPanCmd>();
+    if (name == L"VPLOCK") return std::make_unique<VpLockCmd>();
     return nullptr;
 }

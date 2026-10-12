@@ -198,6 +198,7 @@ const wchar_t* TypeName(EntityType type) {
         case EntityType::Leader: return L"Leader";
         case EntityType::Hatch: return L"Hatch";
         case EntityType::Insert: return L"Block";
+        case EntityType::Viewport: return L"Viewport";
     }
     return L"Object";
 }
@@ -338,6 +339,7 @@ void Primitives(const Entity& e, std::vector<Prim>& out) {
         case EntityType::Leader:
         case EntityType::Hatch:
         case EntityType::Insert:
+        case EntityType::Viewport:
             AnnotPrimitives(e, out);
             break;
     }

@@ -21,7 +21,7 @@
 #include <vector>
 
 #define APP_NAME L"Feather CAD"
-#define APP_VERSION L"1.5.0"
+#define APP_VERSION L"1.6.0"
 #define APP_AUTHOR L"Akshaya Simha"
 #define APP_COPYRIGHT L"\x00A9 2026 Akshaya Simha"
 #define APP_WINDOW_CLASS L"FeatherCadMain"
@@ -171,6 +171,19 @@ enum : int {
     ID_DIM_ANGCOORD,
     ID_DIM_SPACE,
     ID_DIM_DRIVEN,
+    // Version 1.6: sheets and printing
+    ID_SHEET_NEW,
+    ID_PAGESETUP,
+    ID_TITLEBLOCK,
+    ID_DWGPROPS,
+    ID_MVIEW,
+    ID_VPSCALE,
+    ID_VPPAN,
+    ID_VPLOCK,
+    ID_PLOT,
+    ID_EXPORT_PDF,
+    ID_SHEET_RENAME,
+    ID_SHEET_DELETE,
     // Help
     ID_COMMAND_LIST,
     ID_ABOUT,
@@ -200,5 +213,7 @@ enum : int {
     ID_PALETTE_CMD = 400,    // + index into AllCommands()
     ID_TAB_FIRST = 600,      // + index of a drawing tab
     ID_TAB_CLOSE_FIRST = 700,  // + index of a drawing tab: its close button
+    ID_SHEET_TAB_FIRST = 800,  // + 0: the drawing, + 1 + i: sheet i
+    ID_SHEET_MENU_FIRST = 900, // + 1 + i: right click on sheet i's tab
     kMaxTabs = 100,
 };

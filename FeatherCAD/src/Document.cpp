@@ -267,6 +267,15 @@ size_t Document::LayerUse(int id) const {
 // Blocks
 // ---------------------------------------------------------------------------
 
+void Document::SetProperty(const std::wstring& key, const std::wstring& value) {
+    auto it = m_props.find(key);
+    if (value.empty() ? it == m_props.end() : (it != m_props.end() && it->second == value)) return;
+    if (value.empty()) m_props.erase(it);
+    else m_props[key] = value;
+    m_settingsChanged = true;
+    Touch();
+}
+
 std::shared_ptr<const BlockData> Document::FindBlock(const std::wstring& name) const {
     for (const auto& b : m_blocks)
         if (SameName(b->name, name)) return b;
@@ -487,6 +496,7 @@ Look Document::LookOf(const Entity& e, const Entity* block) const {
     if (lw < 0) lw = kDefaultLineWeight;
     k.foreground = color == 7 || color == 255 || color == (kTrueColor | 0xFFFFFF);
     k.rgb = ColorRgb(color);
+    k.color = color;
     k.linetype = lt;
     k.lineweight = lw;
     k.ltscale = m_settings.ltscale * e.ltscale * (block ? block->ltscale : 1.0);
@@ -783,6 +793,7 @@ void Document::Clear() {
     m_current = CurrentStyle{};
     m_states.clear();
     m_blocks.clear();
+    m_props.clear();
     m_undo.clear();
     m_redo.clear();
     m_nextId = 1;
@@ -867,6 +878,12 @@ std::wstring DecodeWord(const std::string& s) {
     return TextFromUtf8(bytes);
 }
 
+}  // namespace
+
+std::string FcadEncode(const std::wstring& w) { return EncodeWord(w); }
+std::wstring FcadDecode(const std::string& s) { return DecodeWord(s); }
+
+namespace {
 using Ordinals = std::map<uint64_t, size_t>;
 
 void WriteStyled(const Entity& e, std::string& out, const Ordinals* ordinals);
@@ -1015,6 +1032,13 @@ void WriteEntity(const Entity& e, std::string& out, const Ordinals* ordinals = n
                     num(p.x); num(p.y);
                 }
             }
+            break;
+        }
+        case EntityType::Viewport: {
+            const Annot& a = *e.annot;
+            out += "viewport";
+            num(e.p0.x); num(e.p0.y); num(e.p1.x); num(e.p1.y);
+            num(a.viewCentre.x); num(a.viewCentre.y); num(a.viewScale); num(a.viewLocked ? 1 : 0);
             break;
         }
         case EntityType::Insert: {
@@ -1323,6 +1347,11 @@ struct Reader {
             out = MakeHatch(std::move(h));
             return true;
         }
+        if (key == "viewport") {
+            if (!need(8) || v[2] == v[0] || v[3] == v[1] || !(v[6] > 0)) return Fail(L"a viewport needs two corners, a centre and a scale");
+            out = MakeViewport({v[0], v[1]}, {v[2], v[3]}, {v[4], v[5]}, v[6], v[7] != 0);
+            return true;
+        }
         if (key == "insert") {
             if (!need(5)) return Fail(L"a block reference needs 5 numbers");
             auto b = std::make_shared<BlockData>();  // only its name: the block is found later
@@ -1406,6 +1435,7 @@ std::string Document::ToText() const {
         out += "layerstate " + std::to_string(ls.layers.size()) + " name=" + EncodeWord(ls.name) + "\n";
         for (const Layer& l : ls.layers) out += LayerLine("statelayer", l);
     }
+    for (const auto& kv : m_props) out += "prop key=" + EncodeWord(kv.first) + " value=" + EncodeWord(kv.second) + "\n";
     BlockTable blocks = m_blocks;
     for (const auto& kv : m_entities) UsedBlocks(kv.second, blocks);
     for (const auto& b : blocks) WriteBlock(*b, out);
@@ -1489,6 +1519,7 @@ bool Document::FromText(const std::string& text, std::wstring& error) {
     std::vector<Entity> ents;
     std::vector<long long> ordinalToIndex;
     std::vector<std::shared_ptr<BlockData>> rawBlocks;
+    std::map<std::wstring, std::wstring> props;
     bool ended = false;
     while (!ended && r.Next(w)) {
         const std::string& key = w[0];
@@ -1536,6 +1567,13 @@ bool Document::FromText(const std::string& text, std::wstring& error) {
             } else if (key == "origin" && v.size() >= 2) {
                 settings.origin = {v[0], v[1]};
             }
+        } else if (key == "prop") {
+            std::wstring k, val;
+            for (const std::string& word : w) {
+                if (word.compare(0, 4, "key=") == 0) k = DecodeWord(word.substr(4));
+                if (word.compare(0, 6, "value=") == 0) val = DecodeWord(word.substr(6));
+            }
+            if (!k.empty() && !val.empty()) props[k] = val;
         } else if (key == "block") {
             std::vector<double> v;
             if (!r.Numbers(w, 1, v) || v.size() < 3 || v[2] < 0 || v[2] > 1e7) {
@@ -1667,6 +1705,7 @@ bool Document::FromText(const std::string& text, std::wstring& error) {
     }
     m_states = states;
     m_blocks = table;
+    m_props = props;
     m_current = current;
     if (!FindLayer(m_current.layer)) m_current.layer = 0;
     for (Entity& e : ents) {
@@ -1685,6 +1724,10 @@ bool Document::FromText(const std::string& text, std::wstring& error) {
 
 bool Document::FromDxf(const std::string& text, std::wstring& error, std::wstring& notes) {
     DxfResult r;
+    return FromDxf(text, error, notes, r);
+}
+
+bool Document::FromDxf(const std::string& text, std::wstring& error, std::wstring& notes, DxfResult& r) {
     if (!ReadDxf(text, r, error)) return false;
     DrawingSettings settings = m_settings;
     if (r.hasUnits) settings.units = r.units;
@@ -1701,12 +1744,13 @@ bool Document::FromDxf(const std::string& text, std::wstring& error, std::wstrin
         e.id = m_nextId++;
         m_entities[e.id] = std::move(e);
     }
+    r.entities.clear();
     notes = r.Notes();
     Touch();
     return true;
 }
 
-std::string Document::ToDxf() const {
+std::string Document::ToDxf(const Document* paper, Vec2 paperSize) const {
     std::string out;
     out.reserve(1024 + m_entities.size() * 120);
     auto group = [&](int code, const std::string& value) {
@@ -1750,6 +1794,16 @@ std::string Document::ToDxf() const {
         group(9, "$EXTMAX");
         point(10, {ext.maxX, ext.maxY});
     }
+    if (paper) {
+        group(9, "$TILEMODE");
+        group(70, "1");  // opens on the drawing; the sheet is the paper space tab
+        group(9, "$PLIMMIN");
+        num(10, 0.0);
+        num(20, 0.0);
+        group(9, "$PLIMMAX");
+        num(10, paperSize.x);
+        num(20, paperSize.y);
+    }
     group(0, "ENDSEC");
 
     group(0, "SECTION");
@@ -1792,10 +1846,23 @@ std::string Document::ToDxf() const {
     group(0, "ENDTAB");
     bool anyConstruction = false;
     for (const auto& kv : m_entities) anyConstruction |= kv.second.construction;
+    if (paper) {  // viewports carry their view as ACAD extended data
+        group(0, "TABLE");
+        group(2, "APPID");
+        group(70, "1");
+        group(0, "APPID");
+        group(2, "ACAD");
+        group(70, "0");
+        group(0, "ENDTAB");
+    }
+    std::vector<Layer> layers = m_layers;
+    if (paper)
+        for (const Layer& l : paper->Layers())
+            if (!LayerByName(l.name)) layers.push_back(l);
     group(0, "TABLE");
     group(2, "LAYER");
-    group(70, std::to_string(m_layers.size() + (anyConstruction ? 1 : 0)));
-    for (const Layer& l : m_layers) {
+    group(70, std::to_string(layers.size() + (anyConstruction ? 1 : 0)));
+    for (const Layer& l : layers) {
         group(0, "LAYER");
         group(2, TextToUtf8(l.name));
         group(70, std::to_string((l.frozen ? 1 : 0) | (l.locked ? 4 : 0)));
@@ -1814,9 +1881,11 @@ std::string Document::ToDxf() const {
     group(0, "ENDSEC");
 
     // Layer, colour, line type and scale of an object.
+    const Document* src = this;  // whose objects are being written (the sheet's: paper space)
     auto common = [&](const Entity& e) {
-        const Layer* l = FindLayer(e.layer);
+        const Layer* l = src->FindLayer(e.layer);
         group(8, e.construction ? "Defpoints" : TextToUtf8(l ? l->name : L"0"));
+        if (src != this) group(67, "1");
         if (e.color == kByBlock) group(62, "0");
         else if (e.color != kByLayer)
             group(62, std::to_string((e.color & kTrueColor) ? NearestAci((uint32_t)e.color & 0xFFFFFF)
@@ -1825,6 +1894,55 @@ std::string Document::ToDxf() const {
         if (e.ltscale != 1) num(48, e.ltscale);
     };
     std::function<void(const Entity&)> write;
+    int viewportId = 1;
+    // A paper space viewport (R12: its view as ACAD "MVIEW" extended data).
+    auto writeViewport = [&](Vec2 a, Vec2 b, Vec2 viewCentre, double viewHeight, const Entity& e) {
+        group(0, "VIEWPORT");
+        if (viewportId == 1) {
+            group(8, "0");
+            group(67, "1");
+        } else {
+            common(e);
+        }
+        point(10, Lerp(a, b, 0.5));
+        num(40, b.x - a.x);
+        num(41, b.y - a.y);
+        group(68, std::to_string(viewportId == 1 ? 1 : viewportId));
+        group(69, std::to_string(viewportId));
+        ++viewportId;
+        group(1001, "ACAD");
+        group(1000, "MVIEW");
+        group(1002, "{");
+        group(1070, "16");
+        group(1010, "0.0"); group(1020, "0.0"); group(1030, "0.0");  // view target
+        group(1010, "0.0"); group(1020, "0.0"); group(1030, "1.0");  // view direction
+        num(1040, 0.0);                                              // twist
+        num(1040, viewHeight);
+        num(1040, viewCentre.x);
+        num(1040, viewCentre.y);
+        num(1040, 50.0);  // lens
+        num(1040, 0.0);   // front and back clip
+        num(1040, 0.0);
+        group(1070, "0");    // view mode
+        group(1070, "100");  // circle zoom
+        group(1070, "1");    // fast zoom
+        group(1070, "3");    // UCS icon
+        group(1070, "0");    // snap, grid, snap style, isometric plane
+        group(1070, "0");
+        group(1070, "0");
+        group(1070, "0");
+        num(1040, 0.0);  // snap angle and base
+        num(1040, 0.0);
+        num(1040, 0.0);
+        num(1040, 10.0);  // snap and grid spacing
+        num(1040, 10.0);
+        num(1040, 10.0);
+        num(1040, 10.0);
+        group(1070, "0");  // hidden lines
+        group(1002, "{");  // frozen layers: none
+        group(1002, "}");
+        group(1002, "}");
+    };
     // Lines, arcs, filled shapes and texts of an annotation.
     auto graphics = [&](const Entity& e, const AnnotGraphics& g) {
         for (const Prim& p : g.lines) {
@@ -2040,6 +2158,9 @@ std::string Document::ToDxf() const {
                 else graphics(e, g);
                 break;
             }
+            case EntityType::Viewport:
+                if (src != this && e.annot) writeViewport(e.p0, e.p1, e.annot->viewCentre, (e.p1.y - e.p0.y) / e.annot->viewScale, e);
+                break;
             case EntityType::Insert: {
                 if (!e.annot || !e.annot->block) break;
                 const BlockData& b = *e.annot->block;
@@ -2095,6 +2216,13 @@ std::string Document::ToDxf() const {
     // Blocks: their objects (attribute definitions as ATTDEF).
     BlockTable blocks = m_blocks;
     for (const auto& kv : m_entities) UsedBlocks(kv.second, blocks);
+    if (paper) {
+        BlockTable more = paper->Blocks();
+        for (const auto& kv : paper->Entities()) UsedBlocks(kv.second, more);
+        for (const auto& b : more)
+            if (std::none_of(blocks.begin(), blocks.end(), [&](const auto& x) { return SameName(x->name, b->name); }))
+                blocks.push_back(b);
+    }
     group(0, "SECTION");
     group(2, "BLOCKS");
     for (const auto& b : blocks) {
@@ -2137,6 +2265,13 @@ std::string Document::ToDxf() const {
     group(0, "SECTION");
     group(2, "ENTITIES");
     for (const auto& kv : m_entities) write(kv.second);
+    if (paper) {
+        // The sheet: the paper space viewport (number 1, the page itself), then its objects.
+        src = paper;
+        writeViewport({0, 0}, paperSize, paperSize * 0.5, paperSize.y, Entity{});
+        for (const auto& kv : paper->Entities()) write(kv.second);
+        src = this;
+    }
     group(0, "ENDSEC");
     group(0, "EOF");
     return out;

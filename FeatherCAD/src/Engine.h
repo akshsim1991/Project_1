@@ -190,6 +190,8 @@ public:
     HatchData lastHatch;   // pattern, scale and angle of the last hatch
     std::wstring lastBlock;
     double lastCloudArc = 15;
+    // On a sheet: the drawing its viewports show (nullptr in the drawing itself).
+    const Document* model = nullptr;
 
 private:
     bool ParsePoint(const std::wstring& text, Vec2& out) const;

@@ -925,6 +925,7 @@ bool StretchEntity(Entity& e, const Box& w, Vec2 d) {
         case EntityType::Array:
         case EntityType::Point:
         case EntityType::Hatch:  // follows its outline (if associative)
+        case EntityType::Viewport:
             return false;
     }
     return false;

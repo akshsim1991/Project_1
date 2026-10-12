@@ -14,6 +14,7 @@
 #include "Engine.h"
 #include "History.h"
 #include "PropertiesPanel.h"
+#include "Plot.h"
 #include "Settings.h"
 #include "StatusBar.h"
 #include "TabBar.h"
@@ -42,11 +43,44 @@ public:
     int EditText(TextData& text, const std::wstring& title) override;
 
 private:
-    // One open drawing.
+    // A sheet's own command engine and view.
+    struct SheetSpace {
+        SheetSpace(Sheet& sheet, EngineHost& host, const Document& model) : engine(sheet.doc, host) { engine.model = &model; }
+        Engine engine;
+        Canvas::View view;
+    };
+    // One open drawing, with its sheets.
     struct Drawing {
         explicit Drawing(EngineHost& host) : engine(doc, host) {}
         Document doc;
         Engine engine;
+        SheetList sheets;
+        std::vector<std::unique_ptr<SheetSpace>> spaces;  // one per sheet
+        int space = -1;              // the sheet shown (-1: the drawing)
+        bool sheetsChanged = false;  // sheets added, removed or set up since saved
+        Document& ActiveDoc() { return space < 0 ? doc : sheets[(size_t)space]->doc; }
+        Engine& ActiveEngine() { return space < 0 ? engine : spaces[(size_t)space]->engine; }
+        Canvas::View& ActiveView() { return space < 0 ? view : spaces[(size_t)space]->view; }
+        bool Modified() const {
+            if (doc.Modified() || sheetsChanged) return true;
+            for (const auto& s : sheets)
+                if (s->doc.Modified()) return true;
+            return false;
+        }
+        uint64_t Revision() const {
+            uint64_t r = doc.Revision() + (sheetsChanged ? 1 : 0);
+            for (const auto& s : sheets) r += s->doc.Revision() * 7;
+            return r + sheets.size() * 1000003;
+        }
+        void MarkSaved() {
+            doc.MarkSaved();
+            for (auto& s : sheets) s->doc.MarkSaved();
+            sheetsChanged = false;
+        }
+        void AddSheet(std::unique_ptr<Sheet> s, EngineHost& host) {
+            spaces.push_back(std::make_unique<SheetSpace>(*s, host, doc));
+            sheets.push_back(std::move(s));
+        }
         History history;
         std::wstring path;           // empty: never saved
         std::wstring suggestedPath;  // for Save of a recovered or imported drawing
@@ -54,7 +88,9 @@ private:
         uint64_t autosavedRevision = 0;
         unsigned long long lastAutosave = 0;
         Canvas::View view;
-        bool Pristine() const { return path.empty() && doc.Count() == 0 && !doc.CanUndo() && !doc.Modified(); }
+        bool Pristine() const {
+            return path.empty() && doc.Count() == 0 && !doc.CanUndo() && !doc.Modified() && sheets.empty();
+        }
     };
 
     static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
@@ -73,8 +109,8 @@ private:
 
     // drawings
     Drawing& Cur() const { return *m_drawings[m_active]; }
-    Document& Doc() const { return Cur().doc; }
-    Engine& Eng() const { return Cur().engine; }
+    Document& Doc() const { return Cur().ActiveDoc(); }  // of the drawing, or of the sheet shown
+    Engine& Eng() const { return Cur().ActiveEngine(); }
     std::unique_ptr<Drawing> MakeDrawing();
     // Puts a drawing in a tab of its own (or in place of an empty, unused one) and shows it.
     void AddDrawing(std::unique_ptr<Drawing> d);
@@ -109,6 +145,7 @@ private:
     // Double-click: the dimension, text, leader or block's own editor.
     void EditObject(uint64_t id);
     void UpdateFields();
+    void AttachCanvas();  // the canvas shows the active drawing's active sheet (or the drawing)
     void DimensionStyle();
     void ClipboardCommand(int id);
 
@@ -121,6 +158,21 @@ private:
                    std::function<void(Entity&, Vec2)> set);
     // Changes every selected object (one undo step).
     void ChangeSelected(const wchar_t* stepName, const std::function<void(Entity&)>& change);
+
+    // sheets
+    void ShowSpace(int space);  // -1: the drawing, else a sheet
+    void UpdateSheetTabs();
+    void NewSheetTab();
+    void SheetMenu(int index);
+    void PageSetup();
+    void DeleteSheet(int index);
+    void DrawingProps();
+    void TitleBlock();
+    std::vector<PlotPage> BuildPages(const struct PlotRequest& r);
+    void Plot();
+    void ExportPdf(const std::vector<PlotPage>* pages = nullptr);
+    void SetSheets(Drawing& d, SheetList sheets);
+    FieldValues FieldsFor(int space) const;
 
     void ApplyTheme(int mode);
     void ToggleDrafting(int id);
@@ -138,6 +190,7 @@ private:
     StatusBar m_status;
     Toolbar m_menuBar, m_tools;
     TabBar m_tabs;
+    TabBar m_sheetTabs;  // under the drawing: the drawing and its sheets
     CommandPalette m_palette;
     PropertiesPanel m_props;
     HWND m_layerCombo = nullptr;

@@ -38,6 +38,9 @@ public:
 
     // Values of text fields ({filename}, {date}...).
     void SetFields(const FieldValues& f);
+    // Showing a sheet (its document is the one given to SetDrawing): drawn as
+    // paper, with `model` seen through its viewports. nullptr: the drawing.
+    void SetSheet(const struct Sheet* sheet, const Document* model);
 
     // ---- view ---------------------------------------------------------------
     void ZoomExtents();
@@ -82,6 +85,7 @@ private:
     void RenderOverlay();
     void DrawGrid(ID2D1RenderTarget* rt);
     void DrawUcsIcon(ID2D1RenderTarget* rt);
+    void DrawPaper(ID2D1RenderTarget* rt);  // a sheet's page, and the drawing in its viewports
     // With `dashes` (pixels: on, off, on...) the lines are cut into dashes.
     ID2D1PathGeometry* BuildGeometry(const std::vector<const Entity*>& entities, const std::vector<float>* dashes = nullptr);
     void DrawEntities(ID2D1RenderTarget* rt, const std::vector<const Entity*>& ents, D2D1_COLOR_F color,
@@ -133,6 +137,9 @@ private:
     IDWriteTextFormat* m_dimFormat = nullptr;  // dimension text, drawn scaled
     std::map<std::wstring, IDWriteTextFormat*> m_fonts;  // text in other fonts, the same way
     FieldValues m_fields;
+    const struct Sheet* m_sheet = nullptr;
+    const Document* m_model = nullptr;
+    D2D1_COLOR_F m_outside{};  // around the paper
     ID2D1HwndRenderTarget* m_target = nullptr;
     ID2D1BitmapRenderTarget* m_layer = nullptr;
     ID2D1SolidColorBrush* m_brush = nullptr;
