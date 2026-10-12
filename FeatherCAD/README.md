@@ -430,6 +430,27 @@ The toolbar has a Point button before Line, and a group with Projector, Label po
 - **Trim, Extend, Fillet, Chamfer, Break, Lengthen and Join** no longer fight the relationships they deliberately break: a corner that is cut or rounded lets go of its connect instead of being pulled back together (and dragging the shape with it), and a locked dimension on a line that is cut takes the new length. A line broken in two passes its corner's connect to the piece left at the corner. With relationships while drawing on, a fillet arc is joined and tangent to both lines, and a chamfer edge is joined to both.
 - **Relationship marks stay one size on the screen**, whatever the zoom: readable when zoomed out, not huge when zoomed in.
 
+## Version 2.2: engineering drawing (CAED) tools
+
+Everything is on the new **Graphics** menu, and in the command search.
+
+| Command | Short name | What it does |
+|---------|------------|--------------|
+| ISODRAFT | ISO | Isometric drawing: the grid and snap become isometric, and Ortho keeps lines along the two axes of the current plane. Also the **Iso** switch on the status bar. Scale: lengths typed along the 30, 90 and 150 degree axes (direct distances, @50<30) are drawn x 0.816, for isometric projection; or true lengths, for an isometric view. |
+| ISOPLANE | IP, F5 | The left, top or right isometric plane (right-click Iso on the status bar too). |
+| ISOCIRCLE | IC | A circle on the current isometric plane, drawn as its ellipse; a typed radius is a true radius (x 0.816 with the isometric scale). |
+| ISOSCALE | | The isometric scale construction: true lengths on a 45 degree line projected onto a 30 degree line, numbered. |
+| DIVIDE | DIV | Points dividing a line, arc, circle, polyline, ellipse or spline into equal parts. On a circle, point 1 goes to the quadrant (or corner) nearest the click. N numbers them 1, 2, 3... |
+| MEASURE | ME | Points every so far along an object, from the end nearer the click. |
+| DEVELOP | DEV | The development of the lateral surface of a prism or pyramid (3 to 12 sides, an edge or a corner to the front) or a cylinder or cone, uncut or cut by a plane square to VP (its angle to HP, and where it meets the axis). Outline thick, folds and generators thin, corners A, B, C... or generators 1, 2, 3... named from the leftmost one in the front view, going round through the front, with a note giving the sizes, the slant height and the cone's sector angle (360 x r / L). |
+| TRUELENGTH | TRL | Click the front view and the top view of a line: its true length, its inclinations to HP and VP and its apparent angles, by the rotating-line method (b1, b1', b2', b2 named, loci and arcs drawn). D draws a line's two views from its true length and its angles to HP and VP. |
+| CUTPLANE | CPL | A cutting-plane line: thin chain line, thick at its ends and bends, arrows to the side the section is seen from, and its letters (A, then B...). |
+| TRUESHAPE | TS | The true shape of a section by an auxiliary view: click the cutting plane (seen as a line), the apparent section in the other view (a closed shape, or click its corners), the XY line, and where X1Y1 goes. Projectors, the true shape, its hatching and "TRUE SHAPE OF SECTION A-A". |
+| FIRSTANGLE | FAS | The first-angle projection symbol. |
+| BISSETUP | BIS | Sets the drawing up as BIS SP 46 asks: millimetres; dimensions 3.5 high in the aligned or unidirectional system (the Dimension style dialog has the unidirectional switch too); layers Visible (0.5 mm, current), Hidden, Centre, Dimension, Section, Construction and Cutting plane; and the BIS title block on new sheets (TITLEBLOCK puts it on an existing one): institution, title, name, USN, branch, sheet number, scale, date, checked by, marks and the projection symbol. Fill these in under File > Drawing properties (USN, Branch and Marks are new there). |
+
+Drawing text uses plain letters ("Inclination to HP = 30°") so it prints in PDFs too.
+
 ## Building
 
 ```

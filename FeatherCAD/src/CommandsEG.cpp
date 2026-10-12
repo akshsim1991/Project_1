@@ -5,6 +5,7 @@
 #include <cmath>
 
 #include "CommandUtil.h"
+#include "Dimension.h"
 #include "EngGraphics.h"
 #include "Style.h"
 
@@ -624,7 +625,7 @@ class TrueShapeCmd : public Command {
         out.push_back(ref);
         for (const auto& pr : r.projectors) {
             Entity l = Entity::Line(pr.first, pr.second);
-            l.lineweight = 13;
+            l.lineweight = 18;
             out.push_back(l);
         }
         Entity shape;
@@ -641,8 +642,7 @@ class TrueShapeCmd : public Command {
         hd.loops.push_back(r.shape);
         hd.scale = std::max(0.5, h / 3.5);
         hd.origin = r.shape[0];
-        Entity hatch = MakeHatch(hd);
-        hatch.lineweight = 13;
+        Entity hatch = MakeHatch(hd);  // the layer's line weight, like other hatches
         out.push_back(hatch);
         const Vec2 u = Normalized(r.y1 - r.x1);
         const Vec2 n = Normalized(r.shape[0] - r.projectors[0].first);
@@ -650,13 +650,17 @@ class TrueShapeCmd : public Command {
         if (Dot(side, n) > 0) side = side * -1;  // the names on the cutting plane's side of X1Y1
         out.push_back(MakePointLabel(r.x1, L"X1", h, side - u * 0.5));
         out.push_back(MakePointLabel(r.y1, L"Y1", h, side + u * 0.5));
-        Box b;
-        for (Vec2 p : r.shape) b.Add(p);
+        // The title beyond the shape, away from X1Y1.
+        Vec2 c{0, 0};
+        double far = -1e300;
+        for (Vec2 p : r.shape) c = c + p / (double)r.shape.size();
+        for (Vec2 p : r.shape) far = std::max(far, Dot(p - c, n));
         TextData t;
         t.content = g_lastLetter.empty() ? L"TRUE SHAPE OF THE SECTION" : L"TRUE SHAPE OF SECTION " + g_lastLetter + L"-" + g_lastLetter;
         t.height = h;
-        t.justify = 1;
-        out.push_back(MakeText({b.Center().x, b.minY - h * 1.5}, t));
+        t.justify = 4;
+        const double w = TextWidth(t.content, h);
+        out.push_back(MakeText(c + n * (far + h * 2 + std::fabs(n.x) * w / 2), t));
         return out;
     }
 

@@ -449,14 +449,16 @@ bool DevelopSolid(const SolidSpec& s, Vec2 at, double h, std::vector<Entity>& ou
     for (Entity& e : thin) out.push_back(Weighted(e, kThin));
 
     // What it is.
-    std::wstring note = L"DEVELOPMENT OF THE LATERAL SURFACE OF A " + SolidName(s) + L"\n";
+    std::wstring what = SolidName(s);
+    for (wchar_t& c : what) c = (wchar_t)std::towupper(c);
+    std::wstring note = L"DEVELOPMENT OF THE LATERAL SURFACE OF A " + what + L"\n";
     if (polygonal) note += L"base side " + Num(s.base, 2) + L", axis " + Num(s.height, 2);
     else note += L"base diameter " + Num(s.base, 2) + L", axis " + Num(s.height, 2);
     if (s.kind == SolidSpec::Pyramid) note += L", slant edge " + Num(slant, 2);
     if (s.kind == SolidSpec::Cone)
         note += L"\nslant height L = " + Num(slant, 2) + L", sector angle = 360 \x00D7 r / L = 360 \x00D7 " + Num(R, 2) +
                 L" / " + Num(slant, 2) + L" = " + Num(360 * R / slant, 1) + L"\x00B0";
-    if (s.kind == SolidSpec::Cylinder) note += L"\nlength = \x03C0 \x00D7 d = " + Num(kPi * s.base, 2);
+    if (s.kind == SolidSpec::Cylinder) note += L"\nlength = pi \x00D7 d = " + Num(kPi * s.base, 2);
     if (s.cut)
         note += L"\ncut by a plane square to VP, " + Num(s.cutAngle, 1) + L"\x00B0 to HP, meeting the axis " +
                 Num(s.cutHeight, 2) + L" above the base";
@@ -554,13 +556,14 @@ std::vector<Entity> TrueLengthConstruction(const LineViews& v, double h, bool wi
         const double mid = from + ang / 2;
         out.push_back(Note(Polar(c, rr + h * 1.2, mid), label, h, 4));
     };
-    angleMark(v.a1, r.theta, false, L"\x03B8");
-    angleMark(v.a, r.phi, true, L"\x03C6");
+    angleMark(v.a1, r.theta, false, Deg(r.theta));
+    angleMark(v.a, r.phi, true, Deg(r.phi));
     // The results.
     const double xr = s > 0 ? std::max({v.b1.x, v.b.x, b1.x, b2f.x}) + h * 4 : std::min({v.b1.x, v.b.x, b1.x, b2f.x}) - h * 4;
-    const std::wstring text = L"TL = " + Num(r.tl, 2) + L"\n\x03B8 = " + Deg(r.theta) + L" (to HP)\n\x03C6 = " +
-                              Deg(r.phi) + L" (to VP)\nFV length = " + Num(r.fvLength, 2) + L", \x03B1 = " +
-                              Deg(r.alpha) + L"\nTV length = " + Num(r.tvLength, 2) + L", \x03B2 = " + Deg(r.beta);
+    // Plain letters only: the PDF fonts have no Greek.
+    const std::wstring text = L"TRUE LENGTH TL = " + Num(r.tl, 2) + L"\nInclination to HP = " + Deg(r.theta) +
+                              L"\nInclination to VP = " + Deg(r.phi) + L"\nFront view " + Num(r.fvLength, 2) + L" at " +
+                              Deg(r.alpha) + L" to XY\nTop view " + Num(r.tvLength, 2) + L" at " + Deg(r.beta) + L" to XY";
     out.push_back(Note({xr, std::max(v.b1.y, v.a1.y)}, text, h, s > 0 ? 0 : 2));
     return out;
 }
