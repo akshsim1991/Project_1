@@ -3078,6 +3078,35 @@ void TestImages() {
     SetImageReader(nullptr);
 }
 
+void TestCloseByClicking() {
+    Document doc;
+    TestHost host;
+    Engine e(doc, host);
+    // SPLINE: three points, then a click on the first one closes it.
+    Type(e, {L"spl", L"0,0", L"50,40", L"100,0"});
+    CHECK(e.Active() && e.CurrentPrompt().hasClose && Close(e.CurrentPrompt().closePoint, {0, 0}));
+    e.Point({0, 0});
+    CHECK(!e.Active());
+    const Entity* s = FirstOf(doc, EntityType::Spline);
+    CHECK(s && s->closed && s->verts.size() == 3);
+    // Two points are not enough to close: no close point yet.
+    Type(e, {L"spl", L"0,100", L"50,140"});
+    CHECK(!e.CurrentPrompt().hasClose);
+    e.Cancel();
+    // PLINE and LINE the same way.
+    Type(e, {L"pl", L"200,0", L"300,0", L"300,50"});
+    CHECK(e.CurrentPrompt().hasClose);
+    e.Point({200, 0});
+    CHECK(!e.Active() && Last(doc).type == EntityType::Polyline && Last(doc).closed && Last(doc).verts.size() == 3);
+    const size_t before = doc.Count();
+    Type(e, {L"l", L"400,0", L"500,0"});
+    CHECK(!e.CurrentPrompt().hasClose);  // one segment: nothing to close yet
+    Type(e, {L"500,50"});
+    CHECK(e.CurrentPrompt().hasClose);
+    e.Point({400, 0});
+    CHECK(!e.Active() && doc.Count() == before + 3 && Close(Last(doc).p1, {400, 0}));
+}
+
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);  // failures show even if a later check crashes
     TestAngles();
@@ -3121,6 +3150,7 @@ int main() {
     TestDynamicBlocks();
     TestTablesAndBalloons();
     TestImages();
+    TestCloseByClicking();
     std::printf("%d checks, %d failed\n", g_checks, g_failures);
     return g_failures;
 }

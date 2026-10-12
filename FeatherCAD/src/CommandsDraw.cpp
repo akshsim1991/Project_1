@@ -249,7 +249,10 @@ class SplineCmd : public Command {
         std::vector<Keyword> kw;
         if (m_pts.size() >= 3) kw.push_back({L"C", L"Close"});
         kw.push_back({L"U", L"Undo"});
-        E->Ask(From(P(L"Enter next point", kAcceptPoint | kAcceptEmpty, kw), m_pts.back()));
+        Prompt p = From(P(L"Specify next point", kAcceptPoint | kAcceptEmpty, kw), m_pts.back());
+        p.hasClose = m_pts.size() >= 3;
+        p.closePoint = m_pts.front();
+        E->Ask(p);
     }
     void Commit(bool closed) {
         if (m_pts.size() >= 2) E->Doc().Add(Entity::Spline(m_pts, closed));
@@ -263,6 +266,7 @@ public:
     }
     void OnPoint(Vec2 p) override {
         if (!m_pts.empty() && Near(p, m_pts.back(), 1e-12)) return;
+        if (m_pts.size() >= 3 && Near(p, m_pts.front(), 1e-9)) return Commit(true);  // on the first point: closed
         m_pts.push_back(p);
         AskNext();
     }
@@ -283,6 +287,10 @@ public:
     }
     void GetPreview(Vec2 c, Preview& out) override {
         if (m_pts.empty()) return;
+        if (m_pts.size() >= 3 && Near(c, m_pts.front(), 1e-9)) {  // at the close point: the closed shape
+            out.entities.push_back(Entity::Spline(m_pts, true));
+            return;
+        }
         std::vector<Vec2> pts = m_pts;
         if (!Near(c, pts.back(), 1e-12)) pts.push_back(c);
         if (pts.size() >= 2) out.entities.push_back(Entity::Spline(pts, false));

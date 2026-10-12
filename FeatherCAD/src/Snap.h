@@ -19,6 +19,8 @@ enum SnapMode : unsigned {
 constexpr int kSnapModeCount = 8;
 // Typed NONE at a point prompt: no object snap for that point.
 constexpr unsigned kSnapNone = 1u << 15;
+// Not an object snap: the start of the shape being drawn, where a click closes it.
+constexpr unsigned kSnapClose = 1u << 16;
 
 const wchar_t* SnapName(unsigned mode);     // "Endpoint"
 const wchar_t* SnapKeyword(unsigned mode);  // "END": typed at a point prompt

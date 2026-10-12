@@ -1049,6 +1049,12 @@ void Canvas::DrawSnapMarker(ID2D1RenderTarget* rt) {
         rt->DrawLine(D2D1::Point2F(c.x + x0, c.y + y0), D2D1::Point2F(c.x + x1, c.y + y1), m_brush, w);
     };
     switch (m_snapHit.mode) {
+        case kSnapClose: {  // a green ring with a dot: "close the shape here"
+            m_brush->SetColor(D2D1::ColorF(0.1f, 0.65f, 0.25f));
+            rt->DrawEllipse(D2D1::Ellipse(c, s * 1.4f, s * 1.4f), m_brush, w);
+            rt->FillEllipse(D2D1::Ellipse(c, s * 0.55f, s * 0.55f), m_brush);
+            break;
+        }
         case kSnapEndpoint:
             rt->DrawRectangle(D2D1::RectF(c.x - s, c.y - s, c.x + s, c.y + s), m_brush, w);
             break;
@@ -1252,6 +1258,13 @@ void Canvas::OnMouseMove(int x, int y, WPARAM keys) {
             q.hasBase = pr.hasBase;
             q.base = pr.base;
             m_snapHit = FindSnap(*m_doc, q);
+        }
+        // Back at the start of the shape being drawn: closing it comes first.
+        if (pr.hasClose && Dist(m_raw, pr.closePoint) * m_scale <= Px(kApertureDip) * 1.5) {
+            m_snapHit = SnapResult{};
+            m_snapHit.found = true;
+            m_snapHit.mode = kSnapClose;
+            m_snapHit.point = pr.closePoint;
         }
         Vec2 p = m_raw;
         m_trackLines.clear();

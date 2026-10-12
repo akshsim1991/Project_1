@@ -24,7 +24,10 @@ class LineCmd : public Command {
         std::vector<Keyword> kw;
         if (m_segments.size() >= 2) kw.push_back({L"C", L"Close"});
         kw.push_back({L"U", L"Undo"});
-        E->Ask(From(P(L"Specify next point", kAcceptPoint | kAcceptEmpty, kw), m_last));
+        Prompt p = From(P(L"Specify next point", kAcceptPoint | kAcceptEmpty, kw), m_last);
+        p.hasClose = m_segments.size() >= 2;  // back at the first point: closes it
+        p.closePoint = m_first;
+        E->Ask(p);
     }
     void Segment(Vec2 to) {
         m_segments.push_back(E->Doc().Add(Entity::Line(m_last, to)));
@@ -44,6 +47,8 @@ public:
             m_first = m_last = p;
         } else if (Near(p, m_last, 1e-12)) {
             E->Msg(L"That is the point the line starts from.");
+        } else if (m_segments.size() >= 2 && Near(p, m_first, 1e-9)) {
+            return OnKeyword(L"C");  // clicked on the first point: closed
         } else {
             Segment(p);
         }
@@ -175,15 +180,18 @@ class PlineCmd : public Command {
         const double theta = 4 * std::atan(prev.bulge);
         return Normalized(RotateAround(chord, {0, 0}, theta / 2));
     }
+    bool CanClose() const { return m_v.size() >= (m_arc ? 2u : 3u); }
     void AskNext() {
+        Prompt p;
         if (m_arc)
-            E->Ask(From(P(L"Specify end point of arc", kAcceptPoint | kAcceptEmpty,
-                          {{L"L", L"Line"}, {L"C", L"Close"}, {L"U", L"Undo"}}),
-                        m_v.back().p));
+            p = From(P(L"Specify end point of arc", kAcceptPoint | kAcceptEmpty, {{L"L", L"Line"}, {L"C", L"Close"}, {L"U", L"Undo"}}),
+                     m_v.back().p);
         else
-            E->Ask(From(P(L"Specify next point", kAcceptPoint | kAcceptEmpty,
-                          {{L"A", L"Arc"}, {L"C", L"Close"}, {L"U", L"Undo"}}),
-                        m_v.back().p));
+            p = From(P(L"Specify next point", kAcceptPoint | kAcceptEmpty, {{L"A", L"Arc"}, {L"C", L"Close"}, {L"U", L"Undo"}}),
+                     m_v.back().p);
+        p.hasClose = CanClose();  // back at the start point: closes it
+        p.closePoint = m_v.front().p;
+        E->Ask(p);
     }
     void Commit(bool closed) {
         if (m_v.size() >= 2) E->Doc().Add(Entity::Polyline(m_v, closed));
@@ -198,6 +206,8 @@ public:
     void OnPoint(Vec2 p) override {
         if (!m_v.empty() && Near(p, m_v.back().p, 1e-12)) {
             E->Msg(L"That is the current point.");
+        } else if (CanClose() && Near(p, m_v.front().p, 1e-9)) {
+            return OnKeyword(L"C");  // clicked on the start point: closed
         } else {
             if (!m_v.empty() && m_arc) m_v.back().bulge = TangentBulge(m_v.back().p, Tangent(), p);
             m_v.push_back({p, 0});
@@ -235,6 +245,11 @@ public:
     void GetPreview(Vec2 c, Preview& out) override {
         if (m_v.empty()) return;
         std::vector<Vertex> v = m_v;
+        if (CanClose() && Near(c, m_v.front().p, 1e-9)) {  // at the close point: the closed shape
+            if (m_arc) v.back().bulge = TangentBulge(v.back().p, Tangent(), c);
+            out.entities.push_back(Entity::Polyline(std::move(v), true));
+            return;
+        }
         if (m_arc) v.back().bulge = TangentBulge(v.back().p, Tangent(), c);
         v.push_back({c, 0});
         out.entities.push_back(Entity::Polyline(std::move(v), false));

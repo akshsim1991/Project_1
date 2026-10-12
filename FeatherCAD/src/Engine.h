@@ -42,6 +42,8 @@ struct Prompt {
     bool pickObject = false;  // the click picks an object (pick box, no object snaps)
     bool spaces = false;      // typed text may contain spaces (space does not act as Enter)
     bool freehand = false;    // dragging with the button held draws a stroke (FreeSketch)
+    bool hasClose = false;    // a click at closePoint closes the shape being drawn
+    Vec2 closePoint;
     std::wstring FullText() const;  // "Specify next point or [Close/Undo] <10.00>:"
 };
 

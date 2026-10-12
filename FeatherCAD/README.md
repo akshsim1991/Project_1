@@ -403,6 +403,8 @@ The symbols are text objects with a frame: their contents can be changed like an
 **Pictures** (Draw > Picture, or IMAGE)
 - A photo or scan (PNG, JPEG, BMP, GIF, TIFF) placed by its corner and width, to trace over or to show on a sheet. Corner grips resize it keeping its shape. It prints and goes into PDFs; in DXF only its frame is written.
 
+**1.8.1**: Spline, Polyline and Line close by clicking their first point again: near it, a green ring and "Click to close" show, with the closed shape previewed.
+
 **Also**: the guide strip above the drawing (since 1.7.1) gives every command's choices as buttons - the "Options bar" planned for this phase.
 
 ## Building

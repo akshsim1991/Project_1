@@ -15,6 +15,7 @@ const wchar_t* SnapName(unsigned mode) {
         case kSnapPerpendicular: return L"Perpendicular";
         case kSnapTangent: return L"Tangent";
         case kSnapNearest: return L"Nearest";
+        case kSnapClose: return L"Click to close";
     }
     return L"";
 }
