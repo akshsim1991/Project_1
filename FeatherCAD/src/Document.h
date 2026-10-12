@@ -49,6 +49,7 @@ struct SolveReport {
     bool ok = true;          // everything holds
     size_t constraints = 0;  // relationships and locked dimensions looked at
     std::wstring message;    // why not, when it failed
+    unsigned serial = 0;     // a new number for each failure (to tell it once)
 };
 
 // How an object is drawn, with "by layer" and "by block" worked out.

@@ -10,6 +10,7 @@
 // Plain C++ (no Windows).
 #pragma once
 #include <set>
+#include <utility>
 #include <string>
 
 #include "Document.h"
@@ -38,8 +39,10 @@ bool PlaceRelationMarks(const Document& doc, Entity& rel);
 
 // Moves the objects related to `changed` until their relationships and
 // locked dimensions hold, keeping the ones in `keep` (just edited) as they
-// are where it can. Call inside BeginChange / EndChange.
-SolveReport SolveRelations(Document& doc, const std::set<uint64_t>& changed, const std::set<uint64_t>& keep);
+// are where it can, and the `pinned` points (object, grip) most of all.
+// Call inside BeginChange / EndChange.
+SolveReport SolveRelations(Document& doc, const std::set<uint64_t>& changed, const std::set<uint64_t>& keep,
+                           const std::set<std::pair<uint64_t, int>>& pinned = {});
 
 // Works out the variables and the dimensions that have formulas: those
 // dimensions are locked to the result. Changed dimensions are put in

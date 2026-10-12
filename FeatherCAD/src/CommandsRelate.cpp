@@ -1,6 +1,7 @@
 // CommandsRelate.cpp - relationships (HORIZONTAL, PARALLEL, TANGENT...),
 // the switches for keeping, adding and showing them, locked dimensions
-// (DIMLOCK), variables (VAR) and GOALSEEK.
+// (DIMLOCK), variables (VAR) and GOALSEEK. When relationships cannot all
+// hold, the window says so after the command (Document::LastSolve).
 #include <algorithm>
 #include <cmath>
 
@@ -48,11 +49,6 @@ bool PickElement(Engine* E, Vec2 p, bool point, bool orPoint, DimRef& out) {
         return true;
     }
     return false;
-}
-
-void ReportSolve(Engine* E) {
-    const SolveReport& r = E->Doc().LastSolve();
-    if (!r.ok && !r.message.empty()) E->Msg(r.message);
 }
 
 class RelateCmd : public Command {
@@ -114,7 +110,6 @@ public:
         E->Doc().BeginChange(std::wstring(RelKindName(m_kind)) + L" relationship");
         E->Doc().Add(rel);
         E->Doc().EndChange();
-        ReportSolve(E);
         if (!E->Doc().Settings().maintainRelations)
             E->Msg(L"Relationships are not being kept just now (MAINTAINREL turns it on).");
         // Ready for the next one of the same kind.
@@ -145,7 +140,6 @@ public:
             E->Doc().BeginChange(L"Keep relationships");
             SolveRelations(E->Doc(), all, none);
             E->Doc().EndChange();
-            ReportSolve(E);
         }
         E->Finish();
     }
@@ -179,7 +173,6 @@ public:
         E->Doc().EndChange();
         E->Msg(std::to_wstring(dims.size()) + (anyOpen ? L" dimension(s) locked: they hold their value as the drawing changes."
                                                        : L" dimension(s) unlocked: they follow the drawing."));
-        ReportSolve(E);
         E->Finish();
     }
 };
@@ -202,7 +195,7 @@ public:
                 return true;
             }
             m_name = s;
-            E->Ask(P(L"Enter its value or formula (empty: remove it)", kAcceptEmpty));
+            E->Ask(TextPrompt(L"Enter its value or formula (empty: remove it)"));
             return true;
         }
         Set(s);
@@ -230,7 +223,6 @@ public:
             d.BeginChange(L"Dimension formula");
             d.Replace(x);
             d.EndChange();
-            ReportSolve(E);
             return E->Finish();
         }
         std::vector<Variable> vars = d.Variables();
@@ -246,7 +238,6 @@ public:
             vars.push_back(v);
         }
         d.SetVariables(vars, L"Variables");
-        ReportSolve(E);
         double v;
         if (!formula.empty() && LookupName(d, m_name, v)) E->Msg(m_name + L" = " + E->Len(v));
         E->Finish();

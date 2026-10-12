@@ -49,6 +49,16 @@ bool PageSetupDialog(HWND owner, SheetSetup& setup, bool& redoBorder);
 // The drawing's title block fields (DrawingPropertyKeys), in that order.
 bool DrawingPropsDialog(HWND owner, std::vector<std::wstring>& values);
 
+// One row of the Variables dialog: a variable, or a dimension (by its name).
+struct VariableRow {
+    std::wstring name, formula, comment;
+    double value = 0;            // as the drawing is now (dimensions: degrees for angles)
+    bool dimension = false;
+    bool attached = true;        // a dimension on objects (only those can have formulas)
+};
+// Variables and dimension formulas; `format` shows a value. True on OK.
+bool VariablesDialog(HWND owner, std::vector<VariableRow>& rows, const std::function<std::wstring(double)>& format);
+
 // What to print, and how.
 struct PlotRequest {
     enum What { ThisSheet, AllSheets, DrawingView, DrawingAll } what = DrawingAll;

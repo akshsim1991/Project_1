@@ -167,6 +167,7 @@ private:
     void PageSetup();
     void DeleteSheet(int index);
     void DrawingProps();
+    void ShowVariables();
     void TitleBlock();
     std::vector<PlotPage> BuildPages(const struct PlotRequest& r);
     void Plot();
@@ -205,5 +206,6 @@ private:
     int m_untitledCount = 0;
     std::wstring m_shownTitle;
     UINT m_clipFormat = 0;
+    unsigned m_solveShown = 0;  // the last relationship failure told (SolveReport::serial)
     FieldValues m_fields;  // shown in texts' {fields}
 };

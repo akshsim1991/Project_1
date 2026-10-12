@@ -10,6 +10,7 @@
 #include <commctrl.h>
 #include <commdlg.h>
 
+#include "Expr.h"
 #include "Print.h"
 #include "Theme.h"
 #include "Util.h"
@@ -578,9 +579,10 @@ INT_PTR CALLBACK TextEditProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
                                      L"Middle right", L"Bottom left", L"Bottom centre", L"Bottom right"})
                 SendDlgItemMessageW(dlg, IDC_TE_JUSTIFY, CB_ADDSTRING, 0, (LPARAM)j);
             SendDlgItemMessageW(dlg, IDC_TE_JUSTIFY, CB_SETCURSEL, (WPARAM)std::clamp(t.justify, 0, 8), 0);
-            for (const wchar_t* f : {L"None", L"Box", L"Circle (balloon)"})
+            for (const wchar_t* f : {L"None", L"Box", L"Circle (balloon)", L"Feature control frame (POS|0.1|A)", L"Datum (letter)",
+                                     L"Surface texture (*Ra 1.6)", L"Weld (FILLET|6|50|B)"})
                 SendDlgItemMessageW(dlg, IDC_TE_FRAME, CB_ADDSTRING, 0, (LPARAM)f);
-            SendDlgItemMessageW(dlg, IDC_TE_FRAME, CB_SETCURSEL, (WPARAM)std::clamp(t.frame, 0, 2), 0);
+            SendDlgItemMessageW(dlg, IDC_TE_FRAME, CB_SETCURSEL, (WPARAM)std::clamp(t.frame, 0, 6), 0);
             SetFocus(GetDlgItem(dlg, IDC_TE_TEXT));
             SendDlgItemMessageW(dlg, IDC_TE_TEXT, EM_SETSEL, 0, -1);
             return FALSE;
@@ -757,6 +759,153 @@ INT_PTR CALLBACK DrawingPropsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
                 EndDialog(dlg, IDOK);
             } else if (LOWORD(wp) == IDCANCEL) {
                 EndDialog(dlg, IDCANCEL);
+            }
+            return TRUE;
+    }
+    return FALSE;
+}
+
+// ---- variables ---------------------------------------------------------------------
+struct VariablesData {
+    std::vector<VariableRow> rows;
+    const std::function<std::wstring(double)>* format;
+};
+
+// Values of the formulas, as far as they can be worked out (in order, a few rounds).
+void EvaluateRows(std::vector<VariableRow>& rows, std::vector<bool>& known, std::wstring& error) {
+    known.assign(rows.size(), false);
+    for (size_t i = 0; i < rows.size(); ++i) known[i] = rows[i].formula.empty();
+    error.clear();
+    for (size_t round = 0; round <= rows.size(); ++round) {
+        bool progress = false;
+        for (size_t i = 0; i < rows.size(); ++i) {
+            if (known[i]) continue;
+            double v;
+            std::wstring err;
+            auto lookup = [&](const std::wstring& n, double& out) {
+                for (size_t j = 0; j < rows.size(); ++j)
+                    if (known[j] && SameName(rows[j].name, n)) return out = rows[j].value, true;
+                return false;
+            };
+            if (EvalExpression(rows[i].formula, lookup, v, err)) {
+                rows[i].value = v;
+                known[i] = progress = true;
+            } else if (round == rows.size() || !progress) {
+                error = rows[i].name + L": " + err;
+            }
+        }
+        if (!progress) break;
+    }
+}
+
+void FillVariables(HWND dlg, VariablesData* d, int select) {
+    HWND list = GetDlgItem(dlg, IDC_VR_LIST);
+    std::vector<bool> known;
+    std::wstring error;
+    EvaluateRows(d->rows, known, error);
+    SendMessageW(list, WM_SETREDRAW, FALSE, 0);
+    ListView_DeleteAllItems(list);
+    for (size_t i = 0; i < d->rows.size(); ++i) {
+        const VariableRow& r = d->rows[i];
+        SetCell(list, (int)i, 0, r.name);
+        SetCell(list, (int)i, 1, r.formula);
+        SetCell(list, (int)i, 2, known[i] ? (*d->format)(r.value) : L"?");
+        SetCell(list, (int)i, 3, r.dimension ? (r.comment.empty() ? std::wstring(L"Dimension") : L"Dimension: " + r.comment) : r.comment);
+    }
+    SendMessageW(list, WM_SETREDRAW, TRUE, 0);
+    if (select >= 0 && select < (int)d->rows.size()) {
+        ListView_SetItemState(list, select, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+        ListView_EnsureVisible(list, select, FALSE);
+    }
+    SetDlgItemTextW(dlg, IDC_VR_INFO,
+                    error.empty() ? L"Formulas may use + - * / ^ ( ), sin cos tan (degrees), sqrt abs round min max pi, and the names of "
+                                    L"variables and dimensions. A dimension with a formula drives its objects."
+                                  : (L"Cannot work out " + error).c_str());
+}
+
+INT_PTR CALLBACK VariablesProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
+    auto* d = (VariablesData*)GetWindowLongPtrW(dlg, DWLP_USER);
+    switch (msg) {
+        case WM_INITDIALOG: {
+            SetWindowLongPtrW(dlg, DWLP_USER, lp);
+            d = (VariablesData*)lp;
+            InitDialog(dlg);
+            const int dpi = GetWindowDpi(dlg);
+            HWND list = GetDlgItem(dlg, IDC_VR_LIST);
+            ListView_SetExtendedListViewStyle(list, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
+            AddColumn(list, 0, L"Name", 90, dpi);
+            AddColumn(list, 1, L"Formula", 190, dpi);
+            AddColumn(list, 2, L"Value", 90, dpi);
+            AddColumn(list, 3, L"Comment", 140, dpi);
+            FillVariables(dlg, d, -1);
+            return TRUE;
+        }
+        case WM_NOTIFY: {
+            const auto* nm = (const NMHDR*)lp;
+            if (nm->idFrom == IDC_VR_LIST && nm->code == LVN_ITEMCHANGED) {
+                const auto* lv = (const NMLISTVIEW*)lp;
+                if ((lv->uNewState & LVIS_SELECTED) && lv->iItem >= 0 && lv->iItem < (int)d->rows.size()) {
+                    const VariableRow& r = d->rows[(size_t)lv->iItem];
+                    SetDlgItemTextW(dlg, IDC_VR_NAME, r.name.c_str());
+                    SetDlgItemTextW(dlg, IDC_VR_FORMULA, r.formula.c_str());
+                    SetDlgItemTextW(dlg, IDC_VR_COMMENT, r.comment.c_str());
+                    EnableWindow(GetDlgItem(dlg, IDC_VR_DELETE), !r.dimension);
+                }
+            }
+            return FALSE;
+        }
+        case WM_COMMAND:
+            switch (LOWORD(wp)) {
+                case IDC_VR_SET: {
+                    const std::wstring name = GetText(dlg, IDC_VR_NAME), formula = GetText(dlg, IDC_VR_FORMULA);
+                    if (!ValidName(name)) {
+                        SetDlgItemTextW(dlg, IDC_VR_INFO, L"A name starts with a letter, then letters, digits or _ (such as Width or D3).");
+                        return TRUE;
+                    }
+                    auto it = std::find_if(d->rows.begin(), d->rows.end(), [&](const VariableRow& r) { return SameName(r.name, name); });
+                    if (it != d->rows.end() && it->dimension && !it->attached && !formula.empty()) {
+                        SetDlgItemTextW(dlg, IDC_VR_INFO, L"That dimension is not attached to objects, so a formula cannot change them.");
+                        return TRUE;
+                    }
+                    if (it == d->rows.end()) {
+                        if (formula.empty()) {
+                            SetDlgItemTextW(dlg, IDC_VR_INFO, L"Enter a value or formula for the new variable.");
+                            return TRUE;
+                        }
+                        VariableRow r;
+                        r.name = name;
+                        // New variables go after the others, before the dimensions.
+                        it = d->rows.insert(std::find_if(d->rows.begin(), d->rows.end(), [](const VariableRow& x) { return x.dimension; }), r);
+                    }
+                    if (!it->dimension && formula.empty()) {
+                        SetDlgItemTextW(dlg, IDC_VR_INFO, L"A variable needs a value or formula (Delete removes it).");
+                        return TRUE;
+                    }
+                    it->formula = formula;
+                    if (!it->dimension) it->comment = GetText(dlg, IDC_VR_COMMENT);
+                    FillVariables(dlg, d, (int)(it - d->rows.begin()));
+                    return TRUE;
+                }
+                case IDC_VR_DELETE: {
+                    const int sel = ListView_GetNextItem(GetDlgItem(dlg, IDC_VR_LIST), -1, LVNI_SELECTED);
+                    if (sel >= 0 && !d->rows[(size_t)sel].dimension) {
+                        d->rows.erase(d->rows.begin() + sel);
+                        FillVariables(dlg, d, std::min(sel, (int)d->rows.size() - 1));
+                    }
+                    return TRUE;
+                }
+                case IDOK: {
+                    std::vector<bool> known;
+                    std::wstring error;
+                    EvaluateRows(d->rows, known, error);
+                    if (!error.empty()) {
+                        SetDlgItemTextW(dlg, IDC_VR_INFO, (L"Cannot work out " + error).c_str());
+                        return TRUE;
+                    }
+                    EndDialog(dlg, IDOK);
+                    return TRUE;
+                }
+                case IDCANCEL: EndDialog(dlg, IDCANCEL); return TRUE;
             }
             return TRUE;
     }
@@ -1230,6 +1379,14 @@ bool PageSetupDialog(HWND owner, SheetSetup& setup, bool& redoBorder) {
 bool DrawingPropsDialog(HWND owner, std::vector<std::wstring>& values) {
     return DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_DWGPROPS), owner, DrawingPropsProc, (LPARAM)&values) ==
            IDOK;
+}
+
+bool VariablesDialog(HWND owner, std::vector<VariableRow>& rows, const std::function<std::wstring(double)>& format) {
+    VariablesData d{rows, &format};
+    if (DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_VARIABLES), owner, VariablesProc, (LPARAM)&d) != IDOK)
+        return false;
+    rows = std::move(d.rows);
+    return true;
 }
 
 int PlotDialog(HWND owner, PlotRequest& request, bool hasSheets, bool onSheet,

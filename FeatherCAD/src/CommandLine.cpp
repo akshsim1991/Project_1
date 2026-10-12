@@ -301,7 +301,9 @@ LRESULT CALLBACK CommandLine::EditProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
             }
             break;
         case WM_CHAR:
-            // Space is Enter, as in other CAD programs. Tab and Enter are handled above.
+            // Space is Enter, as in other CAD programs (except where text is asked
+            // for). Tab and Enter are handled above.
+            if (wp == L' ' && self->m_spaces) break;
             if (wp == L' ' || wp == L'\r' || wp == L'\t' || wp == 27) {
                 if (wp == L' ') self->Send();
                 return 0;

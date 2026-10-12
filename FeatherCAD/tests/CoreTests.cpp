@@ -2591,6 +2591,7 @@ void TestRelations() {
         CHECK(DriveDimension(d, dim, 80, why));
         d.EndChange();
         CHECK(DimOf(d, dim).locked && Close(DimOf(d, dim).value, 80));
+        CHECK(Close(d.Find(a)->p0, {0, 0}, 1e-3));  // the dimension's first point stays
         CHECK(Close(Dist(d.Find(a)->p0, d.Find(a)->p1), 80, tol) && Close(d.Find(b)->p0, d.Find(a)->p1, tol));
         CHECK(Close(d.Find(b)->p0.x, d.Find(b)->p1.x, tol));
         // Moving the other end: the locked length holds.
@@ -2632,7 +2633,7 @@ void TestRelations() {
         Type(e, {L"var", L"D1", L"w+20"});
         CHECK(DimOf(d, dim).formula == L"w+20" && Close(Dist(d.Find(a)->p0, d.Find(a)->p1), 80, tol));
         Type(e, {L"var", L"w", L"=2*50"});
-        CHECK(Close(Dist(d.Find(a)->p0, d.Find(a)->p1), 120, tol));
+        CHECK(Close(Dist(d.Find(a)->p0, d.Find(a)->p1), 120, tol) && Close(d.Find(a)->p0, {0, 0}, 1e-3));
         d.Undo();
         CHECK(Close(Dist(d.Find(a)->p0, d.Find(a)->p1), 80, tol) && Close(d.Variables()[0].value, 60));
         // A formula that cannot be worked out changes nothing.

@@ -453,7 +453,7 @@ public:
         else if (k == L"R") m_d.kind = DimData::Radius;
         else if (k == L"D") m_d.kind = DimData::Diameter;
         else if (k == L"T") {
-            E->Ask(P(L"Enter dimension text (<> stands for the measured value)", kAcceptEmpty, {}, L"measured value"));
+            E->Ask(TextPrompt(L"Enter dimension text (<> stands for the measured value)", 0, L"measured value"));
             m_step = TextEntry;
             return;
         }
@@ -668,7 +668,7 @@ public:
     }
     void OnKeyword(const std::wstring& k) override {
         if (k == L"T") {
-            E->Ask(P(L"Enter dimension text (<> stands for the measured value)", kAcceptEmpty));
+            E->Ask(TextPrompt(L"Enter dimension text (<> stands for the measured value)"));
             m_text = true;
         } else if (k == L"R") {
             m_text = true;

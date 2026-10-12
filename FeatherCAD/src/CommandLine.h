@@ -19,6 +19,7 @@ public:
 
     void AddLine(const std::wstring& text);
     void SetPrompt(const std::wstring& prompt, bool idle);
+    void SetSpaces(bool on) { m_spaces = on; }  // space types a space instead of acting as Enter
     void Focus();
     void ToggleExpanded();  // F2: more history lines
     void OnThemeChanged();
@@ -40,6 +41,7 @@ private:
     int m_dpi = 96;
     bool m_expanded = false;
     bool m_idle = true;
+    bool m_spaces = false;
     std::wstring m_prompt = L"Command:";
     std::wstring m_historyText;
     int m_historyLines = 0;

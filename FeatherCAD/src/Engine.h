@@ -40,6 +40,7 @@ struct Prompt {
     bool hasBase = false;  // rubber band origin: ortho and direct distances use it
     Vec2 base;
     bool pickObject = false;  // the click picks an object (pick box, no object snaps)
+    bool spaces = false;      // typed text may contain spaces (space does not act as Enter)
     std::wstring FullText() const;  // "Specify next point or [Close/Undo] <10.00>:"
 };
 

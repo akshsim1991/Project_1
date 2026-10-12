@@ -24,6 +24,12 @@ inline Prompt From(Prompt p, Vec2 base) {
 }
 
 // A prompt that picks one object with the pick box (no object snaps).
+// A prompt for text that may contain spaces.
+inline Prompt TextPrompt(const wchar_t* text, unsigned accept = 0, std::wstring def = L"") {
+    Prompt p = P(text, accept | kAcceptEmpty, {}, std::move(def));
+    p.spaces = true;
+    return p;
+}
 inline Prompt Pick(const wchar_t* text, unsigned accept = 0, std::vector<Keyword> keywords = {},
                    std::wstring def = L"") {
     Prompt p = P(text, kAcceptPoint | accept, std::move(keywords), std::move(def));

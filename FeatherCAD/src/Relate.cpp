@@ -282,7 +282,7 @@ bool SolveLinear(std::vector<double> A, std::vector<double> b, size_t n, std::ve
 class Solver {
 public:
     Solver(Document& doc, const std::vector<Con>& cons, const std::vector<uint64_t>& ids, const std::set<uint64_t>& fixed,
-           const std::set<uint64_t>& keep)
+           const std::set<uint64_t>& keep, const std::set<std::pair<uint64_t, int>>& pinned)
         : m_doc(doc), m_cons(cons) {
         Box box;
         for (uint64_t id : ids) {
@@ -296,8 +296,17 @@ public:
             s.count = m_x.size() - s.start;
             if (!s.count) continue;
             const double w = keep.count(id) ? 1e4 : 1;
+            // A pinned point (where a driven dimension starts) holds firmer still.
+            int pin = -1;
+            for (const auto& pp : pinned)
+                if (pp.first == id) {
+                    if (e->type == EntityType::Line && (pp.second == 0 || pp.second == 1)) pin = pp.second;
+                    else if (e->type == EntityType::Polyline && pp.second >= 0 && pp.second < (int)e->verts.size()) pin = pp.second;
+                    else if (pp.second == 0 && (e->type == EntityType::Circle || e->type == EntityType::Arc || e->type == EntityType::Point)) pin = 0;
+                }
             for (size_t i = 0; i < s.count; ++i) {
                 double wi = w;
+                if (pin >= 0 && (int)(i / 2) == pin && (e->type != EntityType::Circle && e->type != EntityType::Arc ? true : i < 2)) wi *= 1e6;
                 if (e->type == EntityType::Arc && i >= 3) wi *= e->radius * e->radius;  // angles: as far as the ends move
                 m_w.push_back(wi);
             }
@@ -494,7 +503,8 @@ std::vector<uint64_t> RefIds(const Con& c) {
 }
 }  // namespace
 
-SolveReport SolveRelations(Document& doc, const std::set<uint64_t>& changed, const std::set<uint64_t>& keep) {
+SolveReport SolveRelations(Document& doc, const std::set<uint64_t>& changed, const std::set<uint64_t>& keep,
+                           const std::set<std::pair<uint64_t, int>>& pinned) {
     SolveReport rep;
     // Everything that must hold, and what touches what.
     std::vector<Con> all;
@@ -558,7 +568,7 @@ SolveReport SolveRelations(Document& doc, const std::set<uint64_t>& changed, con
         std::set<uint64_t> held = fixed;
         held.insert(keep.begin(), keep.end());
         if (std::any_of(ids.begin(), ids.end(), [&](uint64_t id) { return !held.count(id); })) {
-            Solver first(doc, used, ids, held, keep);
+            Solver first(doc, used, ids, held, keep, pinned);
             if (first.Run(why)) {
                 first.Write();
                 rep.ok = true;
@@ -567,7 +577,7 @@ SolveReport SolveRelations(Document& doc, const std::set<uint64_t>& changed, con
             why.clear();
         }
     }
-    Solver s(doc, used, ids, fixed, keep);
+    Solver s(doc, used, ids, fixed, keep, pinned);
     rep.ok = s.Run(why);
     rep.message = why;
     s.Write();

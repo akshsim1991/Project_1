@@ -332,12 +332,52 @@ Viewports can also be resized with their corner grips, and their scale, view cen
 **DXF**
 - The first sheet is written as AutoCAD's paper space, with its viewports (DXF R12 has one paper space). Paper space layouts in DXF files come in as sheets.
 
+## Version 1.7 (Phase E): relationships, variables and engineering symbols
+
+**Relationships** (Relate menu) ★
+Relationships say how objects belong together, as in Solid Edge's 2D sketching. They are kept as the drawing changes: drag an end, change a dimension or a radius, and the related objects follow, while the ones just edited stay where they were put.
+
+| Command | Short name | What it keeps |
+|---------|------------|---------------|
+| COINCIDENT | COIN, CONNECT | A point (an end, centre or midpoint) on another point, or on a line, circle or arc |
+| HORIZONTAL / VERTICAL | HOR / VER | A line level or upright |
+| PARALLEL / PERPENDICULAR | PAR / PERP | Two lines parallel or at right angles (the second one turns) |
+| COLLINEAR | COLL | Two lines on one straight line |
+| TANGENT | TANG | A line and a circle or arc, or two circles, touching (on the side they are now) |
+| CONCENTRIC | CONC | Circles and arcs on one centre |
+| EQUAL | EQ | Two lines the same length, or circles and arcs the same radius |
+| MIDPOINT | MIDP | A point on the middle of a line |
+| SYMMETRIC | SYMM | Two points mirror images about a line |
+| FIX | | An object stays where it is; the others move around it |
+
+- Small orange marks show the relationships (H, V, a box for connect, symbols for parallel and the others). **Relate > Show relationships** hides them; they never print.
+- **Add relationships while drawing** (AUTOREL): lines drawn get horizontal, vertical and connect relationships by themselves.
+- **Maintain relationships** (MAINTAINREL) turns the keeping off and on.
+- Erasing an object takes its relationships with it. When relationships contradict each other the command line says so and nothing jumps.
+
+**Locked dimensions, variables and formulas** ★
+- **DIMLOCK** (DLO), or "Locked" in the Properties panel: a dimension that holds its value. Typing a new value in a locked dimension moves its objects, together with everything related to them.
+- Every dimension gets a name (D1, D2...), shown and changed in the Properties panel.
+- **Variables** (Relate > Variables, or VAR on the command line): named values and formulas such as `Width = 120`, `Hole = Width / 4`, and dimension formulas such as `D3 = 2 * D1 + 5`. Formulas may use + - * / ^, brackets, sin cos tan (degrees), sqrt, abs, round, min, max and pi. When a variable changes, every dimension that uses it changes its objects.
+- **GOALSEEK** (GS): pick the dimension that should reach a value, type the value, then pick the dimension (or name the variable) that may change. Feather CAD finds the value that gives it, through all the relationships and formulas.
+
+**Engineering symbols** (Annotate menu)
+
+| Command | Short name | What it makes |
+|---------|------------|---------------|
+| FCF | GDT, TOL | ★ A **feature control frame**: the characteristic symbol (straightness, flatness, circularity, cylindricity, profile, angularity, perpendicularity, parallelism, position, concentricity, symmetry, runout, total runout), the tolerance with %%c and circled modifiers such as (M), and datums A, B, C. Several rows make a composite frame. On its own or on a leader. |
+| DATUM | | A datum feature symbol: a letter in a box on a filled triangle (the next free letter is offered). |
+| SURFACE | ROUGHNESS | A surface texture symbol (any process, material removal required or not allowed) with its roughness, such as Ra 1.6. |
+| WELD | | A weld symbol on a leader: fillet, square, V, bevel, plug or spot, on the arrow side, the other side or both, with size, length, all round. |
+| PARTSLIST | BOM | ★ A **parts list**: the blocks placed in the drawing, counted. The part number comes from a PN (or PART) attribute, or else the block's name; the description from DESC and the material from MATERIAL. Run it again to bring the table up to date. On a sheet it lists the parts in the drawing. |
+
+The symbols are text objects with a frame: their contents can be changed like any text (double-click, or the Properties panel), and they go to DXF and PDF as lines and text.
+
 ## Coming in later phases
 
 | Phase | Contents |
 |-------|----------|
-| E     | Engineering (constraints, GD&T, parts lists) |
-| F     | Professional extras |
+| F     | Professional extras (FreeSketch, dynamic blocks, Options bar for relationships) |
 
 ## Building
 

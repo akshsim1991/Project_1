@@ -16,6 +16,8 @@
 #include "Icons.h"
 #include "Plot.h"
 #include "Print.h"
+#include "Expr.h"
+#include "Relate.h"
 #include "Theme.h"
 #include "Util.h"
 #include "resource.h"
@@ -135,6 +137,30 @@ const IdCommand kIdCommands[] = {
     {ID_PLOT, L"PLOT", nullptr},
     {ID_EXPORT_PDF, L"EXPORTPDF", nullptr},
     {ID_TANLINE, L"TANLINE", nullptr},
+    {ID_REL_HORIZONTAL, L"HORIZONTAL", nullptr},
+    {ID_REL_VERTICAL, L"VERTICAL", nullptr},
+    {ID_REL_PARALLEL, L"PARALLEL", nullptr},
+    {ID_REL_PERPENDICULAR, L"PERPENDICULAR", nullptr},
+    {ID_REL_COLLINEAR, L"COLLINEAR", nullptr},
+    {ID_REL_TANGENT, L"TANGENT", nullptr},
+    {ID_REL_CONCENTRIC, L"CONCENTRIC", nullptr},
+    {ID_REL_EQUAL, L"EQUAL", nullptr},
+    {ID_REL_COINCIDENT, L"COINCIDENT", nullptr},
+    {ID_REL_MIDPOINT, L"MIDPOINT", nullptr},
+    {ID_REL_SYMMETRIC, L"SYMMETRIC", nullptr},
+    {ID_REL_FIX, L"FIX", nullptr},
+    {ID_REL_MAINTAIN, L"MAINTAINREL", nullptr},
+    {ID_REL_AUTO, L"AUTOREL", nullptr},
+    {ID_REL_SHOW, L"SHOWREL", nullptr},
+    {ID_DIMLOCK, L"DIMLOCK", nullptr},
+    {ID_VAR, L"VAR", nullptr},
+    {ID_VARIABLES, L"VARIABLES", nullptr},
+    {ID_GOALSEEK, L"GOALSEEK", nullptr},
+    {ID_FCF, L"FCF", nullptr},
+    {ID_DATUM, L"DATUM", nullptr},
+    {ID_SURFACE, L"SURFACE", nullptr},
+    {ID_WELD, L"WELD", nullptr},
+    {ID_PARTSLIST, L"PARTSLIST", nullptr},
     {ID_CIRCLE_TTR, L"CIRCLE", L"T"},
     {ID_LAYERS, L"LAYER", nullptr},
     {ID_PROPERTIES, L"PROPERTIES", nullptr},
@@ -221,6 +247,7 @@ void MainWindow::CreateChildren() {
     m_menuBar.AddTextButton(ID_MENU_DRAW, L"Draw", nullptr, 50);
     m_menuBar.AddTextButton(ID_MENU_MODIFY, L"Modify", nullptr, 60);
     m_menuBar.AddTextButton(ID_MENU_DIMENSION, L"Dimension", nullptr, 78);
+    m_menuBar.AddTextButton(ID_MENU_RELATE, L"Relate", nullptr, 54);
     m_menuBar.AddTextButton(ID_MENU_ANNOTATE, L"Annotate", nullptr, 72);
     m_menuBar.AddTextButton(ID_MENU_FORMAT, L"Format", nullptr, 58);
     m_menuBar.AddTextButton(ID_MENU_TOOLS, L"Tools", nullptr, 50);
@@ -331,6 +358,7 @@ void MainWindow::CreateAccelerators() {
         {FVIRTKEY | FALT, 'D', ID_MENU_DRAW},
         {FVIRTKEY | FALT, 'M', ID_MENU_MODIFY},
         {FVIRTKEY | FALT, 'N', ID_MENU_DIMENSION},
+        {FVIRTKEY | FALT, 'R', ID_MENU_RELATE},
         {FVIRTKEY | FALT, 'A', ID_MENU_ANNOTATE},
         {FVIRTKEY | FALT, 'O', ID_MENU_FORMAT},
         {FVIRTKEY | FALT, 'T', ID_MENU_TOOLS},
@@ -398,6 +426,7 @@ bool MainWindow::HostCommand(const std::wstring& name) {
     else if (name == L"PAGESETUP") PageSetup();
     else if (name == L"TITLEBLOCK") TitleBlock();
     else if (name == L"DRAWINGPROPS") DrawingProps();
+    else if (name == L"VARIABLES") ShowVariables();
     else if (name == L"PLOT") Plot();
     else if (name == L"EXPORTPDF") ExportPdf();
     else if (name == L"PROPERTIES") {
@@ -441,6 +470,10 @@ void MainWindow::FocusCommandLine() {
 
 void MainWindow::AfterInput() {
     if (!m_ready) return;
+    if (const SolveReport& sr = Doc().LastSolve(); !sr.ok && sr.serial != m_solveShown) {
+        m_solveShown = sr.serial;
+        Message(sr.message);
+    }
     m_canvas.Refresh();
     UpdatePrompt();
     UpdateStatus();
@@ -640,6 +673,60 @@ void MainWindow::DrawingProps() {
     AfterInput();
 }
 
+void MainWindow::ShowVariables() {
+    Document& d = Doc();
+    std::vector<VariableRow> rows;
+    for (const Variable& v : d.Variables()) {
+        VariableRow r;
+        r.name = v.name;
+        r.formula = v.formula;
+        r.comment = v.comment;
+        r.value = v.value;
+        rows.push_back(r);
+    }
+    for (const auto& kv : d.Entities()) {
+        const Entity& e = kv.second;
+        if (e.type != EntityType::Dimension || !e.dim || e.dim->name.empty()) continue;
+        VariableRow r;
+        r.name = e.dim->name;
+        r.formula = e.dim->formula;
+        r.dimension = true;
+        r.attached = HasRefs(e);
+        r.comment = e.dim->locked ? L"locked" : r.attached ? L"" : L"not attached";
+        LookupName(d, r.name, r.value);
+        rows.push_back(r);
+    }
+    if (!VariablesDialog(m_hwnd, rows, [this](double v) { return Eng().Len(v); })) return;
+    std::vector<Variable> vars;
+    for (const VariableRow& r : rows)
+        if (!r.dimension) {
+            Variable v;
+            v.name = r.name;
+            v.formula = r.formula;
+            v.comment = r.comment;
+            vars.push_back(v);
+        }
+    d.BeginChange(L"Variables");
+    if (!(vars == d.Variables())) d.SetVariables(vars, L"Variables");
+    for (const VariableRow& r : rows) {
+        if (!r.dimension) continue;
+        for (const auto& kv : d.Entities()) {
+            const Entity& e = kv.second;
+            if (e.type != EntityType::Dimension || !e.dim || !SameName(e.dim->name, r.name) || e.dim->formula == r.formula) continue;
+            Entity x = e;
+            DimData dd = *x.dim;
+            dd.formula = r.formula;
+            if (!r.formula.empty()) dd.locked = true, dd.value = DimMeasure(dd);
+            x.dim = std::make_shared<const DimData>(dd);
+            d.Replace(x);
+            break;
+        }
+    }
+    d.EndChange();
+    m_canvas.Refresh();
+    AfterInput();
+}
+
 std::vector<PlotPage> MainWindow::BuildPages(const PlotRequest& r) {
     Drawing& d = Cur();
     std::vector<PlotPage> pages;
@@ -739,6 +826,7 @@ void MainWindow::UpdatePrompt() {
     if (!m_ready) return;
     if (Eng().Active()) m_cmdline.SetPrompt(Eng().CurrentPrompt().FullText(), false);
     else m_cmdline.SetPrompt(L"Command:", true);
+    m_cmdline.SetSpaces(Eng().Active() && Eng().CurrentPrompt().spaces);
 }
 
 void MainWindow::UpdateStatus() {
@@ -1143,8 +1231,33 @@ HMENU MainWindow::BuildMenu(int menuId) {
             Append(m, ID_DIM_DRIVEN, L"Dri&ven / driving\tDDR");
             Separator(m);
             Append(m, ID_DIM_EDIT, L"&Edit dimension (or double-click it)\tDED");
+            Append(m, ID_DIMLOCK, L"Loc&k / unlock (holds its value)\tDLO");
             Append(m, ID_DIM_STYLE, L"Dimension st&yle...\tD");
             break;
+        case ID_MENU_RELATE: {
+            const DrawingSettings& ds = Doc().Settings();
+            Append(m, ID_REL_COINCIDENT, L"&Connect (coincident)\tCOIN");
+            Append(m, ID_REL_HORIZONTAL, L"&Horizontal\tHOR");
+            Append(m, ID_REL_VERTICAL, L"&Vertical\tVER");
+            Append(m, ID_REL_PARALLEL, L"&Parallel\tPAR");
+            Append(m, ID_REL_PERPENDICULAR, L"Pe&rpendicular\tPERP");
+            Append(m, ID_REL_COLLINEAR, L"Co&llinear\tCOLL");
+            Append(m, ID_REL_TANGENT, L"&Tangent\tTANG");
+            Append(m, ID_REL_CONCENTRIC, L"Co&ncentric\tCONC");
+            Append(m, ID_REL_EQUAL, L"&Equal\tEQ");
+            Append(m, ID_REL_MIDPOINT, L"&Midpoint\tMIDP");
+            Append(m, ID_REL_SYMMETRIC, L"&Symmetric\tSYMM");
+            Append(m, ID_REL_FIX, L"&Fix\tFIX");
+            Separator(m);
+            Append(m, ID_DIMLOCK, L"Lock &dimensions\tDLO");
+            Append(m, ID_VARIABLES, L"Varia&bles...\tVARIABLES");
+            Append(m, ID_GOALSEEK, L"&Goal seek\tGS");
+            Separator(m);
+            Append(m, ID_REL_MAINTAIN, L"M&aintain relationships", true, ds.maintainRelations);
+            Append(m, ID_REL_AUTO, L"Add relationships while &drawing", true, ds.autoRelations);
+            Append(m, ID_REL_SHOW, L"Sh&ow relationships", true, ds.showRelations);
+            break;
+        }
         case ID_MENU_ANNOTATE:
             Append(m, ID_TEXT, L"&Text\tT");
             Append(m, ID_TEXTEDIT, L"&Edit text (or double-click it)\tED");
@@ -1154,6 +1267,12 @@ HMENU MainWindow::BuildMenu(int menuId) {
             Append(m, ID_CENTERMARK, L"Centre &mark\tCM");
             Append(m, ID_CENTERLINE, L"Centre li&ne\tCL");
             Append(m, ID_REVCLOUD, L"&Revision cloud\tRC");
+            Separator(m);
+            Append(m, ID_FCF, L"Feature &control frame (GD&&T)\tFCF");
+            Append(m, ID_DATUM, L"&Datum\tDATUM");
+            Append(m, ID_SURFACE, L"&Surface texture\tSURFACE");
+            Append(m, ID_WELD, L"&Weld symbol\tWELD");
+            Append(m, ID_PARTSLIST, L"Parts &list\tBOM");
             Separator(m);
             Append(m, ID_HATCH, L"&Hatch\tH");
             Append(m, ID_FILL, L"&Fill\tFILL");
@@ -1181,6 +1300,8 @@ HMENU MainWindow::BuildMenu(int menuId) {
             Append(m, ID_DIST, L"Measure &distance\tDI");
             Append(m, ID_AREA, L"Measure &area\tAA");
             Append(m, ID_ID_POINT, L"Point &coordinates\tID");
+            Append(m, ID_VARIABLES, L"&Variables...\tVARIABLES");
+            Append(m, ID_GOALSEEK, L"Goal s&eek\tGS");
             Separator(m);
             Append(m, ID_TOGGLE_GRID, L"&Grid\tF7", true, d.gridOn);
             Append(m, ID_TOGGLE_SNAP, L"&Snap\tF9", true, d.snapOn);
@@ -2028,7 +2149,8 @@ void MainWindow::AnnotationRows(const Entity& e, std::vector<PropertiesPanel::Ro
         }
         number(L"Width factor", t.widthFactor, [](Entity& x, double v) { return v > 0 && (EditAnnot(x).text.widthFactor = v, true); });
         number(L"Line spacing", t.lineSpacing, [](Entity& x, double v) { return v > 0 && (EditAnnot(x).text.lineSpacing = v, true); });
-        choice(L"Frame", {L"None", L"Box", L"Circle"}, t.frame, [](Entity& x, int i) { return EditAnnot(x).text.frame = i, true; });
+        choice(L"Frame", {L"None", L"Box", L"Circle", L"Feature control frame", L"Datum", L"Surface texture", L"Weld"}, t.frame,
+               [](Entity& x, int i) { return EditAnnot(x).text.frame = i, true; });
         if (e.type == EntityType::Leader)
             number(L"Arrow size", a.arrow, [](Entity& x, double v) { return v >= 0 && (EditAnnot(x).arrow = v, true); });
         else
@@ -2454,6 +2576,13 @@ void MainWindow::UpdateProperties(bool force) {
                     };
                     rows.push_back(r);
                 };
+                dimEdit(L"Name", d.name, [](DimData& nd, const std::wstring& t) { return ValidName(t) && (nd.name = t, true); });
+                if (HasRefs(e))
+                    dimEdit(L"Formula", d.formula, [](DimData& nd, const std::wstring& t) {
+                        nd.formula = t;
+                        if (!t.empty()) nd.locked = true, nd.value = DimMeasure(nd);
+                        return true;
+                    });
                 dimEdit(L"Text", d.text, [](DimData& nd, const std::wstring& t) { nd.text = t; return true; });
                 dimEdit(L"Text height", Eng().Len(d.style.textHeight), [](DimData& nd, const std::wstring& t) {
                     double v;
@@ -2485,6 +2614,43 @@ void MainWindow::UpdateProperties(bool force) {
                     refresh();
                 };
                 rows.push_back(r);
+                if (HasRefs(e)) {
+                    Row lk;
+                    lk.kind = Row::Check;
+                    lk.label = L"Locked (holds its value)";
+                    lk.checked = d.locked;
+                    lk.apply = [this, id, refresh](const Row& edited) {
+                        if (const Entity* cur = Doc().Find(id)) {
+                            Entity x = *cur;
+                            DimData nd = *x.dim;
+                            nd.locked = edited.checked;
+                            nd.value = DimMeasure(nd);
+                            if (!nd.locked) nd.formula.clear();
+                            x.dim = std::make_shared<const DimData>(std::move(nd));
+                            Doc().BeginChange(L"Dimension");
+                            Doc().Replace(x);
+                            Doc().EndChange();
+                        }
+                        AfterInput();
+                        refresh();
+                    };
+                    rows.push_back(lk);
+                }
+                break;
+            }
+            case EntityType::Relation: {
+                if (!e.annot) break;
+                const RelationData& rd = e.annot->rel;
+                info(L"Relationship", RelKindName(rd.kind));
+                std::wstring what;
+                for (int i = 0; i < RelElementCount(rd.kind); ++i) {
+                    const Entity* o = Doc().Find(rd.refs[(size_t)i].id);
+                    const Element el = ElementOf(Doc(), rd.refs[(size_t)i]);
+                    what += (i ? L", " : L"") + std::wstring(o ? TypeName(o->type) : L"?") +
+                            (el.kind == ElemKind::Point ? L" point" : L"");
+                }
+                info(L"Between", what);
+                info(L"Kept", Doc().Settings().maintainRelations ? L"Yes" : L"No (Relate > Maintain relationships)");
                 break;
             }
             case EntityType::Text:

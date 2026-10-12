@@ -677,6 +677,7 @@ std::vector<uint64_t> Document::AddGroup(std::vector<Entity> entities) {
 
 void Document::SolveStep() {
     std::set<uint64_t> changed, keep;
+    std::set<std::pair<uint64_t, int>> pinned;
     for (const Change& c : m_open->changes) {
         changed.insert(c.id);
         if (!c.after) continue;
@@ -684,19 +685,31 @@ void Document::SolveStep() {
         if (x.type == EntityType::Relation && x.annot) {
             if (x.annot->rel.refs[0].id) keep.insert(x.annot->rel.refs[0].id);  // the first element stays, the others follow
         } else if (x.type == EntityType::Dimension) {
-            if (x.dim && x.dim->locked && x.dim->refs[0].id) keep.insert(x.dim->refs[0].id);
+            if (x.dim && x.dim->locked && x.dim->refs[0].id) {  // its first point stays, the rest follows
+                keep.insert(x.dim->refs[0].id);
+                pinned.insert({x.dim->refs[0].id, x.dim->refs[0].grip});
+            }
         } else if (!IsAnnotation(x)) {
             keep.insert(c.id);
         }
     }
     std::wstring formulaError;
     EvaluateFormulas(*this, changed, formulaError);
+    for (uint64_t id : changed) {  // dimensions changed by formulas hold their first point too
+        const Entity* x = Find(id);
+        if (x && x->type == EntityType::Dimension && x->dim && x->dim->locked && x->dim->refs[0].id) {
+            keep.insert(x->dim->refs[0].id);
+            pinned.insert({x->dim->refs[0].id, x->dim->refs[0].grip});
+        }
+    }
     m_lastSolve = SolveReport{};
-    if (m_settings.maintainRelations) m_lastSolve = SolveRelations(*this, changed, keep);
+    if (m_settings.maintainRelations) m_lastSolve = SolveRelations(*this, changed, keep, pinned);
     if (!formulaError.empty()) {
         m_lastSolve.ok = false;
         m_lastSolve.message = formulaError;
     }
+    static unsigned failures = 0;
+    if (!m_lastSolve.ok) m_lastSolve.serial = ++failures;
     // Relationship marks follow their objects; those whose objects are gone go too.
     std::set<uint64_t> now;
     for (const Change& c : m_open->changes) now.insert(c.id);

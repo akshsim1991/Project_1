@@ -21,7 +21,7 @@
 #include <vector>
 
 #define APP_NAME L"Feather CAD"
-#define APP_VERSION L"1.6.0"
+#define APP_VERSION L"1.7.0"
 #define APP_AUTHOR L"Akshaya Simha"
 #define APP_COPYRIGHT L"\x00A9 2026 Akshaya Simha"
 #define APP_WINDOW_CLASS L"FeatherCadMain"
@@ -184,6 +184,31 @@ enum : int {
     ID_EXPORT_PDF,
     ID_SHEET_RENAME,
     ID_SHEET_DELETE,
+    // Version 1.7: relationships, variables, engineering symbols
+    ID_REL_HORIZONTAL,
+    ID_REL_VERTICAL,
+    ID_REL_PARALLEL,
+    ID_REL_PERPENDICULAR,
+    ID_REL_COLLINEAR,
+    ID_REL_TANGENT,
+    ID_REL_CONCENTRIC,
+    ID_REL_EQUAL,
+    ID_REL_COINCIDENT,
+    ID_REL_MIDPOINT,
+    ID_REL_SYMMETRIC,
+    ID_REL_FIX,
+    ID_REL_MAINTAIN,
+    ID_REL_AUTO,
+    ID_REL_SHOW,
+    ID_DIMLOCK,
+    ID_VAR,
+    ID_VARIABLES,
+    ID_GOALSEEK,
+    ID_FCF,
+    ID_DATUM,
+    ID_SURFACE,
+    ID_WELD,
+    ID_PARTSLIST,
     // Help
     ID_COMMAND_LIST,
     ID_ABOUT,
@@ -194,6 +219,7 @@ enum : int {
     ID_MENU_DRAW,
     ID_MENU_MODIFY,
     ID_MENU_DIMENSION,
+    ID_MENU_RELATE,
     ID_MENU_ANNOTATE,
     ID_MENU_FORMAT,
     ID_MENU_TOOLS,

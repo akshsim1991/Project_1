@@ -182,7 +182,7 @@ public:
         }
         if (m_step == Lines) {
             m_typed.lines.push_back(s);
-            E->Ask(P(L"Enter next line of text (an empty line ends)", kAcceptEmpty));
+            E->Ask(TextPrompt(L"Enter next line of text (an empty line ends)"));
             return true;
         }
         return false;
@@ -197,7 +197,7 @@ public:
         }
         if (r == 0) return E->Finish();
         m_step = Lines;
-        E->Ask(P(L"Enter text (an empty line ends; %%d \x00B0, %%c \x00D8, %%p \x00B1, {date} {filename})", kAcceptEmpty));
+        E->Ask(TextPrompt(L"Enter text (an empty line ends; %%d \x00B0, %%c \x00D8, %%p \x00B1, {date} {filename})"));
     }
     void OnEnter() override {
         if (m_step == Font || m_step == Height || m_step == Rotation) return AskWhere();
@@ -248,7 +248,7 @@ public:
         }
         if (r == 0) return E->Finish();
         E->Msg(L"Now: " + t.content);
-        E->Ask(P(L"Enter new text (an empty line ends)", kAcceptEmpty));
+        E->Ask(TextPrompt(L"Enter new text (an empty line ends)"));
     }
     void OnPoint(Vec2 p) override {
         if (m_id) return;
@@ -265,7 +265,7 @@ public:
     bool OnText(const std::wstring& s) override {
         if (!m_id) return false;
         m_typed.lines.push_back(s);
-        E->Ask(P(L"Enter next line of text (an empty line ends)", kAcceptEmpty));
+        E->Ask(TextPrompt(L"Enter next line of text (an empty line ends)"));
         return true;
     }
     void OnEnter() override {
@@ -333,7 +333,7 @@ public:
     bool OnText(const std::wstring& s) override {
         if (!m_text) return false;
         m_typed.lines.push_back(s);
-        E->Ask(P(L"Enter next line of the note (an empty line ends)", kAcceptEmpty));
+        E->Ask(TextPrompt(L"Enter next line of the note (an empty line ends)"));
         return true;
     }
     void OnEnter() override {
@@ -350,7 +350,7 @@ public:
         }
         if (r == 0) return Make(L"");
         m_text = true;
-        E->Ask(P(L"Enter the note (an empty line ends; none for just the arrow)", kAcceptEmpty));
+        E->Ask(TextPrompt(L"Enter the note (an empty line ends; none for just the arrow)"));
     }
     void GetPreview(Vec2 c, Preview& out) override {
         if (m_pts.empty() || m_text) return;
@@ -636,7 +636,7 @@ class InsertCmd : public Command {
         if (m_values.size() >= m_defs.size()) return Make();
         const TextData& t = *m_defs[m_values.size()];
         const std::wstring q = L"Enter " + (t.prompt.empty() ? t.tag : t.prompt);
-        Prompt p = P(L"", kAcceptEmpty, {}, t.content);
+        Prompt p = TextPrompt(L"", 0, t.content);
         p.text = q;
         E->Ask(p);
     }
@@ -735,13 +735,13 @@ public:
             }
             m_t.tag = s;
             m_step = Question;
-            E->Ask(P(L"Enter the question asked when the block is placed", kAcceptEmpty, {}, s));
+            E->Ask(TextPrompt(L"Enter the question asked when the block is placed", 0, s));
             return true;
         }
         if (m_step == Question) {
             m_t.prompt = s;
             m_step = Default;
-            E->Ask(P(L"Enter default value", kAcceptEmpty));
+            E->Ask(TextPrompt(L"Enter default value"));
             return true;
         }
         if (m_step == Default) {
@@ -789,7 +789,7 @@ class AttEditCmd : public Command {
             return E->Finish();
         }
         const TextData& t = *m_defs[m_i];
-        Prompt p = P(L"", kAcceptEmpty, {}, m_values[m_i]);
+        Prompt p = TextPrompt(L"", 0, m_values[m_i]);
         p.text = L"Enter " + (t.prompt.empty() ? t.tag : t.prompt);
         E->Ask(p);
     }
@@ -1362,14 +1362,14 @@ class SymbolCmd : public Command {
                     return E->Ask(P(m_rows.empty() ? L"Enter characteristic: POSITION, FLATNESS, PERPENDICULARITY... (? lists them)"
                                                    : L"Enter characteristic of the next row (Enter: place the frame)",
                                     kAcceptEmpty));
-                if (m_step == 1) return E->Ask(P(L"Enter tolerance, such as %%c0.1(M)", kAcceptEmpty));
-                return E->Ask(P(L"Enter datums, such as A B C (Enter: none)", kAcceptEmpty));
+                if (m_step == 1) return E->Ask(TextPrompt(L"Enter tolerance, such as %%c0.1(M)"));
+                return E->Ask(TextPrompt(L"Enter datums, such as A B C (Enter: none)"));
             case kFrameDatum: return E->Ask(P(L"Enter datum letter", kAcceptEmpty, {}, NextDatum()));
             case kFrameSurface:
                 if (m_step == 0)
                     return E->Ask(P(L"Machining", kAcceptKeyword | kAcceptEmpty,
                                     {{L"A", L"Any process"}, {L"R", L"Removal required"}, {L"N", L"No removal"}}, L"Removal required"));
-                return E->Ask(P(L"Enter roughness, such as Ra 1.6 (Enter: none)", kAcceptEmpty));
+                return E->Ask(TextPrompt(L"Enter roughness, such as Ra 1.6 (Enter: none)"));
             default:
                 switch (m_step) {
                     case 0:

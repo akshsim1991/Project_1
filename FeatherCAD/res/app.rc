@@ -251,6 +251,25 @@ BEGIN
     PUSHBUTTON      "Cancel", IDCANCEL, 220, 168, 50, 14
 END
 
+IDD_VARIABLES DIALOGEX 0, 0, 360, 232
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Variables"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    CONTROL         "", IDC_VR_LIST, "SysListView32", LVS_REPORT | LVS_SHOWSELALWAYS | LVS_SINGLESEL | WS_BORDER | WS_TABSTOP, 10, 10, 340, 136
+    LTEXT           "&Name:", -1, 10, 156, 28, 10
+    EDITTEXT        IDC_VR_NAME, 40, 154, 70, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "&Formula:", -1, 118, 156, 32, 10
+    EDITTEXT        IDC_VR_FORMULA, 152, 154, 198, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "&Comment:", -1, 10, 174, 34, 10
+    EDITTEXT        IDC_VR_COMMENT, 46, 172, 196, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    PUSHBUTTON      "&Set", IDC_VR_SET, 248, 171, 50, 14
+    PUSHBUTTON      "&Delete", IDC_VR_DELETE, 300, 171, 50, 14
+    LTEXT           "", IDC_VR_INFO, 10, 192, 340, 18
+    DEFPUSHBUTTON   "OK", IDOK, 244, 212, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 300, 212, 50, 14
+END
+
 IDD_LAYERS DIALOGEX 0, 0, 480, 252
 STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "Layers"
@@ -319,8 +338,8 @@ BEGIN
 END
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 1,6,0,0
- PRODUCTVERSION 1,6,0,0
+ FILEVERSION 1,7,0,0
+ PRODUCTVERSION 1,7,0,0
  FILEFLAGSMASK 0x3fL
  FILEFLAGS 0x0L
  FILEOS VOS_NT_WINDOWS32
@@ -333,12 +352,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "Akshaya Simha"
             VALUE "FileDescription", "Feather CAD"
-            VALUE "FileVersion", "1.6.0.0"
+            VALUE "FileVersion", "1.7.0.0"
             VALUE "InternalName", "FeatherCAD"
             VALUE "LegalCopyright", "\251 2026 Akshaya Simha"
             VALUE "OriginalFilename", "FeatherCAD.exe"
             VALUE "ProductName", "Feather CAD"
-            VALUE "ProductVersion", "1.6.0.0"
+            VALUE "ProductVersion", "1.7.0.0"
         END
     END
     BLOCK "VarFileInfo"
