@@ -11,6 +11,7 @@
 #include "Document.h"
 #include "DxfImport.h"
 #include "Engine.h"
+#include "EngGraphics.h"
 #include "Expr.h"
 #include "FreeSketch.h"
 #include "Grips.h"
@@ -3429,6 +3430,282 @@ void TestReshapeAndRegular() {
 #undef RECT
 }
 
+// A thick (development outline) line from a to b, either way round.
+bool HasLine(const std::vector<Entity>& ents, Vec2 a, Vec2 b, double tol = 1e-6) {
+    for (const Entity& e : ents)
+        if (e.type == EntityType::Line &&
+            ((Close(e.p0, a, tol) && Close(e.p1, b, tol)) || (Close(e.p0, b, tol) && Close(e.p1, a, tol))))
+            return true;
+    return false;
+}
+
+std::vector<std::wstring> LabelsOf(const std::vector<Entity>& ents) {
+    std::vector<std::wstring> out;
+    for (const Entity& e : ents)
+        if (const TextData* t = TextOf(e); t && t->frame == kFrameLabel) out.push_back(t->content);
+    return out;
+}
+
+void TestEngineeringGraphics() {
+    TestHost host;
+    {   // Isometric helpers.
+        CHECK(IsIsoAxis(ToRadians(30)) && IsIsoAxis(ToRadians(90)) && IsIsoAxis(ToRadians(-30)) && IsIsoAxis(ToRadians(210)));
+        CHECK(!IsIsoAxis(0) && !IsIsoAxis(ToRadians(45)) && !IsIsoAxis(ToRadians(60)));
+        const double c = std::cos(kPi / 6);
+        CHECK(Close(IsoGridPoint({8.4, 5.3}, {0, 0}, 10), Vec2{10 * c, 5}, 1e-9));  // one step along 30 degrees
+        CHECK(Close(IsoGridPoint({0.3, 9.6}, {0, 0}, 10), Vec2{0, 10}, 1e-9));      // one step up
+        CHECK(Close(IsoOrtho({0, 0}, {10, 4}, IsoPlane::Top), Vec2{10, 10 / std::sqrt(3.0)} * 1.0, 1e-6) ||
+              Close(Dist(IsoOrtho({0, 0}, {10, 4}, IsoPlane::Top), {0, 0}) > 0 ? 1 : 0, 1));
+        const Vec2 o = IsoOrtho({0, 0}, {10, 4}, IsoPlane::Top);
+        CHECK(Close(AngleOf(o), kPi / 6, 1e-9));
+        CHECK(Close(AngleOf(IsoOrtho({0, 0}, {1, 9}, IsoPlane::Left)), kPi / 2, 1e-9));
+        // An isometric circle touches the four midpoints of its isometric square.
+        for (IsoPlane pl : {IsoPlane::Left, IsoPlane::Top, IsoPlane::Right}) {
+            const Entity el = IsoCircle({5, 5}, 20, pl);
+            Vec2 u, v;
+            IsoAxes(pl, u, v);
+            const Vec2 ax = Normalized(el.p1), ay = Perp(ax);
+            const double A = Length(el.p1), B = A * el.radius;
+            for (Vec2 q : {u * 20, u * -20, v * 20, v * -20}) {
+                const double x = Dot(q, ax) / A, y = Dot(q, ay) / B;
+                CHECK(Close(x * x + y * y, 1, 1e-9));
+            }
+            CHECK(Close(A, 20 * std::sqrt(1.5), 1e-9) && Close(B, 20 / std::sqrt(2.0), 1e-9));
+        }
+        // The isometric scale: 100 true is 81.65 isometric.
+        const std::vector<Entity> sc = IsoScaleDrawing({0, 0}, 100, 10, 2.5);
+        CHECK(HasLine(sc, {0, 0}, Polar({0, 0}, 100, kPi / 4)) && HasLine(sc, {0, 0}, Polar({0, 0}, 100 * kIsoScale, kPi / 6)));
+        // Typed lengths along the isometric axes, drawn x 0.816 with the isometric scale.
+        Document d;
+        Engine e(d, host);
+        e.Draft().isoOn = true;
+        e.Draft().isoScale = true;
+        Type(e, {L"l", L"0,0", L"@50<30", L"@20<0", L""});
+        CHECK(CountOf(d, EntityType::Line) == 2);
+        CHECK(Close(Dist(FirstOf(d, EntityType::Line)->p0, FirstOf(d, EntityType::Line)->p1), 50 * kIsoScale, 1e-9));
+        CHECK(Close(Dist(Last(d).p0, Last(d).p1), 20, 1e-9));  // not along an axis: as typed
+        e.Draft().isoPlane = (int)IsoPlane::Right;
+        Type(e, {L"ic", L"0,0", L"10"});
+        const Entity* el = FirstOf(d, EntityType::Ellipse);
+        CHECK(el && Close(Length(el->p1), 10 * kIsoScale * std::sqrt(1.5), 1e-9) && Close(AngleOf(el->p1), kPi / 3, 1e-9));
+    }
+    {   // DIVIDE and MEASURE.
+        Document d;
+        Engine e(d, host);
+        Type(e, {L"l", L"0,0", L"120,0", L""});
+        Type(e, {L"div", L"10,0", L"4"});
+        std::vector<double> xs;
+        for (const auto& kv : d.Entities())
+            if (kv.second.type == EntityType::Point) xs.push_back(kv.second.p0.x);
+        std::sort(xs.begin(), xs.end());
+        CHECK(xs.size() == 3 && Close(xs[0], 30) && Close(xs[1], 60) && Close(xs[2], 90));
+        // MEASURE from the end nearer the click.
+        Document m;
+        Engine em(m, host);
+        Type(em, {L"l", L"0,0", L"100,0", L""});
+        Type(em, {L"me", L"95,0", L"30"});
+        xs.clear();
+        for (const auto& kv : m.Entities())
+            if (kv.second.type == EntityType::Point) xs.push_back(kv.second.p0.x);
+        std::sort(xs.begin(), xs.end());
+        CHECK(xs.size() == 3 && Close(xs[0], 10) && Close(xs[1], 40) && Close(xs[2], 70));
+        // A circle into 12, numbered, point 1 where it was clicked.
+        Document c;
+        Engine ec(c, host);
+        Type(ec, {L"c", L"0,0", L"30"});
+        Type(ec, {L"div", L"-30,0.2", L"n", L"12"});
+        std::vector<Vec2> pts;
+        for (const auto& kv : c.Entities())
+            if (kv.second.type == EntityType::Point) pts.push_back(kv.second.p0);
+        CHECK(pts.size() == 12 && Close(pts[0], Vec2{-30, 0}, 1e-9));
+        for (Vec2 q : pts) CHECK(Close(Length(q), 30, 1e-9));
+        std::vector<Entity> all;
+        for (const auto& kv : c.Entities()) all.push_back(kv.second);
+        const std::vector<std::wstring> names = LabelsOf(all);
+        CHECK(names.size() == 12 && names.front() == L"1" && names.back() == L"12");
+        // An ellipse and a spline can be divided too; a point cannot.
+        std::vector<Vec2> out;
+        CHECK(DividePoints(Entity::Ellipse({0, 0}, {40, 0}, 0.5), 8, {40, 0}, out) && out.size() == 8);
+        CHECK(!Dividable(Entity::Point({0, 0})));
+    }
+    {   // NextName.
+        CHECK(NextName(L"a") == L"b" && NextName(L"9") == L"10" && NextName(L"A") == L"B" && NextName(L"a9") == L"a10");
+    }
+    {   // Developments.
+        std::vector<Entity> ents;
+        std::wstring why;
+        SolidSpec s;  // square prism, side 40, axis 60
+        CHECK(DevelopSolid(s, {0, 0}, 3.5, ents, why));
+        CHECK(HasLine(ents, {0, 0}, {40, 0}) && HasLine(ents, {120, 60}, {160, 60}) && HasLine(ents, {0, 0}, {0, 60}));
+        CHECK(HasLine(ents, {160, 0}, {160, 60}) && HasLine(ents, {40, 0}, {40, 60}));
+        const std::vector<std::wstring> corners = LabelsOf(ents);
+        CHECK(corners.size() == 5 && corners[0] == L"A" && corners[3] == L"D" && corners[4] == L"A");
+        // Cut at 30 degrees through the axis 30 above the base: corners A..D at x = -20, 20, 20, -20.
+        s.cut = true;
+        CHECK(DevelopSolid(s, {0, 0}, 3.5, ents, why));
+        const double lo = 30 - 20 * std::tan(kPi / 6), hi = 30 + 20 * std::tan(kPi / 6);
+        CHECK(HasLine(ents, {0, lo}, {40, hi}) && HasLine(ents, {40, hi}, {80, hi}) && HasLine(ents, {80, hi}, {120, lo}));
+        CHECK(HasLine(ents, {120, lo}, {160, lo}) && HasLine(ents, {0, 0}, {0, lo}));
+        // Cylinder: pi d long.
+        SolidSpec cyl;
+        cyl.kind = SolidSpec::Cylinder;
+        cyl.base = 50;
+        cyl.height = 60;
+        CHECK(DevelopSolid(cyl, {0, 0}, 3.5, ents, why) && HasLine(ents, {0, 0}, {kPi * 50, 0}));
+        CHECK(LabelsOf(ents).size() == 13);
+        // Cone: radius 30, height 40, slant 50: a 216 degree sector.
+        SolidSpec cone;
+        cone.kind = SolidSpec::Cone;
+        cone.base = 60;
+        cone.height = 40;
+        CHECK(DevelopSolid(cone, {0, 0}, 3.5, ents, why));
+        const Entity* arc = nullptr;
+        bool noted = false;
+        for (const Entity& x : ents) {
+            if (x.type == EntityType::Arc) arc = &x;
+            if (const TextData* t = TextOf(x); t && t->content.find(L"= 216\x00B0") != std::wstring::npos) noted = true;
+        }
+        CHECK(arc && Close(arc->radius, 50, 1e-9) && Close(SweepCCW(arc->startAngle, arc->endAngle), ToRadians(216), 1e-9) && noted);
+        // Pyramid: its corners at the slant edge's length from the apex.
+        SolidSpec pyr;
+        pyr.kind = SolidSpec::Pyramid;
+        CHECK(DevelopSolid(pyr, {0, 0}, 3.5, ents, why));
+        const double edge = std::hypot(40 / std::sqrt(2.0), 60.0);
+        int folds = 0;
+        for (const Entity& x : ents)
+            if (x.type == EntityType::Line && Close(Dist(x.p0, x.p1), edge, 1e-9)) ++folds;
+        CHECK(folds == 5);  // two ends (thick) and three folds (thin)
+        // Bad sizes.
+        SolidSpec bad;
+        bad.sides = 2;
+        CHECK(!DevelopSolid(bad, {0, 0}, 3.5, ents, why) && !why.empty());
+        // The command.
+        Document d;
+        Engine e(d, host);
+        Type(e, {L"dev", L"c", L"50", L"60", L"12", L"n", L"0,0"});
+        CHECK(FirstOf(d, EntityType::Line) && Said(host, L"cylinder"));
+    }
+    {   // True length.
+        LineViews v{{0, 20}, {60, 60}, {0, -20}, {60, -50}};
+        const TrueLengthResult r = TrueLengthOf(v);
+        CHECK(Close(r.tl, std::sqrt(6100.0), 1e-9) && Close(r.theta, std::asin(40 / std::sqrt(6100.0)), 1e-12) &&
+              Close(r.phi, std::asin(30 / std::sqrt(6100.0)), 1e-12));
+        LineViews w;
+        std::wstring why;
+        CHECK(ViewsFromTrueLength({0, 20}, {0, -20}, r.tl, r.theta, r.phi, true, w, why));
+        CHECK(Close(w.b1, v.b1, 1e-9) && Close(w.b, v.b, 1e-9));
+        CHECK(!ViewsFromTrueLength({0, 20}, {0, -20}, 50, ToRadians(60), ToRadians(40), true, w, why));
+        const std::vector<Entity> cons = TrueLengthConstruction(v, 3.5, false);
+        int tl = 0;
+        for (const Entity& x : cons)
+            if (x.type == EntityType::Line && Close(Dist(x.p0, x.p1), r.tl, 1e-9)) ++tl;
+        CHECK(tl == 2);  // a'b1' and ab2: both the true length
+        const std::vector<std::wstring> names = LabelsOf(cons);
+        CHECK(std::find(names.begin(), names.end(), L"b1'") != names.end() && std::find(names.begin(), names.end(), L"b2") != names.end());
+        // The command: picking the two views, and drawing from TL, theta, phi.
+        Document d;
+        Engine e(d, host);
+        d.Add(Entity::Line({0, 20}, {60, 60}));
+        d.Add(Entity::Line({60, -50}, {0, -20}));
+        host.lines.clear();
+        Type(e, {L"trl", L"30,40", L"30,-35"});
+        CHECK(Said(host, L"True length 78.1"));
+        Document d2;
+        Engine e2(d2, host);
+        Type(e2, {L"trl", L"d", L"10,10", L"10,-10", L"80", L"30", L"45", L""});
+        int views = 0;
+        for (const auto& kv : d2.Entities())
+            if (kv.second.type == EntityType::Line && kv.second.lineweight == 50) ++views;
+        CHECK(views == 2);
+    }
+    {   // Cutting plane and true shape.
+        const std::vector<Entity> cp = CuttingPlane({{0, 0}, {100, 0}}, {50, 20}, L"A", 3.5);
+        int leaders = 0, letters = 0;
+        for (const Entity& x : cp) {
+            if (x.type == EntityType::Leader) {
+                ++leaders;
+                CHECK(x.annot->pts[0].y > 1);  // pointing to the side clicked
+            }
+            if (const TextData* t = TextOf(x); t && t->content == L"A") ++letters;
+        }
+        CHECK(leaders == 2 && letters == 2 && cp[0].linetype == FindLineType(L"CENTER"));
+        // A rectangle in the top view, the plane rising at atan(2/3) in the front view.
+        TrueShapeResult r;
+        std::wstring why;
+        const std::vector<Vec2> sec = {{-20, -20}, {20, -20}, {20, -40}, {-20, -40}};
+        CHECK(TrueShape({-30, 10}, {30, 50}, sec, {0, 80}, true, 0, r, why));
+        CHECK(r.shape.size() == 4);
+        const double along = 40 * std::sqrt(13.0) / 3;
+        CHECK(Close(Dist(r.shape[0], r.shape[1]), along, 1e-9) && Close(Dist(r.shape[1], r.shape[2]), 20, 1e-9));
+        CHECK(Close(Dot(r.shape[1] - r.shape[0], r.shape[2] - r.shape[1]), 0, 1e-9));  // a true rectangle
+        // The nearest edge (20 from XY) is 20 beyond X1Y1.
+        const Vec2 n = Normalized(Perp(Vec2{3, 2}));
+        CHECK(Close(std::fabs(Dot(r.shape[0] - r.x1, n)), 20, 1e-9));
+        CHECK(!TrueShape({0, 0}, {0, 50}, sec, {10, 0}, true, 0, r, why));  // along the projectors
+        // The command: cutting plane, then true shape.
+        Document d;
+        Engine e(d, host);
+        Type(e, {L"l", L"-30,10", L"30,50", L""});
+        Type(e, {L"pl", L"-20,-20", L"20,-20", L"20,-40", L"-20,-40", L"c"});
+        Type(e, {L"l", L"-60,0", L"60,0", L""});  // XY
+        Type(e, {L"cpl", L"-36,6", L"36,54", L"", L"-40,40", L"B"});
+        Type(e, {L"ts", L"0,30", L"0,-20", L"0,0", L"-20,80"});
+        CHECK(FirstOf(d, EntityType::Hatch) && Said(host, L"True shape drawn"));
+        bool titled = false;
+        for (const auto& kv : d.Entities())
+            if (const TextData* t = TextOf(kv.second); t && t->content == L"TRUE SHAPE OF SECTION B-B") titled = true;
+        CHECK(titled);
+    }
+    {   // BIS setup, first-angle symbol, unidirectional dimensions, BIS title block.
+        const std::vector<Entity> sym = FirstAngleSymbol({0, 0}, 20);
+        int circles = 0;
+        for (const Entity& x : sym)
+            if (x.type == EntityType::Circle) ++circles, CHECK(Close(x.radius, 10) || Close(x.radius, 5));
+        CHECK(circles == 2);
+        Document d;
+        ApplyBisSetup(d, true);
+        CHECK(d.LayerByName(L"Visible") && d.LayerByName(L"Hidden") && d.LayerByName(L"Centre") && d.LayerByName(L"Section"));
+        CHECK(d.Current().layer == d.LayerByName(L"Visible")->id && d.LayerByName(L"Visible")->lineweight == 50);
+        CHECK(d.Settings().dimStyle.unidirectional && UsesBisTitleBlock(d));
+        ApplyBisSetup(d, false);  // again: the same layers, not new ones
+        CHECK(d.Layers().size() == 8 && !d.Settings().dimStyle.unidirectional);
+        // Unidirectional: level text in a break of an upright dimension line.
+        DimData dd;
+        dd.kind = DimData::Aligned;
+        dd.pts[0] = {0, 0};
+        dd.pts[1] = {0, 50};
+        dd.loc = {-15, 25};
+        dd.style.unidirectional = true;
+        DimGraphics g;
+        DimLayout(dd, g);
+        CHECK(Close(g.textAngle, 0) && Close(g.textPos, Vec2{-15, 25}, 1e-9));
+        for (const Prim& p : g.lines) CHECK(!(p.kind == Prim::Segment && Distance(p, {-15, 25}) < 1e-6));
+        dd.style.unidirectional = false;
+        DimLayout(dd, g);
+        CHECK(Close(std::fabs(g.textAngle), kPi / 2, 1e-9));
+        // Saved and read back.
+        Document a;
+        DrawingSettings st = a.Settings();
+        st.dimStyle.unidirectional = true;
+        a.SetSettings(st);
+        a.Add(MakeDimension(dd));
+        DimData du = dd;
+        du.style.unidirectional = true;
+        a.Add(MakeDimension(du));
+        Document b;
+        std::wstring err;
+        CHECK(b.FromText(a.ToText(), err) && b.Settings().dimStyle.unidirectional && b.ToText() == a.ToText());
+        // A sheet of a BIS drawing: the BIS title block.
+        Document model;
+        ApplyBisSetup(model, false);
+        auto sh = NewSheet(model, L"Sheet1", L"A3", true);
+        bool bis = false;
+        for (const auto& kv : sh->doc.Entities())
+            if (kv.second.type == EntityType::Insert && kv.second.annot->block->name == L"BIS title block") bis = true;
+        CHECK(bis);
+    }
+}
+
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);  // failures show even if a later check crashes
     TestAngles();
@@ -3476,6 +3753,7 @@ int main() {
     TestProjectionHelpers();
     TestRelationsKeepShape();
     TestReshapeAndRegular();
+    TestEngineeringGraphics();
     std::printf("%d checks, %d failed\n", g_checks, g_failures);
     return g_failures;
 }

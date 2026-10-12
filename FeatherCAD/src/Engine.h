@@ -73,6 +73,12 @@ struct Drafting {
     bool otrackOn = true;     // object snap tracking (F11)
     bool dynOn = true;        // input and prompt at the cursor (F12)
     bool lwDisplay = true;    // show line weights (LWT)
+    // Isometric drawing: grid and snap on the isometric grid, ortho along
+    // the two axes of the plane (0 left, 1 top, 2 right); with isoScale,
+    // lengths typed along the axes are drawn x 0.816 (isometric projection).
+    bool isoOn = false;
+    int isoPlane = 1;
+    bool isoScale = false;
 };
 
 class EngineHost {

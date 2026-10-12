@@ -453,6 +453,7 @@ INT_PTR CALLBACK DimStyleProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
             SetNumber(dlg, IDC_DS_GAP, s.textGap);
             FillDecimals(dlg, IDC_DS_DECIMALS, s.precision);
             Check(dlg, IDC_DS_TRIM, s.trimZeros);
+            Check(dlg, IDC_DS_UNIDIR, s.unidirectional);
             Check(dlg, IDC_DS_APPLY, *d->apply);
             return TRUE;
         }
@@ -465,6 +466,7 @@ INT_PTR CALLBACK DimStyleProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
                     return TRUE;
                 s.precision = std::max(0, (int)SendDlgItemMessageW(dlg, IDC_DS_DECIMALS, CB_GETCURSEL, 0, 0));
                 s.trimZeros = Checked(dlg, IDC_DS_TRIM);
+                s.unidirectional = Checked(dlg, IDC_DS_UNIDIR);
                 *d->style = s;
                 *d->apply = Checked(dlg, IDC_DS_APPLY);
                 EndDialog(dlg, IDOK);
@@ -747,7 +749,7 @@ INT_PTR CALLBACK DrawingPropsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
             SetWindowLongPtrW(dlg, DWLP_USER, lp);
             v = (std::vector<std::wstring>*)lp;
             InitDialog(dlg);
-            for (size_t i = 0; i < DrawingPropertyKeys().size() && i < 7; ++i) {
+            for (size_t i = 0; i < DrawingPropertyKeys().size() && i < 10; ++i) {
                 SetDlgItemTextW(dlg, IDC_DP_FIRST + 10 + (int)i, (std::wstring(DrawingPropertyKeys()[i].label) + L":").c_str());
                 if (i < v->size()) SetDlgItemTextW(dlg, IDC_DP_FIRST + (int)i, (*v)[i].c_str());
             }
@@ -755,7 +757,7 @@ INT_PTR CALLBACK DrawingPropsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_COMMAND:
             if (LOWORD(wp) == IDOK) {
                 v->resize(DrawingPropertyKeys().size());
-                for (size_t i = 0; i < v->size() && i < 7; ++i) (*v)[i] = GetText(dlg, IDC_DP_FIRST + (int)i);
+                for (size_t i = 0; i < v->size() && i < 10; ++i) (*v)[i] = GetText(dlg, IDC_DP_FIRST + (int)i);
                 EndDialog(dlg, IDOK);
             } else if (LOWORD(wp) == IDCANCEL) {
                 EndDialog(dlg, IDCANCEL);

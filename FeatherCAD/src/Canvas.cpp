@@ -11,6 +11,7 @@
 
 #include "Annot.h"
 #include "Dimension.h"
+#include "EngGraphics.h"
 #include "Sheet.h"
 #include "Spline.h"
 #include "Theme.h"
@@ -249,7 +250,7 @@ void Canvas::Refresh() {
     const Drafting& d = m_engine->Draft();
     if (!m_engine->Active() || !d.otrackOn) m_acquired.clear();
     if (m_shownRevision != m_doc->Revision() || m_shownSelection != m_engine->SelectionRevision() ||
-        m_shownGrid != d.gridOn || m_shownGridSpacing != d.gridSpacing || m_shownLw != d.lwDisplay)
+        m_shownGrid != d.gridOn || m_shownGridSpacing != d.gridSpacing || m_shownLw != d.lwDisplay || m_shownIso != d.isoOn)
         m_layerValid = false;
     if (!m_engine->WantsSelection() && m_windowOn) {
         m_windowOn = false;
@@ -929,6 +930,7 @@ void Canvas::DrawGrid(ID2D1RenderTarget* rt) {
     const Drafting& d = m_engine->Draft();
     double spacing = d.gridSpacing;
     if (!(spacing > 0)) return;
+    if (d.isoOn) return DrawIsoGrid(rt, spacing);
     // Adaptive grid: coarser when zoomed out, so lines stay apart.
     const double minPx = Px(8);
     for (int i = 0; spacing * m_scale < minPx && i < 40; ++i) spacing *= (i % 2 == 0) ? 5 : 2;
@@ -956,6 +958,42 @@ void Canvas::DrawGrid(ID2D1RenderTarget* rt) {
         }
     }
     rt->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+}
+
+// The isometric grid: upright lines and lines at 30 and 150 degrees, through
+// points `spacing` apart along them (coarser when zoomed out).
+void Canvas::DrawIsoGrid(ID2D1RenderTarget* rt, double spacing) {
+    const double minPx = Px(10);
+    for (int i = 0; spacing * m_scale < minPx && i < 40; ++i) spacing *= (i % 2 == 0) ? 5 : 2;
+    const Box view = ViewBox();
+    const Vec2 org = m_doc->Settings().origin;
+    const double c = std::cos(kPi / 6);
+    const double dx = spacing * c;  // between upright lines
+    const long long x0 = (long long)std::floor((view.minX - org.x) / dx), x1 = (long long)std::ceil((view.maxX - org.x) / dx);
+    if (x1 - x0 > 3000) return;
+    rt->SetAntialiasMode(D2D1_ANTIALIAS_MODE_ALIASED);
+    m_brush->SetColor(m_gridMinor);
+    for (long long i = x0; i <= x1; ++i) {
+        const float x = std::floor(ToScreen({org.x + i * dx, 0}).x) + 0.5f;
+        rt->DrawLine(D2D1::Point2F(x, 0), D2D1::Point2F(x, (float)m_height), m_brush, 1.0f);
+    }
+    rt->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+    // Slanted lines: y = org.y + k * spacing +/- tan(30) (x - org.x).
+    const double t = std::tan(kPi / 6);
+    for (int sgn : {1, -1}) {
+        // The range of k that crosses the view.
+        double kmin = 1e300, kmax = -1e300;
+        for (Vec2 corner : {Vec2{view.minX, view.minY}, Vec2{view.maxX, view.minY}, Vec2{view.minX, view.maxY}, Vec2{view.maxX, view.maxY}}) {
+            const double k = (corner.y - org.y - sgn * t * (corner.x - org.x)) / spacing;
+            kmin = std::min(kmin, k), kmax = std::max(kmax, k);
+        }
+        if (kmax - kmin > 3000) continue;
+        for (long long k = (long long)std::floor(kmin); k <= (long long)std::ceil(kmax); ++k) {
+            const Vec2 a{view.minX, org.y + k * spacing + sgn * t * (view.minX - org.x)};
+            const Vec2 b{view.maxX, org.y + k * spacing + sgn * t * (view.maxX - org.x)};
+            rt->DrawLine(ToScreen(a), ToScreen(b), m_brush, 1.0f);
+        }
+    }
 }
 
 void Canvas::DrawUcsIcon(ID2D1RenderTarget* rt) {
@@ -1017,6 +1055,7 @@ void Canvas::RenderLayer() {
     m_shownRevision = m_doc->Revision();
     m_shownSelection = m_engine->SelectionRevision();
     m_shownGrid = d.gridOn;
+    m_shownIso = d.isoOn;
     m_shownGridSpacing = d.gridSpacing;
     m_shownLw = d.lwDisplay;
     m_layerValid = true;
@@ -1283,13 +1322,18 @@ void Canvas::OnMouseMove(int x, int y, WPARAM keys) {
             if (!ResolveTracking(pr, d, p)) {
                 if (d.snapOn && d.snapSpacing > 0) {
                     const Vec2 org = m_doc->Settings().origin;
-                    p = {org.x + std::round((p.x - org.x) / d.snapSpacing) * d.snapSpacing,
-                         org.y + std::round((p.y - org.y) / d.snapSpacing) * d.snapSpacing};
+                    if (d.isoOn) p = IsoGridPoint(p, org, d.snapSpacing);
+                    else p = {org.x + std::round((p.x - org.x) / d.snapSpacing) * d.snapSpacing,
+                              org.y + std::round((p.y - org.y) / d.snapSpacing) * d.snapSpacing};
                 }
                 if (ortho && pr.hasBase) {
-                    const Vec2 delta = p - pr.base;
-                    if (std::fabs(delta.x) >= std::fabs(delta.y)) p.y = pr.base.y;
-                    else p.x = pr.base.x;
+                    if (d.isoOn) {  // along the isometric plane's two axes
+                        p = IsoOrtho(pr.base, p, (IsoPlane)d.isoPlane);
+                    } else {
+                        const Vec2 delta = p - pr.base;
+                        if (std::fabs(delta.x) >= std::fabs(delta.y)) p.y = pr.base.y;
+                        else p.x = pr.base.x;
+                    }
                 }
             }
         }

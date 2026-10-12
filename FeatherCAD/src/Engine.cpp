@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <cwctype>
 
+#include "EngGraphics.h"
+
 namespace {
 std::wstring Trim(const std::wstring& s) {
     size_t b = 0, e = s.size();
@@ -311,6 +313,7 @@ bool Engine::ParsePoint(const std::wstring& raw, Vec2& out) const {
     double a, b;
     if (lt != std::wstring::npos) {
         if (!ParseNum(s.substr(0, lt), a) || !ParseNum(s.substr(lt + 1), b)) return false;
+        if (m_draft.isoOn && m_draft.isoScale && IsIsoAxis(ToRadians(b))) a *= kIsoScale;  // isometric length
         out = Polar(origin, a, ToRadians(b));
         return true;
     }
@@ -384,6 +387,7 @@ void Engine::Text(const std::wstring& typedRaw) {
             // Direct distance: that far from the base, towards the cursor.
             Vec2 dir = m_host.TrackedCursor() - m_prompt.base;
             if (Length(dir) < 1e-12) dir = {1, 0};
+            if (m_draft.isoOn && m_draft.isoScale && IsIsoAxis(AngleOf(dir))) v *= kIsoScale;  // isometric length
             Accepted(m_prompt.base + Normalized(dir) * v);
             return;
         }

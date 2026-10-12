@@ -6,6 +6,7 @@
 #include <sstream>
 
 #include "DxfImport.h"
+#include "EngGraphics.h"
 
 const std::vector<PaperSize>& PaperSizes() {
     static const std::vector<PaperSize> p = {
@@ -79,7 +80,8 @@ const std::vector<PropertyKey>& DrawingPropertyKeys() {
     static const std::vector<PropertyKey> k = {
         {L"title", L"Title"},       {L"number", L"Drawing number"}, {L"drawnby", L"Drawn by"},
         {L"checkedby", L"Checked by"}, {L"company", L"Company"},    {L"material", L"Material"},
-        {L"revision", L"Revision"},
+        {L"revision", L"Revision"}, {L"usn", L"USN / roll no."}, {L"branch", L"Branch / batch"},
+        {L"marks", L"Marks"},
     };
     return k;
 }
@@ -155,13 +157,56 @@ BlockData TitleBlock() {
     return b;
 }
 
+// BIS (SP 46) title block for students' sheets, 170 x 48 mm: institution,
+// title, name, USN, branch, sheet, scale, date, checked by, marks, and the
+// first-angle projection symbol.
+constexpr wchar_t kBisTitleBlock[] = L"BIS title block";
+
+BlockData BisTitleBlock() {
+    BlockData b;
+    b.name = kBisTitleBlock;
+    const double W = 170, H = 48, R = 8;
+    auto line = [&](double x0, double y0, double x1, double y1, int lw = 25) {
+        b.items.push_back(Styled(Entity::Line({x0 - W, y0}, {x1 - W, y1}), lw));
+    };
+    auto cell = [&](double x, double y, const wchar_t* label, const wchar_t* field, double h = 2.8) {
+        b.items.push_back(Styled(MakeText({x - W + 1.2, y + R - 0.8}, Label(label, 1.6)), 18));
+        b.items.push_back(Styled(MakeText({x - W + 1.2, y + 1.4}, Label(field, h, 6)), 25));
+    };
+    b.items.push_back(Styled(Entity::Rectangle({-W, 0}, {0, H}), 50));
+    for (int r = 1; r < 6; ++r) line(0, r * R, r >= 4 ? W : 130, r * R);
+    line(80, 0, 80, 4 * R);
+    line(130, 0, 130, 4 * R);
+    cell(0, 40, L"INSTITUTION", L"{company}");
+    cell(0, 32, L"TITLE", L"{title}", 3.5);
+    cell(0, 24, L"NAME", L"{drawnby}");
+    cell(80, 24, L"USN", L"{usn}");
+    cell(0, 16, L"BRANCH / BATCH", L"{branch}");
+    cell(80, 16, L"SHEET NO.", L"{sheet}");
+    cell(0, 8, L"SCALE", L"{scale}");
+    cell(80, 8, L"DATE", L"{date}");
+    cell(0, 0, L"CHECKED BY", L"{checkedby}");
+    cell(80, 0, L"MARKS", L"{marks}");
+    for (Entity e : FirstAngleSymbol({136 - W, 8}, 13)) {
+        e.layer = 0;
+        b.items.push_back(e);
+    }
+    b.items.push_back(Styled(MakeText({150 - W, 1.5}, Label(L"PROJECTION", 1.8, 7)), 18));
+    return b;
+}
+
 // The border is the closed rectangle drawn 0.7 mm wide.
 bool IsBorder(const Entity& e) {
     return e.type == EntityType::Polyline && e.closed && e.verts.size() == 4 && e.lineweight == 70;
 }
 }  // namespace
 
-void AddBorder(Sheet& sheet) {
+bool UsesBisTitleBlock(const Document& model) {
+    auto it = model.Properties().find(L"titleblock");
+    return it != model.Properties().end() && SameName(it->second, L"BIS");
+}
+
+void AddBorder(Sheet& sheet, bool bis) {
     Document& d = sheet.doc;
     const SheetSetup& s = sheet.setup;
     d.BeginChange(L"Border");
@@ -170,15 +215,15 @@ void AddBorder(Sheet& sheet) {
     for (const auto& kv : d.Entities()) {
         const Entity& e = kv.second;
         if (IsBorder(e) || (e.type == EntityType::Insert && e.annot && e.annot->block &&
-                               SameName(e.annot->block->name, kTitleBlock)))
+                               (SameName(e.annot->block->name, kTitleBlock) || SameName(e.annot->block->name, kBisTitleBlock))))
             old.push_back(kv.first);
     }
     for (uint64_t id : old) d.Erase(id);
     const double m = s.margin;
     Entity border = Styled(Entity::Rectangle({m, m}, {s.width - m, s.height - m}), 70);
     d.Add(border);
-    auto def = d.FindBlock(kTitleBlock);
-    if (!def) def = d.DefineBlock(TitleBlock());
+    auto def = d.FindBlock(bis ? kBisTitleBlock : kTitleBlock);
+    if (!def) def = d.DefineBlock(bis ? BisTitleBlock() : TitleBlock());
     Entity tb = MakeInsert(def, {s.width - m, m}, 1, 0);
     tb.layer = 0;
     d.Add(tb);
@@ -192,7 +237,7 @@ std::unique_ptr<Sheet> NewSheet(const Document& model, const std::wstring& name,
     sh->setup.landscape = landscape;
     ApplyPaper(sh->setup);
     if (sh->setup.width < 250 || sh->setup.height < 200) sh->setup.margin = 7;  // A4 and Letter
-    AddBorder(*sh);
+    AddBorder(*sh, UsesBisTitleBlock(model));
     const Box area = DrawingArea(sh->setup);
     const Box ext = model.Extents();
     const double ratio = FitScale(ext, area.Width(), area.Height(), model.Settings().units);

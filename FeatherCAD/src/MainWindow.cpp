@@ -10,6 +10,7 @@
 #include <windowsx.h>
 
 #include "Dialogs.h"
+#include "EngGraphics.h"
 #include "Dimension.h"
 #include "DxfImport.h"
 #include "Curve.h"
@@ -272,6 +273,7 @@ void MainWindow::CreateChildren() {
     m_menuBar.AddTextButton(ID_MENU_ANNOTATE, L"Annotate", nullptr, 72);
     m_menuBar.AddTextButton(ID_MENU_FORMAT, L"Format", nullptr, 58);
     m_menuBar.AddTextButton(ID_MENU_TOOLS, L"Tools", nullptr, 50);
+    m_menuBar.AddTextButton(ID_MENU_GRAPHICS, L"Graphics", nullptr, 66);
     m_menuBar.AddTextButton(ID_MENU_HELP, L"Help", nullptr, 48);
     m_menuBar.AddSpacer();
     m_menuBar.AddTextButton(ID_COMMAND_PALETTE, L"Search commands   Ctrl+K",
@@ -389,6 +391,8 @@ void MainWindow::CreateAccelerators() {
         {FVIRTKEY | FALT, 'A', ID_MENU_ANNOTATE},
         {FVIRTKEY | FALT, 'O', ID_MENU_FORMAT},
         {FVIRTKEY | FALT, 'T', ID_MENU_TOOLS},
+        {FVIRTKEY | FALT, 'G', ID_MENU_GRAPHICS},
+        {FVIRTKEY, VK_F5, ID_ISOPLANE_NEXT},
         {FVIRTKEY | FALT, 'H', ID_MENU_HELP},
     };
     m_accel = CreateAcceleratorTableW(a.data(), (int)a.size());
@@ -656,7 +660,7 @@ void MainWindow::PageSetup() {
     const bool resized = s.width != sh.setup.width || s.height != sh.setup.height;
     sh.setup = s;
     d.sheetsChanged = true;
-    if (redo) AddBorder(sh);
+    if (redo) AddBorder(sh, UsesBisTitleBlock(d.doc));
     AttachCanvas();
     if (resized) m_canvas.ZoomExtents();
     AfterInput();
@@ -669,7 +673,7 @@ void MainWindow::TitleBlock() {
         return;
     }
     Eng().Cancel();
-    AddBorder(*d.sheets[(size_t)d.space]);
+    AddBorder(*d.sheets[(size_t)d.space], UsesBisTitleBlock(d.doc));
     Message(L"Border and title block made for " + d.sheets[(size_t)d.space]->setup.paper +
             L". Its fields come from File > Drawing properties.");
     AfterInput();
@@ -1012,8 +1016,9 @@ void MainWindow::UpdateStatus() {
     const Drafting& d = Eng().Draft();
     // The E, M, I and C snaps light up while object snaps are on.
     auto mode = [&](unsigned bit) { return d.osnapOn && (d.osnapModes & bit) != 0; };
-    m_status.SetToggles({d.gridOn, d.snapOn, d.orthoOn, d.polarOn, d.osnapOn, mode(kSnapEndpoint), mode(kSnapMidpoint),
+    m_status.SetToggles({d.gridOn, d.snapOn, d.orthoOn, d.isoOn, d.polarOn, d.osnapOn, mode(kSnapEndpoint), mode(kSnapMidpoint),
                          mode(kSnapIntersection), mode(kSnapCentre), d.otrackOn, d.dynOn, d.lwDisplay});
+    m_status.SetIsoText(d.isoOn ? std::wstring(L"Iso ") + IsoPlaneName((IsoPlane)d.isoPlane) : L"Iso");
     m_status.SetUnits(UnitsSymbol(Doc().Settings().units));
     UpdateGuide();
 }
@@ -1052,6 +1057,19 @@ void MainWindow::ToggleDrafting(int id) {
         case ID_TOGGLE_OTRACK: on = d.otrackOn = !d.otrackOn; name = L"Object snap tracking"; break;
         case ID_TOGGLE_DYN: on = d.dynOn = !d.dynOn; name = L"Dynamic input"; break;
         case ID_TOGGLE_LWT: on = d.lwDisplay = !d.lwDisplay; name = L"Line weights"; break;
+        case ID_TOGGLE_ISO:
+            on = d.isoOn = !d.isoOn;
+            if (on) d.orthoOn = true, d.polarOn = false;
+            Message(on ? std::wstring(L"<Isometric drawing on: ") + IsoPlaneName((IsoPlane)d.isoPlane) +
+                             L" plane (F5: next plane)>"
+                       : std::wstring(L"<Isometric drawing off>"));
+            DraftingChanged();
+            return;
+        case ID_ISOPLANE_NEXT:
+            d.isoPlane = (int)NextIsoPlane((IsoPlane)d.isoPlane);
+            Message(std::wstring(L"<Isometric plane: ") + IsoPlaneName((IsoPlane)d.isoPlane) + (d.isoOn ? L">" : L" (isometric drawing is off)>"));
+            DraftingChanged();
+            return;
     }
     Message(std::wstring(L"<") + name + (on ? L" on>" : L" off>"));
     DraftingChanged();
@@ -1224,6 +1242,8 @@ void MainWindow::OnCommand(int id) {
         case ID_TOGGLE_OTRACK:
         case ID_TOGGLE_DYN:
         case ID_TOGGLE_LWT:
+        case ID_TOGGLE_ISO:
+        case ID_ISOPLANE_NEXT:
             ToggleDrafting(id);
             break;
         case ID_DRAFTING_SETTINGS: {
@@ -1508,6 +1528,34 @@ HMENU MainWindow::BuildMenu(int menuId) {
             Append(m, ID_UNITS, L"&Units...");
             Append(m, ID_AUTOSAVE_SETTINGS, L"&Auto-save and versions...");
             break;
+        case ID_MENU_GRAPHICS: {
+            auto cmd = [&](const wchar_t* name, const wchar_t* text) {
+                const auto& all = AllCommands();
+                for (size_t i = 0; i < all.size(); ++i)
+                    if (all[i].name == name) return Append(m, ID_PALETTE_CMD + (int)i, text);
+            };
+            Append(m, ID_TOGGLE_ISO, L"&Isometric drawing (grid, snap, 30\x00B0 axes)", true, d.isoOn);
+            Append(m, ID_ISOPLANE_NEXT, (std::wstring(L"Isometric &plane: ") + IsoPlaneName((IsoPlane)d.isoPlane) + L" (next)\tF5").c_str());
+            cmd(L"ISODRAFT", L"Isometric &scale or true lengths...\tISO");
+            cmd(L"ISOCIRCLE", L"Isometric &circle\tIC");
+            cmd(L"ISOSCALE", L"Draw the isometric scal&e\tISOSCALE");
+            Separator(m);
+            cmd(L"PROJECTOR", L"P&rojector lines\tPJ");
+            cmd(L"LABEL", L"&Label points (a, b, a1')\tLB");
+            cmd(L"HIDDEN", L"&Hidden line on/off\tHID");
+            cmd(L"TRUELENGTH", L"&True length and angles of a line\tTRL");
+            Separator(m);
+            cmd(L"DIVIDE", L"&Divide into equal parts\tDIV");
+            cmd(L"MEASURE", L"&Measure off equal lengths\tME");
+            cmd(L"DEVELOP", L"De&velopment of surfaces\tDEV");
+            Separator(m);
+            cmd(L"CUTPLANE", L"C&utting plane line (A-A)\tCPL");
+            cmd(L"TRUESHAPE", L"True shape &of a section\tTS");
+            Separator(m);
+            cmd(L"FIRSTANGLE", L"&First-angle projection symbol\tFAS");
+            cmd(L"BISSETUP", L"&BIS (SP 46) drawing setup\tBIS");
+            break;
+        }
         case ID_MENU_HELP:
             Append(m, ID_COMMAND_LIST, L"&Commands...\tF1");
             Append(m, ID_TIPS, L"&Mouse and keyboard tips");

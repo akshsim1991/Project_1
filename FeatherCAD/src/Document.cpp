@@ -1155,6 +1155,7 @@ void WriteEntity(const Entity& e, std::string& out, const Ordinals* ordinals = n
             }
             if (!d.text.empty()) out += " text=" + EncodeWord(d.text);
             if (d.driven) out += " driven=1";
+            if (st.unidirectional) out += " uni=1";
             if (!d.name.empty()) out += " name=" + EncodeWord(d.name);
             if (d.locked) out += " locked=" + FormatNumber(d.value);
             if (!d.formula.empty()) out += " formula=" + EncodeWord(d.formula);
@@ -1496,6 +1497,7 @@ struct Reader {
             for (const std::string& word : w) {
                 if (word.compare(0, 5, "text=") == 0) d.text = DecodeWord(word.substr(5));
                 if (word == "driven=1") d.driven = true;
+                if (word == "uni=1") d.style.unidirectional = true;
                 if (word.compare(0, 5, "name=") == 0) d.name = DecodeWord(word.substr(5));
                 if (word.compare(0, 8, "formula=") == 0) d.formula = DecodeWord(word.substr(8));
                 double lv;
@@ -1669,7 +1671,7 @@ std::string Document::ToText() const {
     const DimStyle& st = m_settings.dimStyle;
     out += "dimstyle " + FormatNumber(st.textHeight) + " " + FormatNumber(st.arrowSize) + " " +
            FormatNumber(st.extOffset) + " " + FormatNumber(st.extBeyond) + " " + FormatNumber(st.textGap) + " " +
-           std::to_string(st.precision) + " " + (st.trimZeros ? "1" : "0") + "\n";
+           std::to_string(st.precision) + " " + (st.trimZeros ? "1" : "0") + (st.unidirectional ? " 1" : "") + "\n";
     if (m_settings.ltscale != 1) out += "ltscale " + FormatNumber(m_settings.ltscale) + "\n";
     if (m_settings.origin != Vec2{}) out += "origin " + FormatNumber(m_settings.origin.x) + " " + FormatNumber(m_settings.origin.y) + "\n";
     if (!m_settings.maintainRelations || m_settings.autoRelations || !m_settings.showRelations)
@@ -1909,6 +1911,7 @@ bool Document::FromText(const std::string& text, std::wstring& error) {
                 st.textGap = std::max(0.0, v[4]);
                 st.precision = std::clamp((int)v[5], 0, 8);
                 st.trimZeros = v[6] != 0;
+                st.unidirectional = v.size() >= 8 && v[7] != 0;
             }
         } else {
             Entity e;

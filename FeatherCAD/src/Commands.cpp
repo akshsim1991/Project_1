@@ -1106,6 +1106,18 @@ const std::vector<CommandInfo>& AllCommands() {
         {L"TABLE", {L"TB"}, L"Table", L"A table of cells: double-click it to type, one row per line, cells split by |"},
         {L"PARTBALLOON", {L"PB", L"ITEMBALLOON"}, L"Part balloon", L"A balloon with a part's item number from the parts list (kept up to date)"},
         {L"SKETCH", {L"FREESKETCH", L"FS"}, L"FreeSketch", L"Draw freehand with the mouse: lines, arcs, circles and shapes are tidied up for you"},
+        {L"DIVIDE", {L"DIV"}, L"Divide", L"Points dividing a line, arc, circle or curve into equal parts (N: numbered 1, 2, 3...)"},
+        {L"MEASURE", {L"ME"}, L"Measure", L"Points every so far along a line, arc, circle or curve"},
+        {L"ISODRAFT", {L"ISO", L"ISOMETRIC"}, L"Isometric drawing", L"Isometric grid, snap and ortho along the 30\x00B0 axes (Scale: draw lengths \x00D7 0.816)"},
+        {L"ISOPLANE", {L"IP"}, L"Isometric plane", L"Draw on the left, top or right isometric plane (F5)"},
+        {L"ISOCIRCLE", {L"IC"}, L"Isometric circle", L"A circle on the current isometric plane (drawn as an ellipse)"},
+        {L"ISOSCALE", {}, L"Isometric scale", L"Draw the isometric scale: true lengths at 45\x00B0 projected onto 30\x00B0"},
+        {L"DEVELOP", {L"DEV", L"DEVELOPMENT"}, L"Development", L"The development of the lateral surface of a prism, cylinder, pyramid or cone, cut or not"},
+        {L"TRUELENGTH", {L"TRL", L"TLEN"}, L"True length", L"A line's true length and its angles to HP and VP from its two views (or draw it from them)"},
+        {L"CUTPLANE", {L"CPL", L"SECTIONLINE"}, L"Cutting plane", L"A cutting-plane line: chain line, thick ends, arrows and letters (A-A)"},
+        {L"TRUESHAPE", {L"TS"}, L"True shape", L"The true shape of a section, by an auxiliary view on X1Y1, hatched"},
+        {L"FIRSTANGLE", {L"FAS"}, L"First-angle symbol", L"The first-angle projection symbol (BIS SP 46)"},
+        {L"BISSETUP", {L"BIS", L"SP46"}, L"BIS drawing setup", L"Millimetres, BIS dimensions (aligned or unidirectional), line layers and the BIS title block"},
         {L"HORIZONTAL", {L"HOR"}, L"Horizontal", L"Keep a line horizontal (a relationship)"},
         {L"VERTICAL", {L"VER"}, L"Vertical", L"Keep a line vertical (a relationship)"},
         {L"PARALLEL", {L"PAR"}, L"Parallel", L"Keep two lines parallel (the second one turns)"},
@@ -1171,6 +1183,7 @@ std::unique_ptr<Command> CreateCommand(const std::wstring& name) {
     if (auto cmd = CreateAnnotCommand(name)) return cmd;
     if (auto cmd = CreateSheetCommand(name)) return cmd;
     if (auto cmd = CreateRelateCommand(name)) return cmd;
+    if (auto cmd = CreateEgCommand(name)) return cmd;
     if (name == L"LINE") return std::make_unique<LineCmd>();
     if (name == L"PLINE") return std::make_unique<PlineCmd>();
     if (name == L"TANLINE") return std::make_unique<TanLineCmd>();

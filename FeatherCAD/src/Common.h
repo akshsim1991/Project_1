@@ -233,6 +233,7 @@ enum : int {
     ID_MENU_ANNOTATE,
     ID_MENU_FORMAT,
     ID_MENU_TOOLS,
+    ID_MENU_GRAPHICS,
     ID_MENU_HELP,
     // Context menu
     ID_CTX_ENTER,
@@ -241,6 +242,8 @@ enum : int {
     ID_ESCAPE,
     ID_TOGGLE_HISTORY,  // F2: more command history lines
     ID_TIPS,
+    ID_TOGGLE_ISO,       // isometric drawing on/off (status bar)
+    ID_ISOPLANE_NEXT,    // F5: the next isometric plane
     ID_RECENT_FIRST = 300,   // + index into the recent files (up to 10)
     ID_CTX_KEYWORD = 330,    // + index into the prompt's options
     ID_CTX_RECENT_CMD = 360, // + index into the recent commands

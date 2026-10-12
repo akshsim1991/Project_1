@@ -18,6 +18,7 @@ StatusBar::StatusBar() {
         {ID_TOGGLE_GRID, ID_DRAFTING_SETTINGS, L"Grid", L"Show the grid of dots and lines (F7). Right-click for its spacing."},
         {ID_TOGGLE_SNAP, ID_DRAFTING_SETTINGS, L"Snap", L"The cursor jumps from grid point to grid point (F9). Right-click for the spacing."},
         {ID_TOGGLE_ORTHO, ID_DRAFTING_SETTINGS, L"Ortho", L"Only straight across or straight up and down (F8, or hold Shift)"},
+        {ID_TOGGLE_ISO, ID_ISOPLANE_NEXT, L"Iso", L"Isometric drawing: grid, snap and lines along the 30\x00B0 axes. Right-click or F5: next plane (left, top, right)"},
         {ID_TOGGLE_POLAR, ID_DRAFTING_SETTINGS, L"Polar", L"Lines snap to round angles: 0, 15, 30, 45... (F10). Right-click for the angle."},
         {ID_TOGGLE_OSNAP, ID_OSNAP_SETTINGS, L"Obj snap", L"The cursor snaps to ends, middles, centres of objects (F3). Right-click to choose."},
         {ID_SNAPMODE_FIRST + 0, ID_OSNAP_SETTINGS, L"End", L"Snap to the ends of lines and arcs (click: on or off)"},
@@ -100,6 +101,14 @@ void StatusBar::SetToggles(const std::vector<bool>& states) {
         m_buttons[i].on = states[i];
     }
     if (changed && m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void StatusBar::SetIsoText(const std::wstring& text) {
+    for (Button& b : m_buttons)
+        if (b.id == ID_TOGGLE_ISO && b.text != text) {
+            b.text = text;
+            Layout();
+        }
 }
 
 void StatusBar::SetUnits(const std::wstring& text) {

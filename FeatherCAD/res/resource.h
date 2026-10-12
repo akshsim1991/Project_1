@@ -128,3 +128,4 @@
 #define IDC_VR_SET 1234
 #define IDC_VR_DELETE 1235
 #define IDC_VR_INFO 1236
+#define IDC_DS_UNIDIR 1237

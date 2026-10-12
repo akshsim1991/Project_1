@@ -82,6 +82,8 @@ void Settings::Load() {
     d.otrackOn = ReadDword(key, L"OtrackOn", 1) != 0;
     d.dynOn = ReadDword(key, L"DynOn", 1) != 0;
     d.lwDisplay = ReadDword(key, L"ShowLineWeights", 1) != 0;
+    d.isoPlane = std::clamp((int)ReadDword(key, L"IsoPlane", 1), 0, 2);
+    d.isoScale = ReadDword(key, L"IsoScale", 0) != 0;
     propertiesOn = ReadDword(key, L"PropertiesOn", 1) != 0;
     if (d.orthoOn) d.polarOn = false;
     newUnits = std::clamp((int)ReadDword(key, L"NewUnits", 1), 0, 5);
@@ -113,6 +115,8 @@ void Settings::Save() const {
     WriteDword(key, L"OtrackOn", d.otrackOn);
     WriteDword(key, L"DynOn", d.dynOn);
     WriteDword(key, L"ShowLineWeights", d.lwDisplay);
+    WriteDword(key, L"IsoPlane", (DWORD)d.isoPlane);
+    WriteDword(key, L"IsoScale", d.isoScale);
     WriteDword(key, L"PropertiesOn", propertiesOn);
     WriteDword(key, L"NewUnits", (DWORD)newUnits);
     WriteDword(key, L"NewPrecision", (DWORD)newPrecision);

@@ -28,10 +28,13 @@ struct DimStyle {
     double textGap = 1;     // between the dimension line and the text
     int precision = 2;      // decimal places
     bool trimZeros = true;  // 12.50 is shown as 12.5, 40.00 as 40
+    // Text always level, set in a break of the dimension line (the
+    // unidirectional system); otherwise along the line, above it (aligned).
+    bool unidirectional = false;
     bool operator==(const DimStyle& o) const {
         return textHeight == o.textHeight && arrowSize == o.arrowSize && extOffset == o.extOffset &&
                extBeyond == o.extBeyond && textGap == o.textGap && precision == o.precision &&
-               trimZeros == o.trimZeros;
+               trimZeros == o.trimZeros && unidirectional == o.unidirectional;
     }
     bool operator!=(const DimStyle& o) const { return !(*this == o); }
 };

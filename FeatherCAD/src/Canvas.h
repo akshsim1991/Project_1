@@ -85,6 +85,7 @@ private:
     void RenderLayer();
     void RenderOverlay();
     void DrawGrid(ID2D1RenderTarget* rt);
+    void DrawIsoGrid(ID2D1RenderTarget* rt, double spacing);
     void DrawUcsIcon(ID2D1RenderTarget* rt);
     void DrawPaper(ID2D1RenderTarget* rt);  // a sheet's page, and the drawing in its viewports
     // With `dashes` (pixels: on, off, on...) the lines are cut into dashes.
@@ -162,7 +163,7 @@ private:
 
     // what the layer shows (to know when to rebuild it)
     uint64_t m_shownRevision = 0, m_shownSelection = 0;
-    bool m_shownGrid = false, m_shownLw = false;
+    bool m_shownGrid = false, m_shownLw = false, m_shownIso = false;
     double m_shownGridSpacing = 0;
 
     // cursor and interaction state

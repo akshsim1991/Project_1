@@ -67,8 +67,11 @@ FieldValues SheetFields(const Document& model, const SheetList& sheets, size_t i
 // A new sheet: a border and title block, and one viewport showing the
 // whole drawing at a usual scale.
 std::unique_ptr<Sheet> NewSheet(const Document& model, const std::wstring& name, const std::wstring& paper, bool landscape);
-// Border and title block for the sheet's paper (replacing the ones it has).
-void AddBorder(Sheet& sheet);
+// Border and title block for the sheet's paper (replacing the ones it has):
+// the BIS (SP 46) title block with the first-angle symbol, or the ISO one.
+void AddBorder(Sheet& sheet, bool bis = false);
+// The drawing asks for the BIS title block (BISSETUP).
+bool UsesBisTitleBlock(const Document& model);
 // The area inside the border above the title block (for viewports).
 Box DrawingArea(const SheetSetup& s);
 

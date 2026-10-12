@@ -113,7 +113,7 @@ jobs:
         run: |
           g++ -std=c++17 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-sanitize-recover=all \
             -Isrc tests/CoreTests.cpp src/Geometry.cpp src/Entity.cpp src/Spline.cpp src/Curve.cpp src/Modify.cpp \
-            src/Grips.cpp src/Select.cpp src/Dimension.cpp src/Annot.cpp src/CommandsAnnot.cpp src/Sheet.cpp src/Plot.cpp src/Expr.cpp src/Relate.cpp src/CommandsRelate.cpp src/FreeSketch.cpp src/Style.cpp src/Document.cpp src/DxfImport.cpp src/Snap.cpp src/Engine.cpp \
+            src/Grips.cpp src/Select.cpp src/Dimension.cpp src/Annot.cpp src/CommandsAnnot.cpp src/Sheet.cpp src/Plot.cpp src/Expr.cpp src/Relate.cpp src/CommandsRelate.cpp src/FreeSketch.cpp src/EngGraphics.cpp src/CommandsEG.cpp src/Style.cpp src/Document.cpp src/DxfImport.cpp src/Snap.cpp src/Engine.cpp \
             src/Commands.cpp src/CommandsModify.cpp src/CommandsDraw.cpp src/CommandsDim.cpp -o coretests
           ./coretests
       - run: sudo apt-get update && sudo apt-get install -y g++-mingw-w64-x86-64

@@ -390,8 +390,17 @@ void DimLayout(const DimData& d, DimGraphics& g) {
             ext(d.pts[1], d1);
             const double len = Dist(d0, d1);
             const Vec2 e = len > 1e-12 ? (d1 - d0) / len : u;
+            const Vec2 mid = Lerp(d0, d1, 0.5);
+            // Unidirectional: level text in a break of the line, if there is room.
+            const double half = std::fabs(e.x) * (g.textWidth / 2 + st.textGap) + std::fabs(e.y) * (h / 2 + st.textGap);
+            const bool inBreak = st.unidirectional && len >= 2 * half + 2.5 * as;
             if (len >= 2.5 * as) {
-                seg(d0, d1);
+                if (inBreak) {
+                    seg(d0, mid - e * half);
+                    seg(mid + e * half, d1);
+                } else {
+                    seg(d0, d1);
+                }
                 g.arrows.push_back(Arrow(d0, -e, as));
                 g.arrows.push_back(Arrow(d1, e, as));
             } else {  // no room: arrows outside, pointing in
@@ -399,8 +408,19 @@ void DimLayout(const DimData& d, DimGraphics& g) {
                 g.arrows.push_back(Arrow(d0, e, as));
                 g.arrows.push_back(Arrow(d1, -e, as));
             }
-            g.textAngle = Readable(AngleOf(e));
-            g.textPos = Lerp(d0, d1, 0.5) + Up(g.textAngle) * (st.textGap + h / 2);
+            if (st.unidirectional) {
+                g.textAngle = 0;
+                if (inBreak) {
+                    g.textPos = mid;
+                } else {  // beside the line: above it, or to its left
+                    Vec2 side = Perp(e);
+                    if (side.y < -1e-9 || (std::fabs(side.y) <= 1e-9 && side.x > 0)) side = side * -1;
+                    g.textPos = mid + side * (std::fabs(side.x) * g.textWidth / 2 + std::fabs(side.y) * h / 2 + st.textGap);
+                }
+            } else {
+                g.textAngle = Readable(AngleOf(e));
+                g.textPos = mid + Up(g.textAngle) * (st.textGap + h / 2);
+            }
             break;
         }
         case DimData::Radius:
@@ -434,7 +454,7 @@ void DimLayout(const DimData& d, DimGraphics& g) {
                 seg(from, q);
                 g.arrows.push_back(Arrow(q, dir, as));
                 if (dia) g.arrows.push_back(Arrow(q2, -dir, as));
-                g.textAngle = Readable(AngleOf(dir));
+                g.textAngle = st.unidirectional ? 0 : Readable(AngleOf(dir));
                 g.textPos = Lerp(from, q, 0.5) + Up(g.textAngle) * (st.textGap + h / 2);
             }
             break;
@@ -475,8 +495,8 @@ void DimLayout(const DimData& d, DimGraphics& g) {
                 }
             }
             const double mid = s.start + s.sweep / 2;
-            g.textAngle = Readable(mid - kPi / 2);
-            g.textPos = Polar(s.v, R + st.textGap + h / 2, mid);
+            g.textAngle = st.unidirectional ? 0 : Readable(mid - kPi / 2);
+            g.textPos = Polar(s.v, R + st.textGap + (st.unidirectional ? h / 2 + g.textWidth / 2 * std::fabs(std::cos(mid)) : h / 2), mid);
             break;
         }
         case DimData::Ordinate: {

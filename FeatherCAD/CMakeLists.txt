@@ -34,6 +34,8 @@ set(CORE_SOURCES
   src/Relate.cpp
   src/CommandsRelate.cpp
   src/FreeSketch.cpp
+  src/EngGraphics.cpp
+  src/CommandsEG.cpp
 )
 
 add_executable(FeatherCAD WIN32
