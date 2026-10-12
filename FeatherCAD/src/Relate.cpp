@@ -709,6 +709,101 @@ bool EvaluateFormulas(Document& doc, std::set<uint64_t>& changed, std::wstring& 
 // Relationships while drawing
 // ---------------------------------------------------------------------------
 
+namespace {
+// The points of an object where another object can be joined to it: a
+// line's or an arc's ends, a polyline's vertices, a point.
+void JoinPoints(const Entity& e, std::vector<Grip>& out) {
+    out.clear();
+    std::vector<Grip> grips;
+    GripsOf(e, grips);
+    for (const Grip& g : grips) {
+        bool end = false;
+        switch (e.type) {
+            case EntityType::Line: end = g.index == 0 || g.index == 1; break;
+            case EntityType::Arc: end = g.index == 1 || g.index == 2; break;
+            case EntityType::Polyline: end = g.index >= 0 && g.index < (int)e.verts.size(); break;
+            case EntityType::Point: end = g.index == 0; break;
+            default: break;
+        }
+        if (end) out.push_back(g);
+    }
+}
+
+bool Joinable(const Document& doc, const Entity& e) {
+    return !e.construction && doc.Visible(e) &&
+           (e.type == EntityType::Line || e.type == EntityType::Arc || e.type == EntityType::Polyline || e.type == EntityType::Point);
+}
+
+bool SameRef(const DimRef& a, const DimRef& b) { return a.id == b.id && a.grip == b.grip; }
+}  // namespace
+
+int AddImpliedRelations(Document& doc, const std::set<uint64_t>& ids) {
+    // The relationships there already are.
+    std::vector<RelationData> have;
+    for (const auto& kv : doc.Entities())
+        if (kv.second.type == EntityType::Relation && kv.second.annot) have.push_back(kv.second.annot->rel);
+    auto exists = [&](RelKind k, DimRef a, DimRef b) {
+        for (const RelationData& r : have) {
+            if (r.kind != k) continue;
+            if ((SameRef(r.refs[0], a) && SameRef(r.refs[1], b)) || (SameRef(r.refs[0], b) && SameRef(r.refs[1], a))) return true;
+        }
+        return false;
+    };
+    const double markSize = doc.Settings().dimStyle.textHeight * 0.8;
+    int added = 0;
+    auto add = [&](RelKind k, DimRef a, DimRef b) {
+        if (exists(k, a, b)) return;
+        Entity rel;
+        std::wstring why;
+        if (!MakeRelation(doc, k, {a, b, DimRef{}}, markSize, rel, why)) return;
+        EditAnnot(rel).rel.implied = true;
+        rel.layer = -1;
+        doc.Add(rel);
+        have.push_back(rel.annot->rel);
+        ++added;
+    };
+
+    // Through every object joined end to end with these, a connect at each joint.
+    std::set<uint64_t> seen;
+    std::vector<uint64_t> queue;
+    for (uint64_t id : ids)
+        if (const Entity* e = doc.Find(id); e && Joinable(doc, *e) && seen.insert(id).second) queue.push_back(id);
+    std::vector<Grip> mine, theirs;
+    while (!queue.empty()) {
+        const uint64_t id = queue.back();
+        queue.pop_back();
+        const Entity* e = doc.Find(id);
+        if (!e) continue;
+        JoinPoints(*e, mine);
+        const std::vector<Grip> myPoints = mine;
+        for (const Grip& g : myPoints) {
+            const double tol = 1e-7 * (1 + std::fabs(g.p.x) + std::fabs(g.p.y));
+            for (const auto& kv : doc.Entities()) {
+                if (kv.first == id || !Joinable(doc, kv.second) || !Bounds(kv.second).Inflated(tol).Contains(g.p)) continue;
+                JoinPoints(kv.second, theirs);
+                for (const Grip& o : theirs) {
+                    if (!Near(o.p, g.p, tol)) continue;
+                    add(RelKind::Coincident, {id, g.index}, {kv.first, o.index});
+                    if (seen.insert(kv.first).second) queue.push_back(kv.first);
+                }
+            }
+        }
+    }
+    // Rectangles (closed four-sided polylines with square corners) keep their right angles.
+    for (uint64_t id : seen) {
+        const Entity* e = doc.Find(id);
+        if (!e || e->type != EntityType::Polyline || !e->closed || e->verts.size() != 4) continue;
+        bool rect = true;
+        for (size_t i = 0; i < 4 && rect; ++i) {
+            const Vec2 u = e->verts[(i + 1) % 4].p - e->verts[i].p, w = e->verts[(i + 2) % 4].p - e->verts[(i + 1) % 4].p;
+            rect = e->verts[i].bulge == 0 && std::fabs(Dot(Normalized(u), Normalized(w))) < 1e-6;
+        }
+        if (!rect) continue;
+        for (int i = 0; i < 3; ++i) add(RelKind::Perpendicular, {id, -1 - i}, {id, -2 - i});
+    }
+    return added;
+}
+
 void AutoRelate(Document& doc, uint64_t lineId) {
     const Entity* e = doc.Find(lineId);
     if (!e || e->type != EntityType::Line) return;

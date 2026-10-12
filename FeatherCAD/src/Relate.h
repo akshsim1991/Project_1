@@ -51,6 +51,14 @@ bool EvaluateFormulas(Document& doc, std::set<uint64_t>& changed, std::wstring& 
 // The value of a variable or a named dimension (degrees for angles).
 bool LookupName(const Document& doc, const std::wstring& name, double& value);
 
+// The relationships a shape already has without saying so, made explicit
+// before other relationships are kept on it (as in Solid Edge): objects
+// whose ends meet stay joined (a connect relationship at each such corner,
+// all through the shape of joined objects), and a rectangle keeps its right
+// angles. For the objects `ids` and everything joined to them. Call inside
+// BeginChange / EndChange; returns how many relationships were added.
+int AddImpliedRelations(Document& doc, const std::set<uint64_t>& ids);
+
 // Relationships the drawing suggests for a new line (horizontal or
 // vertical, ends on other objects' points): added when the drawing's
 // "add relationships while drawing" is on.

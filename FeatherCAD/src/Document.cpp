@@ -690,7 +690,8 @@ void Document::SolveStep() {
         if (!c.after) continue;
         const Entity& x = *c.after;
         if (x.type == EntityType::Relation && x.annot) {
-            if (x.annot->rel.refs[0].id) keep.insert(x.annot->rel.refs[0].id);  // the first element stays, the others follow
+            // The first element stays, the others follow (not for those the shape already had).
+            if (x.annot->rel.refs[0].id && !x.annot->rel.implied) keep.insert(x.annot->rel.refs[0].id);
         } else if (x.type == EntityType::Dimension) {
             if (x.dim && x.dim->locked && x.dim->refs[0].id) {  // its first point stays, the rest follows
                 keep.insert(x.dim->refs[0].id);

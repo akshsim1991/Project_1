@@ -108,8 +108,14 @@ public:
         rel.layer = -1;
         rel.color = 30;
         E->Doc().BeginChange(std::wstring(RelKindName(m_kind)) + L" relationship");
+        // What the shape already has (joined corners, a rectangle's right angles) is kept too.
+        std::set<uint64_t> touched;
+        for (const DimRef& r : m_refs)
+            if (r.id) touched.insert(r.id);
+        const int implied = AddImpliedRelations(E->Doc(), touched);
         E->Doc().Add(rel);
         E->Doc().EndChange();
+        if (implied) E->Msg(std::to_wstring(implied) + L" relationship(s) added so the shape keeps its joined corners and right angles.");
         if (!E->Doc().Settings().maintainRelations)
             E->Msg(L"Relationships are not being kept just now (MAINTAINREL turns it on).");
         // Ready for the next one of the same kind.
@@ -162,6 +168,13 @@ public:
             return E->Finish();
         }
         E->Doc().BeginChange(anyOpen ? L"Lock dimensions" : L"Unlock dimensions");
+        if (anyOpen) {  // the shapes they measure keep their joined corners
+            std::set<uint64_t> touched;
+            for (const Entity& e : dims)
+                for (const DimRef& r : e.dim->refs)
+                    if (r.id) touched.insert(r.id);
+            AddImpliedRelations(E->Doc(), touched);
+        }
         for (Entity& e : dims) {
             DimData d = *e.dim;
             d.locked = anyOpen;
@@ -221,6 +234,12 @@ public:
             if (!formula.empty()) dd.locked = true, dd.value = DimMeasure(dd);
             x.dim = std::make_shared<const DimData>(dd);
             d.BeginChange(L"Dimension formula");
+            {
+                std::set<uint64_t> touched;
+                for (const DimRef& r : x.dim->refs)
+                    if (r.id) touched.insert(r.id);
+                AddImpliedRelations(d, touched);
+            }
             d.Replace(x);
             d.EndChange();
             return E->Finish();

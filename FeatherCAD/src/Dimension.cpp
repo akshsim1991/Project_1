@@ -8,6 +8,7 @@
 
 #include "Document.h"
 #include "Grips.h"
+#include "Relate.h"
 
 namespace {
 constexpr double kCapHeight = 0.716;  // Arial capitals, in ems
@@ -935,6 +936,11 @@ bool DriveDimension(Document& doc, uint64_t dimId, double value, std::wstring& w
         DimData nd = d;
         nd.locked = true;
         nd.value = value;
+        // The shape it measures keeps its joined corners while it changes.
+        std::set<uint64_t> touched;
+        for (const DimRef& r : d.refs)
+            if (r.id) touched.insert(r.id);
+        AddImpliedRelations(doc, touched);
         x.dim = std::make_shared<const DimData>(std::move(nd));
         doc.Replace(x);
         return true;

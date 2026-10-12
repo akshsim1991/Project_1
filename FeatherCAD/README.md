@@ -417,6 +417,8 @@ Drawing projections (a prism resting on HP, its axis inclined to HP and VP...) b
 | LABEL | LB | Click corners to letter them: a, b, c... follow on by themselves. Type a label first to change it: digits after a letter are written small and low, ' is a prime, so a1' shows as a with a small 1 and a prime, and [c1'] marks a hidden point. Each label sits beside its corner where the drawing leaves room, and moves with the corner. |
 | HIDDEN | HID | Click an edge to make it a hidden (dashed) line; click it again to make it visible. Objects selected first are all changed at once. |
 
+**1.9.1**: relationships keep shapes whole. Before a relationship is added (or a dimension locked), the shape gets the relationships it already has: a connect at every corner where objects meet - all through the shape of joined lines, arcs and polylines - and a rectangle (RECTANGLE) keeps its right angles. So Parallel or Equal on a rectangle drawn with LINE no longer pulls its corners apart, and Equal on two sides of a RECTANGLE makes a square. The command line says how many were added; Undo takes them back with the relationship.
+
 **Worked example**: `samples/Prism-axis-45-to-HP-edge-30-to-VP.fcad` (and its PDF) - a square prism, 35 mm base and 65 mm axis, resting on HP on an edge of its base inclined to VP at 30 deg, the axis inclined to HP at 45 deg: the three stages with projectors, every corner labelled, hidden edges dashed, and the 35, 65, 45 deg and 30 deg dimensions.
 
 The toolbar has a Point button before Line, and a group with Projector, Label points and Hidden line. On a narrow window, the toolbar buttons that do not fit are in the » menu at its right end.

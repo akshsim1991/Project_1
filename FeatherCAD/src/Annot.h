@@ -178,6 +178,7 @@ struct RelationData {
     // whole line, circle or arc (-1, or -1 - i for segment i of a polyline).
     std::array<DimRef, 3> refs{};
     double param = 1;  // Tangent: which side (+1, -1)
+    bool implied = false;  // added because the shape already had it (not kept still when added)
 };
 
 // What annotation objects carry (Text, Leader, Hatch, Insert).

@@ -3184,6 +3184,79 @@ void TestProjectionHelpers() {
     e.Cancel();
 }
 
+// Do the ends of these lines meet, each where the next begins (a closed chain)?
+bool ChainClosed(const Document& doc, const std::vector<uint64_t>& ids, double tol = 1e-6) {
+    for (size_t i = 0; i < ids.size(); ++i) {
+        const Entity* a = doc.Find(ids[i]);
+        const Entity* b = doc.Find(ids[(i + 1) % ids.size()]);
+        if (!a || !b || !Close(a->p1, b->p0, tol)) return false;
+    }
+    return true;
+}
+
+void TestRelationsKeepShape() {
+    // A rectangle drawn with LINE by hand (a little out of square).
+    Document doc;
+    TestHost host;
+    Engine e(doc, host);
+    Type(e, {L"l", L"0,0", L"100,3", L"97,60", L"-2,58", L"c"});
+    std::vector<uint64_t> lines;
+    for (const auto& kv : doc.Entities())
+        if (kv.second.type == EntityType::Line) lines.push_back(kv.first);
+    CHECK(lines.size() == 4 && ChainClosed(doc, lines));
+    auto mid = [&](size_t i) { return Lerp(doc.Find(lines[i])->p0, doc.Find(lines[i])->p1, 0.5); };
+    auto dir = [&](size_t i) { return Normalized(doc.Find(lines[i])->p1 - doc.Find(lines[i])->p0); };
+    // Parallel: bottom and top. The corners stay joined.
+    Type(e, {L"parallel"});
+    e.Point(mid(0));
+    e.Point(mid(2));
+    e.Cancel();
+    CHECK(ChainClosed(doc, lines) && Close(Cross(dir(0), dir(2)), 0, 1e-6));
+    CHECK(CountOf(doc, EntityType::Relation) == 4 + 1);  // four connects (the shape's own), the parallel
+    // Parallel: left and right; perpendicular: bottom and left.
+    Type(e, {L"parallel"});
+    e.Point(mid(1));
+    e.Point(mid(3));
+    e.Cancel();
+    Type(e, {L"perpendicular"});
+    e.Point(mid(0));
+    e.Point(mid(3));
+    e.Cancel();
+    CHECK(ChainClosed(doc, lines) && Close(Cross(dir(1), dir(3)), 0, 1e-6) && Close(Dot(dir(0), dir(3)), 0, 1e-6));
+    // Equal: bottom and left - a square, still closed.
+    Type(e, {L"equal"});
+    e.Point(mid(0));
+    e.Point(mid(3));
+    e.Cancel();
+    auto len = [&](size_t i) { return Dist(doc.Find(lines[i])->p0, doc.Find(lines[i])->p1); };
+    CHECK(ChainClosed(doc, lines) && Close(len(0), len(3), 1e-5) && Close(len(0), len(2), 1e-5) && doc.LastSolve().ok);
+    // Dragging a corner of one line: the joined line comes with it.
+    Entity x = *doc.Find(lines[1]);
+    x.p1 = x.p1 + Vec2{10, 10};
+    doc.BeginChange(L"Grip");
+    doc.Replace(x);
+    doc.EndChange();
+    CHECK(ChainClosed(doc, lines, 1e-5));
+
+    // RECTANGLE: equal on two sides next to each other makes it a square (its right angles are kept).
+    Document r;
+    Engine er(r, host);
+    Type(er, {L"rec", L"0,0", L"100,60"});
+    const uint64_t rect = FirstOf(r, EntityType::Polyline)->id;
+    Type(er, {L"equal"});
+    er.Point({50, 0});
+    er.Point({100, 30});
+    er.Cancel();
+    const Entity& sq = *r.Find(rect);
+    CHECK(sq.verts.size() == 4 && sq.closed);
+    for (size_t i = 0; i < 4; ++i) {
+        const Vec2 u = sq.verts[(i + 1) % 4].p - sq.verts[i].p, w = sq.verts[(i + 2) % 4].p - sq.verts[(i + 1) % 4].p;
+        CHECK(Close(Dot(Normalized(u), Normalized(w)), 0, 1e-6));          // square corners
+        CHECK(Close(Length(u), Length(sq.verts[1].p - sq.verts[0].p), 1e-5));  // equal sides
+    }
+    CHECK(r.LastSolve().ok);
+}
+
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);  // failures show even if a later check crashes
     TestAngles();
@@ -3229,6 +3302,7 @@ int main() {
     TestImages();
     TestCloseByClicking();
     TestProjectionHelpers();
+    TestRelationsKeepShape();
     std::printf("%d checks, %d failed\n", g_checks, g_failures);
     return g_failures;
 }
