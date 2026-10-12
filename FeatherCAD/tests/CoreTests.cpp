@@ -2809,6 +2809,29 @@ void TestSymbols() {
     CHECK(cellTexts().find(L"2;B-2;Bolt M8;2;") != std::wstring::npos);
 }
 
+void TestEasierUse() {
+    // Prompts in plain words.
+    CHECK(PlainPrompt(L"Specify first point", kAcceptPoint) == L"Click the first point");
+    CHECK(PlainPrompt(L"Specify radius of circle", kAcceptPoint | kAcceptNumber) == L"Click or type the radius of circle");
+    CHECK(PlainPrompt(L"Specify the offset distance", kAcceptNumber) == L"Type the offset distance");
+    CHECK(PlainPrompt(L"Enter text", kAcceptEmpty) == L"Type text");
+    CHECK(PlainPrompt(L"Select a line", kAcceptPoint) == L"Click a line");
+    CHECK(PlainPrompt(L"Pick something", kAcceptPoint) == L"Pick something");
+    Document doc;
+    TestHost host;
+    Engine e(doc, host);
+    Type(e, {L"c"});
+    CHECK(e.CurrentPrompt().text.rfind(L"Click", 0) == 0);
+    e.Cancel();
+    // Line thickness on screen: every step thicker than the one before.
+    double last = 0;
+    for (int lw : {5, 13, 18, 25, 35, 50, 70, 100, 140, 211}) {
+        CHECK(ScreenLineWidth(lw) > last);
+        last = ScreenLineWidth(lw);
+    }
+    CHECK(Close(ScreenLineWidth(kDefaultLineWeight), 1) && Close(ScreenLineWidth(kLwDefault), 1) && ScreenLineWidth(50) >= 3);
+}
+
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);  // failures show even if a later check crashes
     TestAngles();
@@ -2847,6 +2870,7 @@ int main() {
     TestSheets();
     TestRelations();
     TestSymbols();
+    TestEasierUse();
     std::printf("%d checks, %d failed\n", g_checks, g_failures);
     return g_failures;
 }

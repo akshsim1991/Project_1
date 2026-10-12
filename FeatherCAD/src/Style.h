@@ -39,6 +39,9 @@ constexpr int kLwByLayer = -1, kLwByBlock = -2, kLwDefault = -3;
 const std::vector<int>& LineWeights();  // 0, 5, 9, 13 ... 211
 std::wstring LineWeightName(int lw);    // "0.25 mm", "ByLayer", "Default"
 constexpr int kDefaultLineWeight = 25;
+// Pixels on screen for a line weight (hundredths of a mm), at 96 dpi: each
+// step clearly thicker than the one before (0.25 mm: 1, 0.5 mm: 3, 1 mm: 7).
+double ScreenLineWidth(int lw);
 
 // ---- layers ------------------------------------------------------------------
 struct Layer {

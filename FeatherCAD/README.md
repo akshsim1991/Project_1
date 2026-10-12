@@ -373,6 +373,15 @@ Relationships say how objects belong together, as in Solid Edge's 2D sketching. 
 
 The symbols are text objects with a frame: their contents can be changed like any text (double-click, or the Properties panel), and they go to DXF and PDF as lines and text.
 
+## Version 1.7.1: easier to use
+
+- **The guide strip** above the drawing always says, in plain words, what to do next ("Click the first point", "Type the offset distance"). While a command runs, its choices are buttons (Close, Undo, 3 points...), with **Done** (the same as Enter) and **Cancel** (the same as Esc), so nothing has to be typed or remembered.
+- With objects selected, the strip offers **Move, Copy, Rotate, Mirror, Scale, Erase** and **Clear selection**.
+- **Colours**: eleven colour swatches on the strip (and More... for any colour). Click one to colour the selected objects, or, with nothing selected, the objects drawn next.
+- **Thickness**: the Thickness button sets how thick lines are, from very thin (0.13 mm) to extra heavy (2 mm), for the selection or for new objects. Line thickness now shows on screen from the start, each step clearly thicker than the one before (it used to need LWT turned on, and thin weights all looked alike).
+- The cursor tip reads "Length 42.00  Angle 30.00°"; the status bar buttons have names (Obj snap, End, Mid, Cross, Centre, Track...) and explain themselves when the mouse rests on them.
+- Prompts say "Click" and "Type" instead of "Specify" and "Enter"; Trim and Extend explain what a click does.
+
 ## Coming in later phases
 
 | Phase | Contents |

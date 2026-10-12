@@ -15,18 +15,18 @@ const wchar_t kClass[] = L"FeatherCadStatusBar";
 
 StatusBar::StatusBar() {
     m_buttons = {
-        {ID_TOGGLE_GRID, ID_DRAFTING_SETTINGS, L"GRID", L"Grid (F7). Right-click for settings."},
-        {ID_TOGGLE_SNAP, ID_DRAFTING_SETTINGS, L"SNAP", L"Snap to the grid spacing (F9). Right-click for settings."},
-        {ID_TOGGLE_ORTHO, ID_DRAFTING_SETTINGS, L"ORTHO", L"Horizontal and vertical only (F8, or hold Shift)"},
-        {ID_TOGGLE_POLAR, ID_DRAFTING_SETTINGS, L"POLAR", L"Polar tracking at set angles (F10). Right-click for the angle."},
-        {ID_TOGGLE_OSNAP, ID_OSNAP_SETTINGS, L"OSNAP", L"Object snaps (F3). Right-click to choose them."},
-        {ID_SNAPMODE_FIRST + 0, ID_OSNAP_SETTINGS, L"E", L"Endpoint snap on or off. Right-click for all the snaps."},
-        {ID_SNAPMODE_FIRST + 1, ID_OSNAP_SETTINGS, L"M", L"Midpoint snap on or off. Right-click for all the snaps."},
-        {ID_SNAPMODE_FIRST + 4, ID_OSNAP_SETTINGS, L"I", L"Intersection snap on or off. Right-click for all the snaps."},
-        {ID_SNAPMODE_FIRST + 2, ID_OSNAP_SETTINGS, L"C", L"Centre snap on or off. Right-click for all the snaps."},
-        {ID_TOGGLE_OTRACK, ID_DRAFTING_SETTINGS, L"OTRACK", L"Object snap tracking (F11): rest on a snap point to line up with it"},
-        {ID_TOGGLE_DYN, ID_DRAFTING_SETTINGS, L"DYN", L"Dynamic input (F12): prompt, input and sizes at the cursor"},
-        {ID_TOGGLE_LWT, ID_PROPERTIES, L"LWT", L"Show line weights. Right-click for the Properties panel."},
+        {ID_TOGGLE_GRID, ID_DRAFTING_SETTINGS, L"Grid", L"Show the grid of dots and lines (F7). Right-click for its spacing."},
+        {ID_TOGGLE_SNAP, ID_DRAFTING_SETTINGS, L"Snap", L"The cursor jumps from grid point to grid point (F9). Right-click for the spacing."},
+        {ID_TOGGLE_ORTHO, ID_DRAFTING_SETTINGS, L"Ortho", L"Only straight across or straight up and down (F8, or hold Shift)"},
+        {ID_TOGGLE_POLAR, ID_DRAFTING_SETTINGS, L"Polar", L"Lines snap to round angles: 0, 15, 30, 45... (F10). Right-click for the angle."},
+        {ID_TOGGLE_OSNAP, ID_OSNAP_SETTINGS, L"Obj snap", L"The cursor snaps to ends, middles, centres of objects (F3). Right-click to choose."},
+        {ID_SNAPMODE_FIRST + 0, ID_OSNAP_SETTINGS, L"End", L"Snap to the ends of lines and arcs (click: on or off)"},
+        {ID_SNAPMODE_FIRST + 1, ID_OSNAP_SETTINGS, L"Mid", L"Snap to the middle of lines and arcs (click: on or off)"},
+        {ID_SNAPMODE_FIRST + 4, ID_OSNAP_SETTINGS, L"Cross", L"Snap to where two objects cross (click: on or off)"},
+        {ID_SNAPMODE_FIRST + 2, ID_OSNAP_SETTINGS, L"Centre", L"Snap to the centre of circles and arcs (click: on or off)"},
+        {ID_TOGGLE_OTRACK, ID_DRAFTING_SETTINGS, L"Track", L"Line up with snap points: rest the cursor on one, then move away (F11)"},
+        {ID_TOGGLE_DYN, ID_DRAFTING_SETTINGS, L"Tip", L"Show the instruction, length and angle next to the cursor (F12)"},
+        {ID_TOGGLE_LWT, ID_PROPERTIES, L"Thickness", L"Show line thickness on screen (otherwise all lines are thin)"},
         {ID_UNITS, ID_UNITS, L"mm", L"Drawing units and decimal places"},
     };
 }

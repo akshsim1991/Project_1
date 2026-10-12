@@ -69,7 +69,7 @@ struct Drafting {
     double polarAngle = 15;   // degrees between tracking directions
     bool otrackOn = true;     // object snap tracking (F11)
     bool dynOn = true;        // input and prompt at the cursor (F12)
-    bool lwDisplay = false;   // show line weights (LWT)
+    bool lwDisplay = true;    // show line weights (LWT)
 };
 
 class EngineHost {
@@ -114,6 +114,7 @@ struct CommandInfo {
     bool host = false;                 // handled by EngineHost::HostCommand
 };
 const std::vector<CommandInfo>& AllCommands();
+std::wstring PlainPrompt(const std::wstring& text, unsigned accept);
 const CommandInfo* FindCommand(const std::wstring& nameOrAlias);
 
 class Command;

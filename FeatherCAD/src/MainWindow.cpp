@@ -173,6 +173,17 @@ const IdCommand kIdCommands[] = {
 const unsigned kSnapBits[] = {kSnapEndpoint, kSnapMidpoint, kSnapCentre, kSnapQuadrant,
                               kSnapIntersection, kSnapPerpendicular, kSnapTangent, kSnapNearest};
 
+// The colours offered as swatches in the guide bar (colour indexes:
+// red, orange, yellow, green, cyan, blue, magenta, black/white, greys, brown).
+const int32_t kSwatchColors[] = {1, 30, 2, 3, 4, 5, 6, 7, 8, 9, 34};
+const wchar_t* const kSwatchNames[] = {L"Red", L"Orange", L"Yellow", L"Green", L"Cyan", L"Blue", L"Magenta",
+                                       L"Black (white on a dark background)", L"Dark grey", L"Light grey", L"Brown"};
+std::wstring FriendlyColour(int32_t c) {
+    for (size_t i = 0; i < std::size(kSwatchColors); ++i)
+        if (kSwatchColors[i] == c) return kSwatchNames[i];
+    return ColorName(c);
+}
+
 void Append(HMENU m, int id, const std::wstring& text, bool enabled = true, bool checked = false) {
     AppendMenuW(m, MF_STRING | (enabled ? 0 : MF_GRAYED) | (checked ? MF_CHECKED : 0), (UINT_PTR)id, text.c_str());
 }
@@ -303,6 +314,7 @@ void MainWindow::CreateChildren() {
     m_tools.AddIconButton(ID_DIST, kIconDistance, L"Measure a distance (DI)");
 
     m_tabs.Create(m_hwnd, m_hwnd);
+    m_guide.Create(m_hwnd, m_hwnd);
     {
         TabBar::Ids ids;
         ids.tabFirst = ID_SHEET_TAB_FIRST;
@@ -373,11 +385,13 @@ void MainWindow::Layout() {
     GetClientRect(m_hwnd, &rc);
     const int menuH = m_menuBar.Height(), toolH = m_tools.Height(), tabH = m_tabs.Height();
     const int statusH = m_status.Height(), cmdH = m_cmdline.Height(), sheetH = m_sheetTabs.Height();
-    HDWP dwp = BeginDeferWindowPos(8);
+    const int guideH = m_guide.Height();
+    HDWP dwp = BeginDeferWindowPos(9);
     dwp = DeferWindowPos(dwp, m_menuBar.Hwnd(), nullptr, 0, 0, rc.right, menuH, SWP_NOZORDER);
     dwp = DeferWindowPos(dwp, m_tools.Hwnd(), nullptr, 0, menuH, rc.right, toolH, SWP_NOZORDER);
     dwp = DeferWindowPos(dwp, m_tabs.Hwnd(), nullptr, 0, menuH + toolH, rc.right, tabH, SWP_NOZORDER);
-    const int canvasTop = menuH + toolH + tabH;
+    dwp = DeferWindowPos(dwp, m_guide.Hwnd(), nullptr, 0, menuH + toolH + tabH, rc.right, guideH, SWP_NOZORDER);
+    const int canvasTop = menuH + toolH + tabH + guideH;
     const int canvasH = std::max(10, (int)rc.bottom - canvasTop - cmdH - statusH - sheetH);
     const int panelW = m_settings.propertiesOn ? std::min(m_props.Width(), (int)rc.right / 2) : 0;
     dwp = DeferWindowPos(dwp, m_canvas.Hwnd(), nullptr, 0, canvasTop, rc.right - panelW, canvasH, SWP_NOZORDER);
@@ -827,6 +841,127 @@ void MainWindow::UpdatePrompt() {
     if (Eng().Active()) m_cmdline.SetPrompt(Eng().CurrentPrompt().FullText(), false);
     else m_cmdline.SetPrompt(L"Command:", true);
     m_cmdline.SetSpaces(Eng().Active() && Eng().CurrentPrompt().spaces);
+    UpdateGuide();
+}
+
+void MainWindow::UpdateGuide() {
+    if (!m_ready) return;
+    using B = GuideBar::Button;
+    std::vector<B> buttons;
+    std::wstring title, text;
+    const bool active = Eng().Active();
+    if (active) {
+        const Prompt& p = Eng().CurrentPrompt();
+        const CommandInfo* info = FindCommand(Eng().ActiveName());
+        title = info ? info->title : Eng().ActiveName();
+        text = p.text;
+        if (!p.text.empty() && (p.accept & kAcceptPoint) && !p.pickObject && !(p.accept & kAcceptSelect))
+            text += (p.hasBase ? L" (or type a length)" : L"");
+        for (size_t i = 0; i < p.keywords.size() && i < 30; ++i) {
+            // "cuTting edges" (the typed letter in capitals) reads as "Cutting edges" on a button.
+            std::wstring name = p.keywords[i].name;
+            if (!name.empty() && std::iswlower(name[0])) {
+                for (wchar_t& ch : name) ch = (wchar_t)std::towlower(ch);
+                name[0] = (wchar_t)std::towupper(name[0]);
+            }
+            buttons.push_back({ID_CTX_KEYWORD + (int)i, name, L"Choose " + name + L" (or type " + p.keywords[i].key + L")", 0});
+        }
+        if (p.accept & kAcceptEmpty) {
+            if (!p.defaultText.empty() && !(p.accept & kAcceptSelect))
+                buttons.push_back({ID_CTX_ENTER, L"Use " + p.defaultText, L"Take the value shown (Enter)", 1});
+            else
+                buttons.push_back({ID_CTX_ENTER, L"Done", L"Finish this step (Enter, or right-click > Enter)", 1});
+        }
+        buttons.push_back({ID_CTX_CANCEL, L"Cancel", L"Stop this command (Esc)", 2});
+    } else if (const size_t n = Eng().Selection().size()) {
+        title = std::to_wstring(n) + (n == 1 ? L" object selected" : L" objects selected");
+        text = L"What to do with it:";
+        buttons = {{ID_MOVE, L"Move", L"Move to another place (M)", 0},     {ID_COPY, L"Copy", L"Make copies (CO)", 0},
+                   {ID_ROTATE, L"Rotate", L"Turn about a point (RO)", 0},  {ID_MIRROR, L"Mirror", L"Mirror about a line (MI)", 0},
+                   {ID_SCALE, L"Scale", L"Make bigger or smaller (SC)", 0}, {ID_ERASE, L"Erase", L"Delete (Delete key)", 0},
+                   {ID_ESCAPE, L"Clear selection", L"Select nothing (Esc)", 2}};
+    } else {
+        text = L"Choose a tool above (Line, Circle, Rectangle...) or type its name below (L, C, REC) and press Enter. "
+               L"Click an object to select it.";
+    }
+    m_guide.SetGuide(title, text, std::move(buttons), active);
+
+    // Colour and thickness: of the selection, or for new objects.
+    int32_t color = Doc().Current().color;
+    int lw = Doc().Current().lineweight;
+    bool first = true;
+    for (uint64_t id : Eng().Selection())
+        if (const Entity* e = Doc().Find(id)) {
+            if (first) color = e->color, lw = e->lineweight, first = false;
+            else {
+                if (e->color != color) color = INT32_MIN;
+                if (e->lineweight != lw) lw = INT32_MIN;
+            }
+        }
+    std::vector<GuideBar::Swatch> sw;
+    int chosen = 0;
+    const Theme& th = CurrentTheme();
+    for (size_t i = 0; i < std::size(kSwatchColors); ++i) {
+        const int32_t c = kSwatchColors[i];
+        uint32_t rgb = ColorRgb(c);
+        COLORREF cr = RGB((rgb >> 16) & 255, (rgb >> 8) & 255, rgb & 255);
+        if (c == 7) cr = th.dark ? RGB(255, 255, 255) : RGB(0, 0, 0);  // white on dark paper, black on light
+        sw.push_back({ID_SWATCH_FIRST + (int)i, cr, kSwatchNames[i]});
+        if (c == color) chosen = ID_SWATCH_FIRST + (int)i;
+    }
+    std::wstring wt = lw == INT32_MIN ? L"(mixed)" : lw == kLwByLayer ? L"as layer" : lw == kLwDefault ? L"normal" : LineWeightName(lw);
+    m_guide.SetStyle(std::move(sw), chosen, ID_SWATCH_MORE, ID_WEIGHT_MENU, wt);
+}
+
+void MainWindow::ApplyColour(int32_t color) {
+    if (Eng().Selection().empty()) {
+        CurrentStyle c = Doc().Current();
+        c.color = color;
+        Doc().SetCurrent(c);
+        Message(L"New objects will be " + FriendlyColour(color) + L".");
+    } else {
+        ChangeSelected(L"Change colour", [color](Entity& x) { x.color = color; });
+    }
+    UpdateProperties(true);
+    AfterInput();
+}
+
+void MainWindow::ThicknessMenu() {
+    struct Choice {
+        int lw;
+        const wchar_t* name;
+    };
+    static const Choice choices[] = {{kLwByLayer, L"As the layer"}, {13, L"Very thin  (0.13 mm)"}, {18, L"Thin  (0.18 mm)"},
+                                     {25, L"Normal  (0.25 mm)"},     {35, L"Medium  (0.35 mm)"},   {50, L"Thick  (0.50 mm)"},
+                                     {70, L"Thicker  (0.70 mm)"},   {100, L"Very thick  (1.00 mm)"}, {140, L"Heavy  (1.40 mm)"},
+                                     {200, L"Extra heavy  (2.00 mm)"}};
+    int now = Doc().Current().lineweight;
+    if (!Eng().Selection().empty())
+        if (const Entity* e = Doc().Find(*Eng().Selection().begin())) now = e->lineweight;
+    HMENU m = CreatePopupMenu();
+    for (size_t i = 0; i < std::size(choices); ++i) {
+        AppendMenuW(m, MF_STRING | (choices[i].lw == now ? MF_CHECKED : 0), i + 1, choices[i].name);
+        if (i == 0) AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    }
+    const RECT r = m_guide.ItemScreenRect(ID_WEIGHT_MENU);
+    const int pick = (int)TrackPopupMenu(m, TPM_RETURNCMD | TPM_RIGHTALIGN | TPM_TOPALIGN | TPM_NONOTIFY, r.right, r.bottom, 0, m_hwnd, nullptr);
+    DestroyMenu(m);
+    if (pick <= 0) return;
+    const int lw = choices[pick - 1].lw;
+    if (!Eng().Draft().lwDisplay) {  // thickness that cannot be seen is no use
+        Eng().Draft().lwDisplay = true;
+        DraftingChanged();
+    }
+    if (Eng().Selection().empty()) {
+        CurrentStyle c = Doc().Current();
+        c.lineweight = lw;
+        Doc().SetCurrent(c);
+        Message(std::wstring(L"New objects will be drawn ") + choices[pick - 1].name + L".");
+    } else {
+        ChangeSelected(L"Change thickness", [lw](Entity& x) { x.lineweight = (int16_t)lw; });
+    }
+    UpdateProperties(true);
+    AfterInput();
 }
 
 void MainWindow::UpdateStatus() {
@@ -847,6 +982,7 @@ void MainWindow::UpdateStatus() {
     m_status.SetToggles({d.gridOn, d.snapOn, d.orthoOn, d.polarOn, d.osnapOn, mode(kSnapEndpoint), mode(kSnapMidpoint),
                          mode(kSnapIntersection), mode(kSnapCentre), d.otrackOn, d.dynOn, d.lwDisplay});
     m_status.SetUnits(UnitsSymbol(Doc().Settings().units));
+    UpdateGuide();
 }
 
 std::wstring MainWindow::DrawingName(const Drawing& d) const {
@@ -955,6 +1091,20 @@ void MainWindow::OnCommand(int id) {
         const size_t i = (size_t)(id - ID_CTX_KEYWORD);
         if (i < kw.size()) Eng().Keyword(kw[i].key);
         AfterInput();
+        return;
+    }
+    if (id >= ID_SWATCH_FIRST && id < ID_SWATCH_MORE) {
+        const size_t i = (size_t)(id - ID_SWATCH_FIRST);
+        if (i < std::size(kSwatchColors)) ApplyColour(kSwatchColors[i]);
+        return;
+    }
+    if (id == ID_SWATCH_MORE) {
+        int32_t c = Doc().Current().color;
+        if (PickColor(m_hwnd, c, true)) ApplyColour(c);
+        return;
+    }
+    if (id == ID_WEIGHT_MENU) {
+        ThicknessMenu();
         return;
     }
     if (id >= ID_CTX_RECENT_CMD && id < ID_CTX_RECENT_CMD + 10) {
@@ -2396,7 +2546,7 @@ void MainWindow::UpdateProperties(bool force) {
     {
         Row r;
         r.kind = Row::Choice;
-        r.label = L"Line weight";
+        r.label = L"Thickness";
         const std::vector<int> list = WeightChoices();
         for (int v : list) {
             r.choices.push_back(LineWeightName(v));
@@ -2678,6 +2828,7 @@ void MainWindow::ApplyTheme(int mode) {
     m_menuBar.OnThemeChanged();
     m_tools.OnThemeChanged();
     m_tabs.OnThemeChanged();
+    m_guide.OnThemeChanged();
     m_props.OnThemeChanged();
     m_cmdline.OnThemeChanged();
     m_status.OnThemeChanged();
@@ -2788,6 +2939,7 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             m_menuBar.OnDpiChanged();
             m_tools.OnDpiChanged();
             m_tabs.OnDpiChanged();
+            m_guide.OnDpiChanged();
             m_props.OnDpiChanged();
             m_cmdline.OnDpiChanged();
             m_status.OnDpiChanged();

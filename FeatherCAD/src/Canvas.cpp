@@ -696,8 +696,10 @@ void Canvas::DrawStyled(ID2D1RenderTarget* rt, const std::vector<const Entity*>&
             color = m_constructionInk;
             dashes = DashPattern(FindLineType(L"CONSTRUCTION"), 1, true);  // the same at any zoom
         } else {
-            // Line weight on screen: 0.25 mm is one pixel, thicker ones in proportion.
-            if (lwOn && k.lw > kDefaultLineWeight) width = (float)std::max(1.0, k.lw * 0.04 * m_dpi / 96.0);
+            // Line weight on screen, so that each step looks different: 0.25 mm
+            // (the default) is one pixel, 0.5 mm three, 1 mm seven, 2 mm fifteen;
+            // thinner ones are drawn lighter than one pixel.
+            if (lwOn) width = (float)(ScreenLineWidth(k.lw) * m_dpi / 96.0);
             dashes = DashPattern(k.lt, k.lts);
         }
         if (k.locked) color = D2D1::ColorF((color.r + m_bg.r) / 2, (color.g + m_bg.g) / 2, (color.b + m_bg.b) / 2, color.a);
@@ -1130,7 +1132,7 @@ void Canvas::RenderOverlay() {
             line(pr.text + (m_typed.empty() ? std::wstring() : L":  " + m_typed + L"_"));
         if (wantsPoint && pr.hasBase && m_trackLabel.empty() && !Near(m_tracked, pr.base, 1e-12)) {
             const Vec2 d = m_tracked - pr.base;
-            line(m_engine->Len(Length(d)) + L"  <  " + m_engine->Ang(NormalizeAngle(AngleOf(d))) + L"\x00B0");
+            line(L"Length " + m_engine->Len(Length(d)) + L"    Angle " + m_engine->Ang(NormalizeAngle(AngleOf(d))) + L"\x00B0");
         }
         if (!tip.empty()) DrawLabel(rt, tip, c.x + (float)Px(18), c.y + (float)Px(18));
     }

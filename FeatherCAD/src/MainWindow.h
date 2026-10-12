@@ -12,6 +12,7 @@
 #include "Common.h"
 #include "Document.h"
 #include "Engine.h"
+#include "GuideBar.h"
 #include "History.h"
 #include "PropertiesPanel.h"
 #include "Plot.h"
@@ -103,6 +104,9 @@ private:
     void AfterInput();
     void FocusCommandLine();
     void UpdatePrompt();
+    void UpdateGuide();
+    void ApplyColour(int32_t color);
+    void ThicknessMenu();
     void UpdateStatus();
     void UpdateTitle();
     void UpdateTabs();
@@ -191,6 +195,7 @@ private:
     StatusBar m_status;
     Toolbar m_menuBar, m_tools;
     TabBar m_tabs;
+    GuideBar m_guide;  // what to do next, choices, colour and thickness
     TabBar m_sheetTabs;  // under the drawing: the drawing and its sheets
     CommandPalette m_palette;
     PropertiesPanel m_props;

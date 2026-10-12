@@ -142,7 +142,31 @@ void Engine::Start(const CommandInfo& info) {
     m_cmd->Start();
 }
 
-void Engine::Ask(Prompt p) { m_prompt = std::move(p); }
+// Prompts in plain words: "Click the first point", "Type the offset
+// distance" (rather than "Specify..." and "Enter...", which beginners read
+// as the Enter key).
+std::wstring PlainPrompt(const std::wstring& text, unsigned accept) {
+    auto starts = [&](const wchar_t* w) { return text.rfind(w, 0) == 0; };
+    auto rest = [&](size_t n) {
+        std::wstring r = text.substr(n);
+        if (r.rfind(L"the ", 0) == 0) r.erase(0, 4);
+        return r;
+    };
+    const bool point = (accept & kAcceptPoint) != 0, number = (accept & kAcceptNumber) != 0;
+    if (starts(L"Specify ")) {
+        if (point && number) return L"Click or type the " + rest(8);
+        if (point) return L"Click the " + rest(8);
+        return L"Type the " + rest(8);
+    }
+    if (starts(L"Enter ")) return L"Type " + text.substr(6);
+    if (starts(L"Select ")) return L"Click " + text.substr(7);
+    return text;
+}
+
+void Engine::Ask(Prompt p) {
+    p.text = PlainPrompt(p.text, p.accept);
+    m_prompt = std::move(p);
+}
 
 void Engine::AskSelection() {
     if (!m_selection.empty()) {
@@ -152,7 +176,7 @@ void Engine::AskSelection() {
     }
     m_selecting = true;
     Prompt p;
-    p.text = L"Select objects";
+    p.text = L"Click the objects to use (or drag a box around them), then press Enter";
     p.accept = kAcceptSelect | kAcceptEmpty;
     m_prompt = p;
 }

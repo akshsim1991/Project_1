@@ -52,10 +52,10 @@ class TrimExtendCmd : public Command {
 
     void AskPick() {
         if (m_extend)
-            E->Ask(Pick(L"Select object to extend or shift-select to trim", kAcceptEmpty,
+            E->Ask(Pick(L"Click each line to lengthen it up to the next object (Shift+click cuts instead)", kAcceptEmpty,
                         {{L"B", L"Boundary edges"}, {L"U", L"Undo"}}));
         else
-            E->Ask(Pick(L"Select object to trim or shift-select to extend", kAcceptEmpty,
+            E->Ask(Pick(L"Click each piece to cut away, up to where it crosses (Shift+click lengthens instead)", kAcceptEmpty,
                         {{L"T", L"cuTting edges"}, {L"U", L"Undo"}}));
     }
     // Trims or extends object `id` at `pick`; into `preview` only if given.

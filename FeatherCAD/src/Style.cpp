@@ -128,6 +128,12 @@ const std::vector<int>& LineWeights() {
     return list;
 }
 
+double ScreenLineWidth(int lw) {
+    if (lw < 0) lw = kDefaultLineWeight;
+    if (lw < kDefaultLineWeight) return std::max(0.5, lw / (double)kDefaultLineWeight);
+    return 1 + (lw - kDefaultLineWeight) * 0.08;
+}
+
 std::wstring LineWeightName(int lw) {
     if (lw == kLwByLayer) return L"ByLayer";
     if (lw == kLwByBlock) return L"ByBlock";

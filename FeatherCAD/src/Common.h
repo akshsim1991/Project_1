@@ -21,7 +21,7 @@
 #include <vector>
 
 #define APP_NAME L"Feather CAD"
-#define APP_VERSION L"1.7.0"
+#define APP_VERSION L"1.7.1"
 #define APP_AUTHOR L"Akshaya Simha"
 #define APP_COPYRIGHT L"\x00A9 2026 Akshaya Simha"
 #define APP_WINDOW_CLASS L"FeatherCadMain"
@@ -241,5 +241,8 @@ enum : int {
     ID_TAB_CLOSE_FIRST = 700,  // + index of a drawing tab: its close button
     ID_SHEET_TAB_FIRST = 800,  // + 0: the drawing, + 1 + i: sheet i
     ID_SHEET_MENU_FIRST = 900, // + 1 + i: right click on sheet i's tab
+    ID_SWATCH_FIRST = 1000,    // + index of a colour swatch in the guide bar
+    ID_SWATCH_MORE = 1030,     // the guide bar's "More..." colours
+    ID_WEIGHT_MENU = 1031,     // the guide bar's thickness button
     kMaxTabs = 100,
 };
