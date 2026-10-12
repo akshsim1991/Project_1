@@ -911,6 +911,34 @@ bool DriveDimension(Document& doc, uint64_t dimId, double value, std::wstring& w
         why = L"This is a driven dimension: it only reports. Make it driving first (in its properties).";
         return false;
     }
+    if (!d.formula.empty()) {
+        why = L"This dimension follows its formula (" + d.formula + L"): change the formula in Variables.";
+        return false;
+    }
+    // Held by the relationship solver: a locked dimension, or one on objects
+    // with relationships. It holds the new value; the solver moves the objects.
+    bool related = d.locked;
+    if (!related && doc.Settings().maintainRelations) {
+        for (const auto& kv : doc.Entities()) {
+            if (kv.second.type != EntityType::Relation || !kv.second.annot) continue;
+            for (const DimRef& rr : kv.second.annot->rel.refs)
+                for (const DimRef& dr : d.refs) related |= rr.id && rr.id == dr.id;
+            if (related) break;
+        }
+    }
+    if (related && doc.Settings().maintainRelations && HasRefs(*de)) {
+        if (!(value > 0) || !std::isfinite(value)) {
+            why = L"The value must be positive.";
+            return false;
+        }
+        Entity x = *de;
+        DimData nd = d;
+        nd.locked = true;
+        nd.value = value;
+        x.dim = std::make_shared<const DimData>(std::move(nd));
+        doc.Replace(x);
+        return true;
+    }
     if (d.kind == DimData::Ordinate || d.kind == DimData::AngularCoord) {
         if (!d.refs[d.kind == DimData::Ordinate ? 0 : 2].id) {
             why = L"This dimension is not attached to any object, so there is nothing to change.";

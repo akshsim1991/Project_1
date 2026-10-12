@@ -11,9 +11,11 @@
 #include "Document.h"
 #include "DxfImport.h"
 #include "Engine.h"
+#include "Expr.h"
 #include "Grips.h"
 #include "Modify.h"
 #include "Plot.h"
+#include "Relate.h"
 #include "Select.h"
 #include "Spline.h"
 #include "Snap.h"
@@ -2454,6 +2456,263 @@ void TestSheets() {
     CHECK(dm.Count() == 2);
 }
 
+uint64_t AddRel(Document& d, RelKind k, DimRef a, DimRef b = {}, DimRef c = {}) {
+    Entity r;
+    std::wstring why;
+    if (!MakeRelation(d, k, {a, b, c}, 2.5, r, why)) return 0;
+    d.BeginChange(L"Relationship");
+    const uint64_t id = d.Add(r);
+    d.EndChange();
+    return id;
+}
+DimRef W(uint64_t id) { return {id, -1}; }
+size_t CountOf(const Document& d, EntityType t) {
+    size_t n = 0;
+    for (const auto& kv : d.Entities()) n += kv.second.type == t;
+    return n;
+}
+void MoveEnd(Document& d, uint64_t id, int end, Vec2 to) {
+    Entity e = *d.Find(id);
+    (end == 0 ? e.p0 : e.p1) = to;
+    d.BeginChange(L"Move");
+    d.Replace(e);
+    d.EndChange();
+}
+
+void TestRelations() {
+    const double tol = 1e-6;
+    {  // Horizontal straightens the line; it stays so when an end moves.
+        Document d;
+        const uint64_t a = d.Add(Entity::Line({0, 0}, {100, 10}));
+        CHECK(AddRel(d, RelKind::Horizontal, W(a)) != 0);
+        CHECK(Close(d.Find(a)->p0.y, d.Find(a)->p1.y, tol) && d.LastSolve().ok);
+        MoveEnd(d, a, 1, {120, 40});
+        CHECK(Close(d.Find(a)->p0.y, d.Find(a)->p1.y, tol));
+        CHECK(Close(d.Find(a)->p1.x, 120, 1e-3));
+        // Undo takes back the move, then the relationship (and what it did).
+        d.Undo();
+        d.Undo();
+        CHECK(Close(d.Find(a)->p1, {100, 10}) && CountOf(d, EntityType::Relation) == 0);
+        // A relationship the drawing cannot have.
+        Entity r;
+        std::wstring why;
+        CHECK(!MakeRelation(d, RelKind::Concentric, {W(a), W(a), {}}, 2.5, r, why) && !why.empty());
+    }
+    {  // An L of two lines: connected, the first horizontal, the second at right angles.
+        Document d;
+        const uint64_t a = d.Add(Entity::Line({0, 0}, {100, 0}));
+        const uint64_t b = d.Add(Entity::Line({100, 0}, {100, 50}));
+        AddRel(d, RelKind::Coincident, {a, 1}, {b, 0});
+        AddRel(d, RelKind::Horizontal, W(a));
+        AddRel(d, RelKind::Perpendicular, W(a), W(b));
+        CHECK(CountOf(d, EntityType::Relation) == 3);
+        MoveEnd(d, a, 1, {130, 0});
+        const Entity &ea = *d.Find(a), &eb = *d.Find(b);
+        CHECK(Close(eb.p0, ea.p1, tol) && Close(eb.p0.x, eb.p1.x, tol) && Close(ea.p0.y, ea.p1.y, tol));
+        CHECK(Close(ea.p1.x, 130, 1e-3));
+        // MAINTAINREL off: nothing follows.
+        DrawingSettings st = d.Settings();
+        st.maintainRelations = false;
+        d.SetSettings(st);
+        MoveEnd(d, a, 1, {150, 5});
+        CHECK(Close(d.Find(b)->p0.x, 130, 1e-3));
+        // The marks go with their objects; erasing an object takes its relationships away.
+        st.maintainRelations = true;
+        d.SetSettings(st);
+        d.BeginChange(L"Erase");
+        d.Erase(b);
+        d.EndChange();
+        CHECK(CountOf(d, EntityType::Relation) == 1);
+    }
+    {  // Parallel turns the second line; the first stays.
+        Document d;
+        const uint64_t a = d.Add(Entity::Line({0, 0}, {100, 0}));
+        const uint64_t b = d.Add(Entity::Line({0, 20}, {100, 40}));
+        AddRel(d, RelKind::Parallel, W(a), W(b));
+        const Entity &ea = *d.Find(a), &eb = *d.Find(b);
+        CHECK(Close(Cross(Normalized(ea.p1 - ea.p0), Normalized(eb.p1 - eb.p0)), 0, tol));
+        CHECK(Close(ea.p0, {0, 0}, 1e-2) && Close(ea.p1, {100, 0}, 1e-2));
+        // Equal lengths, then collinear.
+        const uint64_t c = d.Add(Entity::Line({0, -30}, {40, -30}));
+        AddRel(d, RelKind::Equal, W(a), W(c));
+        CHECK(Close(Dist(d.Find(c)->p0, d.Find(c)->p1), Dist(d.Find(a)->p0, d.Find(a)->p1), tol));
+        AddRel(d, RelKind::Collinear, W(a), W(c));
+        const Vec2 u = Normalized(d.Find(a)->p1 - d.Find(a)->p0);
+        CHECK(Close(Cross(u, d.Find(c)->p0 - d.Find(a)->p0), 0, tol) && Close(Cross(u, d.Find(c)->p1 - d.Find(a)->p0), 0, tol));
+    }
+    {  // Tangent and concentric; FIX keeps the line where it is.
+        Document d;
+        const uint64_t l = d.Add(Entity::Line({-50, 0}, {50, 0}));
+        const uint64_t c = d.Add(Entity::Circle({0, 13}, 10));
+        AddRel(d, RelKind::Fix, W(l));
+        AddRel(d, RelKind::Tangent, W(l), W(c));
+        CHECK(Close(d.Find(l)->p0, {-50, 0}) && Close(d.Find(l)->p1, {50, 0}));
+        CHECK(Close(d.Find(c)->p0.y, d.Find(c)->radius, tol) && d.Find(c)->p0.y > 0);
+        const uint64_t c2 = d.Add(Entity::Circle({3, 4}, 4));
+        AddRel(d, RelKind::Concentric, W(c), W(c2));
+        CHECK(Close(d.Find(c)->p0, d.Find(c2)->p0, tol));
+        // Growing the circle keeps it on the line (its centre moves up).
+        Entity e = *d.Find(c);
+        e.radius = 15;
+        d.BeginChange(L"Radius");
+        d.Replace(e);
+        d.EndChange();
+        CHECK(Close(d.Find(c)->p0.y, d.Find(c)->radius, tol) && Close(d.Find(l)->p0, {-50, 0}));
+        CHECK(Close(d.Find(c2)->p0, d.Find(c)->p0, tol));
+    }
+    {  // Midpoint and symmetric.
+        Document d;
+        const uint64_t a = d.Add(Entity::Line({0, 0}, {100, 0}));
+        const uint64_t p = d.Add(Entity::Point({30, 10}));
+        AddRel(d, RelKind::Fix, W(a));
+        AddRel(d, RelKind::Midpoint, {p, 0}, W(a));
+        CHECK(Close(d.Find(p)->p0, {50, 0}, tol));
+        const uint64_t ax = d.Add(Entity::Line({0, 50}, {0, 100}));
+        const uint64_t q1 = d.Add(Entity::Point({-20, 60}));
+        const uint64_t q2 = d.Add(Entity::Point({25, 70}));
+        AddRel(d, RelKind::Fix, W(ax));
+        AddRel(d, RelKind::Symmetric, {q1, 0}, {q2, 0}, W(ax));
+        CHECK(Close(d.Find(q1)->p0.x, -d.Find(q2)->p0.x, tol) && Close(d.Find(q1)->p0.y, d.Find(q2)->p0.y, tol));
+    }
+    {  // A locked dimension holds; driving it moves the objects with their relationships.
+        Document d;
+        const uint64_t a = d.Add(Entity::Line({0, 0}, {100, 0}));
+        const uint64_t b = d.Add(Entity::Line({100, 0}, {100, 50}));
+        AddRel(d, RelKind::Coincident, {a, 1}, {b, 0});
+        AddRel(d, RelKind::Horizontal, W(a));
+        AddRel(d, RelKind::Vertical, W(b));
+        DimData dd = Aligned({0, 0}, {100, 0}, {50, -15});
+        dd.refs[0] = {a, 0};
+        dd.refs[1] = {a, 1};
+        const uint64_t dim = d.Add(MakeDimension(dd));
+        CHECK(DimOf(d, dim).name == L"D1");
+        std::wstring why;
+        d.BeginChange(L"Value");
+        CHECK(DriveDimension(d, dim, 80, why));
+        d.EndChange();
+        CHECK(DimOf(d, dim).locked && Close(DimOf(d, dim).value, 80));
+        CHECK(Close(Dist(d.Find(a)->p0, d.Find(a)->p1), 80, tol) && Close(d.Find(b)->p0, d.Find(a)->p1, tol));
+        CHECK(Close(d.Find(b)->p0.x, d.Find(b)->p1.x, tol));
+        // Moving the other end: the locked length holds.
+        MoveEnd(d, b, 1, {200, 60});
+        CHECK(Close(Dist(d.Find(a)->p0, d.Find(a)->p1), 80, tol));
+        // Two lengths that cannot both hold: the solver says so.
+        const uint64_t c = d.Add(Entity::Line({0, 100}, {50, 100}));
+        DimData dc = Aligned({0, 100}, {50, 100}, {25, 120});
+        dc.refs[0] = {c, 0};
+        dc.refs[1] = {c, 1};
+        dc.locked = true;
+        dc.value = 50;
+        d.Add(MakeDimension(dc));
+        AddRel(d, RelKind::Equal, W(a), W(c));
+        CHECK(!d.LastSolve().ok && !d.LastSolve().message.empty());
+    }
+    {  // Expressions.
+        double v;
+        std::wstring err;
+        auto none = [](const std::wstring&, double&) { return false; };
+        CHECK(EvalExpression(L"=2+3*4^2/8", none, v, err) && Close(v, 8));
+        CHECK(EvalExpression(L"-(1+2)*sin(30)+max(1,sqrt(16))", none, v, err) && Close(v, 2.5));
+        CHECK(!EvalExpression(L"2*(3", none, v, err) && !err.empty());
+        CHECK(!EvalExpression(L"w+1", none, v, err));
+        CHECK(ValidName(L"Width_2") && !ValidName(L"2w") && !ValidName(L""));
+    }
+    {  // VAR and formulas: D1 = w + 20, then w changes.
+        Document d;
+        TestHost host;
+        Engine e(d, host);
+        const uint64_t a = d.Add(Entity::Line({0, 0}, {100, 0}));
+        AddRel(d, RelKind::Horizontal, W(a));
+        DimData dd = Aligned({0, 0}, {100, 0}, {50, -15});
+        dd.refs[0] = {a, 0};
+        dd.refs[1] = {a, 1};
+        const uint64_t dim = d.Add(MakeDimension(dd));
+        Type(e, {L"var", L"w", L"60"});
+        CHECK(d.Variables().size() == 1 && Close(d.Variables()[0].value, 60));
+        Type(e, {L"var", L"D1", L"w+20"});
+        CHECK(DimOf(d, dim).formula == L"w+20" && Close(Dist(d.Find(a)->p0, d.Find(a)->p1), 80, tol));
+        Type(e, {L"var", L"w", L"=2*50"});
+        CHECK(Close(Dist(d.Find(a)->p0, d.Find(a)->p1), 120, tol));
+        d.Undo();
+        CHECK(Close(Dist(d.Find(a)->p0, d.Find(a)->p1), 80, tol) && Close(d.Variables()[0].value, 60));
+        // A formula that cannot be worked out changes nothing.
+        Type(e, {L"var", L"D1", L"nothing*2"});
+        CHECK(!d.LastSolve().ok || !host.lines.empty());
+        double v;
+        CHECK(LookupName(d, L"W", v) && Close(v, 60));
+
+        // GOALSEEK: the diagonal of an L reaches 130 by changing w.
+        Document g;
+        Engine eg(g, host);
+        const uint64_t la = g.Add(Entity::Line({0, 0}, {100, 0}));
+        const uint64_t lb = g.Add(Entity::Line({100, 0}, {100, 50}));
+        AddRel(g, RelKind::Coincident, {la, 1}, {lb, 0});
+        AddRel(g, RelKind::Horizontal, W(la));
+        AddRel(g, RelKind::Vertical, W(lb));
+        DimData da = Aligned({0, 0}, {100, 0}, {50, -15});
+        da.refs[0] = {la, 0};
+        da.refs[1] = {la, 1};
+        g.Add(MakeDimension(da));  // D1: the bottom
+        DimData db = Aligned({100, 0}, {100, 50}, {115, 25});
+        db.refs[0] = {lb, 0};
+        db.refs[1] = {lb, 1};
+        db.locked = true;
+        db.value = 50;
+        g.Add(MakeDimension(db));  // D2: the side, locked
+        DimData diag = Aligned({0, 0}, {100, 50}, {40, 40});
+        diag.refs[0] = {la, 0};
+        diag.refs[1] = {lb, 1};
+        const uint64_t dg = g.Add(MakeDimension(diag));  // D3
+        Type(eg, {L"var", L"w", L"100", L"var", L"D1", L"w"});
+        CHECK(Close(Dist(g.Find(la)->p0, g.Find(la)->p1), 100, tol));
+        host.lines.clear();
+        Type(eg, {L"gs"});
+        eg.Point(diag.loc);
+        Type(eg, {L"130", L"w"});
+        CHECK(!eg.Active());
+        CHECK(Close(DimMeasure(DimOf(g, dg)), 130, 1e-5) && Close(g.Variables()[0].value, 120, 1e-4));
+        g.Undo();
+        CHECK(Close(g.Variables()[0].value, 100) && Close(DimMeasure(DimOf(g, dg)), std::sqrt(12500.0), 1e-6));
+
+        // Saved and opened again: relationships, variables, locked dimensions, settings.
+        DrawingSettings st = g.Settings();
+        st.showRelations = false;
+        st.autoRelations = true;
+        g.SetSettings(st);
+        const std::string text = g.ToText();
+        Document h;
+        std::wstring err;
+        CHECK(h.FromText(text, err));
+        CHECK(h.ToText() == text);
+        CHECK(CountOf(h, EntityType::Relation) == 3 && h.Variables().size() == 1 && h.Variables()[0].formula == L"100");
+        CHECK(!h.Settings().showRelations && h.Settings().autoRelations && h.Settings().maintainRelations);
+        size_t locked = 0;
+        for (const auto& kv : h.Entities())
+            if (kv.second.dim && kv.second.dim->locked) ++locked;
+        CHECK(locked == 2);
+        MoveEnd(h, la, 0, {-10, 0});  // still kept after opening
+        CHECK(Close(Dist(h.Find(la)->p0, h.Find(la)->p1), 100, tol));
+    }
+    {  // AUTOREL: lines drawn get horizontal, vertical and connect relationships.
+        Document d;
+        TestHost host;
+        Engine e(d, host);
+        Type(e, {L"autorel"});
+        CHECK(d.Settings().autoRelations);
+        Type(e, {L"l", L"0,0", L"100,0", L"@0,50", L""});
+        CHECK(CountOf(d, EntityType::Relation) == 3);
+        // HORIZONTAL from the command line, picking a line.
+        Type(e, {L"l", L"0,100", L"50,120", L""});
+        const uint64_t sl = Last(d).type == EntityType::Line ? Last(d).id : 0;
+        Type(e, {L"hor"});
+        e.Point({25, 110});
+        e.Enter();
+        CHECK(sl && Close(d.Find(sl)->p0.y, d.Find(sl)->p1.y, tol));
+        Type(e, {L"showrel"});
+        CHECK(!d.Settings().showRelations);
+    }
+}
+
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);  // failures show even if a later check crashes
     TestAngles();
@@ -2490,6 +2749,7 @@ int main() {
     TestAnnotCommands();
     TestDxfAnnotations();
     TestSheets();
+    TestRelations();
     std::printf("%d checks, %d failed\n", g_checks, g_failures);
     return g_failures;
 }

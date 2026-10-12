@@ -11,6 +11,7 @@
 #include <sstream>
 
 #include "DxfImport.h"
+#include "Relate.h"
 
 namespace {
 constexpr size_t kMaxUndo = 1000;
@@ -166,7 +167,7 @@ const Entity* Document::Find(uint64_t id) const {
 
 void Document::BeginChange(const std::wstring& name) {
     if (m_open) EndChange();
-    m_open = Step{name, {}, 0, std::nullopt, std::nullopt, std::nullopt, std::nullopt};
+    m_open = Step{name, {}, 0, std::nullopt, std::nullopt, std::nullopt, std::nullopt, std::nullopt, std::nullopt};
     m_openIndex.clear();
 }
 
@@ -180,7 +181,7 @@ void Document::EndChange() {
     step.changes.erase(std::remove_if(step.changes.begin(), step.changes.end(),
                                       [](const Change& c) { return !c.before && !c.after; }),
                        step.changes.end());
-    if (step.changes.empty() && !step.layersAfter && !step.blocksAfter) return;
+    if (step.changes.empty() && !step.layersAfter && !step.blocksAfter && !step.varsAfter) return;
     step.serial = m_nextSerial++;
     m_undo.push_back(std::move(step));
     if (m_undo.size() > kMaxUndo) m_undo.erase(m_undo.begin());
@@ -266,6 +267,20 @@ size_t Document::LayerUse(int id) const {
 // ---------------------------------------------------------------------------
 // Blocks
 // ---------------------------------------------------------------------------
+
+void Document::SetVariables(std::vector<Variable> vars, const std::wstring& stepName) {
+    const bool implicit = !m_open;
+    if (implicit) BeginChange(stepName);
+    if (!m_open->varsBefore) m_open->varsBefore = m_vars;
+    m_vars = std::move(vars);
+    m_open->varsAfter = m_vars;
+    Touch();
+    if (implicit) EndChange();
+}
+
+void Document::SetVariableValues(const std::vector<double>& values) {
+    for (size_t i = 0; i < values.size() && i < m_vars.size(); ++i) m_vars[i].value = values[i];
+}
 
 void Document::SetProperty(const std::wstring& key, const std::wstring& value) {
     auto it = m_props.find(key);
@@ -464,6 +479,7 @@ void Document::DeleteLayerState(const std::wstring& name) {
 }
 
 bool Document::Visible(const Entity& e) const {
+    if (e.type == EntityType::Relation && !m_settings.showRelations) return false;
     const Layer* l = FindLayer(e.layer);
     return !l || (l->on && !l->frozen);
 }
@@ -536,6 +552,19 @@ uint64_t Document::Add(Entity e) {
             e.ltscale = (float)m_current.ltscale;
         }
     }
+    if (e.type == EntityType::Dimension && e.dim && e.dim->name.empty()) {
+        // A name for formulas: D1, D2...
+        int n = 0;
+        for (const auto& kv : m_entities)
+            if (kv.second.type == EntityType::Dimension && kv.second.dim) {
+                const std::wstring& nm = kv.second.dim->name;
+                if (nm.size() > 1 && nm[0] == L'D' && std::all_of(nm.begin() + 1, nm.end(), [](wchar_t c) { return c >= L'0' && c <= L'9'; }))
+                    n = std::max(n, std::stoi(nm.substr(1)));
+            }
+        DimData d = *e.dim;
+        d.name = L"D" + std::to_wstring(n + 1);
+        e.dim = std::make_shared<const DimData>(std::move(d));
+    }
     Entity& stored = m_entities[id];
     stored = std::move(e);
     Record(id, nullptr, &stored);
@@ -598,7 +627,8 @@ std::vector<uint64_t> Document::AddGroup(std::vector<Entity> entities) {
     std::map<uint64_t, uint64_t> idMap;
     // Objects first, then the dimensions, pointed at the new objects.
     auto attached = [](const Entity& e) {
-        return e.type == EntityType::Dimension || (e.type == EntityType::Hatch && e.annot && !e.annot->hatch.refs.empty());
+        return e.type == EntityType::Dimension || e.type == EntityType::Relation ||
+               (e.type == EntityType::Hatch && e.annot && !e.annot->hatch.refs.empty());
     };
     for (size_t i = 0; i < entities.size(); ++i) {
         if (attached(entities[i])) continue;
@@ -609,6 +639,19 @@ std::vector<uint64_t> Document::AddGroup(std::vector<Entity> entities) {
     for (size_t i = 0; i < entities.size(); ++i) {
         if (!attached(entities[i])) continue;
         Entity& e = entities[i];
+        if (e.type == EntityType::Relation && e.annot) {
+            // Only with all of its objects.
+            RelationData r = e.annot->rel;
+            bool all = true;
+            for (DimRef& ref : r.refs) {
+                if (!ref.id) continue;
+                auto it = idMap.find(ref.id);
+                if (it == idMap.end()) all = false;
+                else ref.id = it->second;
+            }
+            if (!all) continue;
+            EditAnnot(e).rel = r;
+        }
         if (e.type == EntityType::Hatch) {
             HatchData& h = EditAnnot(e).hatch;
             std::vector<uint64_t> refs;
@@ -632,8 +675,54 @@ std::vector<uint64_t> Document::AddGroup(std::vector<Entity> entities) {
     return ids;
 }
 
+void Document::SolveStep() {
+    std::set<uint64_t> changed, keep;
+    for (const Change& c : m_open->changes) {
+        changed.insert(c.id);
+        if (!c.after) continue;
+        const Entity& x = *c.after;
+        if (x.type == EntityType::Relation && x.annot) {
+            if (x.annot->rel.refs[0].id) keep.insert(x.annot->rel.refs[0].id);  // the first element stays, the others follow
+        } else if (x.type == EntityType::Dimension) {
+            if (x.dim && x.dim->locked && x.dim->refs[0].id) keep.insert(x.dim->refs[0].id);
+        } else if (!IsAnnotation(x)) {
+            keep.insert(c.id);
+        }
+    }
+    std::wstring formulaError;
+    EvaluateFormulas(*this, changed, formulaError);
+    m_lastSolve = SolveReport{};
+    if (m_settings.maintainRelations) m_lastSolve = SolveRelations(*this, changed, keep);
+    if (!formulaError.empty()) {
+        m_lastSolve.ok = false;
+        m_lastSolve.message = formulaError;
+    }
+    // Relationship marks follow their objects; those whose objects are gone go too.
+    std::set<uint64_t> now;
+    for (const Change& c : m_open->changes) now.insert(c.id);
+    std::vector<uint64_t> rels;
+    for (const auto& kv : m_entities)
+        if (kv.second.type == EntityType::Relation && kv.second.annot) {
+            bool touched = now.count(kv.first) > 0;
+            for (const DimRef& r : kv.second.annot->rel.refs) touched |= r.id && now.count(r.id);
+            if (touched) rels.push_back(kv.first);
+        }
+    for (uint64_t id : rels) {
+        Entity e = m_entities[id];
+        const std::vector<Vec2> before = e.annot->pts;
+        if (!PlaceRelationMarks(*this, e)) Erase(id);
+        else if (e.annot->pts != before) Replace(e);
+    }
+}
+
 void Document::UpdateDimensions() {
-    if (!m_open || m_open->changes.empty()) return;
+    if (!m_open || (m_open->changes.empty() && !m_open->varsAfter)) return;
+    if (!m_solving) {
+        m_solving = true;
+        SolveStep();
+        m_solving = false;
+    }
+    if (m_open->changes.empty()) return;
     std::set<uint64_t> changed, touchedDims, touchedHatches;
     bool anyDims = false;
     for (const Change& c : m_open->changes) {
@@ -741,6 +830,7 @@ void Document::Apply(const Step& step, bool forward) {
         if (!FindLayer(m_current.layer)) m_current.layer = 0;
     }
     if (const auto& blocks = forward ? step.blocksAfter : step.blocksBefore) m_blocks = *blocks;
+    if (const auto& vars = forward ? step.varsAfter : step.varsBefore) m_vars = *vars;
     Touch();
 }
 
@@ -794,6 +884,8 @@ void Document::Clear() {
     m_states.clear();
     m_blocks.clear();
     m_props.clear();
+    m_vars.clear();
+    m_lastSolve = SolveReport{};
     m_undo.clear();
     m_redo.clear();
     m_nextId = 1;
@@ -997,6 +1089,9 @@ void WriteEntity(const Entity& e, std::string& out, const Ordinals* ordinals = n
             }
             if (!d.text.empty()) out += " text=" + EncodeWord(d.text);
             if (d.driven) out += " driven=1";
+            if (!d.name.empty()) out += " name=" + EncodeWord(d.name);
+            if (d.locked) out += " locked=" + FormatNumber(d.value);
+            if (!d.formula.empty()) out += " formula=" + EncodeWord(d.formula);
             break;
         }
         case EntityType::Text:
@@ -1032,6 +1127,19 @@ void WriteEntity(const Entity& e, std::string& out, const Ordinals* ordinals = n
                     num(p.x); num(p.y);
                 }
             }
+            break;
+        }
+        case EntityType::Relation: {
+            const Annot& a = *e.annot;
+            out += "rel";
+            num((double)a.rel.kind);
+            for (const DimRef& r : a.rel.refs) {
+                const size_t o = OrdinalOf(r.id, ordinals);
+                num((double)o);
+                num(o ? r.grip : 0);
+            }
+            num(a.rel.param);
+            num(a.arrow);
             break;
         }
         case EntityType::Viewport: {
@@ -1297,6 +1405,10 @@ struct Reader {
             for (const std::string& word : w) {
                 if (word.compare(0, 5, "text=") == 0) d.text = DecodeWord(word.substr(5));
                 if (word == "driven=1") d.driven = true;
+                if (word.compare(0, 5, "name=") == 0) d.name = DecodeWord(word.substr(5));
+                if (word.compare(0, 8, "formula=") == 0) d.formula = DecodeWord(word.substr(8));
+                double lv;
+                if (word.compare(0, 7, "locked=") == 0 && ParseNumber(word.substr(7), lv)) d.locked = true, d.value = lv;
             }
             if (depth > 0)
                 for (DimRef& r : d.refs) r = {};
@@ -1345,6 +1457,22 @@ struct Reader {
                 h.loops.push_back(std::move(l));
             }
             out = MakeHatch(std::move(h));
+            return true;
+        }
+        if (key == "rel") {
+            if (!need(9) || v[0] < 0 || v[0] > (double)RelKind::Midpoint) return Fail(L"a relationship needs its kind and elements");
+            if (depth > 0) {  // inside a block or array: nothing to relate
+                known = false;
+                return true;
+            }
+            out = Entity{};
+            out.type = EntityType::Relation;
+            auto a = std::make_shared<Annot>();
+            a->rel.kind = (RelKind)(int)v[0];
+            for (size_t i = 0; i < 3; ++i) a->rel.refs[i] = {v[1 + 2 * i] >= 1 ? (uint64_t)v[1 + 2 * i] : 0, (int)v[2 + 2 * i]};
+            a->rel.param = v[7];
+            a->arrow = v[8] > 0 ? v[8] : 2.5;
+            out.annot = std::move(a);
             return true;
         }
         if (key == "viewport") {
@@ -1427,6 +1555,12 @@ std::string Document::ToText() const {
            std::to_string(st.precision) + " " + (st.trimZeros ? "1" : "0") + "\n";
     if (m_settings.ltscale != 1) out += "ltscale " + FormatNumber(m_settings.ltscale) + "\n";
     if (m_settings.origin != Vec2{}) out += "origin " + FormatNumber(m_settings.origin.x) + " " + FormatNumber(m_settings.origin.y) + "\n";
+    if (!m_settings.maintainRelations || m_settings.autoRelations || !m_settings.showRelations)
+        out += std::string("relations ") + (m_settings.maintainRelations ? "1 " : "0 ") + (m_settings.autoRelations ? "1 " : "0 ") +
+               (m_settings.showRelations ? "1" : "0") + "\n";
+    for (const Variable& v : m_vars)
+        out += "var name=" + EncodeWord(v.name) + " formula=" + EncodeWord(v.formula) +
+               (v.comment.empty() ? "" : " comment=" + EncodeWord(v.comment)) + "\n";
     for (const Layer& l : m_layers) out += LayerLine("layer", l);
     out += "current " + std::to_string(m_current.layer) + " " + std::to_string(m_current.color) + " " +
            std::to_string(m_current.linetype) + " " + std::to_string(m_current.lineweight) + " " +
@@ -1520,6 +1654,7 @@ bool Document::FromText(const std::string& text, std::wstring& error) {
     std::vector<long long> ordinalToIndex;
     std::vector<std::shared_ptr<BlockData>> rawBlocks;
     std::map<std::wstring, std::wstring> props;
+    std::vector<Variable> vars;
     bool ended = false;
     while (!ended && r.Next(w)) {
         const std::string& key = w[0];
@@ -1550,7 +1685,15 @@ bool Document::FromText(const std::string& text, std::wstring& error) {
             for (const std::string& word : w)
                 if (word.compare(0, 5, "name=") == 0) ls.name = DecodeWord(word.substr(5));
             states.push_back(ls);
-        } else if (key == "current" || key == "ltscale" || key == "origin") {
+        } else if (key == "var") {
+            Variable var;
+            for (const std::string& word : w) {
+                if (word.compare(0, 5, "name=") == 0) var.name = DecodeWord(word.substr(5));
+                if (word.compare(0, 8, "formula=") == 0) var.formula = DecodeWord(word.substr(8));
+                if (word.compare(0, 8, "comment=") == 0) var.comment = DecodeWord(word.substr(8));
+            }
+            if (!var.name.empty()) vars.push_back(var);
+        } else if (key == "current" || key == "ltscale" || key == "origin" || key == "relations") {
             std::vector<double> v;
             if (!r.Numbers(w, 1, v)) {
                 error = r.error;
@@ -1566,6 +1709,10 @@ bool Document::FromText(const std::string& text, std::wstring& error) {
                 settings.ltscale = v[0];
             } else if (key == "origin" && v.size() >= 2) {
                 settings.origin = {v[0], v[1]};
+            } else if (key == "relations" && v.size() >= 3) {
+                settings.maintainRelations = v[0] != 0;
+                settings.autoRelations = v[1] != 0;
+                settings.showRelations = v[2] != 0;
             }
         } else if (key == "prop") {
             std::wstring k, val;
@@ -1673,6 +1820,12 @@ bool Document::FromText(const std::string& text, std::wstring& error) {
         return 0;
     };
     for (Entity& e : ents) {
+        if (e.type != EntityType::Relation || !e.annot) continue;
+        RelationData r = e.annot->rel;
+        for (DimRef& ref : r.refs) ref.id = ref.id ? idOf(ref.id) : 0;
+        EditAnnot(e).rel = r;
+    }
+    for (Entity& e : ents) {
         if (e.type != EntityType::Hatch || !e.annot || e.annot->hatch.refs.empty()) continue;
         HatchData& h = EditAnnot(e).hatch;
         std::vector<uint64_t> refs;
@@ -1706,6 +1859,7 @@ bool Document::FromText(const std::string& text, std::wstring& error) {
     m_states = states;
     m_blocks = table;
     m_props = props;
+    m_vars = vars;
     m_current = current;
     if (!FindLayer(m_current.layer)) m_current.layer = 0;
     for (Entity& e : ents) {
@@ -1713,6 +1867,11 @@ bool Document::FromText(const std::string& text, std::wstring& error) {
         e.id = m_nextId++;
         m_entities[e.id] = std::move(e);
     }
+    // Relationship marks next to their objects (not kept in the file).
+    std::vector<uint64_t> gone;
+    for (auto& kv : m_entities)
+        if (kv.second.type == EntityType::Relation && !PlaceRelationMarks(*this, kv.second)) gone.push_back(kv.first);
+    for (uint64_t id : gone) m_entities.erase(id);
     Touch();
     return true;
 }
@@ -2158,6 +2317,8 @@ std::string Document::ToDxf(const Document* paper, Vec2 paperSize) const {
                 else graphics(e, g);
                 break;
             }
+            case EntityType::Relation:  // not in DXF
+                break;
             case EntityType::Viewport:
                 if (src != this && e.annot) writeViewport(e.p0, e.p1, e.annot->viewCentre, (e.p1.y - e.p0.y) / e.annot->viewScale, e);
                 break;

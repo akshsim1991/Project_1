@@ -66,6 +66,10 @@ struct DimData {
     std::wstring text;  // replaces the value; "<>" in it stands for the value
     DimStyle style;
     bool driven = false;  // reports only (shown in brackets): never changes the geometry
+    std::wstring name;     // "D1", or a name given: formulas use it
+    bool locked = false;   // holds `value`: the geometry follows it (Relate.h)
+    double value = 0;      // locked: the value it holds (radians for angles)
+    std::wstring formula;  // locked to a formula of variables and dimensions ("Width / 2")
 };
 
 Entity MakeDimension(DimData d);

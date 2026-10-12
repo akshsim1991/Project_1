@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include "Dimension.h"
 #include "Entity.h"
 
 // ---- text --------------------------------------------------------------------
@@ -116,6 +117,18 @@ struct BlockData {
     std::vector<Entity> items;  // attribute definitions are texts with a tag
 };
 
+// ---- relationships (Relate.h) ---------------------------------------------------
+enum class RelKind : uint8_t {
+    Coincident, Horizontal, Vertical, Parallel, Perpendicular, Collinear, Tangent, Concentric, Equal, Fix, Symmetric, Midpoint
+};
+struct RelationData {
+    RelKind kind = RelKind::Coincident;
+    // The elements related: a point (a grip, as GripsOf numbers them) or a
+    // whole line, circle or arc (-1, or -1 - i for segment i of a polyline).
+    std::array<DimRef, 3> refs{};
+    double param = 1;  // Tangent: which side (+1, -1)
+};
+
 // What annotation objects carry (Text, Leader, Hatch, Insert).
 struct Annot {
     TextData text;                     // Text; Leader: its note
@@ -129,6 +142,7 @@ struct Annot {
     Vec2 viewCentre;
     double viewScale = 1;
     bool viewLocked = false;
+    RelationData rel;  // Relation (pts: where its marks are shown)
     // A hatch's pattern lines, worked out once (not copied with it).
     struct Cache {
         mutable std::shared_ptr<std::vector<std::pair<Vec2, Vec2>>> segs;

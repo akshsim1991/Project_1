@@ -8,6 +8,7 @@
 #include "CommandUtil.h"
 #include "Engine.h"
 #include "Modify.h"
+#include "Relate.h"
 
 namespace {
 // ---------------------------------------------------------------------------
@@ -27,6 +28,7 @@ class LineCmd : public Command {
     }
     void Segment(Vec2 to) {
         m_segments.push_back(E->Doc().Add(Entity::Line(m_last, to)));
+        if (E->Doc().Settings().autoRelations) AutoRelate(E->Doc(), m_segments.back());
         m_starts.push_back(m_last);
         m_last = to;
     }
@@ -1076,6 +1078,25 @@ const std::vector<CommandInfo>& AllCommands() {
         {L"VPLOCK", {}, L"Lock viewport", L"Lock viewports so their scale and view cannot change (again: unlock)"},
         {L"PLOT", {L"PRINT"}, L"Print", L"Print sheets or the drawing, with a preview (Ctrl+P)", true},
         {L"EXPORTPDF", {L"PDF"}, L"Export PDF", L"Save the sheets as one PDF (or the drawing, if it has no sheets)", true},
+        {L"HORIZONTAL", {L"HOR"}, L"Horizontal", L"Keep a line horizontal (a relationship)"},
+        {L"VERTICAL", {L"VER"}, L"Vertical", L"Keep a line vertical (a relationship)"},
+        {L"PARALLEL", {L"PAR"}, L"Parallel", L"Keep two lines parallel (the second one turns)"},
+        {L"PERPENDICULAR", {L"PERP"}, L"Perpendicular", L"Keep two lines at right angles (the second one turns)"},
+        {L"COLLINEAR", {L"COLL"}, L"Collinear", L"Keep two lines on one straight line"},
+        {L"TANGENT", {L"TANG"}, L"Tangent", L"Keep a line and a circle or arc, or two circles, touching"},
+        {L"CONCENTRIC", {L"CONC"}, L"Concentric", L"Keep circles and arcs on one centre"},
+        {L"EQUAL", {L"EQ"}, L"Equal", L"Keep two lines the same length, or circles and arcs the same radius"},
+        {L"COINCIDENT", {L"COIN", L"CONNECT"}, L"Connect", L"Keep a point on another point or on an object"},
+        {L"MIDPOINT", {L"MIDP"}, L"Midpoint", L"Keep a point on the midpoint of a line"},
+        {L"SYMMETRIC", {L"SYMM"}, L"Symmetric", L"Keep two points symmetric about a line"},
+        {L"FIX", {}, L"Fix", L"Keep an object where it is: relationships move the others"},
+        {L"MAINTAINREL", {L"MAINTAIN"}, L"Maintain relationships", L"Keep relationships and locked dimensions as objects change (on/off)"},
+        {L"AUTOREL", {}, L"Add relationships while drawing", L"Lines drawn get horizontal, vertical and connect relationships (on/off)"},
+        {L"SHOWREL", {}, L"Show relationships", L"Show or hide the relationship marks"},
+        {L"DIMLOCK", {L"DLO"}, L"Lock dimensions", L"Dimensions that hold their value: changing one moves the objects (again: unlock)"},
+        {L"VAR", {L"VARIABLE"}, L"Variable", L"A named value or formula (also a dimension's formula: D1 = 2*D2)"},
+        {L"VARIABLES", {L"VARTABLE"}, L"Variables", L"The table of variables and named dimensions, with formulas", true},
+        {L"GOALSEEK", {L"GS"}, L"Goal seek", L"Find the value of one dimension or variable that gives another dimension a target"},
         {L"COPYCLIP", {}, L"Copy to clipboard", L"Copy objects to paste them elsewhere, also into another drawing (Ctrl+C)"},
         {L"CUTCLIP", {}, L"Cut to clipboard", L"Remove objects to paste them elsewhere (Ctrl+X)"},
         {L"PASTECLIP", {}, L"Paste", L"Paste copied objects at a point (Ctrl+V)"},
@@ -1121,6 +1142,7 @@ std::unique_ptr<Command> CreateCommand(const std::wstring& name) {
     if (auto cmd = CreateDimCommand(name)) return cmd;
     if (auto cmd = CreateAnnotCommand(name)) return cmd;
     if (auto cmd = CreateSheetCommand(name)) return cmd;
+    if (auto cmd = CreateRelateCommand(name)) return cmd;
     if (name == L"LINE") return std::make_unique<LineCmd>();
     if (name == L"PLINE") return std::make_unique<PlineCmd>();
     if (name == L"TANLINE") return std::make_unique<TanLineCmd>();

@@ -526,7 +526,8 @@ ID2D1PathGeometry* Canvas::BuildGeometry(const std::vector<const Entity*>& entit
             }
             case EntityType::Text:
             case EntityType::Leader:
-            case EntityType::Hatch: {
+            case EntityType::Hatch:
+            case EntityType::Relation: {
                 AnnotGraphics g;
                 AnnotLayout(*e, &m_fields, g);
                 const double dot = Px(1) / m_scale;
@@ -709,7 +710,8 @@ void Canvas::DrawDimensionParts(ID2D1RenderTarget* rt, const std::vector<const E
     const Box cull = ViewBox().Inflated(Px(4) / m_scale);
     for (const Entity* e : ents) {
         if (e->type == EntityType::Dimension && e->dim && Bounds(*e).Intersects(cull)) dims.push_back(e);
-        if ((e->type == EntityType::Text || e->type == EntityType::Leader || e->type == EntityType::Hatch) && e->annot &&
+        if ((e->type == EntityType::Text || e->type == EntityType::Leader || e->type == EntityType::Hatch ||
+             e->type == EntityType::Relation) && e->annot &&
             Bounds(*e).Intersects(cull))
             annots.push_back(e);
     }

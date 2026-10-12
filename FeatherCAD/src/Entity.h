@@ -13,7 +13,8 @@
 enum class EntityType : uint8_t {
     Line, Circle, Arc, Polyline, Array, Ellipse, Spline, Point, Dimension,
     Text, Leader, Hatch, Insert,  // annotations and block references (Annot.h)
-    Viewport                      // on a sheet: a window onto the drawing at a scale
+    Viewport,                     // on a sheet: a window onto the drawing at a scale
+    Relation                      // a relationship kept between objects (Relate.h)
 };
 
 struct Vertex {

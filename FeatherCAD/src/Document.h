@@ -28,10 +28,27 @@ struct DrawingSettings {
     DimStyle dimStyle;  // for new dimensions
     double ltscale = 1;  // all line type patterns are this many times larger
     Vec2 origin;         // grid origin: coordinates are typed and shown from here
+    // Relationships: kept when objects change; added while drawing; shown.
+    bool maintainRelations = true, autoRelations = false, showRelations = true;
     bool operator==(const DrawingSettings& o) const {
         return units == o.units && precision == o.precision && dimStyle == o.dimStyle && ltscale == o.ltscale &&
-               origin == o.origin;
+               origin == o.origin && maintainRelations == o.maintainRelations && autoRelations == o.autoRelations &&
+               showRelations == o.showRelations;
     }
+};
+
+// A named value: a number or a formula of other variables and dimensions.
+struct Variable {
+    std::wstring name, formula, comment;
+    double value = 0;  // worked out
+    bool operator==(const Variable& o) const { return name == o.name && formula == o.formula && comment == o.comment; }
+};
+
+// How the last solve of relationships went (Relate.h).
+struct SolveReport {
+    bool ok = true;          // everything holds
+    size_t constraints = 0;  // relationships and locked dimensions looked at
+    std::wstring message;    // why not, when it failed
 };
 
 // How an object is drawn, with "by layer" and "by block" worked out.
@@ -117,6 +134,16 @@ public:
     Look LookOf(const Entity& e, const Entity* block = nullptr) const;
     size_t LayerUse(int id) const;  // objects on it
 
+    // ---- variables and relationships -----------------------------------------
+    const std::vector<Variable>& Variables() const { return m_vars; }
+    // An undo step of its own (or part of the open one); dimensions with
+    // formulas follow at the end of the step.
+    void SetVariables(std::vector<Variable> vars, const std::wstring& stepName);
+    void SetVariableValues(const std::vector<double>& values);  // worked out (not a change)
+    const SolveReport& LastSolve() const { return m_lastSolve; }
+    // Inside a change: keeps the relationships now (they are also kept at EndChange).
+    void Resolve() { UpdateDimensions(); }
+
     // ---- drawing properties (title, drawing number...: title block fields) ----
     const std::map<std::wstring, std::wstring>& Properties() const { return m_props; }
     void SetProperty(const std::wstring& key, const std::wstring& value);  // empty: removed
@@ -173,6 +200,7 @@ private:
         uint64_t serial = 0;
         std::optional<std::vector<Layer>> layersBefore, layersAfter;
         std::optional<BlockTable> blocksBefore, blocksAfter;
+        std::optional<std::vector<Variable>> varsBefore, varsAfter;
     };
     void SetBlocks(BlockTable blocks, const std::wstring& stepName);
     void SetLayers(std::vector<Layer> layers, const std::wstring& stepName);
@@ -180,6 +208,7 @@ private:
     void Record(uint64_t id, const Entity* before, const Entity* after);
     // Dimensions and hatches follow the objects they are attached to (before a step is kept).
     void UpdateDimensions();
+    void SolveStep();  // formulas, relationships and their marks (UpdateDimensions)
     void UpdateHatches(const std::set<uint64_t>& changed, const std::set<uint64_t>& touched);
     void Apply(const Step& step, bool forward);
     void Touch() { ++m_revision; }
@@ -202,6 +231,9 @@ private:
     std::vector<LayerState> m_states;
     BlockTable m_blocks;
     std::map<std::wstring, std::wstring> m_props;
+    std::vector<Variable> m_vars;
+    SolveReport m_lastSolve;
+    bool m_solving = false;
 };
 
 // Text as one word of the file format (spaces and = escaped), and back.

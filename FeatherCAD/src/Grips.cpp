@@ -88,6 +88,8 @@ void GripsOf(const Entity& e, std::vector<Grip>& out) {
         case EntityType::Leader:
         case EntityType::Hatch:
         case EntityType::Insert:
+        case EntityType::Relation:
+            break;
         case EntityType::Viewport: {
             std::vector<std::pair<int, Vec2>> g;
             AnnotGrips(e, g);
@@ -175,6 +177,8 @@ bool DragGrip(Entity& e, int index, Vec2 from, Vec2 to) {
         case EntityType::Insert:
         case EntityType::Viewport:
             return DragAnnotGrip(e, index, from, to);
+        case EntityType::Relation:
+            return false;
     }
     return false;
 }

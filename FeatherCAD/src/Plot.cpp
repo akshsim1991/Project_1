@@ -43,7 +43,7 @@ public:
 
 private:
     bool Printable(const Entity& e) const {
-        if (e.construction || e.type == EntityType::Viewport || !m_doc->Visible(e)) return false;
+        if (e.construction || e.type == EntityType::Viewport || e.type == EntityType::Relation || !m_doc->Visible(e)) return false;
         const Layer* l = m_doc->FindLayer(e.layer);
         return !l || l->plot;
     }

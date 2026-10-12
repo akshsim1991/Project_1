@@ -726,7 +726,7 @@ void ExpandBlock(const Entity& ref, std::vector<Entity>& out, int depth, bool de
 
 bool IsAnnotType(EntityType t) {
     return t == EntityType::Text || t == EntityType::Leader || t == EntityType::Hatch || t == EntityType::Insert ||
-           t == EntityType::Viewport;
+           t == EntityType::Viewport || t == EntityType::Relation;
 }
 
 Entity MakeViewport(Vec2 a, Vec2 b, Vec2 centre, double scale, bool locked) {
@@ -756,7 +756,7 @@ Box ViewportModelBox(const Entity& vp) { return Box(ViewportToModel(vp, vp.p0), 
 
 bool IsAnnotation(const Entity& e) {
     return e.type == EntityType::Text || e.type == EntityType::Leader || e.type == EntityType::Hatch ||
-           e.type == EntityType::Dimension;
+           e.type == EntityType::Dimension || e.type == EntityType::Relation;
 }
 
 Annot& EditAnnot(Entity& e) {
@@ -873,9 +873,68 @@ std::vector<std::pair<Vec2, Vec2>>& HatchLines(const Annot& a) {
 }
 }  // namespace
 
+namespace {
+// A relationship's marks: a small box with a letter (or a little drawing) by each element.
+void RelationLayout(const Entity& e, AnnotGraphics& g) {
+    const Annot& a = *e.annot;
+    const double s = a.arrow > 0 ? a.arrow : 2.5;
+    for (const Vec2& p : a.pts) {
+        if (a.rel.kind == RelKind::Coincident) {  // a small filled square on the point
+            const double h = s * 0.18;
+            g.fills.push_back({p + Vec2{-h, -h}, p + Vec2{h, -h}, p + Vec2{h, h}, p + Vec2{-h, h}});
+            g.boxes.push_back({p + Vec2{-h, -h}, p + Vec2{h, -h}, p + Vec2{h, h}, p + Vec2{-h, h}});
+            continue;
+        }
+        const Vec2 c = p + Vec2{s * 0.9, s * 0.9}, h{s / 2, s / 2};
+        const Vec2 q[4] = {c - h, c + Vec2{h.x, -h.y}, c + h, c + Vec2{-h.x, h.y}};
+        for (int i = 0; i < 4; ++i) g.lines.push_back(Prim::Seg(q[i], q[(i + 1) % 4]));
+        g.boxes.push_back({q[0], q[1], q[2], q[3]});
+        const double k = s * 0.3;
+        auto seg = [&](Vec2 x, Vec2 y) { g.lines.push_back(Prim::Seg(c + x * k, c + y * k)); };
+        const wchar_t* letter = nullptr;
+        switch (a.rel.kind) {
+            case RelKind::Horizontal: letter = L"H"; break;
+            case RelKind::Vertical: letter = L"V"; break;
+            case RelKind::Parallel:
+                seg({-0.6, -1}, {0.0, 1});
+                seg({0.0, -1}, {0.6, 1});
+                break;
+            case RelKind::Perpendicular:
+                seg({-1, -0.9}, {1, -0.9});
+                seg({0, -0.9}, {0, 1});
+                break;
+            case RelKind::Collinear: letter = L"C"; break;
+            case RelKind::Tangent: letter = L"T"; break;
+            case RelKind::Concentric:
+                g.lines.push_back(Prim::Circle(c, k * 1.1));
+                g.lines.push_back(Prim::Circle(c, k * 0.45));
+                break;
+            case RelKind::Equal: letter = L"="; break;
+            case RelKind::Fix: letter = L"F"; break;
+            case RelKind::Symmetric: letter = L"S"; break;
+            case RelKind::Midpoint: letter = L"M"; break;
+            case RelKind::Coincident: break;
+        }
+        if (letter) {
+            TextItem t;
+            t.text = letter;
+            t.pos = c;
+            t.align = 1;
+            t.height = s * 0.6;
+            t.width = TextWidth(t.text, t.height);
+            t.font = L"Arial";
+            g.texts.push_back(t);
+        }
+    }
+}
+}  // namespace
+
 void AnnotLayout(const Entity& e, const FieldValues* fields, AnnotGraphics& g) {
     if (!e.annot) return;
     switch (e.type) {
+        case EntityType::Relation:
+            RelationLayout(e, g);
+            break;
         case EntityType::Text:
             LayoutText(e.annot->text, e.p0, fields, g);
             break;
@@ -938,7 +997,7 @@ double AnnotDistance(const Entity& e, Vec2 p) {
     }
     if (e.type == EntityType::Hatch && InsideLoops(e.annot->hatch.loops, p)) return 0;
     AnnotGraphics g;
-    if (e.type != EntityType::Hatch && e.type != EntityType::Viewport) {
+    if (e.type != EntityType::Hatch && e.type != EntityType::Viewport) {  // texts and marks: inside their boxes
         AnnotLayout(e, nullptr, g);
         for (const auto& b : g.boxes)
             if (InLoop({b.begin(), b.end()}, p)) return 0;

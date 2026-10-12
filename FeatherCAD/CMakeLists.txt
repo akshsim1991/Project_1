@@ -30,6 +30,9 @@ set(CORE_SOURCES
   src/CommandsAnnot.cpp
   src/Sheet.cpp
   src/Plot.cpp
+  src/Expr.cpp
+  src/Relate.cpp
+  src/CommandsRelate.cpp
 )
 
 add_executable(FeatherCAD WIN32
