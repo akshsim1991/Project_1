@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <cstdio>
 #include <cstring>
 #include <cwctype>
 #include <functional>

@@ -26,6 +26,13 @@ jobs:
       - name: Build (Release)
         run: cmake --build build --config Release --parallel
 
+      - name: Show build errors
+        if: failure()
+        shell: pwsh
+        run: |
+          cmake --build build --config Release 2>&1 | Select-String -Pattern ": error |: fatal error " |
+            Select-Object -First 30 | ForEach-Object { Write-Host "::error::$_" }
+
       - name: Unit tests
         run: build\Release\CoreTests.exe
 

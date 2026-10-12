@@ -2,6 +2,7 @@
 // file formats (no window needed). Prints each failure and returns the
 // number of failures, so CI fails when anything breaks.
 //   cmake -DFEATHERCAD_TESTS=ON ...   then run CoreTests.exe
+#include <algorithm>
 #include <cstdio>
 #include <string>
 
