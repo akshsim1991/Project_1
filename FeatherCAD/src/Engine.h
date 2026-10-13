@@ -112,10 +112,11 @@ public:
     }
     // A picture file chosen by the user, with its size in pixels. False: none.
     // A symbol from the library (Symbols.h), chosen in a window with
-    // pictures. False: there is none (the command line asks for its name).
-    virtual bool ChooseSymbol(std::wstring& name) {
+    // pictures. 1: chosen, 0: cancelled, -1: there is no such window (the
+    // command line asks for its name).
+    virtual int ChooseSymbol(std::wstring& name) {
         (void)name;
-        return false;
+        return -1;
     }
     virtual bool ChooseImage(std::wstring& path, int& width, int& height) {
         (void)path, (void)width, (void)height;

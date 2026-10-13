@@ -48,6 +48,9 @@ bool TextEditDialog(HWND owner, TextData& text, const std::wstring& title);
 bool PageSetupDialog(HWND owner, SheetSetup& setup, bool& redoBorder);
 // The drawing's title block fields (DrawingPropertyKeys), in that order.
 bool DrawingPropsDialog(HWND owner, std::vector<std::wstring>& values);
+// A symbol from the library (Symbols.h), with a picture of each. `name`:
+// the last one chosen in, the one chosen out.
+bool SymbolDialog(HWND owner, std::wstring& name);
 
 // One row of the Variables dialog: a variable, or a dimension (by its name).
 struct VariableRow {

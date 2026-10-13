@@ -12,6 +12,7 @@
 
 #include "Expr.h"
 #include "Print.h"
+#include "Symbols.h"
 #include "Theme.h"
 #include "Util.h"
 #include "resource.h"
@@ -1376,6 +1377,157 @@ bool DimEditDialog(HWND owner, const DimData& dim, bool attached, DimEditResult&
 bool PageSetupDialog(HWND owner, SheetSetup& setup, bool& redoBorder) {
     PageSetupData d{&setup, &redoBorder};
     return DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_PAGESETUP), owner, PageSetupProc, (LPARAM)&d) == IDOK;
+}
+
+// ---- symbols --------------------------------------------------------------------------
+namespace {
+struct SymbolsData {
+    std::wstring* name;
+    std::vector<const SymbolInfo*> shown;  // in the list now
+    BlockData block;                       // the one selected, for its picture
+};
+
+void FillSymbolList(HWND dlg, SymbolsData& d, const std::wstring& select) {
+    const int g = (int)SendDlgItemMessageW(dlg, IDC_SY_GROUP, CB_GETCURSEL, 0, 0);
+    const auto cats = SymbolCategories();
+    SendDlgItemMessageW(dlg, IDC_SY_LIST, LB_RESETCONTENT, 0, 0);
+    d.shown.clear();
+    int sel = 0;
+    for (const SymbolInfo& s : SymbolLibrary()) {
+        if (g < 0 || (size_t)g >= cats.size() || cats[(size_t)g] != s.category) continue;
+        if (select == SymbolBlockName(s)) sel = (int)d.shown.size();
+        d.shown.push_back(&s);
+        SendDlgItemMessageW(dlg, IDC_SY_LIST, LB_ADDSTRING, 0, (LPARAM)s.title);
+    }
+    SendDlgItemMessageW(dlg, IDC_SY_LIST, LB_SETCURSEL, sel, 0);
+}
+
+void SymbolSelected(HWND dlg, SymbolsData& d) {
+    const int i = (int)SendDlgItemMessageW(dlg, IDC_SY_LIST, LB_GETCURSEL, 0, 0);
+    d.block = BlockData{};
+    if (i >= 0 && (size_t)i < d.shown.size()) {
+        MakeSymbolBlock(*d.shown[(size_t)i], d.block);
+        SetDlgItemTextW(dlg, IDC_SY_NAME, (L"Type: SYMBOL " + SymbolBlockName(*d.shown[(size_t)i])).c_str());
+    }
+    InvalidateRect(GetDlgItem(dlg, IDC_SY_PREVIEW), nullptr, TRUE);
+}
+
+void DrawSymbol(const DRAWITEMSTRUCT* di, const BlockData& b) {
+    HDC dc = di->hDC;
+    const RECT rc = di->rcItem;
+    FillRect(dc, &rc, (HBRUSH)GetStockObject(WHITE_BRUSH));
+    Box box;
+    for (const Entity& e : b.items)
+        if (!(e.type == EntityType::Text && e.annot && !e.annot->text.tag.empty())) box.Add(Bounds(e));
+    if (box.Empty()) return;
+    const double w = rc.right - rc.left - 20, h = rc.bottom - rc.top - 20;
+    const double s = std::min(w / std::max(box.Width(), 1e-9), h / std::max(box.Height(), 1e-9));
+    const Vec2 c = box.Center();
+    auto P = [&](Vec2 p) {
+        return POINT{(LONG)std::lround((rc.left + rc.right) / 2.0 + (p.x - c.x) * s), (LONG)std::lround((rc.top + rc.bottom) / 2.0 - (p.y - c.y) * s)};
+    };
+    HPEN pen = CreatePen(PS_SOLID, 2, RGB(20, 20, 20));
+    HGDIOBJ oldPen = SelectObject(dc, pen);
+    HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(BLACK_BRUSH));
+    for (const Entity& e : b.items) {
+        if (e.type == EntityType::Hatch && e.annot) {
+            for (const auto& loop : e.annot->hatch.loops) {
+                std::vector<POINT> pts;
+                for (Vec2 q : loop) pts.push_back(P(q));
+                if (pts.size() >= 3) Polygon(dc, pts.data(), (int)pts.size());
+            }
+            continue;
+        }
+        if (e.type == EntityType::Text && e.annot) {
+            const TextData& t = e.annot->text;
+            if (!t.tag.empty() || t.content.empty()) continue;
+            HFONT f = CreateFontW(-std::max(8, (int)std::lround(t.height * s * 1.3)), 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0,
+                                  CLEARTYPE_QUALITY, 0, L"Arial");
+            HGDIOBJ of = SelectObject(dc, f);
+            SetBkMode(dc, TRANSPARENT);
+            SetTextAlign(dc, TA_CENTER | TA_BASELINE);
+            const POINT p = P(e.p0 - Vec2{0, t.height / 2});
+            TextOutW(dc, p.x, p.y, t.content.c_str(), (int)t.content.size());
+            SelectObject(dc, of);
+            DeleteObject(f);
+            continue;
+        }
+        std::vector<Prim> prims;
+        Primitives(e, prims);
+        for (const Prim& pr : prims) {
+            std::vector<POINT> pts;
+            if (pr.kind == Prim::Segment) {
+                pts = {P(pr.a), P(pr.b)};
+            } else {
+                const int n = 32;
+                for (int k = 0; k <= n; ++k) pts.push_back(P(Polar(pr.c, pr.r, pr.start + pr.sweep * k / n)));
+            }
+            Polyline(dc, pts.data(), (int)pts.size());
+        }
+    }
+    // The ports: where wires join.
+    HPEN red = CreatePen(PS_SOLID, 1, RGB(200, 40, 40));
+    SelectObject(dc, red);
+    SelectObject(dc, GetStockObject(NULL_BRUSH));
+    for (const BlockPort& p : b.ports) {
+        const POINT q = P(p.at);
+        Ellipse(dc, q.x - 4, q.y - 4, q.x + 5, q.y + 5);
+    }
+    SelectObject(dc, oldPen);
+    SelectObject(dc, oldBrush);
+    DeleteObject(pen);
+    DeleteObject(red);
+}
+
+INT_PTR CALLBACK SymbolsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
+    auto* d = (SymbolsData*)GetWindowLongPtrW(dlg, DWLP_USER);
+    switch (msg) {
+        case WM_INITDIALOG: {
+            SetWindowLongPtrW(dlg, DWLP_USER, lp);
+            d = (SymbolsData*)lp;
+            InitDialog(dlg);
+            const auto cats = SymbolCategories();
+            int g = 0;
+            const SymbolInfo* last = FindSymbol(*d->name);
+            for (size_t i = 0; i < cats.size(); ++i) {
+                SendDlgItemMessageW(dlg, IDC_SY_GROUP, CB_ADDSTRING, 0, (LPARAM)cats[i].c_str());
+                if (last && cats[i] == last->category) g = (int)i;
+            }
+            SendDlgItemMessageW(dlg, IDC_SY_GROUP, CB_SETCURSEL, g, 0);
+            FillSymbolList(dlg, *d, last ? SymbolBlockName(*last) : L"");
+            SymbolSelected(dlg, *d);
+            SetFocus(GetDlgItem(dlg, IDC_SY_LIST));
+            return FALSE;
+        }
+        case WM_DRAWITEM:
+            if (wp == IDC_SY_PREVIEW) {
+                DrawSymbol((const DRAWITEMSTRUCT*)lp, d->block);
+                return TRUE;
+            }
+            break;
+        case WM_COMMAND:
+            if (LOWORD(wp) == IDC_SY_GROUP && HIWORD(wp) == CBN_SELCHANGE) {
+                FillSymbolList(dlg, *d, L"");
+                SymbolSelected(dlg, *d);
+            } else if (LOWORD(wp) == IDC_SY_LIST && HIWORD(wp) == LBN_SELCHANGE) {
+                SymbolSelected(dlg, *d);
+            } else if (LOWORD(wp) == IDOK || (LOWORD(wp) == IDC_SY_LIST && HIWORD(wp) == LBN_DBLCLK)) {
+                const int i = (int)SendDlgItemMessageW(dlg, IDC_SY_LIST, LB_GETCURSEL, 0, 0);
+                if (i < 0 || (size_t)i >= d->shown.size()) return TRUE;
+                *d->name = SymbolBlockName(*d->shown[(size_t)i]);
+                EndDialog(dlg, IDOK);
+            } else if (LOWORD(wp) == IDCANCEL) {
+                EndDialog(dlg, IDCANCEL);
+            }
+            return TRUE;
+    }
+    return FALSE;
+}
+}  // namespace
+
+bool SymbolDialog(HWND owner, std::wstring& name) {
+    SymbolsData d{&name, {}, {}};
+    return DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_SYMBOLS), owner, SymbolsProc, (LPARAM)&d) == IDOK;
 }
 
 bool DrawingPropsDialog(HWND owner, std::vector<std::wstring>& values) {

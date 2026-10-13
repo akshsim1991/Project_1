@@ -1,0 +1,101 @@
+FeatherCAD 1
+units mm
+precision 2
+dimstyle 3.5 3 1 2 1 2 1
+layer 0 0 7 0 -3 name=0
+layer 1 0 7 0 50 name=Visible
+layer 2 0 6 10 25 name=Hidden
+layer 3 0 1 11 25 name=Centre
+layer 4 0 3 0 25 name=Dimension
+layer 5 0 4 0 18 name=Section
+layer 6 0 8 0 18 name=Construction
+layer 7 0 1 11 25 name=Cutting%20plane
+current 1 -1 -1 -1 1
+prop key=drawnby value=Feather%20CAD%20example
+prop key=title value=DEVELOPMENT%20OF%20A%20CUT%20SQUARE%20PRISM
+prop key=titleblock value=BIS
+line -40 0 260 0 L=1 W=18
+text -44.26634020785935 0.905145839533988 th=3.5 tj=4 tf=8 content=X L=1
+text 264.26634020785934 0.905145839533988 th=3.5 tj=4 tf=8 content=Y L=1
+line -20 10 20 10 L=1 W=50
+line -20 10 -20 28.452994616207484 L=1 W=50
+line 20 10 20 51.547005383792516 L=1 W=50
+line -20 28.452994616207484 20 51.547005383792516 L=1 W=50
+line -20 28.452994616207484 -20 70 L=1 W=18
+line 20 51.547005383792516 20 70 L=1 W=18
+line -20 70 20 70 L=1 W=18
+pline 1 4 -20 -20 0 20 -20 0 20 -60 0 -20 -60 0 L=1 W=50
+text -22.91869187307084 -22.227386360737626 th=3.5 tj=4 tf=8 content=a L=1
+text 22.91869187307084 -22.227386360737626 th=3.5 tj=4 tf=8 content=b L=1
+text 22.91869187307084 -57.772613639262374 th=3.5 tj=4 tf=8 content=c L=1
+text -22.91869187307084 -57.772613639262374 th=3.5 tj=4 tf=8 content=d L=1
+text -26.189949557431625 7.772613639262376 th=3.5 tj=4 tf=8 content=a'(d') L=1
+text 26.189949557431625 7.772613639262376 th=3.5 tj=4 tf=8 content=b'(c') L=1
+text 60 6.85 th=3.5 tj=4 tf=8 content=A L=1
+text 100 6.85 th=3.5 tj=4 tf=8 content=B L=1
+text 140 6.85 th=3.5 tj=4 tf=8 content=C L=1
+text 180 6.85 th=3.5 tj=4 tf=8 content=D L=1
+text 220 6.85 th=3.5 tj=4 tf=8 content=A L=1
+line 60 10 100 10 L=1 W=50
+line 100 51.54700538379251 60 28.452994616207484 L=1 W=50
+line 60 28.452994616207484 60 10 L=1 W=50
+line 100 10 140 10 L=1 W=50
+line 140 51.547005383792516 100 51.54700538379251 L=1 W=50
+line 140 10 180 10 L=1 W=50
+line 180 28.452994616207498 140 51.547005383792516 L=1 W=50
+line 180 10 220 10 L=1 W=50
+line 220 10 220 28.452994616207484 L=1 W=50
+line 220 28.452994616207484 180 28.452994616207498 L=1 W=50
+line 100 10 100 51.54700538379251 L=1 W=18
+line 140 10 140 51.547005383792516 L=1 W=18
+line 180 10 180 28.452994616207498 L=1 W=18
+text 60 -0.5 th=2.8000000000000003 content=DEVELOPMENT%20OF%20THE%20LATERAL%20SURFACE%20OF%20A%20SQUARE%20PRISM%0Abase%20side%2040,%20axis%2060%0Acut%20by%20a%20plane%20square%20to%20VP,%2030%C2%B0%20to%20HP,%20meeting%20the%20axis%2030%20above%20the%20base L=1
+text -45.89657763802695 82 th=5 content=DEVELOPMENT%20OF%20A%20CUT%20SQUARE%20PRISM%0Abase%2040,%20axis%2060,%20a%20side%20of%20the%20base%20parallel%20to%20VP;%20cut%20at%2030%20deg%20to%20HP%20through%20the%20axis%2030%20above%20the%20base L=1
+text -45.89657763802695 -70.74761363926237 th=3 content=STEPS%0A1.%20Draw%20the%20top%20view%20(square%2040)%20and%20the%20front%20view%20(rectangle%2040%20x%2060)%20with%20PROJECTOR%20lines;%20the%20cutting%20plane%20at%2030%20deg.%0A2.%20DEVELOP:%20P%20(prism),%204,%2040,%2060,%20E%20(edge%20parallel%20to%20VP),%20Y%20(cut),%2030,%2030;%20click%20the%20place.%0A3.%20By%20hand:%20stretch-out%204%20x%2040%20%3D%20160;%20fold%20lines%20A,%20B,%20C,%20D,%20A;%20carry%20the%20cut%20heights%20across%20from%20the%20front%20view. L=1
+end
+sheet 420 297 1 10 0 1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 paper=A3 name=Sheet1
+FeatherCAD 1
+units mm
+precision 2
+dimstyle 3.5 3 1 2 1 2 1
+layer 0 0 7 0 -3 name=0
+current 0 -1 -1 -1 1
+block 0 0 34 name=BIS%20title%20block
+pline 1 4 -170 0 0 0 0 0 0 48 0 -170 48 0 W=50
+line -170 8 -40 8 W=25
+line -170 16 -40 16 W=25
+line -170 24 -40 24 W=25
+line -170 32 0 32 W=25
+line -170 40 0 40 W=25
+line -90 0 -90 32 W=25
+line -40 0 -40 32 W=25
+text -168.8 47.2 th=1.6 content=INSTITUTION W=18
+text -168.8 41.4 th=2.8 tj=6 content={company} W=25
+text -168.8 39.2 th=1.6 content=TITLE W=18
+text -168.8 33.4 th=3.5 tj=6 content={title} W=25
+text -168.8 31.2 th=1.6 content=NAME W=18
+text -168.8 25.4 th=2.8 tj=6 content={drawnby} W=25
+text -88.8 31.2 th=1.6 content=USN W=18
+text -88.8 25.4 th=2.8 tj=6 content={usn} W=25
+text -168.8 23.2 th=1.6 content=BRANCH%20/%20BATCH W=18
+text -168.8 17.4 th=2.8 tj=6 content={branch} W=25
+text -88.8 23.2 th=1.6 content=SHEET%20NO. W=18
+text -88.8 17.4 th=2.8 tj=6 content={sheet} W=25
+text -168.8 15.2 th=1.6 content=SCALE W=18
+text -168.8 9.4 th=2.8 tj=6 content={scale} W=25
+text -88.8 15.2 th=1.6 content=DATE W=18
+text -88.8 9.4 th=2.8 tj=6 content={date} W=25
+text -168.8 7.2 th=1.6 content=CHECKED%20BY W=18
+text -168.8 1.4 th=2.8 tj=6 content={checkedby} W=25
+text -88.8 7.2 th=1.6 content=MARKS W=18
+text -88.8 1.4 th=2.8 tj=6 content={marks} W=25
+pline 1 4 -32.05 13.2 0 -20.349999999999994 9.95 0 -20.349999999999994 22.95 0 -32.05 19.7 0 W=35
+circle -7.999999999999993 16.45 6.5 W=35
+circle -7.999999999999993 16.45 3.25 W=35
+line -34 16.45 0.45000000000000706 16.45 T=3 W=18 S=0.32499998807907104
+line -7.999999999999993 7.999999999999999 -7.999999999999993 24.9 T=3 W=18 S=0.32499998807907104
+text -20 1.5 th=1.8 tj=7 content=PROJECTION W=18
+pline 1 4 10 10 0 410 10 0 410 287 0 10 287 0 W=70
+insert 410 10 1 0 0 name=BIS%20title%20block
+viewport 15 55 405 282 120.34643912174954 -3.273956819631181 1 0
+end

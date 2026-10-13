@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstring>
+#include <cwchar>
 #include <memory>
 
 #include "GdiPlusInc.h"
@@ -61,4 +62,18 @@ bool ReadImageRgb(const std::wstring& path, int& width, int& height, std::vector
         rgb[i * 3 + 2] = mix(bgra[i * 4]);
     }
     return true;
+}
+
+bool SavePng(const std::wstring& path, int width, int height, const uint8_t* bgra, int stride) {
+    UINT count = 0, size = 0;
+    if (Gdiplus::GetImageEncodersSize(&count, &size) != Gdiplus::Ok || size == 0) return false;
+    std::vector<uint8_t> buf(size);
+    auto* codecs = reinterpret_cast<Gdiplus::ImageCodecInfo*>(buf.data());
+    if (Gdiplus::GetImageEncoders(count, size, codecs) != Gdiplus::Ok) return false;
+    const CLSID* png = nullptr;
+    for (UINT i = 0; i < count; ++i)
+        if (codecs[i].MimeType && std::wcscmp(codecs[i].MimeType, L"image/png") == 0) png = &codecs[i].Clsid;
+    if (!png) return false;
+    Gdiplus::Bitmap bmp(width, height, stride, PixelFormat32bppRGB, const_cast<BYTE*>(bgra));
+    return bmp.Save(path.c_str(), png, nullptr) == Gdiplus::Ok;
 }

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(FeatherCAD VERSION 2.2.0 LANGUAGES CXX RC)
+project(FeatherCAD VERSION 2.3.0 LANGUAGES CXX RC)
 
 # Feather CAD: a lightweight 2D drafting program (Win32 + Direct2D, no
 # third-party libraries).
@@ -105,3 +105,4 @@ endif()
 # `cmake --install build --prefix dist` produces a ready-to-zip portable folder.
 install(TARGETS FeatherCAD RUNTIME DESTINATION .)
 install(FILES README.md DESTINATION .)
+install(DIRECTORY samples/ DESTINATION samples)

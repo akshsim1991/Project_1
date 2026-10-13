@@ -79,7 +79,9 @@ class SymbolCmd : public Command {
 public:
     void Start() override {
         std::wstring name;
-        if (E->Host().ChooseSymbol(name)) return Chosen(name);
+        const int chosen = E->Host().ChooseSymbol(name);
+        if (chosen == 1) return Chosen(name);
+        if (chosen == 0) return E->Finish();  // cancelled
         AskName();
     }
     bool OnText(const std::wstring& s) override {
@@ -93,7 +95,7 @@ public:
             for (const std::wstring& c : SymbolCategories()) {
                 std::wstring line = c + L":";
                 for (const SymbolInfo& i : SymbolLibrary())
-                    if (c == i.category) line += L" " + std::wstring(i.name);
+                    if (c == i.category) line += L" " + SymbolBlockName(i);
                 E->Msg(line);
             }
             AskName();

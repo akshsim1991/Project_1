@@ -195,7 +195,15 @@ std::wstring FriendlyColour(int32_t c) {
     return ColorName(c);
 }
 
-void Append(HMENU m, int id, const std::wstring& text, bool enabled = true, bool checked = false) {
+void Append(HMENU m, int id, const std::wstring& text, bool enabled = true, bool checked = false);
+// A menu item that runs a command by name.
+void AppendCmd(HMENU m, const wchar_t* name, const wchar_t* text) {
+    const auto& all = AllCommands();
+    for (size_t i = 0; i < all.size(); ++i)
+        if (all[i].name == name) return Append(m, ID_PALETTE_CMD + (int)i, text);
+}
+
+void Append(HMENU m, int id, const std::wstring& text, bool enabled, bool checked) {
     AppendMenuW(m, MF_STRING | (enabled ? 0 : MF_GRAYED) | (checked ? MF_CHECKED : 0), (UINT_PTR)id, text.c_str());
 }
 void Separator(HMENU m) { AppendMenuW(m, MF_SEPARATOR, 0, nullptr); }
@@ -462,6 +470,9 @@ bool MainWindow::HostCommand(const std::wstring& name) {
     else if (name == L"VARIABLES") ShowVariables();
     else if (name == L"PLOT") Plot();
     else if (name == L"EXPORTPDF") ExportPdf();
+    else if (name == L"EXPORTPNG") ExportImage(true);
+    else if (name == L"EXPORTSVG") ExportImage(false);
+    else if (name == L"EXAMPLES") OpenExample();
     else if (name == L"PROPERTIES") {
         m_settings.propertiesOn = !m_settings.propertiesOn;
         ShowWindow(m_props.Hwnd(), m_settings.propertiesOn ? SW_SHOW : SW_HIDE);
@@ -704,6 +715,104 @@ void MainWindow::DrawingProps() {
     UpdateFields();
     m_canvas.Refresh();
     AfterInput();
+}
+
+int MainWindow::ChooseSymbol(std::wstring& name) {
+    if (!SymbolDialog(m_hwnd, m_lastSymbol)) return 0;
+    name = m_lastSymbol;
+    return 1;
+}
+
+void MainWindow::ExportImage(bool png) {
+    Drawing& d = Cur();
+    PlotRequest r;
+    r.what = d.space >= 0 ? PlotRequest::ThisSheet : PlotRequest::DrawingAll;
+    const std::vector<PlotPage> pages = BuildPages(r);
+    if (pages.empty() || pages[0].items.empty()) {
+        Message(L"There is nothing to export: the drawing is empty.");
+        return;
+    }
+    const PlotPage& page = pages[0];
+    wchar_t file[MAX_PATH * 4] = L"";
+    const std::wstring base = !d.path.empty() ? d.path : !d.suggestedPath.empty() ? d.suggestedPath : d.untitledName;
+    wcsncpy_s(file, (StripExtension(base) + (png ? L".png" : L".svg")).c_str(), _TRUNCATE);
+    OPENFILENAMEW ofn{sizeof(ofn)};
+    ofn.hwndOwner = m_hwnd;
+    ofn.lpstrFilter = png ? L"PNG picture (*.png)\0*.png\0" : L"SVG drawing (*.svg)\0*.svg\0";
+    ofn.lpstrFile = file;
+    ofn.nMaxFile = (DWORD)std::size(file);
+    ofn.lpstrDefExt = png ? L"png" : L"svg";
+    ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY;
+    if (!GetSaveFileNameW(&ofn)) return;
+    std::wstring error;
+    bool ok;
+    if (!png) {
+        ok = WriteFileSafely(file, WriteSvg(page), &error);
+    } else {
+        // 200 dots per inch, at most 8000 pixels a side.
+        double pxPerMm = 200 / 25.4;
+        pxPerMm = std::min(pxPerMm, 8000 / std::max(page.width, page.height));
+        const int w = std::max(1, (int)std::ceil(page.width * pxPerMm)), h = std::max(1, (int)std::ceil(page.height * pxPerMm));
+        BITMAPINFO bi{};
+        bi.bmiHeader.biSize = sizeof(bi.bmiHeader);
+        bi.bmiHeader.biWidth = w;
+        bi.bmiHeader.biHeight = -h;  // top row first
+        bi.bmiHeader.biPlanes = 1;
+        bi.bmiHeader.biBitCount = 32;
+        void* bits = nullptr;
+        HDC screen = GetDC(nullptr);
+        HDC mem = CreateCompatibleDC(screen);
+        HBITMAP dib = CreateDIBSection(screen, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+        ReleaseDC(nullptr, screen);
+        ok = dib && bits;
+        if (ok) {
+            HGDIOBJ old = SelectObject(mem, dib);
+            RECT rc{0, 0, w, h};
+            FillRect(mem, &rc, (HBRUSH)GetStockObject(WHITE_BRUSH));
+            DrawPlotPage(mem, page, pxPerMm, 0, 0);
+            GdiFlush();
+            ok = SavePng(file, w, h, (const uint8_t*)bits, w * 4);
+            SelectObject(mem, old);
+            if (!ok) error = L"The picture could not be written.";
+        } else {
+            error = L"Not enough memory for a picture that large.";
+        }
+        if (dib) DeleteObject(dib);
+        DeleteDC(mem);
+    }
+    if (!ok) {
+        MessageBoxW(m_hwnd, (L"Could not save\n" + std::wstring(file) + L"\n\n" + error).c_str(), APP_NAME, MB_ICONERROR);
+        return;
+    }
+    Message(std::wstring(L"Saved ") + (d.space >= 0 ? L"the sheet" : L"the drawing") + L" as " + file + L".");
+}
+
+void MainWindow::OpenExample() {
+    // The samples folder next to the program (or the source tree's, when run from a build).
+    wchar_t exe[MAX_PATH] = L"";
+    GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    std::wstring dir = exe;
+    dir = dir.substr(0, dir.find_last_of(L"\\/") + 1);
+    std::wstring folder;
+    for (const wchar_t* rel : {L"samples", L"..\\samples", L"..\\..\\samples"}) {
+        const std::wstring f = dir + rel;
+        const DWORD a = GetFileAttributesW(f.c_str());
+        if (a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY)) {
+            folder = f;
+            break;
+        }
+    }
+    wchar_t file[MAX_PATH * 4] = L"";
+    OPENFILENAMEW ofn{sizeof(ofn)};
+    ofn.hwndOwner = m_hwnd;
+    ofn.lpstrFilter = L"Feather CAD drawings (*.fcad)\0*.fcad\0";
+    ofn.lpstrFile = file;
+    ofn.nMaxFile = (DWORD)std::size(file);
+    ofn.lpstrInitialDir = folder.empty() ? nullptr : folder.c_str();
+    ofn.lpstrTitle = L"Examples: solved problems, each with its steps";
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY;
+    if (!GetOpenFileNameW(&ofn)) return;
+    OpenFile(file);
 }
 
 bool MainWindow::ChooseImage(std::wstring& path, int& width, int& height) {
@@ -1297,6 +1406,8 @@ HMENU MainWindow::BuildMenu(int menuId) {
             Append(m, ID_SAVE_AS, L"Save &as...\tCtrl+Shift+S");
             Append(m, ID_EXPORT_DXF, L"&Export DXF (for AutoCAD and others)...");
             Append(m, ID_EXPORT_PDF, L"Export P&DF...");
+            AppendCmd(m, L"EXPORTPNG", L"Export P&NG picture...");
+            AppendCmd(m, L"EXPORTSVG", L"Export S&VG drawing...");
             Separator(m);
             Append(m, ID_PLOT, L"&Print...\tCtrl+P");
             Append(m, ID_PAGESETUP, L"Pa&ge setup...", Cur().space >= 0);
@@ -1529,11 +1640,7 @@ HMENU MainWindow::BuildMenu(int menuId) {
             Append(m, ID_AUTOSAVE_SETTINGS, L"&Auto-save and versions...");
             break;
         case ID_MENU_GRAPHICS: {
-            auto cmd = [&](const wchar_t* name, const wchar_t* text) {
-                const auto& all = AllCommands();
-                for (size_t i = 0; i < all.size(); ++i)
-                    if (all[i].name == name) return Append(m, ID_PALETTE_CMD + (int)i, text);
-            };
+            auto cmd = [&](const wchar_t* name, const wchar_t* text) { AppendCmd(m, name, text); };
             Append(m, ID_TOGGLE_ISO, L"&Isometric drawing (grid, snap, 30\x00B0 axes)", true, d.isoOn);
             Append(m, ID_ISOPLANE_NEXT, (std::wstring(L"Isometric &plane: ") + IsoPlaneName((IsoPlane)d.isoPlane) + L" (next)\tF5").c_str());
             cmd(L"ISODRAFT", L"Isometric &scale or true lengths...\tISO");
@@ -1554,11 +1661,29 @@ HMENU MainWindow::BuildMenu(int menuId) {
             Separator(m);
             cmd(L"FIRSTANGLE", L"&First-angle projection symbol\tFAS");
             cmd(L"BISSETUP", L"&BIS (SP 46) drawing setup\tBIS");
+            Separator(m);
+            {
+                HMENU cur = CreatePopupMenu();
+                auto c = [&](const wchar_t* name, const wchar_t* text) { AppendCmd(cur, name, text); };
+                c(L"CONIC", L"&Conic by eccentricity (ellipse, parabola, hyperbola)\tCONIC");
+                c(L"CYCLOID", L"C&ycloid\tCYC");
+                c(L"EPICYCLOID", L"&Epicycloid\tEPI");
+                c(L"HYPOCYCLOID", L"&Hypocycloid\tHYPO");
+                c(L"INVOLUTE", L"&Involute of a circle or polygon\tINV");
+                c(L"SPIRAL", L"Archimedean &spiral\tSPI");
+                c(L"HELIX", L"He&lix\tHEL");
+                Separator(cur);
+                c(L"TANNORM", L"&Tangent and normal at a point\tTN");
+                Submenu(m, cur, L"Engineering c&urves");
+            }
+            cmd(L"SYMBOL", L"S&ymbols (electrical, logic, flowchart, network, civil)...\tSYM");
+            cmd(L"WIRE", L"&Wire / connector (stays joined)\tWI");
             break;
         }
         case ID_MENU_HELP:
             Append(m, ID_COMMAND_LIST, L"&Commands...\tF1");
             Append(m, ID_TIPS, L"&Mouse and keyboard tips");
+            AppendCmd(m, L"EXAMPLES", L"&Examples: solved problems with their steps...");
             Separator(m);
             Append(m, ID_ABOUT, L"&About Feather CAD");
             break;

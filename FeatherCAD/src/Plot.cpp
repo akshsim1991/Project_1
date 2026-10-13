@@ -465,6 +465,89 @@ std::string PageContent(const PlotPage& page, const std::map<std::wstring, int>&
 }
 }  // namespace
 
+std::string WriteSvg(const PlotPage& page) {
+    const double H = page.height;
+    auto X = [](double v) { return Num(v); };
+    auto Y = [&](double v) { return Num(H - v); };
+    auto colour = [](uint32_t rgb) {
+        char buf[16];
+        std::snprintf(buf, sizeof buf, "#%02x%02x%02x", (unsigned)((rgb >> 16) & 0xFF), (unsigned)((rgb >> 8) & 0xFF), (unsigned)(rgb & 0xFF));
+        return std::string(buf);
+    };
+    auto escape = [](const std::wstring& w) {
+        std::string s;
+        for (char ch : TextToUtf8(w)) {
+            if (ch == '&') s += "&amp;";
+            else if (ch == '<') s += "&lt;";
+            else if (ch == '>') s += "&gt;";
+            else if (ch == '"') s += "&quot;";
+            else s += ch;
+        }
+        return s;
+    };
+    std::string out = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
+    out += "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"" + Num(page.width) + "mm\" height=\"" + Num(H) +
+           "mm\" viewBox=\"0 0 " + Num(page.width) + " " + Num(H) + "\">\n";
+    out += "<title>" + escape(page.name) + "</title>\n";
+    out += "<rect x=\"0\" y=\"0\" width=\"" + Num(page.width) + "\" height=\"" + Num(H) + "\" fill=\"#ffffff\"/>\n";
+    // The viewports' windows.
+    for (size_t i = 0; i < page.clips.size(); ++i) {
+        const Box& b = page.clips[i];
+        out += "<clipPath id=\"c" + std::to_string(i) + "\"><rect x=\"" + X(b.minX) + "\" y=\"" + Y(b.maxY) + "\" width=\"" +
+               Num(b.Width()) + "\" height=\"" + Num(b.Height()) + "\"/></clipPath>\n";
+    }
+    out += "<g fill=\"none\" stroke-linecap=\"round\" stroke-linejoin=\"round\">\n";
+    for (const PlotItem& it : page.items) {
+        const std::string clip = it.clip >= 0 && (size_t)it.clip < page.clips.size() ? " clip-path=\"url(#c" + std::to_string(it.clip) + ")\"" : "";
+        switch (it.kind) {
+            case PlotItem::Path: {
+                if (it.pts.size() < 2) break;
+                std::string pts;
+                for (Vec2 p : it.pts) pts += X(p.x) + "," + Y(p.y) + " ";
+                out += std::string(it.closed ? "<polygon" : "<polyline") + " points=\"" + pts + "\" stroke=\"" + colour(it.rgb) +
+                       "\" stroke-width=\"" + Num(std::max(it.width, 0.1)) + "\"" + clip + "/>\n";
+                break;
+            }
+            case PlotItem::Fill: {
+                std::string d;
+                for (const auto& l : it.loops) {
+                    if (l.empty()) continue;
+                    d += "M" + X(l[0].x) + " " + Y(l[0].y);
+                    for (size_t i = 1; i < l.size(); ++i) d += " L" + X(l[i].x) + " " + Y(l[i].y);
+                    d += " Z ";
+                }
+                out += "<path d=\"" + d + "\" fill=\"" + colour(it.rgb) + "\" fill-rule=\"evenodd\" stroke=\"none\"" + clip + "/>\n";
+                break;
+            }
+            case PlotItem::Image: {
+                if (it.pts.size() < 2) break;
+                const Vec2 a = it.pts[0], b = it.pts[1];
+                out += "<rect x=\"" + X(a.x) + "\" y=\"" + Y(b.y) + "\" width=\"" + Num(b.x - a.x) + "\" height=\"" + Num(b.y - a.y) +
+                       "\" stroke=\"" + colour(it.rgb) + "\" stroke-width=\"0.2\"" + clip + "/>\n";
+                break;
+            }
+            case PlotItem::Text: {
+                const TextItem& t = it.text;
+                double cap;
+                const int font = FontOf(t.font, cap);
+                const double size = t.height / cap;
+                const Vec2 u{std::cos(t.angle), std::sin(t.angle)}, n = Perp(u);
+                const Vec2 at = t.pos - n * (t.height / 2);  // on the baseline
+                const char* anchor = t.align == 1 ? "middle" : t.align == 2 ? "end" : "start";
+                const char* family = font == 2 ? "Times New Roman, Times, serif" : font == 3 ? "Courier New, monospace" : "Arial, Helvetica, sans-serif";
+                const double wf = t.widthFactor > 0 ? t.widthFactor : 1;
+                out += "<text transform=\"translate(" + X(at.x) + " " + Y(at.y) + ") rotate(" + Num(-ToDegrees(t.angle)) + ")" +
+                       (wf != 1 ? " scale(" + Num(wf) + " 1)" : std::string()) + "\" font-family=\"" + family + "\" font-size=\"" +
+                       Num(size) + "\" text-anchor=\"" + anchor + "\" fill=\"" + colour(it.rgb) + "\" stroke=\"none\"" + clip + ">" +
+                       escape(t.text) + "</text>\n";
+                break;
+            }
+        }
+    }
+    out += "</g>\n</svg>\n";
+    return out;
+}
+
 std::string WritePdf(const std::vector<PlotPage>& pages, const std::wstring& title) {
     std::string out = "%PDF-1.4\n%\xE2\xE3\xCF\xD3\n";
     std::vector<size_t> offsets;

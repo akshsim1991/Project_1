@@ -40,6 +40,12 @@ Entity Note(Vec2 at, const std::wstring& s, double h, int justify = 0) {
 
 // A smooth curve through the points (thick).
 Entity Curve(const std::vector<Vec2>& pts, bool closed = false) { return W(Entity::Spline(pts, closed), kThick); }
+// A curve with cusps (where a spline would swing past them): finely, as a polyline through exact points.
+Entity FineCurve(const std::vector<Vec2>& pts) {
+    std::vector<Vertex> v;
+    for (Vec2 p : pts) v.push_back({p, 0});
+    return W(Entity::Polyline(v, false), kThick);
+}
 
 Entity CentreLine(Vec2 a, Vec2 b) {
     Entity e = W(Entity::Line(a, b), kThin);
@@ -116,7 +122,7 @@ bool RollingCurve(Roll kind, Vec2 at, double dia, double baseDia, double h, std:
     const double r = dia / 2, R = baseDia / 2;
     if (kind != Roll::Cycloid && !(R > 0)) return why = L"The diameter of the base circle must be more than zero.", false;
     if (kind == Roll::Hypocycloid && r >= R) return why = L"The rolling circle must be smaller than the base circle.", false;
-    const int N = 12, fine = 48;
+    const int N = 12, fine = 192;
     // The point and the rolling circle's centre after turning the circle by t (0..2 pi).
     std::function<Vec2(double)> point, centre;
     if (kind == Roll::Cycloid) {
@@ -141,7 +147,7 @@ bool RollingCurve(Roll kind, Vec2 at, double dia, double baseDia, double h, std:
     }
     std::vector<Vec2> pts;
     for (int k = 0; k <= fine; ++k) pts.push_back(point(kTau * k / fine));
-    out.push_back(Curve(pts));
+    out.push_back(FineCurve(pts));
     // The rolling circle where it starts, divided into 12; the centres' path; the base.
     const Vec2 c0 = centre(0);
     out.push_back(W(Entity::Circle(c0, r), kThin));
@@ -184,8 +190,8 @@ bool InvoluteCurve(Vec2 at, int sides, double size, double h, std::vector<Entity
             return c + Vec2{-std::sin(a), std::cos(a)} * (r * t);  // behind the contact, along the string
         };
         std::vector<Vec2> pts;
-        for (int k = 0; k <= 48; ++k) pts.push_back(point(kTau * k / 48));
-        out.push_back(Curve(pts));
+        for (int k = 0; k <= 192; ++k) pts.push_back(point(kTau * k / 192));
+        out.push_back(FineCurve(pts));
         for (int k = 1; k <= 12; ++k) {
             const double t = kTau * k / 12;
             const Vec2 c = Polar(at, r, kPi / 2 - t), p = point(t);
@@ -305,7 +311,8 @@ bool HelixCurve(Vec2 at, double dia, double pitch, double turns, double h, std::
     return true;
 }
 
-bool TangentNormal(const Entity& e, Vec2 near, double length, double h, std::vector<Entity>& out, Vec2* atOut) {
+bool TangentNormal(const Entity& curveIn, Vec2 near, double length, double h, std::vector<Entity>& out, Vec2* atOut) {
+    const Entity e = curveIn;  // a copy: the curve may be one of `out`
     out.clear();
     Entity c;
     if (!AsMeasuredCurve(e, c) || !(length > 0)) return false;

@@ -451,6 +451,30 @@ Everything is on the new **Graphics** menu, and in the command search.
 
 Drawing text uses plain letters ("Inclination to HP = 30°") so it prints in PDFs too.
 
+## Version 2.3: symbols, wires, engineering curves, pictures and examples
+
+**Symbols and wires** (Graphics menu, or SYMBOL and WIRE):
+
+| Command | Short name | What it does |
+|---------|------------|--------------|
+| SYMBOL | SYM | A window with a picture of each symbol, in five groups: **Electrical** (resistor, variable resistor, capacitor, electrolytic capacitor, inductor, transformer, diode, Zener, LED, photodiode, NPN and PNP transistors, cell, battery, DC and AC sources, generator, switch, push button, fuse, lamp, motor, ammeter, voltmeter, galvanometer, ground, junction dot, terminal), **Logic gates** (AND, OR, NOT, NAND, NOR, XOR, XNOR, buffer), **Flowchart** (start/stop, process, decision, input/output, predefined process, document, preparation, stored data, connector), **Network** (PC, laptop, server, router, switch, hub, wireless access point, modem, firewall, printer, mobile phone, IoT device, cloud) and **Civil** plans (door, double door, window, ventilator, stairs). Type a label (R1, 10 k...) or the text inside a flowchart shape; click to place it, R rotates it 90 degrees, and labels number on (R1, R2...) as you place more. |
+| WIRE | WI, FLOWLINE | Click the end of one lead, then the end of the next: a wire bends square (or runs straight for network links), flow lines between flowchart shapes get arrowheads, and **the wire stays joined when either symbol moves, turns or is copied**. S and A choose straight / square bends and arrows yourself. |
+
+**Engineering curves** (Graphics > Engineering curves), each with its construction, its points named and a note:
+
+| Command | Short name | What it does |
+|---------|------------|--------------|
+| CONIC | | Ellipse, parabola or hyperbola by the eccentricity method: type the distance of the focus from the directrix and the eccentricity (2/3 can be typed as it is); the directrix, axis, focus F and vertex V. |
+| CYCLOID, EPICYCLOID, HYPOCYCLOID | CYC, EPI, HYPO | The rolling circle in 12 parts, the centres C1...C12, the points P1...P12 and the curve. |
+| INVOLUTE | INV | Of a circle (12 tangents, each k/12 of pi d long) or of a polygon (arcs about each corner). |
+| SPIRAL | SPI | The Archimedean spiral: start and end distances from the pole and the number of turns. |
+| HELIX | HEL | On a cylinder: the front view (the part at the back dashed) and the top view. |
+| TANNORM | TN | The tangent T-T and the normal N-N at a point of any curve (ellipse, parabola, cycloid, involute, spiral, spline...). |
+
+**Pictures**: File > Export PNG (200 dpi) and Export SVG save the sheet shown, or the whole drawing, for reports and web pages.
+
+**Examples with their steps** (Help > Examples, in the samples folder): the ellipse by eccentricity with its tangent and normal, the cycloid, the involute, the development of a cut square prism, the true length of a line, the section of a square pyramid with its true shape, the isometric view of an L block, an electronic circuit with a half adder, a flowchart and a star network. Each shows the solution, how to do it with the commands and by hand ("STEPS"), and has an A3 sheet with the BIS title block ready to print. `tools/MakeExamples.cpp` makes them.
+
 ## Building
 
 ```

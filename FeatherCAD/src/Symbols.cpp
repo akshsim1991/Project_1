@@ -516,11 +516,12 @@ std::wstring Upper(std::wstring s) {
     for (wchar_t& c : s) c = c == L' ' ? L'_' : (wchar_t)std::towupper(c);
     return s;
 }
-// The block name: the network switch is not the electrical one.
-std::wstring BlockName(const SymbolInfo& s) {
+std::wstring BlockName(const SymbolInfo& s) { return SymbolBlockName(s); }
+}  // namespace
+
+std::wstring SymbolBlockName(const SymbolInfo& s) {
     return std::wstring(s.category) == L"Network" && std::wstring(s.name) == L"SWITCH" ? L"NETWORK_SWITCH" : s.name;
 }
-}  // namespace
 
 const SymbolInfo* FindSymbol(const std::wstring& name) {
     const std::wstring u = Upper(name);
@@ -533,6 +534,12 @@ const SymbolInfo* FindSymbol(const std::wstring& name) {
 
 bool MakeSymbolBlock(const std::wstring& name, BlockData& out) {
     const SymbolInfo* info = FindSymbol(name);
+    if (!info) return false;
+    return MakeSymbolBlock(*info, out);
+}
+
+bool MakeSymbolBlock(const SymbolInfo& infoRef, BlockData& out) {
+    const SymbolInfo* info = &infoRef;
     if (!info) return false;
     Sb s;
     const std::wstring n = info->name, cat = info->category;

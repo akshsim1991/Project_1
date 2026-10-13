@@ -10,3 +10,5 @@ bool ImageFileSize(const std::wstring& path, int& width, int& height);
 bool ReadImageRgb(const std::wstring& path, int& width, int& height, std::vector<uint8_t>& rgb);
 // 32-bit BGRA with alpha (for the screen), top row first.
 bool ReadImageBgra(const std::wstring& path, int& width, int& height, std::vector<uint8_t>& bgra);
+// Saves 32-bit BGRA pixels (top row first, `stride` bytes a row) as a PNG file.
+bool SavePng(const std::wstring& path, int width, int height, const uint8_t* bgra, int stride);

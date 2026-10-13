@@ -1,0 +1,95 @@
+FeatherCAD 1
+units mm
+precision 2
+dimstyle 3.5 3 1 2 1 2 1
+layer 0 0 7 0 -3 name=0
+layer 1 0 7 0 50 name=Visible
+layer 2 0 6 10 25 name=Hidden
+layer 3 0 1 11 25 name=Centre
+layer 4 0 3 0 25 name=Dimension
+layer 5 0 4 0 18 name=Section
+layer 6 0 8 0 18 name=Construction
+layer 7 0 1 11 25 name=Cutting%20plane
+current 1 -1 -1 -1 1
+prop key=drawnby value=Feather%20CAD%20example
+prop key=title value=TRUE%20LENGTH%20OF%20A%20LINE
+prop key=titleblock value=BIS
+line -30 0 150 0 L=1 W=18
+text -34.26634020785935 0.905145839533988 th=3.5 tj=4 tf=8 content=X L=1
+text 154.26634020785934 0.905145839533988 th=3.5 tj=4 tf=8 content=Y L=1
+line 0 20 40.00000000000001 59.99999999999999 L=1 W=50
+line 0 -15 40.00000000000001 -71.5685424949238 L=1 W=50
+line 0 20 0 -15 L=1 W=18
+line 40.00000000000001 59.99999999999999 40.00000000000001 -71.5685424949238 L=1 W=18
+arc 0 -15 69.2820323027551 305.26438968275465 0 L=1 W=18
+line 0 -15 69.2820323027551 -15 L=1 W=18
+line 69.2820323027551 -15 69.2820323027551 59.99999999999999 L=1 W=18
+line 40.00000000000001 59.99999999999999 69.2820323027551 59.99999999999999 L=1 W=18
+line 0 20 69.2820323027551 59.99999999999999 L=1 W=35
+arc 0 20 56.568542494923804 0 44.99999999999999 L=1 W=18
+line 0 20 56.568542494923804 20 L=1 W=18
+line 56.568542494923804 20 56.568542494923804 -71.5685424949238 L=1 W=18
+line 40.00000000000001 -71.5685424949238 56.568542494923804 -71.5685424949238 L=1 W=18
+line 0 -15 56.568542494923804 -71.5685424949238 L=1 W=35
+text -4.921704514784795 21.169880630515426 th=3.5 tj=4 tf=8 content=a' L=1
+text 38.03131819408608 62.92470157628856 th=3.5 tj=4 tf=8 content=b' L=1
+text -3.8324301846959434 -16.169880630515426 th=3.5 tj=4 tf=8 content=a L=1
+text 38.46702792612163 -74.49324407121237 th=3.5 tj=4 tf=8 content=b L=1
+text 73.75369024413149 -16.620661629596707 th=3.5 tj=4 tf=8 content=b1 L=1
+text 74.75968753128028 61.620661629596704 th=3.5 tj=4 tf=8 content=b1' L=1
+text 62.046197723449 21.620661629596707 th=3.5 tj=4 tf=8 content=b2' L=1
+text 61.040200436300196 -73.18920412452051 th=3.5 tj=4 tf=8 content=b2 L=1
+arc 0 20 20 0 29.999999999999993 L=1 W=18
+text 23.375404996195453 26.263420891481 th=3.5 tj=4 content=30%C2%B0 L=1
+arc 0 -15 20 315 0 L=1 W=18
+text 22.35788468677314 -24.26093906323517 th=3.5 tj=4 content=45%C2%B0 L=1
+text 83.2820323027551 59.99999999999999 th=3.5 content=TRUE%20LENGTH%20TL%20%3D%2080%0AInclination%20to%20HP%20%3D%2030%C2%B0%0AInclination%20to%20VP%20%3D%2045%C2%B0%0AFront%20view%2056.57%20at%2045%C2%B0%20to%20XY%0ATop%20view%2069.28%20at%2054.7%C2%B0%20to%20XY L=1
+text -35.89657763802695 77.65470157628856 th=5 content=TRUE%20LENGTH%20OF%20A%20LINE%0AAB%2080%20long,%20at%2030%20deg%20to%20HP%20and%2045%20deg%20to%20VP;%20A%2020%20above%20HP%20and%2015%20in%20front%20of%20VP L=1
+text -35.89657763802695 -87.46824407121237 th=3 content=STEPS%0A1.%20TRUELENGTH,%20D:%20click%20a'%20(20%20above%20XY),%20then%20a%20(15%20below%20it);%20type%2080,%2030,%2045:%20both%20views%20and%20the%20construction.%0A2.%20Or:%20draw%20the%20two%20views,%20TRUELENGTH,%20click%20the%20front%20view,%20then%20the%20top%20view:%20TL%20and%20the%20angles.%0A3.%20By%20hand:%20turn%20the%20top%20view%20level%20about%20a%20(arc),%20project%20up%20to%20the%20locus%20of%20b':%20a'b1'%20is%20the%20true%20length%20at%20theta. L=1
+end
+sheet 420 297 1 10 0 1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 paper=A3 name=Sheet1
+FeatherCAD 1
+units mm
+precision 2
+dimstyle 3.5 3 1 2 1 2 1
+layer 0 0 7 0 -3 name=0
+current 0 -1 -1 -1 1
+block 0 0 34 name=BIS%20title%20block
+pline 1 4 -170 0 0 0 0 0 0 48 0 -170 48 0 W=50
+line -170 8 -40 8 W=25
+line -170 16 -40 16 W=25
+line -170 24 -40 24 W=25
+line -170 32 0 32 W=25
+line -170 40 0 40 W=25
+line -90 0 -90 32 W=25
+line -40 0 -40 32 W=25
+text -168.8 47.2 th=1.6 content=INSTITUTION W=18
+text -168.8 41.4 th=2.8 tj=6 content={company} W=25
+text -168.8 39.2 th=1.6 content=TITLE W=18
+text -168.8 33.4 th=3.5 tj=6 content={title} W=25
+text -168.8 31.2 th=1.6 content=NAME W=18
+text -168.8 25.4 th=2.8 tj=6 content={drawnby} W=25
+text -88.8 31.2 th=1.6 content=USN W=18
+text -88.8 25.4 th=2.8 tj=6 content={usn} W=25
+text -168.8 23.2 th=1.6 content=BRANCH%20/%20BATCH W=18
+text -168.8 17.4 th=2.8 tj=6 content={branch} W=25
+text -88.8 23.2 th=1.6 content=SHEET%20NO. W=18
+text -88.8 17.4 th=2.8 tj=6 content={sheet} W=25
+text -168.8 15.2 th=1.6 content=SCALE W=18
+text -168.8 9.4 th=2.8 tj=6 content={scale} W=25
+text -88.8 15.2 th=1.6 content=DATE W=18
+text -88.8 9.4 th=2.8 tj=6 content={date} W=25
+text -168.8 7.2 th=1.6 content=CHECKED%20BY W=18
+text -168.8 1.4 th=2.8 tj=6 content={checkedby} W=25
+text -88.8 7.2 th=1.6 content=MARKS W=18
+text -88.8 1.4 th=2.8 tj=6 content={marks} W=25
+pline 1 4 -32.05 13.2 0 -20.349999999999994 9.95 0 -20.349999999999994 22.95 0 -32.05 19.7 0 W=35
+circle -7.999999999999993 16.45 6.5 W=35
+circle -7.999999999999993 16.45 3.25 W=35
+line -34 16.45 0.45000000000000706 16.45 T=3 W=18 S=0.32499998807907104
+line -7.999999999999993 7.999999999999999 -7.999999999999993 24.9 T=3 W=18 S=0.32499998807907104
+text -20 1.5 th=1.8 tj=7 content=PROJECTION W=18
+pline 1 4 10 10 0 410 10 0 410 287 0 10 287 0 W=70
+insert 410 10 1 0 0 name=BIS%20title%20block
+viewport 15 55 405 282 94.85412068599541 -13.8069212474619 1 0
+end

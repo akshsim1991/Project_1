@@ -3862,10 +3862,10 @@ void TestSymbolsAndCurves() {
         CHECK(InvoluteCurve({0, 0}, 0, 40, 3.5, out, why));
         std::vector<Vec2> pts;
         for (const Entity& x : out)
-            if (x.type == EntityType::Spline) pts = FitPoints(x);
-        CHECK(pts.size() == 49);
+            if (x.type == EntityType::Polyline && x.lineweight == 50) pts = FitPoints(x);
+        CHECK(pts.size() == 193);
         for (size_t k = 0; k < pts.size(); ++k) {
-            const double t = kTau * k / 48;
+            const double t = kTau * k / 192;
             CHECK(Close(Length(pts[k]), 20 * std::sqrt(1 + t * t), 1e-9));
         }
         CHECK(InvoluteCurve({0, 0}, 4, 30, 3.5, out, why));
@@ -3900,6 +3900,51 @@ void TestSymbolsAndCurves() {
         Type(e, {L"c", L"0,0", L"30", L"tn", L"30,0", L"0,30"});
         CHECK(CountOf(d, EntityType::Line) == 2 && Said(host, L"Tangent T-T"));
     }
+}
+
+void TestExamplesAndSvg() {
+    // Every example in samples/ opens (run from FeatherCAD/ or its build folder).
+    const char* names[] = {"Ellipse-by-eccentricity", "Cycloid", "Involute-of-a-circle", "Development-cut-square-prism",
+                           "True-length-of-a-line", "Section-and-true-shape-of-a-pyramid", "Isometric-L-block",
+                           "Electronic-circuit", "Flowchart-larger-of-two-numbers", "Network-star-topology",
+                           "Prism-axis-45-to-HP-edge-30-to-VP"};
+    int found = 0;
+    for (const char* n : names) {
+        std::string text;
+        for (const char* dir : {"samples/", "../samples/", "../../samples/", "FeatherCAD/samples/"}) {
+            std::FILE* f = std::fopen((std::string(dir) + n + ".fcad").c_str(), "rb");
+            if (!f) continue;
+            char buf[65536];
+            size_t got;
+            while ((got = std::fread(buf, 1, sizeof buf, f)) > 0) text.append(buf, got);
+            std::fclose(f);
+            break;
+        }
+        if (text.empty()) continue;
+        ++found;
+        Document model;
+        SheetList sheets;
+        std::wstring err;
+        CHECK(DrawingFromText(text, model, sheets, err));
+        CHECK(model.Count() > 10);
+        // Wires in the circuit examples are joined to their symbols.
+        for (const auto& kv : model.Entities())
+            if (IsConnector(kv.second)) CHECK(kv.second.annot->from.id && kv.second.annot->to.id);
+    }
+    if (found == 0) std::printf("note: samples/ not found from here; the examples were not checked\n");
+    // SVG: lines, text, the page turned the right way up.
+    Document d;
+    d.Add(Entity::Line({0, 0}, {100, 0}));
+    TextData t;
+    t.content = L"A & B";
+    d.Add(MakeText({10, 50}, t));
+    PlotPage page;
+    PlotStyle style;
+    PlotDrawing(d, d.Extents(), 210, 297, 10, 1, style, FieldValues{}, page);
+    const std::string svg = WriteSvg(page);
+    CHECK(svg.find("<svg") != std::string::npos && svg.find("viewBox=\"0 0 210 297\"") != std::string::npos);
+    CHECK(svg.find("<polyline") != std::string::npos && svg.find("A &amp; B</text>") != std::string::npos);
+    CHECK(svg.rfind("</svg>") != std::string::npos);
 }
 
 int main() {
@@ -3951,6 +3996,7 @@ int main() {
     TestReshapeAndRegular();
     TestEngineeringGraphics();
     TestSymbolsAndCurves();
+    TestExamplesAndSvg();
     std::printf("%d checks, %d failed\n", g_checks, g_failures);
     return g_failures;
 }

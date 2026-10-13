@@ -173,6 +173,10 @@ private:
     void DrawingProps();
     void ShowVariables();
     bool ChooseImage(std::wstring& path, int& width, int& height) override;
+    int ChooseSymbol(std::wstring& name) override;
+    void ExportImage(bool png);  // the sheet shown, or the whole drawing, as a picture
+    void OpenExample();          // Help > Examples: a solved drawing from the samples folder
+    std::wstring m_lastSymbol;
     void TitleBlock();
     std::vector<PlotPage> BuildPages(const struct PlotRequest& r);
     void Plot();

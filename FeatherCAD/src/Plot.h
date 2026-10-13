@@ -59,3 +59,6 @@ const ImageReader& GetImageReader();
 
 // The pages as a PDF document (lines, fills and text stay sharp at any zoom).
 std::string WritePdf(const std::vector<PlotPage>& pages, const std::wstring& title);
+// One page as an SVG drawing (millimetres; text as text, for web pages and
+// documents).
+std::string WriteSvg(const PlotPage& page);

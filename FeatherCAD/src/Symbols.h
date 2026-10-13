@@ -18,9 +18,12 @@ struct SymbolInfo {
 const std::vector<SymbolInfo>& SymbolLibrary();
 std::vector<std::wstring> SymbolCategories();
 const SymbolInfo* FindSymbol(const std::wstring& name);  // not case sensitive
+// Its block's name, unique in the library (the network switch: NETWORK_SWITCH).
+std::wstring SymbolBlockName(const SymbolInfo& s);
 // The symbol's block (millimetres, its base where it hangs from), with its
 // ports and a LABEL attribute (TEXT for flowchart shapes). False if unknown.
 bool MakeSymbolBlock(const std::wstring& name, BlockData& out);
+bool MakeSymbolBlock(const SymbolInfo& info, BlockData& out);
 // The block in the drawing (defined from the library the first time).
 std::shared_ptr<const BlockData> SymbolBlock(Document& doc, const std::wstring& name);
 
