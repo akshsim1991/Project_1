@@ -379,6 +379,54 @@ std::string PdfString(const std::wstring& s) {
     return out + ")";
 }
 
+// Greek letters and a few signs of mathematics, which the WinAnsi fonts
+// lack: their code in the standard Symbol font (0 if not there).
+unsigned SymbolCode(wchar_t c) {
+    static const char upper[] = "ABGDEZHQIKLMNXOPR?STUFCYW";  // Alpha..Omega (U+0391..U+03A9)
+    static const char lower[] = "abgdezhqiklmnxoprVstufcyw";  // alpha..omega (U+03B1..U+03C9)
+    if (c >= 0x391 && c <= 0x3A9 && upper[c - 0x391] != '?') return (unsigned char)upper[c - 0x391];
+    if (c >= 0x3B1 && c <= 0x3C9) return (unsigned char)lower[c - 0x3B1];
+    switch (c) {
+        case 0x3D1: return 'J';   // theta symbol
+        case 0x3D5: return 'j';   // phi symbol
+        case 0x3D6: return 'v';   // pi symbol
+        case 0x221E: return 0xA5; // infinity
+        case 0x2264: return 0xA3; // less than or equal
+        case 0x2265: return 0xB3; // greater than or equal
+        case 0x2260: return 0xB9; // not equal
+        case 0x2248: return 0xBB; // almost equal
+        case 0x221A: return 0xD6; // square root
+        case 0x2220: return 0xD0; // angle
+        case 0x22A5: return 0x5E; // perpendicular
+        case 0x2206: return 'D';  // increment (delta)
+        case 0x2126: return 'W';  // ohm
+        default: return 0;
+    }
+}
+
+// The text in runs: the font's own (false) and the Symbol font's (true).
+std::vector<std::pair<bool, std::wstring>> SymbolRuns(const std::wstring& s) {
+    std::vector<std::pair<bool, std::wstring>> runs;
+    for (wchar_t c : s) {
+        const unsigned sym = SymbolCode(c);
+        const bool isSym = sym != 0;
+        if (runs.empty() || runs.back().first != isSym) runs.push_back({isSym, L""});
+        runs.back().second.push_back(isSym ? (wchar_t)sym : c);
+    }
+    return runs;
+}
+
+// A run in the Symbol font: its codes as they are.
+std::string PdfSymbolString(const std::wstring& s) {
+    std::string out = "(";
+    for (wchar_t c : s) {
+        const unsigned code = (unsigned)c & 0xFF;
+        if (code == '(' || code == ')' || code == '\\') out += '\\';
+        out += (char)code;
+    }
+    return out + ")";
+}
+
 int FontOf(const std::wstring& font, double& capHeight) {
     std::wstring f = font;
     for (wchar_t& c : f) c = (wchar_t)towlower(c);
@@ -454,8 +502,13 @@ std::string PageContent(const PlotPage& page, const std::map<std::wstring, int>&
                 const Vec2 at = t.pos + u * shift - n * (t.height / 2);  // on the baseline
                 c += Colour(it.rgb, "rg");
                 c += "BT /F" + std::to_string(font) + " " + Num(size) + " Tf " + Num(100 * (t.widthFactor > 0 ? t.widthFactor : 1)) +
-                     " Tz " + Num(u.x) + " " + Num(u.y) + " " + Num(-u.y) + " " + Num(u.x) + " " + Num(at.x) + " " + Num(at.y) +
-                     " Tm " + PdfString(t.text) + " Tj ET\n";
+                     " Tz " + Num(u.x) + " " + Num(u.y) + " " + Num(-u.y) + " " + Num(u.x) + " " + Num(at.x) + " " + Num(at.y) + " Tm ";
+                // Greek and mathematical signs from the Symbol font (F4), the rest in the text's font.
+                for (const auto& run : SymbolRuns(t.text)) {
+                    if (run.first) c += "/F4 " + Num(size) + " Tf " + PdfSymbolString(run.second) + " Tj /F" + std::to_string(font) + " " + Num(size) + " Tf ";
+                    else c += PdfString(run.second) + " Tj ";
+                }
+                c += "ET\n";
                 break;
             }
         }
@@ -587,10 +640,12 @@ std::string WritePdf(const std::vector<PlotPage>& pages, const std::wstring& tit
         for (size_t k = 0; k < pics.size(); ++k) xobjects += " /Im" + std::to_string(k + 1) + " " + std::to_string(7 + 2 * n + k) + " 0 R";
         xobjects += " >>";
     }
+    // The Symbol font (Greek letters) comes last, after the pictures.
+    const std::string symbolFont = std::to_string(7 + 2 * n + pics.size());
     for (size_t i = 0; i < n; ++i) {
         const PlotPage& p = pages[i];
         object("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 " + Num(p.width * kPt) + " " + Num(p.height * kPt) +
-               "] /Resources << /Font << /F1 3 0 R /F2 4 0 R /F3 5 0 R >>" + xobjects + " >> /Contents " +
+               "] /Resources << /Font << /F1 3 0 R /F2 4 0 R /F3 5 0 R /F4 " + symbolFont + " 0 R >>" + xobjects + " >> /Contents " +
                std::to_string(8 + 2 * i) + " 0 R >>");
         const std::string content = PageContent(p, names);
         object("<< /Length " + std::to_string(content.size()) + " >>\nstream\n" + content + "endstream");
@@ -599,6 +654,7 @@ std::string WritePdf(const std::vector<PlotPage>& pages, const std::wstring& tit
         object("<< /Type /XObject /Subtype /Image /Width " + std::to_string(pic.w) + " /Height " + std::to_string(pic.h) +
                " /ColorSpace /DeviceRGB /BitsPerComponent 8 /Length " + std::to_string(pic.rgb.size()) + " >>\nstream\n" +
                std::string(pic.rgb.begin(), pic.rgb.end()) + "\nendstream");
+    object("<< /Type /Font /Subtype /Type1 /BaseFont /Symbol >>");
     const size_t xref = out.size();
     out += "xref\n0 " + std::to_string(offsets.size() + 1) + "\n0000000000 65535 f \n";
     for (size_t off : offsets) {

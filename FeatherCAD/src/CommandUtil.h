@@ -105,3 +105,4 @@ std::unique_ptr<Command> CreateSheetCommand(const std::wstring& name);
 std::unique_ptr<Command> CreateRelateCommand(const std::wstring& name);
 std::unique_ptr<Command> CreateEgCommand(const std::wstring& name);
 std::unique_ptr<Command> CreateCurvesCommand(const std::wstring& name);
+std::unique_ptr<Command> CreateR3Command(const std::wstring& name);

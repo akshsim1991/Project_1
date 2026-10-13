@@ -437,8 +437,13 @@ ID2D1PathGeometry* Canvas::BuildGeometry(const std::vector<const Entity*>& entit
         if (!safe.Contains(a) || !safe.Contains(b)) {
             if (!ClipSegment(a, b, cull)) return;
         }
-        pen.Begin(ToScreen(a));
-        pen.Line(ToScreen(b));
+        D2D1_POINT_2F sa = ToScreen(a), sb = ToScreen(b);
+        // Level and upright lines on pixel centres: crisp, and thin ones never
+        // fall between two rows of pixels and fade away.
+        if (std::fabs(sa.y - sb.y) < 0.01f) sa.y = sb.y = std::floor(sa.y) + 0.5f;
+        else if (std::fabs(sa.x - sb.x) < 0.01f) sa.x = sb.x = std::floor(sa.x) + 0.5f;
+        pen.Begin(sa);
+        pen.Line(sb);
         pen.End(false);
     };
     // Arcs are drawn as short straight pieces, fine enough that they never

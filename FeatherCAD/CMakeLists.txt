@@ -39,6 +39,8 @@ set(CORE_SOURCES
   src/Symbols.cpp
   src/EngCurves.cpp
   src/CommandsCurves.cpp
+  src/EngMore.cpp
+  src/CommandsR3.cpp
 )
 
 add_executable(FeatherCAD WIN32

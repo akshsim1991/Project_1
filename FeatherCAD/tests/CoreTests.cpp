@@ -13,6 +13,7 @@
 #include "Engine.h"
 #include "EngCurves.h"
 #include "EngGraphics.h"
+#include "EngMore.h"
 #include "Symbols.h"
 #include "Expr.h"
 #include "FreeSketch.h"
@@ -3947,6 +3948,193 @@ void TestExamplesAndSvg() {
     CHECK(svg.rfind("</svg>") != std::string::npos);
 }
 
+// The lines among `ents` (by their ends, either way round).
+bool HasLine(const Document& d, Vec2 a, Vec2 b, double tol = 1e-6) {
+    for (const auto& kv : d.Entities())
+        if (kv.second.type == EntityType::Line &&
+            ((Close(kv.second.p0, a, tol) && Close(kv.second.p1, b, tol)) || (Close(kv.second.p0, b, tol) && Close(kv.second.p1, a, tol))))
+            return true;
+    return false;
+}
+
+void TestRound3Constructions() {
+    TestHost host;
+    {   // RF and scales.
+        double rf = 0;
+        CHECK(ReadRf(L"1:50", rf) && Close(rf, 0.02));
+        CHECK(ReadRf(L"1 / 2500", rf) && Close(rf, 1.0 / 2500));
+        CHECK(ReadRf(L"2:1", rf) && Close(rf, 2));
+        CHECK(ReadRf(L"0.02", rf) && Close(rf, 0.02));
+        CHECK(!ReadRf(L"one to fifty", rf) && !ReadRf(L"1:0", rf) && !ReadRf(L"1:50x", rf));
+        CHECK(Close(UnitMm(L"km"), 1e6) && Close(UnitMm(L"M"), 1000) && UnitMm(L"furlong") == 0);
+        std::vector<Entity> out;
+        std::wstring why;
+        CHECK(ScaleDrawing(false, {0, 0}, 0.02, 6, L"m", 3.5, out, why));  // 1 m = 20 mm on paper
+        CHECK(out[0].type == EntityType::Polyline && Close(out[0].verts[2].p, Vec2{120, 8}));
+        CHECK(ScaleDrawing(true, {0, 0}, 0.02, 6, L"m", 3.5, out, why));
+        bool diagonal = false;  // the first diagonal: from the zero mark at the bottom, one tenth left at the top
+        for (const Entity& e : out)
+            if (e.type == EntityType::Line && Close(e.p0, Vec2{20, 0}) && Close(e.p1, Vec2{18, 25})) diagonal = true;
+        CHECK(diagonal);
+        CHECK(!ScaleDrawing(false, {0, 0}, 0.02, 6, L"furlong", 3.5, out, why) && !why.empty());
+        CHECK(!ScaleDrawing(false, {0, 0}, 1, 6, L"km", 3.5, out, why));  // kilometres long
+        CHECK(!ScaleDrawing(false, {0, 0}, 0.02, 1, L"m", 3.5, out, why));
+    }
+    {   // Projections of a point; the quadrants.
+        CHECK(std::wstring(QuadrantName(20, 30)) == L"first quadrant");
+        CHECK(std::wstring(QuadrantName(20, -30)) == L"second quadrant");
+        CHECK(std::wstring(QuadrantName(-20, -30)) == L"third quadrant");
+        CHECK(std::wstring(QuadrantName(-20, 30)) == L"fourth quadrant");
+        CHECK(std::wstring(QuadrantName(0, 30)) == L"on HP, in front of VP");
+        DimStyle st;
+        int points = 0, dims = 0;
+        for (const Entity& e : PointProjection({0, 0}, 20, 30, L"a", st)) {
+            if (e.type == EntityType::Point) points += Close(e.p0, Vec2{0, 20}) || Close(e.p0, Vec2{0, -30});
+            if (e.type == EntityType::Dimension) ++dims;
+        }
+        CHECK(points == 2 && dims == 2);
+    }
+    {   // Traces: A 10 above HP and 20 in front of VP, B 60 to the right, 40 above, 50 in front.
+        LineViews v;
+        v.a1 = {0, 10}, v.b1 = {60, 40}, v.a = {0, -20}, v.b = {60, -50};
+        const Traces t = LineTraces(v, 0);
+        CHECK(t.hasHT && Close(t.h1, Vec2{-20, 0}) && Close(t.h, Vec2{-20, -10}));
+        CHECK(t.hasVT && Close(t.v, Vec2{-40, 0}) && Close(t.v1, Vec2{-40, -10}));
+        LineViews flat = v;  // parallel to HP: no HT
+        flat.b1.y = 10;
+        CHECK(!LineTraces(flat, 0).hasHT && LineTraces(flat, 0).hasVT);
+        CHECK(!TraceConstruction(v, 0, t, 3.5).empty());
+    }
+    {   // The development of a transition piece keeps the true lengths of its edges.
+        std::vector<Entity> out;
+        std::wstring why;
+        CHECK(DevelopTransition(80, 60, 50, 60, {0, 0}, 3.5, out, why));
+        const Entity& bottom = out[0];
+        CHECK(bottom.type == EntityType::Polyline && bottom.verts.size() == 6);
+        const double want[] = {40, 60, 80, 60, 40};
+        bool sides = true;
+        for (size_t k = 0; k < 5; ++k) sides = sides && Close(Dist(bottom.verts[k].p, bottom.verts[k + 1].p), want[k], 1e-6);
+        CHECK(sides);
+        const Entity& top = out[1];
+        bool chords = top.type == EntityType::Spline && top.verts.size() == 13;
+        for (size_t k = 0; chords && k + 1 < top.verts.size(); ++k)
+            chords = Close(Dist(top.verts[k].p, top.verts[k + 1].p), 50 * std::sin(kPi / 12), 1e-6);
+        CHECK(chords);
+        // The seam is the same length at both ends.
+        CHECK(Close(Dist(bottom.verts[0].p, top.verts[0].p), Dist(bottom.verts[5].p, top.verts[12].p), 1e-6));
+        CHECK(!DevelopTransition(80, 0, 50, 60, {0, 0}, 3.5, out, why));
+    }
+    {   // Intersection of two cylinders: the curve's points lie on both.
+        IntersectSpec s;
+        s.uprightSize = 60, s.acrossSize = 40, s.axisHeight = 50, s.uprightHeight = 100, s.acrossLength = 120;
+        std::vector<Entity> out;
+        std::wstring why;
+        CHECK(IntersectSolids(s, {0, 0}, 100, 3.5, out, why));
+        int curves = 0;
+        bool onBoth = true;
+        for (const Entity& e : out) {
+            if (e.type != EntityType::Polyline || e.verts.size() < 20) continue;
+            ++curves;
+            for (const Vertex& v : e.verts) onBoth = onBoth && Close(v.p.x * v.p.x - (v.p.y - 50) * (v.p.y - 50), 500, 1e-6);
+        }
+        CHECK(curves >= 2 && onBoth);
+        IntersectSpec big = s;
+        big.acrossSize = 70;  // wider than the upright one
+        CHECK(!IntersectSolids(big, {0, 0}, 100, 3.5, out, why));
+        IntersectSpec low = s;
+        low.axisHeight = 10;  // out through the base
+        CHECK(!IntersectSolids(low, {0, 0}, 100, 3.5, out, why));
+        IntersectSpec prisms = s;
+        prisms.upright = IntersectSpec::Prism, prisms.across = IntersectSpec::PrismDiamond;
+        CHECK(IntersectSolids(prisms, {0, 0}, 100, 3.5, out, why));
+    }
+    {   // Perspective: points on the picture plane stay where they are; far ones go to the vanishing point.
+        CHECK(Close(PerspectivePoint(10, 0, 30, 20, 120, 50), Vec2{10, 30}));
+        const double t = ToRadians(30), far = 1e9;
+        const Vec2 v = PerspectivePoint(far * std::cos(t), far * std::sin(t), 0, 20, 120, 50);
+        CHECK(Close(v, Vec2{20 + 120 / std::tan(t), 50}, 1e-4));
+        PerspectiveSpec ps;
+        std::vector<Entity> out;
+        std::wstring why;
+        CHECK(PerspectiveDrawing(ps, {0, 0}, 3.5, out, why) && out.size() > 20);
+        ps.angle = 0;
+        CHECK(!PerspectiveDrawing(ps, {0, 0}, 3.5, out, why));
+    }
+    {   // The construction helpers.
+        Document d;
+        Engine e(d, host);
+        d.Add(Entity::Line({0, 0}, {10, 0}));
+        Type(e, {L"bisect", L"5,0", L""});
+        CHECK(HasLine(d, {5, -6}, {5, 6}));
+        d.Add(Entity::Line({0, 0}, {0, 10}));
+        Type(e, {L"bsc", L"8,0", L"0,8"});
+        CHECK(HasLine(d, {0, 0}, {std::sqrt(50.0), std::sqrt(50.0)}));
+        Type(e, {L"parallelthru", L"3,0", L"3,7", L""});
+        CHECK(HasLine(d, {0, 7}, {10, 7}));
+        Type(e, {L"ppt", L"2,0", L"4,9", L""});
+        CHECK(HasLine(d, {4, 9}, {4, 0}));
+        d.Add(Entity::Circle({100, 0}, 10));
+        Type(e, {L"tanfrom", L"110,0", L"120,0", L""});
+        int tangents = 0;
+        for (const auto& kv : d.Entities())
+            if (kv.second.type == EntityType::Line && Close(kv.second.p0, Vec2{120, 0}))
+                tangents += Close(Dist(kv.second.p0, kv.second.p1), std::sqrt(300.0), 1e-6) &&
+                            Close(Dist(kv.second.p1, Vec2{100, 0}), 10, 1e-6);
+        CHECK(tangents == 2);
+    }
+    {   // ALIGN: two points onto two others, scaled to fit; and just moved.
+        Document d;
+        Engine e(d, host);
+        const uint64_t id = d.Add(Entity::Line({0, 0}, {10, 0}));
+        e.AddToSelection({id});
+        Type(e, {L"align", L"0,0", L"50,50", L"10,0", L"50,70", L"Y"});
+        CHECK(Close(d.Find(id)->p0, Vec2{50, 50}, 1e-9) && Close(d.Find(id)->p1, Vec2{50, 70}, 1e-9));
+        e.AddToSelection({id});
+        Type(e, {L"al", L"50,50", L"60,50", L"50,70", L"70,60", L""});  // turned, not scaled
+        CHECK(Close(d.Find(id)->p0, Vec2{60, 50}, 1e-9) && Close(d.Find(id)->p1, Vec2{60 + 20 / std::sqrt(2.0), 50 + 20 / std::sqrt(2.0)}, 1e-9));
+        e.AddToSelection({id});
+        Type(e, {L"align", L"60,50", L"0,0", L""});
+        CHECK(Close(d.Find(id)->p0, Vec2{0, 0}, 1e-9));
+    }
+    {   // The construction commands make their drawings.
+        Document d;
+        Engine e(d, host);
+        Type(e, {L"scales", L"D", L"1:50", L"M", L"6", L"0,0"});
+        const size_t afterScale = d.Count();
+        CHECK(afterScale > 30);
+        Type(e, {L"pointproj", L"p", L"-20", L"30", L"200,0", L"", L"", L"", L"300,0"});
+        e.Cancel();
+        CHECK(d.Count() > afterScale + 10);
+        const size_t before = d.Count();
+        Type(e, {L"transition", L"", L"", L"", L"", L"0,-200"});
+        Type(e, {L"intersect", L"C", L"", L"", L"P", L"", L"", L"", L"", L"300,-200"});
+        Type(e, {L"perspective", L"", L"", L"", L"", L"", L"", L"", L"600,-200"});
+        CHECK(d.Count() > before + 100);
+        // TRACES from the views drawn as lines.
+        Document t;
+        Engine te(t, host);
+        t.Add(Entity::Line({0, 10}, {60, 40}));
+        t.Add(Entity::Line({0, -20}, {60, -50}));
+        t.Add(Entity::Line({-80, 0}, {80, 0}));
+        Type(te, {L"traces", L"30,25", L"30,-35", L"70,0"});
+        CHECK(HasLine(t, {-20, 0}, {-20, -10}) && HasLine(t, {-40, 0}, {-40, -10}));
+    }
+    {   // Greek letters in a PDF come from the Symbol font.
+        Document d;
+        TextData t;
+        t.content = L"\x03B8 = 30\x00B0, \x03C6";
+        d.Add(MakeText({10, 50}, t));
+        d.Add(Entity::Line({0, 0}, {100, 0}));
+        PlotPage page;
+        PlotStyle style;
+        PlotDrawing(d, d.Extents(), 210, 297, 10, 1, style, FieldValues{}, page);
+        const std::string pdf = WritePdf({page}, L"Greek");
+        CHECK(pdf.find("/F4 9 0 R") != std::string::npos);
+        CHECK(pdf.find("9 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Symbol >>") != std::string::npos);
+        CHECK(pdf.find("(q) Tj") != std::string::npos && pdf.find("(f) Tj") != std::string::npos);
+    }
+}
+
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);  // failures show even if a later check crashes
     TestAngles();
@@ -3997,6 +4185,7 @@ int main() {
     TestEngineeringGraphics();
     TestSymbolsAndCurves();
     TestExamplesAndSvg();
+    TestRound3Constructions();
     std::printf("%d checks, %d failed\n", g_checks, g_failures);
     return g_failures;
 }

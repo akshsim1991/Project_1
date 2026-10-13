@@ -1512,6 +1512,7 @@ HMENU MainWindow::BuildMenu(int menuId) {
             Append(m, ID_ROTATE, L"&Rotate\tRO");
             Append(m, ID_MIRROR, L"M&irror\tMI");
             Append(m, ID_SCALE, L"&Scale\tSC");
+            AppendCmd(m, L"ALIGN", L"&Align (two points onto two)\tAL");
             Append(m, ID_STRETCH, L"Stretc&h\tS");
             Separator(m);
             Append(m, ID_TRIM, L"&Trim\tTR");
@@ -1657,10 +1658,27 @@ HMENU MainWindow::BuildMenu(int menuId) {
             cmd(L"LABEL", L"&Label points (a, b, a1')\tLB");
             cmd(L"HIDDEN", L"&Hidden line on/off\tHID");
             cmd(L"TRUELENGTH", L"&True length and angles of a line\tTRL");
+            cmd(L"POINTPROJ", L"Projections of a p&oint (quadrants)\tPPJ");
+            cmd(L"TRACES", L"Traces of a line (HT, VT)\tTRC");
             Separator(m);
-            cmd(L"DIVIDE", L"&Divide into equal parts\tDIV");
-            cmd(L"MEASURE", L"&Measure off equal lengths\tME");
+            {
+                HMENU geo = CreatePopupMenu();
+                auto g = [&](const wchar_t* name, const wchar_t* text) { AppendCmd(geo, name, text); };
+                g(L"BISECT", L"&Bisector of a line or an angle\tBSC");
+                g(L"PARALLELTHRU", L"&Parallel through a point\tPTH");
+                g(L"PERPTHRU", L"Perpendicular &from a point\tPPT");
+                g(L"TANFROM", L"&Tangents from a point to a circle\tTF");
+                Separator(geo);
+                g(L"DIVIDE", L"&Divide into equal parts\tDIV");
+                g(L"MEASURE", L"&Measure off equal lengths\tME");
+                Submenu(m, geo, L"Geometric co&nstructions");
+            }
+            cmd(L"SCALES", L"Plain or diagonal sc&ale (RF)\tSCALES");
+            Separator(m);
             cmd(L"DEVELOP", L"De&velopment of surfaces\tDEV");
+            cmd(L"TRANSITION", L"Transition piece (square to round)\tTRANS");
+            cmd(L"INTERSECT", L"Intersection of solids\tINTERSECT");
+            cmd(L"PERSPECTIVE", L"Perspective of a block\tPERS");
             Separator(m);
             cmd(L"CUTPLANE", L"C&utting plane line (A-A)\tCPL");
             cmd(L"TRUESHAPE", L"True shape &of a section\tTS");

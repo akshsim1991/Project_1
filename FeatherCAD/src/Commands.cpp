@@ -1131,6 +1131,17 @@ const std::vector<CommandInfo>& AllCommands() {
         {L"SPIRAL", {L"SPI"}, L"Archimedean spiral", L"A point moving away from the pole steadily as it turns"},
         {L"HELIX", {L"HEL"}, L"Helix", L"A helix on a cylinder: front view (back part hidden) and top view"},
         {L"TANNORM", {L"TN", L"NORMAL"}, L"Tangent and normal", L"The tangent and normal at a point of a curve (ellipse, cycloid, spiral...)"},
+        {L"BISECT", {L"BSC", L"BISECTOR"}, L"Bisector", L"The perpendicular bisector of a line, or the bisector of an angle between two lines"},
+        {L"PARALLELTHRU", {L"PTH"}, L"Parallel through a point", L"A line through a point, parallel to a line and as long"},
+        {L"PERPTHRU", {L"PPT"}, L"Perpendicular from a point", L"A line from a point square to a line (to its foot)"},
+        {L"TANFROM", {L"TF"}, L"Tangents from a point", L"The two tangents from a point to a circle or arc"},
+        {L"ALIGN", {L"AL"}, L"Align", L"Move and turn objects so two of their points land on two others (scale to fit if wanted)"},
+        {L"SCALES", {L"PLAINSCALE", L"DIAGONALSCALE"}, L"Plain or diagonal scale", L"Draw a plain or diagonal scale for an RF such as 1:50"},
+        {L"POINTPROJ", {L"PPJ", L"QUADRANT"}, L"Projections of a point", L"A point above or below HP, in front of or behind VP: its views and quadrant"},
+        {L"TRACES", {L"TRC", L"HTVT"}, L"Traces of a line", L"The horizontal and vertical traces (HT, VT) of a line from its two views"},
+        {L"TRANSITION", {L"TRANS"}, L"Transition piece", L"The development of a square-to-round transition piece by triangulation"},
+        {L"INTERSECT", {L"INTERSECTION", L"PENETRATION"}, L"Intersection of solids", L"An upright cylinder or prism penetrated by a horizontal one, with the curves of intersection"},
+        {L"PERSPECTIVE", {L"PERS"}, L"Perspective", L"The perspective of a block by the visual ray method"},
         {L"HORIZONTAL", {L"HOR"}, L"Horizontal", L"Keep a line horizontal (a relationship)"},
         {L"VERTICAL", {L"VER"}, L"Vertical", L"Keep a line vertical (a relationship)"},
         {L"PARALLEL", {L"PAR"}, L"Parallel", L"Keep two lines parallel (the second one turns)"},
@@ -1198,6 +1209,7 @@ std::unique_ptr<Command> CreateCommand(const std::wstring& name) {
     if (auto cmd = CreateRelateCommand(name)) return cmd;
     if (auto cmd = CreateEgCommand(name)) return cmd;
     if (auto cmd = CreateCurvesCommand(name)) return cmd;
+    if (auto cmd = CreateR3Command(name)) return cmd;
     if (name == L"LINE") return std::make_unique<LineCmd>();
     if (name == L"PLINE") return std::make_unique<PlineCmd>();
     if (name == L"TANLINE") return std::make_unique<TanLineCmd>();
