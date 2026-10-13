@@ -21,6 +21,7 @@ public:
     void SetPrompt(const std::wstring& prompt, bool idle);
     void SetSpaces(bool on) { m_spaces = on; }  // space types a space instead of acting as Enter
     void Focus();
+    void ClearInput();  // what was typed and not yet sent goes
     void ToggleExpanded();  // F2: more history lines
     void OnThemeChanged();
     void OnDpiChanged();

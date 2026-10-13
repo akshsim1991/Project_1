@@ -277,6 +277,15 @@ void DrawCadIcon(HDC dc, int icon, const RECT& rc, COLORREF ink, COLORREF accent
             g.DrawLine(&pen, 15.0f, 3.0f, 14.0f, 6.0f);  // the prime
             break;
         }
+        case kIconStop: {
+            // A bold red X (red whatever the theme: it means stop).
+            Pen red(Color(255, 214, 40, 40), 2.6f);
+            red.SetStartCap(LineCapRound);
+            red.SetEndCap(LineCapRound);
+            g.DrawLine(&red, 4.5f, 4.5f, 15.5f, 15.5f);
+            g.DrawLine(&red, 15.5f, 4.5f, 4.5f, 15.5f);
+            break;
+        }
         case kIconHidden: {
             // A solid edge above, a hidden (dashed) one below.
             g.DrawLine(&pen, 2.5f, 6.0f, 17.5f, 6.0f);

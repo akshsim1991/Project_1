@@ -322,3 +322,7 @@ LRESULT CALLBACK CommandLine::EditProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
     }
     return DefSubclassProc(hwnd, msg, wp, lp);
 }
+
+void CommandLine::ClearInput() {
+    if (m_input) SetWindowTextW(m_input, L"");
+}

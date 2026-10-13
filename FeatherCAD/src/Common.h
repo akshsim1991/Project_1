@@ -244,6 +244,7 @@ enum : int {
     ID_TIPS,
     ID_TOGGLE_ISO,       // isometric drawing on/off (status bar)
     ID_ISOPLANE_NEXT,    // F5: the next isometric plane
+    ID_STOP,             // the red X on the toolbar: as Esc (stop the command, clear the selection)
     ID_RECENT_FIRST = 300,   // + index into the recent files (up to 10)
     ID_CTX_KEYWORD = 330,    // + index into the prompt's options
     ID_CTX_RECENT_CMD = 360, // + index into the recent commands

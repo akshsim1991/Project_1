@@ -288,6 +288,8 @@ void MainWindow::CreateChildren() {
                             L"Find any command by typing what you want to do", 190);
 
     m_tools.Create(m_hwnd, m_hwnd, kToolBarDip);
+    m_tools.AddIconButton(ID_STOP, kIconStop, L"Stop (Esc): cancel the command, clear the selection, back to picking objects");
+    m_tools.AddSeparator();
     m_tools.AddButton(ID_NEW, kGlyphNew, L"New drawing (Ctrl+N)");
     m_tools.AddButton(ID_OPEN, kGlyphOpen, L"Open (Ctrl+O)");
     m_tools.AddButton(ID_SAVE, kGlyphSave, L"Save (Ctrl+S)");
@@ -1316,8 +1318,12 @@ void MainWindow::OnCommand(int id) {
                 SwitchTo(id == ID_NEXT_DRAWING ? (m_active + 1) % n : (m_active + n - 1) % n);
             }
             break;
+        case ID_STOP:  // as Esc in the command line: what was typed goes too
+            m_cmdline.ClearInput();
+            [[fallthrough]];
         case ID_ESCAPE:
             Eng().Cancel();
+            Eng().SetPanMode(false);
             AfterInput();
             break;
         case ID_CTX_ENTER:

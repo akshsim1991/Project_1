@@ -37,6 +37,7 @@ enum CadIcon : int {
     kIconProjector,
     kIconLabel,
     kIconHidden,
+    kIconStop,  // a red X: stop, as Esc
 };
 
 // Draws `icon` centred in `rc` (a 20x20 DIP design) in `ink`, with key
