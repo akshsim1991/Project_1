@@ -11,7 +11,9 @@
 #include "Document.h"
 #include "DxfImport.h"
 #include "Engine.h"
+#include "EngCurves.h"
 #include "EngGraphics.h"
+#include "Symbols.h"
 #include "Expr.h"
 #include "FreeSketch.h"
 #include "Grips.h"
@@ -3706,6 +3708,200 @@ void TestEngineeringGraphics() {
     }
 }
 
+std::vector<Vec2> FitPoints(const Entity& e) {
+    std::vector<Vec2> out;
+    for (const Vertex& v : e.verts) out.push_back(v.p);
+    return out;
+}
+
+const Entity* FirstWire(const Document& d) {
+    for (const auto& kv : d.Entities())
+        if (IsConnector(kv.second)) return &kv.second;
+    return nullptr;
+}
+
+bool Orthogonal(const std::vector<Vec2>& p) {
+    for (size_t i = 0; i + 1 < p.size(); ++i)
+        if (std::fabs(p[i].x - p[i + 1].x) > 1e-9 && std::fabs(p[i].y - p[i + 1].y) > 1e-9) return false;
+    return true;
+}
+
+void TestSymbolsAndCurves() {
+    TestHost host;
+    {   // The library.
+        CHECK(SymbolLibrary().size() >= 60 && SymbolCategories().size() == 5);
+        for (const SymbolInfo& s : SymbolLibrary()) {
+            BlockData b;
+            CHECK(MakeSymbolBlock(s.name, b) && !b.items.empty());
+            const std::wstring cat = s.category;
+            if (cat == L"Flowchart") CHECK(b.ports.size() == 4);
+            if (cat == L"Logic gates") CHECK(b.ports.size() == (std::wstring(s.name) == L"NOT" || std::wstring(s.name) == L"BUFFER" ? 2u : 3u));
+        }
+        BlockData r;
+        CHECK(MakeSymbolBlock(L"resistor", r) && r.ports.size() == 2 && Close(r.ports[1].at, Vec2{20, 0}));
+        CHECK(!MakeSymbolBlock(L"FLUX_CAPACITOR", r));
+        CHECK(FindSymbol(L"NETWORK_SWITCH") && std::wstring(FindSymbol(L"NETWORK_SWITCH")->category) == L"Network");
+    }
+    {   // Placing symbols, wiring them, moving one: the wire follows.
+        Document d;
+        Engine e(d, host);
+        Type(e, {L"symbol", L"RESISTOR", L"R1", L"0,0", L"r", L"40,0", L""});
+        std::vector<uint64_t> ins;
+        for (const auto& kv : d.Entities())
+            if (kv.second.type == EntityType::Insert) ins.push_back(kv.first);
+        CHECK(ins.size() == 2);
+        CHECK(d.Find(ins[0])->annot->values.size() == 1 && d.Find(ins[0])->annot->values[0] == L"R1");
+        CHECK(d.Find(ins[1])->annot->values[0] == L"R2");  // numbered on
+        Vec2 at, dir;
+        CHECK(PortPoint(d, {ins[1], 0}, at, dir) && Close(at, Vec2{40, 0}, 1e-9) && Close(dir, Vec2{0, -1}, 1e-9));
+        Type(e, {L"wire", L"20,0", L"40,0", L""});
+        const Entity* w = FirstWire(d);
+        CHECK(w && w->annot->from.id == ins[0] && w->annot->from.grip == 1 && w->annot->to.id == ins[1] && w->annot->to.grip == 0);
+        CHECK(w && Orthogonal(w->annot->pts) && Close(w->annot->pts.front(), Vec2{40, 0}) && Close(w->annot->pts.back(), Vec2{20, 0}));
+        CHECK(w && w->annot->arrow == 0);  // no arrows on electrical wires
+        e.AddToSelection({ins[1]});
+        Type(e, {L"move", L"0,0", L"10,10"});
+        w = FirstWire(d);
+        CHECK(w && Close(w->annot->pts.front(), Vec2{50, 10}, 1e-9) && Close(w->annot->pts.back(), Vec2{20, 0}, 1e-9) &&
+              Orthogonal(w->annot->pts));
+        // Saved and opened again: the ports and the wire's ends.
+        Document o;
+        std::wstring err;
+        CHECK(o.FromText(d.ToText(), err) && o.ToText() == d.ToText());
+        const Entity* ow = FirstWire(o);
+        CHECK(ow && ow->annot->from.id && ow->annot->to.id && o.Find(ow->annot->to.id)->annot->block->ports.size() == 2);
+        Entity moved = *o.Find(ow->annot->to.id);
+        Translate(moved, {0, 5});
+        o.BeginChange(L"Move");
+        o.Replace(moved);
+        o.EndChange();
+        CHECK(Close(FirstWire(o)->annot->pts.front(), Vec2{50, 15}, 1e-9));
+        // Copied together: the copy's wire joins the copies.
+        std::vector<Entity> group;
+        for (const auto& kv : d.Entities())
+            if (kv.second.type == EntityType::Insert || IsConnector(kv.second)) group.push_back(kv.second);
+        for (Entity& g : group) Translate(g, {0, 100});
+        d.BeginChange(L"Copy");
+        const std::vector<uint64_t> ids = d.AddGroup(group);
+        d.EndChange();
+        int joined = 0;
+        for (uint64_t id : ids)
+            if (const Entity* x = d.Find(id); x && IsConnector(*x))
+                joined += std::find(ids.begin(), ids.end(), x->annot->from.id) != ids.end() &&
+                          std::find(ids.begin(), ids.end(), x->annot->to.id) != ids.end();
+        CHECK(joined == 1);
+        // Erasing a symbol: its wire lets go and stays.
+        d.BeginChange(L"Erase");
+        d.Erase(ins[0]);
+        d.EndChange();
+        w = FirstWire(d);
+        CHECK(w && w->annot->from.id == 0 && Close(w->annot->pts.back(), Vec2{20, 0}, 1e-9));
+    }
+    {   // Flowchart: arrows; network: straight links.
+        Document d;
+        Engine e(d, host);
+        Type(e, {L"symbol", L"PROCESS", L"Read A, B", L"0,0", L"", L"symbol", L"DECISION", L"Is A > B ?", L"0,-50", L""});
+        Type(e, {L"wire", L"0,-10", L"0,-38", L""});
+        const Entity* w = FirstWire(d);
+        CHECK(w && w->annot->arrow > 0 && Close(w->annot->pts.front(), Vec2{0, -38}, 1e-9));
+        Document n;
+        Engine en(n, host);
+        Type(en, {L"sym", L"ROUTER", L"R", L"0,0", L"", L"sym", L"PC", L"PC1", L"60,30", L""});
+        Type(en, {L"wire", L"12,0", L"50,37", L""});
+        w = FirstWire(n);
+        CHECK(w && w->annot->pts.size() == 2 && w->annot->straight);
+    }
+    {   // Conics: every point is e times as far from the focus as from the directrix.
+        for (double ecc : {2.0 / 3, 1.0, 1.5}) {
+            std::vector<Entity> out;
+            std::wstring why;
+            CHECK(ConicCurve({10, 20}, 50, ecc, 3.5, out, why));
+            const Entity* curve = nullptr;
+            for (const Entity& x : out)
+                if (x.type == EntityType::Spline) curve = &x;
+            CHECK(curve != nullptr);
+            if (!curve) continue;
+            const Vec2 F{60, 20};
+            for (Vec2 p : FitPoints(*curve)) CHECK(Close(Dist(p, F), ecc * (p.x - 10), 1e-9));
+            CHECK(curve->closed == (ecc < 1));
+        }
+        std::vector<Entity> out;
+        std::wstring why;
+        CHECK(!ConicCurve({0, 0}, 0, 0.5, 3.5, out, why));
+        Document d;
+        Engine e(d, host);
+        Type(e, {L"conic", L"50", L"2/3", L"0,0"});
+        CHECK(FirstOf(d, EntityType::Spline) && FirstOf(d, EntityType::Spline)->closed);
+    }
+    {   // Rolling curves.
+        std::vector<Entity> out;
+        std::wstring why;
+        CHECK(RollingCurve(Roll::Cycloid, {0, 0}, 50, 0, 3.5, out, why));
+        std::vector<Vec2> pts = FitPoints(out[0]);
+        CHECK(Close(pts.front(), Vec2{0, 0}, 1e-9) && Close(pts.back(), Vec2{kPi * 50, 0}, 1e-9));
+        double top = 0;
+        for (Vec2 p : pts) top = std::max(top, p.y);
+        CHECK(Close(top, 50, 1e-9));
+        // Epicycloid: outside the base circle, back on it after one turn of the rolling circle.
+        CHECK(RollingCurve(Roll::Epicycloid, {0, 0}, 50, 150, 3.5, out, why));
+        pts = FitPoints(out[0]);
+        for (Vec2 p : pts) CHECK(Length(p) >= 75 - 1e-9);
+        CHECK(Close(pts.front(), Vec2{0, 75}, 1e-9) && Close(Length(pts.back()), 75, 1e-9) &&
+              Close(AngleOf(pts.back()), kPi / 2 - kTau * 25 / 75, 1e-9));
+        CHECK(Close(Length(pts[pts.size() / 2]), 125, 1e-9));  // half a turn: a diameter out
+        // Hypocycloid: inside, back on it too.
+        CHECK(RollingCurve(Roll::Hypocycloid, {0, 0}, 50, 150, 3.5, out, why));
+        pts = FitPoints(out[0]);
+        for (Vec2 p : pts) CHECK(Length(p) <= 75 + 1e-9);
+        CHECK(Close(Length(pts.back()), 75, 1e-9) && Close(Length(pts[pts.size() / 2]), 25, 1e-9));
+        CHECK(!RollingCurve(Roll::Hypocycloid, {0, 0}, 160, 150, 3.5, out, why));
+    }
+    {   // Involutes, spiral, helix.
+        std::vector<Entity> out;
+        std::wstring why;
+        CHECK(InvoluteCurve({0, 0}, 0, 40, 3.5, out, why));
+        std::vector<Vec2> pts;
+        for (const Entity& x : out)
+            if (x.type == EntityType::Spline) pts = FitPoints(x);
+        CHECK(pts.size() == 49);
+        for (size_t k = 0; k < pts.size(); ++k) {
+            const double t = kTau * k / 48;
+            CHECK(Close(Length(pts[k]), 20 * std::sqrt(1 + t * t), 1e-9));
+        }
+        CHECK(InvoluteCurve({0, 0}, 4, 30, 3.5, out, why));
+        int arcs = 0;
+        double big = 0;
+        for (const Entity& x : out)
+            if (x.type == EntityType::Arc) ++arcs, big = std::max(big, x.radius);
+        CHECK(arcs == 4 && Close(big, 120, 1e-9));
+        CHECK(SpiralCurve({0, 0}, 10, 70, 1, 3.5, out, why));
+        pts = FitPoints(out[0]);
+        CHECK(Close(Length(pts.front()), 10, 1e-9) && Close(Length(pts.back()), 70, 1e-9) && Close(Length(pts[pts.size() / 2]), 40, 1e-9));
+        CHECK(HelixCurve({0, 0}, 50, 60, 2, 3.5, out, why));
+        double hi = 0;
+        int hiddenParts = 0;
+        for (const Entity& x : out)
+            if (x.type == EntityType::Spline) {
+                for (Vec2 p : FitPoints(x)) hi = std::max(hi, p.y);
+                hiddenParts += x.linetype == FindLineType(L"HIDDEN2");
+            }
+        CHECK(Close(hi, 120, 1e-9) && hiddenParts == 2);
+    }
+    {   // Tangent and normal.
+        std::vector<Entity> out;
+        Vec2 at;
+        CHECK(TangentNormal(Entity::Circle({0, 0}, 30), {31, 0}, 20, 3.5, out, &at));
+        CHECK(Close(at, Vec2{30, 0}, 0.05) && Close(std::fabs(out[0].p1.x - out[0].p0.x), 0, 0.1) && Close(Dist(out[0].p0, out[0].p1), 40, 1e-9));
+        CHECK(TangentNormal(Entity::Ellipse({0, 0}, {50, 0}, 0.5), {0, 26}, 20, 3.5, out, &at));
+        CHECK(Close(at, Vec2{0, 25}, 0.1) && std::fabs(Normalized(out[0].p1 - out[0].p0).y) < 1e-3);  // level at the top
+        CHECK(!TangentNormal(Entity::Point({0, 0}), {0, 0}, 20, 3.5, out));
+        Document d;
+        Engine e(d, host);
+        Type(e, {L"c", L"0,0", L"30", L"tn", L"30,0", L"0,30"});
+        CHECK(CountOf(d, EntityType::Line) == 2 && Said(host, L"Tangent T-T"));
+    }
+}
+
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);  // failures show even if a later check crashes
     TestAngles();
@@ -3754,6 +3950,7 @@ int main() {
     TestRelationsKeepShape();
     TestReshapeAndRegular();
     TestEngineeringGraphics();
+    TestSymbolsAndCurves();
     std::printf("%d checks, %d failed\n", g_checks, g_failures);
     return g_failures;
 }

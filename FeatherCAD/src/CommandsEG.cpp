@@ -10,24 +10,7 @@
 #include "Style.h"
 
 namespace {
-// Objects added as one undo step, on the current layer in the current
-// colour, keeping the line weights and types they were made with (thick
-// outlines, thin projectors, chain lines).
-void AddAll(Engine* E, const wchar_t* step, const std::vector<Entity>& ents) {
-    Document& d = E->Doc();
-    const CurrentStyle& cur = d.Current();
-    d.BeginChange(step);
-    for (Entity e : ents) {
-        if (e.layer < 0) {
-            e.layer = cur.layer;
-            if (e.color == kByLayer) e.color = cur.color;
-            if (e.linetype == kLtByLayer) e.linetype = (int16_t)cur.linetype;
-            if (e.lineweight == kLwByLayer) e.lineweight = (int16_t)cur.lineweight;
-        }
-        d.Add(e);
-    }
-    d.EndChange();
-}
+void AddAll(Engine* E, const wchar_t* step, const std::vector<Entity>& ents) { AddKeepingStyle(E, step, ents); }
 
 double TextSize(Engine* E) { return E->Doc().Settings().dimStyle.textHeight; }
 

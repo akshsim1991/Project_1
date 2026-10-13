@@ -48,6 +48,9 @@ std::vector<Entity> IsoScaleDrawing(Vec2 at, double length, double step, double 
 
 // Curves that can be divided: line, arc, circle, polyline, ellipse, spline.
 bool Dividable(const Entity& e);
+// The object as a curve measured along its length (Curve.h): lines, arcs,
+// circles and polylines as they are, ellipses and splines as fine polylines.
+bool AsMeasuredCurve(const Entity& e, Entity& curve);
 // Points dividing it into `parts` equal lengths. An open curve: the points
 // between its ends, from the end nearer `from`. A closed one: `parts`
 // points, the first where it is nearest `from`.

@@ -172,6 +172,8 @@ bool AsCurve(const Entity& e, Entity& c) {
 }
 }  // namespace
 
+bool AsMeasuredCurve(const Entity& e, Entity& curve) { return AsCurve(e, curve); }
+
 bool Dividable(const Entity& e) {
     Entity c;
     return AsCurve(e, c) && CurveLength(c) > 1e-9;

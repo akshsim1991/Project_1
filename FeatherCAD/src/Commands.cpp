@@ -1118,6 +1118,16 @@ const std::vector<CommandInfo>& AllCommands() {
         {L"TRUESHAPE", {L"TS"}, L"True shape", L"The true shape of a section, by an auxiliary view on X1Y1, hatched"},
         {L"FIRSTANGLE", {L"FAS"}, L"First-angle symbol", L"The first-angle projection symbol (BIS SP 46)"},
         {L"BISSETUP", {L"BIS", L"SP46"}, L"BIS drawing setup", L"Millimetres, BIS dimensions (aligned or unidirectional), line layers and the BIS title block"},
+        {L"SYMBOL", {L"SYM", L"SYMBOLS"}, L"Symbol", L"Electrical, electronic, logic gate, flowchart, network and civil symbols to place"},
+        {L"WIRE", {L"WI", L"FLOWLINE", L"LINK"}, L"Wire / connector", L"Join symbols' terminals: the wire stays joined when they move (arrows for flowcharts)"},
+        {L"CONIC", {L"ECCENTRICITY"}, L"Conic (eccentricity)", L"Ellipse, parabola or hyperbola by the eccentricity method: directrix, focus, vertex"},
+        {L"CYCLOID", {L"CYC"}, L"Cycloid", L"The curve of a point on a circle rolling along a line, with its construction"},
+        {L"EPICYCLOID", {L"EPI"}, L"Epicycloid", L"A circle rolling round the outside of another"},
+        {L"HYPOCYCLOID", {L"HYPO"}, L"Hypocycloid", L"A circle rolling round the inside of another"},
+        {L"INVOLUTE", {L"INV"}, L"Involute", L"The involute of a circle or of a polygon, with its construction"},
+        {L"SPIRAL", {L"SPI"}, L"Archimedean spiral", L"A point moving away from the pole steadily as it turns"},
+        {L"HELIX", {L"HEL"}, L"Helix", L"A helix on a cylinder: front view (back part hidden) and top view"},
+        {L"TANNORM", {L"TN", L"NORMAL"}, L"Tangent and normal", L"The tangent and normal at a point of a curve (ellipse, cycloid, spiral...)"},
         {L"HORIZONTAL", {L"HOR"}, L"Horizontal", L"Keep a line horizontal (a relationship)"},
         {L"VERTICAL", {L"VER"}, L"Vertical", L"Keep a line vertical (a relationship)"},
         {L"PARALLEL", {L"PAR"}, L"Parallel", L"Keep two lines parallel (the second one turns)"},
@@ -1184,6 +1194,7 @@ std::unique_ptr<Command> CreateCommand(const std::wstring& name) {
     if (auto cmd = CreateSheetCommand(name)) return cmd;
     if (auto cmd = CreateRelateCommand(name)) return cmd;
     if (auto cmd = CreateEgCommand(name)) return cmd;
+    if (auto cmd = CreateCurvesCommand(name)) return cmd;
     if (name == L"LINE") return std::make_unique<LineCmd>();
     if (name == L"PLINE") return std::make_unique<PlineCmd>();
     if (name == L"TANLINE") return std::make_unique<TanLineCmd>();

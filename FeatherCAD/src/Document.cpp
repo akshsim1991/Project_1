@@ -14,6 +14,7 @@
 #include "DxfImport.h"
 #include "Grips.h"
 #include "Relate.h"
+#include "Symbols.h"
 
 namespace {
 constexpr size_t kMaxUndo = 1000;
@@ -631,7 +632,8 @@ std::vector<uint64_t> Document::AddGroup(std::vector<Entity> entities) {
     auto attached = [](const Entity& e) {
         return e.type == EntityType::Dimension || e.type == EntityType::Relation ||
                (e.type == EntityType::Hatch && e.annot && !e.annot->hatch.refs.empty()) ||
-               (e.type == EntityType::Text && e.annot && e.annot->anchor.id);
+               (e.type == EntityType::Text && e.annot && e.annot->anchor.id) ||
+               (e.type == EntityType::Leader && e.annot && e.annot->connector);
     };
     for (size_t i = 0; i < entities.size(); ++i) {
         if (attached(entities[i])) continue;
@@ -658,6 +660,13 @@ std::vector<uint64_t> Document::AddGroup(std::vector<Entity> entities) {
         if (e.type == EntityType::Text && e.annot && e.annot->anchor.id) {  // a label: with its object, or on its own
             auto it = idMap.find(e.annot->anchor.id);
             EditAnnot(e).anchor.id = it == idMap.end() ? 0 : it->second;
+        }
+        if (e.type == EntityType::Leader && e.annot && e.annot->connector) {  // a wire: on the copies' ports, or free
+            Annot& a = EditAnnot(e);
+            for (DimRef* r : {&a.from, &a.to}) {
+                auto it = idMap.find(r->id);
+                *r = it == idMap.end() ? DimRef{} : DimRef{it->second, r->grip};
+            }
         }
         if (e.type == EntityType::Hatch) {
             HatchData& h = EditAnnot(e).hatch;
@@ -750,6 +759,17 @@ void Document::SolveStep() {
         const std::vector<Vec2> before = e.annot->pts;
         if (!PlaceRelationMarks(*this, e)) Erase(id);
         else if (e.annot->pts != before) Replace(e);
+    }
+    // Wires follow the symbols they join.
+    std::vector<uint64_t> wires;
+    for (const auto& kv : m_entities)
+        if (IsConnector(kv.second) && ((kv.second.annot->from.id && now.count(kv.second.annot->from.id)) ||
+                                       (kv.second.annot->to.id && now.count(kv.second.annot->to.id))))
+            wires.push_back(kv.first);
+    for (uint64_t id : wires) {
+        Entity e = m_entities[id];
+        const DimRef f = e.annot->from, t = e.annot->to;
+        if (RerouteConnector(*this, e) || !(f.id == e.annot->from.id) || !(t.id == e.annot->to.id)) Replace(e);
     }
     // Labels follow their points; a label moved on its own keeps its new place beside the point.
     std::vector<uint64_t> labels;
@@ -1178,6 +1198,12 @@ void WriteEntity(const Entity& e, std::string& out, const Ordinals* ordinals = n
                 num(p.x); num(p.y);
             }
             out += TextWords(a.text);
+            if (a.connector) {  // a wire: its ends' ports
+                out += " conn=1";
+                if (a.straight) out += " straight=1";
+                if (const size_t o = OrdinalOf(a.from.id, ordinals)) out += " from=" + std::to_string(o) + ":" + std::to_string(a.from.grip);
+                if (const size_t o = OrdinalOf(a.to.id, ordinals)) out += " to=" + std::to_string(o) + ":" + std::to_string(a.to.grip);
+            }
             break;
         }
         case EntityType::Hatch: {
@@ -1304,7 +1330,8 @@ std::string DxfText(const std::wstring& w) {
 
 void WriteBlock(const BlockData& b, std::string& out) {
     out += "block " + FormatNumber(b.base.x) + " " + FormatNumber(b.base.y) + " " + std::to_string(b.items.size()) +
-           " name=" + EncodeWord(b.name) + (b.params.empty() ? "" : " params=" + std::to_string(b.params.size())) + "\n";
+           " name=" + EncodeWord(b.name) + (b.params.empty() ? "" : " params=" + std::to_string(b.params.size())) +
+           (b.ports.empty() ? "" : " ports=" + std::to_string(b.ports.size())) + "\n";
     for (const Entity& e : b.items) {
         WriteStyled(e, out, nullptr);
         out += '\n';
@@ -1324,6 +1351,10 @@ void WriteBlock(const BlockData& b, std::string& out) {
         }
         out += "\n";
     }
+    // A symbol's ports: where wires join, and which way they leave.
+    for (const BlockPort& p : b.ports)
+        out += "bport " + FormatNumber(p.at.x) + " " + FormatNumber(p.at.y) + " " + FormatNumber(p.dir.x) + " " +
+               FormatNumber(p.dir.y) + "\n";
 }
 
 // The blocks `e` uses (and those they use), added to `out` once each.
@@ -1536,6 +1567,19 @@ struct Reader {
             TextData t;
             ReadTextWords(w, t);
             out = MakeLeader(std::move(pts), std::move(t), std::max(0.0, v[0]));
+            for (const std::string& word : w) {
+                Annot& a = EditAnnot(out);
+                auto ref = [&](const std::string& s, DimRef& r) {
+                    const size_t colon = s.find(':');
+                    if (colon == std::string::npos || depth > 0) return;
+                    r.id = (uint64_t)std::max(0LL, std::atoll(s.substr(0, colon).c_str()));  // the file ordinal for now
+                    r.grip = std::atoi(s.c_str() + colon + 1);
+                };
+                if (word == "conn=1") a.connector = true;
+                else if (word == "straight=1") a.straight = true;
+                else if (word.compare(0, 5, "from=") == 0) ref(word.substr(5), a.from);
+                else if (word.compare(0, 3, "to=") == 0) ref(word.substr(3), a.to);
+            }
             return true;
         }
         if (key == "hatch") {
@@ -1895,6 +1939,18 @@ bool Document::FromText(const std::string& text, std::wstring& error) {
                 }
                 b->params.push_back(p);
             }
+            size_t nPorts = 0;
+            for (const std::string& word : w)
+                if (word.compare(0, 6, "ports=") == 0) nPorts = (size_t)std::max(0, std::min(1000, std::atoi(word.c_str() + 6)));
+            for (size_t i = 0; i < nPorts; ++i) {
+                std::vector<std::string> pw;
+                std::vector<double> pv;
+                if (!r.Next(pw) || pw.empty() || pw[0] != "bport" || !r.Numbers(pw, 1, pv) || pv.size() < 4) {
+                    error = L"The block \"" + b->name + L"\" has a damaged port.";
+                    return false;
+                }
+                b->ports.push_back({{pv[0], pv[1]}, {pv[2], pv[3]}});
+            }
             rawBlocks.push_back(std::move(b));
         } else if (key == "dimstyle") {
             std::vector<double> v;
@@ -1978,6 +2034,12 @@ bool Document::FromText(const std::string& text, std::wstring& error) {
     }
     for (Entity& e : ents)
         if (e.type == EntityType::Text && e.annot && e.annot->anchor.id) EditAnnot(e).anchor.id = idOf(e.annot->anchor.id);
+    for (Entity& e : ents)
+        if (e.type == EntityType::Leader && e.annot && e.annot->connector) {
+            Annot& a = EditAnnot(e);
+            a.from.id = a.from.id ? idOf(a.from.id) : 0;
+            a.to.id = a.to.id ? idOf(a.to.id) : 0;
+        }
     for (Entity& e : ents) {
         if (e.type != EntityType::Hatch || !e.annot || e.annot->hatch.refs.empty()) continue;
         HatchData& h = EditAnnot(e).hatch;

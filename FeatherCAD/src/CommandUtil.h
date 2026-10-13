@@ -78,6 +78,25 @@ struct StepLog {
     }
 };
 
+// Objects added as one undo step, on the current layer in the current
+// colour, keeping the line weights and types they were made with (thick
+// outlines, thin construction, chain lines).
+inline void AddKeepingStyle(Engine* E, const wchar_t* step, const std::vector<Entity>& ents) {
+    Document& d = E->Doc();
+    const CurrentStyle cur = d.Current();
+    d.BeginChange(step);
+    for (Entity e : ents) {
+        if (e.layer < 0) {
+            e.layer = cur.layer;
+            if (e.color == kByLayer) e.color = cur.color;
+            if (e.linetype == kLtByLayer) e.linetype = (int16_t)cur.linetype;
+            if (e.lineweight == kLwByLayer) e.lineweight = (int16_t)cur.lineweight;
+        }
+        d.Add(e);
+    }
+    d.EndChange();
+}
+
 std::unique_ptr<Command> CreateModifyCommand(const std::wstring& name);
 std::unique_ptr<Command> CreateDrawCommand(const std::wstring& name);
 std::unique_ptr<Command> CreateDimCommand(const std::wstring& name);
@@ -85,3 +104,4 @@ std::unique_ptr<Command> CreateAnnotCommand(const std::wstring& name);
 std::unique_ptr<Command> CreateSheetCommand(const std::wstring& name);
 std::unique_ptr<Command> CreateRelateCommand(const std::wstring& name);
 std::unique_ptr<Command> CreateEgCommand(const std::wstring& name);
+std::unique_ptr<Command> CreateCurvesCommand(const std::wstring& name);

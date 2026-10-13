@@ -146,11 +146,19 @@ struct BlockParam {
     }
 };
 
+// Where a wire joins a block (a symbol's lead end), and which way it leaves
+// (zero: any way).
+struct BlockPort {
+    Vec2 at, dir;
+    bool operator==(const BlockPort& o) const { return at == o.at && dir == o.dir; }
+};
+
 struct BlockData {
     std::wstring name;
     Vec2 base;                  // where it hangs from when placed
     std::vector<Entity> items;  // attribute definitions are texts with a tag
     std::vector<BlockParam> params;  // a dynamic block's stretches and flips
+    std::vector<BlockPort> ports;    // symbols: where connectors join (block coordinates)
 };
 
 // A parts list (bill of materials): the blocks placed, grouped by their
@@ -203,6 +211,12 @@ struct Annot {
     // and where it sits from it; it follows the point.
     DimRef anchor;
     Vec2 anchorOffset;
+    // A leader that is a connector (wire, link, flow line, Symbols.h): its
+    // ends' ports (grip = port index; id 0: a free end). pts run from the
+    // `to` end (the arrow) back to the `from` end.
+    bool connector = false;
+    DimRef from, to;
+    bool straight = false;
     // A hatch's pattern lines, worked out once (not copied with it).
     struct Cache {
         mutable std::shared_ptr<std::vector<std::pair<Vec2, Vec2>>> segs;
