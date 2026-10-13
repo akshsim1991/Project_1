@@ -166,7 +166,8 @@ private:
     // sheets
     void ShowSpace(int space);  // -1: the drawing, else a sheet
     void UpdateSheetTabs();
-    void NewSheetTab();
+    void NewSheetTab(const std::wstring& paper = L"");
+    std::wstring m_examPaper;
     void SheetMenu(int index);
     void PageSetup();
     void DeleteSheet(int index);
@@ -174,6 +175,17 @@ private:
     void ShowVariables();
     bool ChooseImage(std::wstring& path, int& width, int& height) override;
     int ChooseSymbol(std::wstring& name) override;
+    bool NewExamSheet(const std::wstring& paper) override;
+    void MyDetailsChanged() override;
+    void LanguageChanged() override;
+    void ApplyLanguage();            // the menu bar and hints in the chosen language (Lang.h)
+    void LoadAliases(bool report);   // the user's aliases.txt (Personal.h), if it changed
+    void EditAliases();              // ALIASEDIT: the file in Notepad
+    void StartReplay();              // REPLAY: the drawing's steps again, one by one
+    void ReplayStep();
+    void StopReplay(bool toEnd);
+    size_t m_replayLeft = 0, m_replayTotal = 0;
+    FILETIME m_aliasStamp{};
     void ExportImage(bool png);  // the sheet shown, or the whole drawing, as a picture
     void OpenExample();          // Help > Examples: a solved drawing from the samples folder
     std::wstring m_lastSymbol;

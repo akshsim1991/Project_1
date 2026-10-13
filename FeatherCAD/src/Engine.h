@@ -118,6 +118,16 @@ public:
         (void)name;
         return -1;
     }
+    // A new sheet for an exam or lab drawing (EXAMSHEET): the BIS border and
+    // title block on `paper` ("A3"), landscape. False if there are no sheets here.
+    virtual bool NewExamSheet(const std::wstring& paper) {
+        (void)paper;
+        return false;
+    }
+    // MYDETAILS changed the student's details (Personal.h): keep them.
+    virtual void MyDetailsChanged() {}
+    // LANGUAGE chose another language for the menus (Lang.h).
+    virtual void LanguageChanged() {}
     virtual bool ChooseImage(std::wstring& path, int& width, int& height) {
         (void)path, (void)width, (void)height;
         return false;

@@ -20,6 +20,8 @@
 #include "Print.h"
 #include "Expr.h"
 #include "ImageFile.h"
+#include "Lang.h"
+#include "Personal.h"
 #include "Relate.h"
 #include "Theme.h"
 #include "Util.h"
@@ -27,6 +29,7 @@
 
 namespace {
 constexpr UINT_PTR kAutosaveTimer = 1;
+constexpr UINT_PTR kReplayTimer = 2;
 constexpr int kMenuBarDip = 30, kToolBarDip = 40;
 constexpr wchar_t kClipFormatName[] = L"FeatherCAD.Objects";
 
@@ -200,14 +203,37 @@ void Append(HMENU m, int id, const std::wstring& text, bool enabled = true, bool
 void AppendCmd(HMENU m, const wchar_t* name, const wchar_t* text) {
     const auto& all = AllCommands();
     for (size_t i = 0; i < all.size(); ++i)
-        if (all[i].name == name) return Append(m, ID_PALETTE_CMD + (int)i, text);
+        if (all[i].name == name) return Append(m, ID_PALETTE_CMD + (int)i, Tr(text));
 }
 
 void Append(HMENU m, int id, const std::wstring& text, bool enabled, bool checked) {
-    AppendMenuW(m, MF_STRING | (enabled ? 0 : MF_GRAYED) | (checked ? MF_CHECKED : 0), (UINT_PTR)id, text.c_str());
+    AppendMenuW(m, MF_STRING | (enabled ? 0 : MF_GRAYED) | (checked ? MF_CHECKED : 0), (UINT_PTR)id, Tr(text).c_str());
 }
 void Separator(HMENU m) { AppendMenuW(m, MF_SEPARATOR, 0, nullptr); }
-void Submenu(HMENU m, HMENU sub, const wchar_t* text) { AppendMenuW(m, MF_POPUP, (UINT_PTR)sub, text); }
+void Submenu(HMENU m, HMENU sub, const wchar_t* text) { AppendMenuW(m, MF_POPUP, (UINT_PTR)sub, Tr(text).c_str()); }
+
+// The menu bar's buttons, in English (Lang.h translates them).
+struct BarLabel {
+    int id;
+    const wchar_t* text;
+    int widthDip;
+};
+const BarLabel kBarLabels[] = {{ID_MENU_FILE, L"File", 44},         {ID_MENU_EDIT, L"Edit", 44},
+                               {ID_MENU_VIEW, L"View", 48},         {ID_MENU_DRAW, L"Draw", 50},
+                               {ID_MENU_MODIFY, L"Modify", 60},     {ID_MENU_DIMENSION, L"Dimension", 78},
+                               {ID_MENU_RELATE, L"Relate", 54},     {ID_MENU_ANNOTATE, L"Annotate", 72},
+                               {ID_MENU_FORMAT, L"Format", 58},     {ID_MENU_TOOLS, L"Tools", 50},
+                               {ID_MENU_GRAPHICS, L"Graphics", 66}, {ID_MENU_HELP, L"Help", 48},
+                               {ID_COMMAND_PALETTE, L"Search commands   Ctrl+K", 190}};
+
+// A language's extra words from lang\<code>.txt beside the program, if there is one.
+std::string LanguageFile(const std::wstring& code) {
+    std::string data;
+    if (code != L"en") ReadWholeFile(DirectoryFromPath(ExecutablePath()) + L"\\lang\\" + code + L".txt", data);
+    return data;
+}
+
+std::wstring AliasesPath() { return AppDataDir(nullptr) + L"\\aliases.txt"; }
 }  // namespace
 
 MainWindow::MainWindow() = default;
@@ -217,6 +243,8 @@ MainWindow::~MainWindow() {
 
 bool MainWindow::Create(HINSTANCE inst, int showCmd, const std::vector<std::wstring>& files) {
     m_settings.Load();
+    MyDetails() = m_settings.details;
+    SetLanguage(m_settings.language, LanguageFile(m_settings.language));
     ReloadTheme((ThemeMode)m_settings.themeMode);
     m_clipFormat = RegisterClipboardFormatW(kClipFormatName);
     m_drawings.push_back(MakeDrawing());
@@ -239,6 +267,8 @@ bool MainWindow::Create(HINSTANCE inst, int showCmd, const std::vector<std::wstr
     ApplyWindowTheme(m_hwnd);
     CreateChildren();
     CreateAccelerators();
+    ApplyLanguage();
+    LoadAliases(false);
 
     if (m_settings.hasPlacement) {
         WINDOWPLACEMENT wp = m_settings.placement;
@@ -475,6 +505,8 @@ bool MainWindow::HostCommand(const std::wstring& name) {
     else if (name == L"EXPORTPNG") ExportImage(true);
     else if (name == L"EXPORTSVG") ExportImage(false);
     else if (name == L"EXAMPLES") OpenExample();
+    else if (name == L"REPLAY") StartReplay();
+    else if (name == L"ALIASEDIT") EditAliases();
     else if (name == L"PROPERTIES") {
         m_settings.propertiesOn = !m_settings.propertiesOn;
         ShowWindow(m_props.Hwnd(), m_settings.propertiesOn ? SW_SHOW : SW_HIDE);
@@ -503,6 +535,7 @@ bool MainWindow::HostCommand(const std::wstring& name) {
 // ---------------------------------------------------------------------------
 
 void MainWindow::Run(const std::wstring& name, const wchar_t* keyword) {
+    if (m_replayLeft && name != L"REPLAY") StopReplay(true);
     Eng().Run(name);
     if (keyword && Eng().Active() && Eng().ActiveName() == name) Eng().Keyword(keyword);
     AfterInput();
@@ -619,7 +652,104 @@ void MainWindow::ShowSpace(int space) {
     FocusCommandLine();
 }
 
-void MainWindow::NewSheetTab() {
+// ---------------------------------------------------------------------------
+// Round 3: language, the student's details and exam sheets, aliases, replay
+// ---------------------------------------------------------------------------
+
+void MainWindow::ApplyLanguage() {
+    for (const BarLabel& b : kBarLabels) m_menuBar.SetTextFitted(b.id, Tr(b.text), b.widthDip);
+    Layout();
+    AfterInput();  // the guide's hint
+}
+
+void MainWindow::LanguageChanged() {
+    m_settings.language = CurrentLanguage();
+    SetLanguage(m_settings.language, LanguageFile(m_settings.language));  // with lang\<code>.txt's corrections
+    m_settings.Save();
+    ApplyLanguage();
+}
+
+void MainWindow::MyDetailsChanged() {
+    m_settings.details = MyDetails();
+    m_settings.Save();
+}
+
+bool MainWindow::NewExamSheet(const std::wstring& paper) {
+    // EXAMSHEET is still running: the sheet comes once it has finished (a new
+    // sheet tab ends the command in the drawing).
+    m_examPaper = paper;
+    PostMessageW(m_hwnd, WM_APP_EXAMSHEET, 0, 0);
+    return true;
+}
+
+void MainWindow::LoadAliases(bool report) {
+    const std::wstring path = AliasesPath();
+    WIN32_FILE_ATTRIBUTE_DATA a{};
+    if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &a)) {
+        UserAliases().clear();
+        return;
+    }
+    if (CompareFileTime(&a.ftLastWriteTime, &m_aliasStamp) == 0) return;  // as it was
+    m_aliasStamp = a.ftLastWriteTime;
+    std::string data;
+    if (!ReadWholeFile(path, data)) return;
+    std::map<std::wstring, std::wstring> aliases;
+    std::wstring problems;
+    const size_t n = ReadAliases(TextFromUtf8(data), aliases, problems);
+    UserAliases() = aliases;
+    if (!report) return;
+    Message(std::to_wstring(n) + L" alias(es) of your own read from aliases.txt.");
+    if (!problems.empty()) Message(L"aliases.txt: " + problems.substr(0, problems.size() - 1));
+}
+
+void MainWindow::EditAliases() {
+    const std::wstring path = AliasesPath();
+    if (!FileExists(path)) WriteFileSafely(path, WideToUtf8(AliasesTemplate()));
+    ShellExecuteW(m_hwnd, L"open", L"notepad.exe", (L"\"" + path + L"\"").c_str(), nullptr, SW_SHOWNORMAL);
+    Message(L"Your aliases are in Notepad: one per line, such as BX = RECTANG. Save the file and come back here; "
+            L"Feather CAD reads it again.");
+}
+
+void MainWindow::StartReplay() {
+    Eng().Cancel();
+    Eng().ClearSelection();
+    Document& d = Doc();
+    m_canvas.ZoomExtents();  // the finished drawing fits the window while it grows
+    size_t n = 0;
+    while (d.CanUndo() && d.Undo()) ++n;
+    if (!n) {
+        Message(L"Nothing to replay: the steps made since this drawing was opened are replayed (opening a file starts afresh).");
+        return;
+    }
+    m_replayTotal = m_replayLeft = n;
+    EnableWindow(m_canvas.Hwnd(), FALSE);  // look only: a click would end the replay's steps
+    Message(L"Replaying " + std::to_wstring(n) + L" step(s). Esc stops (the drawing is put back as it was).");
+    AfterInput();
+    SetTimer(m_hwnd, kReplayTimer, 900, nullptr);
+}
+
+void MainWindow::ReplayStep() {
+    if (!m_replayLeft) return StopReplay(false);
+    Document& d = Doc();
+    if (!d.CanRedo() || !d.Redo()) return StopReplay(false);
+    --m_replayLeft;
+    Message(L"Step " + std::to_wstring(m_replayTotal - m_replayLeft) + L" of " + std::to_wstring(m_replayTotal) + L": " +
+            d.UndoName());
+    AfterInput();
+    if (!m_replayLeft) StopReplay(false);
+}
+
+void MainWindow::StopReplay(bool toEnd) {
+    KillTimer(m_hwnd, kReplayTimer);
+    if (toEnd)
+        while (m_replayLeft && Doc().CanRedo() && Doc().Redo()) --m_replayLeft;
+    m_replayLeft = 0;
+    EnableWindow(m_canvas.Hwnd(), TRUE);
+    Message(toEnd ? L"Replay stopped: the drawing is back as it was." : L"Replay finished.");
+    AfterInput();
+}
+
+void MainWindow::NewSheetTab(const std::wstring& paperIn) {
     Drawing& d = Cur();
     Eng().Cancel();
     const Units u = d.doc.Settings().units;
@@ -629,7 +759,8 @@ void MainWindow::NewSheetTab() {
         name = L"Sheet" + std::to_wstring(n);
         if (std::none_of(d.sheets.begin(), d.sheets.end(), [&](const auto& s) { return SameName(s->setup.name, name); })) break;
     }
-    d.AddSheet(NewSheet(d.doc, name, imperial ? L"ANSI B (Tabloid)" : L"A3", true), *this);
+    const std::wstring paper = !paperIn.empty() ? paperIn : imperial ? L"ANSI B (Tabloid)" : L"A3";
+    d.AddSheet(NewSheet(d.doc, name, paper, true), *this);
     d.sheetsChanged = true;
     ShowSpace((int)d.sheets.size() - 1);
     const Entity* vp = nullptr;
@@ -1029,8 +1160,8 @@ void MainWindow::UpdateGuide() {
                    {ID_SCALE, L"Scale", L"Make bigger or smaller (SC)", 0}, {ID_ERASE, L"Erase", L"Delete (Delete key)", 0},
                    {ID_ESCAPE, L"Clear selection", L"Select nothing (Esc)", 2}};
     } else {
-        text = L"Choose a tool above (Line, Circle, Rectangle...) or type its name below (L, C, REC) and press Enter. "
-               L"Click an object to select it.";
+        text = Tr(L"Choose a tool above (Line, Circle, Rectangle...) or type its name below (L, C, REC) and press Enter. "
+                  L"Click an object to select it.");
     }
     m_guide.SetGuide(title, text, std::move(buttons), active);
 
@@ -1201,6 +1332,15 @@ void MainWindow::QuickSelect() {
 }
 
 void MainWindow::OnCommand(int id) {
+    if (m_replayLeft) {  // anything stops a replay (the drawing back as it was); Esc just that
+        StopReplay(true);
+        if (id == ID_ESCAPE || id == ID_STOP) return;
+    }
+    if (id >= ID_LANG_FIRST && id < ID_LANG_FIRST + (int)Languages().size()) {
+        SetLanguage(Languages()[(size_t)(id - ID_LANG_FIRST)].code);
+        LanguageChanged();
+        return;
+    }
     if (id == ID_DIM_EDIT && Eng().Selection().size() == 1 && !Eng().Active()) {
         // One dimension selected: its dialog.
         const Entity* e = Doc().Find(*Eng().Selection().begin());
@@ -1418,6 +1558,8 @@ HMENU MainWindow::BuildMenu(int menuId) {
             Append(m, ID_PLOT, L"&Print...\tCtrl+P");
             Append(m, ID_PAGESETUP, L"Pa&ge setup...", Cur().space >= 0);
             Append(m, ID_DWGPROPS, L"Drawing pro&perties (title block)...");
+            AppendCmd(m, L"EXAMSHEET", L"E&xam sheet (my details filled in)...\tEXAM");
+            AppendCmd(m, L"MYDETAILS", L"&My details (name, USN)...\tMD");
             Separator(m);
             Append(m, ID_HISTORY, L"&Version history...");
             Append(m, ID_RECOVER, L"Re&cover drawings...");
@@ -1454,6 +1596,7 @@ HMENU MainWindow::BuildMenu(int menuId) {
             Append(m, ID_ZOOM_OUT, L"Zoom &out\tWheel");
             Append(m, ID_PAN, L"P&an\tMiddle drag");
             Separator(m);
+            AppendCmd(m, L"REPLAY", L"&Replay the drawing step by step\tREPLAY");
             AppendCmd(m, L"HIDEOBJECTS", L"&Hide objects for now\tHO");
             AppendCmd(m, L"ISOLATE", L"&Isolate (show only these)\tISOLATE");
             AppendCmd(m, L"UNHIDE", L"Show hidden objects a&gain\tUNHIDE");
@@ -1474,6 +1617,16 @@ HMENU MainWindow::BuildMenu(int menuId) {
                 Submenu(m, sh, L"&Sheets");
             }
             Separator(m);
+            {
+                HMENU lang = CreatePopupMenu();
+                for (size_t i = 0; i < Languages().size(); ++i) {
+                    const Language& l = Languages()[i];
+                    const std::wstring label = std::wstring(l.native) + (std::wstring(l.native) == l.name ? L"" : L" (" + std::wstring(l.name) + L")");
+                    AppendMenuW(lang, MF_STRING | (CurrentLanguage() == l.code ? MF_CHECKED : 0), (UINT_PTR)(ID_LANG_FIRST + (int)i),
+                                label.c_str());
+                }
+                Submenu(m, lang, L"&Language");
+            }
             HMENU theme = CreatePopupMenu();
             Append(theme, ID_THEME_SYSTEM, L"Follow &Windows", true, m_settings.themeMode == 0);
             Append(theme, ID_THEME_LIGHT, L"&Light", true, m_settings.themeMode == 1);
@@ -1657,6 +1810,7 @@ HMENU MainWindow::BuildMenu(int menuId) {
             Append(m, ID_DRAFTING_SETTINGS, L"&Drafting settings (grid, snaps)...");
             Append(m, ID_UNITS, L"&Units...");
             Append(m, ID_AUTOSAVE_SETTINGS, L"&Auto-save and versions...");
+            AppendCmd(m, L"ALIASEDIT", L"Command a&liases (my shortcuts)...\tALIASEDIT");
             break;
         case ID_MENU_GRAPHICS: {
             auto cmd = [&](const wchar_t* name, const wchar_t* text) { AppendCmd(m, name, text); };
@@ -1869,6 +2023,7 @@ std::unique_ptr<MainWindow::Drawing> MainWindow::MakeDrawing() {
     ds.precision = m_settings.newPrecision;
     ds.autoRelations = true;  // lines drawn keep their joins and their level or upright sides (as in Solid Edge)
     d->doc.SetSettings(ds);
+    ApplyMyDetails(d->doc, false);  // the student's name and USN in the title block
     d->doc.MarkSaved();
     d->untitledName = L"Drawing" + std::to_wstring(++m_untitledCount);
     d->history.SetDrawing(L"", d->untitledName);
@@ -3192,7 +3347,11 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         case WM_APP_PROPERTIES:
             UpdateProperties(true);
             return 0;
+        case WM_APP_EXAMSHEET:
+            NewSheetTab(m_examPaper);
+            return 0;
         case WM_APP_COMMAND_TEXT:
+            if (m_replayLeft) StopReplay(true);  // typing ends a replay first
             Eng().Text(*(const std::wstring*)lp);
             AfterInput();
             return 0;
@@ -3224,13 +3383,17 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             }
             return 0;
         case WM_ACTIVATE:
-            if (LOWORD(wp) != WA_INACTIVE) FocusCommandLine();
+            if (LOWORD(wp) != WA_INACTIVE) {
+                FocusCommandLine();
+                if (m_ready) LoadAliases(true);  // edited in Notepad meanwhile?
+            }
             return 0;
         case WM_SETFOCUS:
             FocusCommandLine();
             return 0;
         case WM_TIMER:
             if (wp == kAutosaveTimer) Autosave();
+            if (wp == kReplayTimer) ReplayStep();
             return 0;
         case WM_SETTINGCHANGE:
             if (m_settings.themeMode == 0 && lp && lstrcmpW((LPCWSTR)lp, L"ImmersiveColorSet") == 0) ApplyTheme(0);

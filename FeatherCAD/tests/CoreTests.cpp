@@ -15,6 +15,9 @@
 #include "EngCurves.h"
 #include "EngGraphics.h"
 #include "EngMore.h"
+#include "Lang.h"
+#include "Sheet.h"
+#include "Personal.h"
 #include "Symbols.h"
 #include "Expr.h"
 #include "FreeSketch.h"
@@ -4361,6 +4364,72 @@ void TestRound3Annotation() {
     }
 }
 
+void TestRound3Personal() {
+    TestHost host;
+    {   // Languages: menus translated, shortcuts kept, unknown words left in English.
+        CHECK(Languages().size() == 3 && std::wstring(Languages()[0].code) == L"en");
+        SetLanguage(L"hi");
+        CHECK(CurrentLanguage() == L"hi");
+        CHECK(Tr(L"&Line\tL") == L"\x0930\x0947\x0916\x093E\tL");  // rekha
+        CHECK(Tr(L"File") != L"File" && Tr(L"Balloon (callout)") == L"Balloon (callout)");
+        SetLanguage(L"kn", "Balloon (callout) = TEST\n# a note\nbad line\n");
+        CHECK(Tr(L"Circle") == L"\x0CB5\x0CC3\x0CA4\x0CCD\x0CA4" && Tr(L"Bal&loon (callout)\tBALLOON") == L"TEST\tBALLOON");
+        SetLanguage(L"xx");
+        CHECK(CurrentLanguage() == L"en" && Tr(L"&Line\tL") == L"&Line\tL");
+        std::map<std::wstring, std::wstring> t;
+        CHECK(ReadTranslations("A = B\nC=D\n = E\n#F = G\nH = I & J\n", t) == 2 && t[L"A"] == L"B" && t[L"H"] == L"I & J");
+        // Every Hindi and Kannada entry is read (no line lost to a typo).
+        for (const wchar_t* code : {L"hi", L"kn"}) {
+            SetLanguage(code);
+            CHECK(Tr(L"Tolerance and fits (H7/g6)...") != L"Tolerance and fits (H7/g6)..." && Tr(L"About Feather CAD") != L"About Feather CAD");
+        }
+        SetLanguage(L"en");
+    }
+    {   // The user's aliases come first; bad lines are reported.
+        std::map<std::wstring, std::wstring> a;
+        std::wstring problems;
+        const size_t n = ReadAliases(L"# mine\nbx = rectang\nCC, *CIRCLE\nzz = nosuchcommand\njust words\nTL=trl ; true length\n", a, problems);
+        CHECK(n == 3 && a[L"BX"] == L"RECTANG" && a[L"CC"] == L"CIRCLE" && a[L"TL"] == L"TRUELENGTH");
+        CHECK(problems.find(L"NOSUCHCOMMAND") != std::wstring::npos && problems.find(L"line 5") != std::wstring::npos);
+        UserAliases() = a;
+        Document d;
+        Engine e(d, host);
+        Type(e, {L"bx", L"0,0", L"10,10"});
+        CHECK(d.Count() == 1 && Last(d).type == EntityType::Polyline);
+        Type(e, {L"L", L"0,0", L"5,0", L""});  // the built-in ones still work
+        CHECK(d.Count() == 2);
+        UserAliases().clear();
+        std::map<std::wstring, std::wstring> none;
+        CHECK(ReadAliases(AliasesTemplate(), none, problems) == 0);
+    }
+    {   // My details: asked once, then in the title block of new drawings and exam sheets.
+        MyDetails().clear();
+        Document d;
+        Engine e(d, host);
+        Type(e, {L"mydetails", L"Akshaya Simha", L"1RV24ME001", L"Mechanical", L"RV College"});
+        CHECK(MyDetails()[L"usn"] == L"1RV24ME001" && d.Properties().at(L"drawnby") == L"Akshaya Simha" &&
+              d.Properties().at(L"company") == L"RV College");
+        Document fresh;
+        CHECK(ApplyMyDetails(fresh, false) && fresh.Properties().at(L"usn") == L"1RV24ME001");
+        fresh.SetProperty(L"usn", L"OTHER");
+        CHECK(!ApplyMyDetails(fresh, false) && fresh.Properties().at(L"usn") == L"OTHER");
+        Type(e, {L"md", L"", L"-", L"", L""});  // Enter keeps, - clears
+        CHECK(MyDetails()[L"name"] == L"Akshaya Simha" && MyDetails()[L"usn"].empty());
+        // EXAMSHEET: the title, BIS set up (TestHost has no sheets: it says so).
+        Document x;
+        Engine ex(x, host);
+        Type(ex, {L"examsheet", L"PROJECTIONS OF SOLIDS", L"A4"});
+        CHECK(x.Properties().at(L"title") == L"PROJECTIONS OF SOLIDS" && x.Properties().at(L"drawnby") == L"Akshaya Simha" &&
+              UsesBisTitleBlock(x) && !ex.Active());
+        MyDetails().clear();
+        Document y;
+        Engine ey(y, host);
+        Type(ey, {L"exam", L"Student", L"U1", L"B", L"C", L"", L""});  // no details yet: asked first
+        CHECK(y.Properties().at(L"drawnby") == L"Student" && !ey.Active());
+        MyDetails().clear();
+    }
+}
+
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);  // failures show even if a later check crashes
     TestAngles();
@@ -4413,6 +4482,7 @@ int main() {
     TestExamplesAndSvg();
     TestRound3Constructions();
     TestRound3Annotation();
+    TestRound3Personal();
     std::printf("%d checks, %d failed\n", g_checks, g_failures);
     return g_failures;
 }

@@ -195,6 +195,24 @@ void Toolbar::SetText(int id, const std::wstring& text) {
     InvalidateRect(m_hwnd, &it->rc, FALSE);
 }
 
+void Toolbar::SetTextFitted(int id, const std::wstring& text, int minWidthDip) {
+    Item* it = Find(id);
+    if (!it) return;
+    it->text = text;
+    int width = minWidthDip;
+    if (HDC dc = GetDC(m_hwnd)) {
+        HGDIOBJ old = SelectObject(dc, m_textFont);
+        SIZE sz{};
+        GetTextExtentPoint32W(dc, text.c_str(), (int)text.size(), &sz);
+        SelectObject(dc, old);
+        ReleaseDC(m_hwnd, dc);
+        width = std::max(width, MulDiv(sz.cx, 96, m_dpi) + 16);
+    }
+    it->widthDip = width;
+    Layout();
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
 void Toolbar::SetEnabled(int id, bool enabled) {
     Item* it = Find(id);
     if (!it || it->enabled == enabled) return;

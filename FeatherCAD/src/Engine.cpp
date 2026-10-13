@@ -7,6 +7,7 @@
 #include <cwctype>
 
 #include "EngGraphics.h"
+#include "Personal.h"
 
 namespace {
 std::wstring Trim(const std::wstring& s) {
@@ -80,7 +81,9 @@ std::wstring Prompt::FullText() const {
 }
 
 const CommandInfo* FindCommand(const std::wstring& nameOrAlias) {
-    const std::wstring u = Upper(Trim(nameOrAlias));
+    std::wstring u = Upper(Trim(nameOrAlias));
+    // The user's own aliases first (aliases.txt).
+    if (auto it = UserAliases().find(u); it != UserAliases().end()) u = it->second;
     for (const CommandInfo& c : AllCommands()) {
         if (c.name == u) return &c;
         for (const std::wstring& a : c.aliases)

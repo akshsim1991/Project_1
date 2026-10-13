@@ -3,6 +3,8 @@
 #include "Common.h"
 #include "Engine.h"
 
+#include <map>
+
 struct Settings {
     WINDOWPLACEMENT placement{};
     bool hasPlacement = false;
@@ -14,6 +16,8 @@ struct Settings {
     int newPrecision = 2;
     int autosaveMinutes = 5;            // 0 = off
     int keepVersions = 30;              // versions kept per drawing
+    std::wstring language = L"en";      // of the menus (Lang.h)
+    std::map<std::wstring, std::wstring> details;  // the student's (Personal.h): name, usn, branch, institution
 
     void Load();
     void Save() const;

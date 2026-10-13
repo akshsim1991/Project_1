@@ -31,6 +31,8 @@ public:
     void AddSpacer();  // flexible gap: pushes the following items right
 
     void SetText(int id, const std::wstring& text);
+    // A text button's text, the button at least `minWidthDip` wide and wide enough for it.
+    void SetTextFitted(int id, const std::wstring& text, int minWidthDip);
     void SetEnabled(int id, bool enabled);
     void SetChecked(int id, bool checked);
     RECT ItemScreenRect(int id) const;

@@ -475,6 +475,40 @@ Drawing text uses plain letters ("Inclination to HP = 30°") so it prints in PDF
 
 **Examples with their steps** (Help > Examples, in the samples folder): the ellipse by eccentricity with its tangent and normal, the cycloid, the involute, the development of a cut square prism, the true length of a line, the section of a square pyramid with its true shape, the isometric view of an L block, an electronic circuit with a half adder, a flowchart and a star network. Each shows the solution, how to do it with the commands and by hand ("STEPS"), and has an A3 sheet with the BIS title block ready to print. `tools/MakeExamples.cpp` makes them.
 
+## Version 2.4: more of engineering drawing, tolerances, groups, exam sheets and languages
+
+**Engineering drawing** (Graphics menu):
+
+| Command | Short name | What it does |
+|---------|------------|--------------|
+| POINTPROJ | PPJ | Projections of a point: type how far it is above HP and in front of VP (negative: below or behind), click on XY. Draws a', a, the projector and the two distances, and says which quadrant it is in. Asks for the next point (b, c...) at once. |
+| TRACES | TRC | Click the front view, the top view and the XY line of a line: its HT and VT with h', h, v, v' and the views extended to them. |
+| SCALES | | A plain or diagonal scale for an RF such as 1:50, 1/2500 or 2:1, in km, m, dm, cm or mm, with its figures and its RF note. |
+| BISECT | BSC | The perpendicular bisector of a line (click it, Enter), or the bisector of the angle between two lines (click both). |
+| PARALLELTHRU, PERPTHRU | PTH, PPT | A line through a point parallel to a line (as long), or from a point square to a line (to its foot). |
+| TANFROM | TF | The two tangents from a point to a circle or arc. |
+| TRANSITION | TRANS | The development of a square-to-round (rectangle-to-circle) transition piece by triangulation, the seam in the middle of the front side. |
+| INTERSECT | | An upright cylinder or square prism (also corner to the front) penetrated by a horizontal one: the front and top views with the curves (or lines) of intersection, visible parts thick and hidden ones dashed. The axes may meet or be offset. |
+| PERSPECTIVE | PERS | The perspective of a block by the visual ray method: plan, picture plane, station point, visual rays, vanishing points, ground and horizon lines, and the view. |
+| ISOTEXT | IT | Text lying on the left, top or right face of an isometric drawing (turned and slanted 30 degrees). |
+| ISODIM | IDIM | A dimension along an isometric edge: its extension lines run along another isometric axis (the one towards the cursor) and its figures lean to match. |
+
+**Dimensions**: QDIM (QD) dimensions all the chosen objects at once, in a chain or from one base (B). DIMTOL (DTOL, FITS) adds a tolerance to a dimension: plus-or-minus, upper and lower deviations, limits (40.025 over 40.000), or an **ISO 286 fit** such as H7 or g6, worked out for its size (grades IT5 to IT12; holes A to H and JS; shafts d to h, js, k, m, n, p) and shown as 40H7 with +0.025 over 0.
+
+**Text**: every text can be slanted (Properties: Slant), on screen, in PDF, SVG, PNG, prints and DXF. TEXTSTYLE (ST) chooses or makes a named style (font, width, slant); Isometric right (+30), Isometric left (-30) and Narrow are built in, and changing a style changes the texts written in it. FIND finds text (and replaces it, one undo step). Greek letters and signs such as theta, phi, infinity, less-or-equal and square root now come out in PDFs too.
+
+**Objects**: ALIGN (AL) moves and turns objects so that two of their points land on two others (and scales them, if wanted). GROUP (G) joins objects so that clicking one picks them all (kept in the file; copies become groups of their own); UNGROUP parts them. HIDEOBJECTS (HO) and ISOLATE hide objects for a while (they are not deleted, not saved as hidden); UNHIDE shows them again.
+
+**For students**:
+- MYDETAILS (MD) asks once for your name, USN, branch and college. New drawings get them in the title block.
+- EXAMSHEET (EXAM) gives a lab or exam sheet in one go. It asks the title (the question) and the paper (A4, A3 or A2), sets the drawing up to BIS (SP 46) and adds a sheet with the BIS title block filled in.
+- REPLAY (View menu) shows the drawing being made again, step by step. Esc stops it and puts the drawing back.
+- ALIASEDIT (Tools menu) opens your own aliases file in Notepad, for example `BX = RECTANG`. Feather CAD reads it again when you come back to it.
+
+**Languages**: View > Language shows the menus, the menu bar and the first hint in **Hindi** or **Kannada** (commands and prompts stay in English). These translations are a first draft and should be checked by native speakers. Corrections can be made in `src/Lang.cpp`, or without rebuilding in `lang\hi.txt` or `lang\kn.txt` beside FeatherCAD.exe (one `English = translation` per line).
+
+Not done in this round: draw order (bring to front / send to back), and 3D / STL.
+
 ## Building
 
 ```

@@ -14,6 +14,9 @@
 #include "CommandUtil.h"
 #include "EngGraphics.h"
 #include "EngMore.h"
+#include "Sheet.h"
+#include "Lang.h"
+#include "Personal.h"
 
 namespace {
 double TextSize(Engine* E) { return E->Doc().Settings().dimStyle.textHeight; }
@@ -1177,6 +1180,131 @@ public:
         E->Finish();
     }
 };
+// ---------------------------------------------------------------------------
+// MYDETAILS: the student's name, USN, branch and institution, for title blocks
+// EXAMSHEET: a sheet for an exam or lab drawing with them filled in
+// ---------------------------------------------------------------------------
+class DetailsCmd : public Command {
+protected:
+    size_t m_k = 0;  // which detail is asked
+    void AskDetail() {
+        static const wchar_t* const questions[] = {L"Your name", L"Your USN (university seat number) or roll number",
+                                                   L"Your branch, semester or batch (such as Mechanical, 2nd sem, B2)",
+                                                   L"Your college or institution"};
+        E->Ask(TextPrompt((std::wstring(questions[m_k]) + L" (Enter keeps it; - clears it)").c_str(), 0,
+                          MyDetails()[kMyDetailKeys[m_k]]));
+    }
+    virtual void DetailsDone() = 0;
+    void Next() {
+        if (++m_k < std::size(kMyDetailKeys)) return AskDetail();
+        E->Host().MyDetailsChanged();
+        DetailsDone();
+    }
+
+public:
+    bool OnText(const std::wstring& s) override {
+        if (m_k >= std::size(kMyDetailKeys) || s.empty()) return false;
+        MyDetails()[kMyDetailKeys[m_k]] = s == L"-" ? L"" : s;
+        Next();
+        return true;
+    }
+    void OnEnter() override {
+        if (m_k < std::size(kMyDetailKeys)) return Next();
+        E->Finish();
+    }
+};
+
+class MyDetailsCmd : public DetailsCmd {
+    void DetailsDone() override {
+        const bool changed = ApplyMyDetails(E->Doc(), true);
+        E->Msg(std::wstring(L"Your details are kept for new drawings and exam sheets") +
+               (changed ? L", and are now in this drawing's title block." : L"."));
+        E->Finish();
+    }
+
+public:
+    void Start() override { AskDetail(); }
+};
+
+std::wstring g_examPaper = L"A3";
+class ExamSheetCmd : public DetailsCmd {
+    enum Step { Details, Title, Paper } m_step = Details;
+    void DetailsDone() override { AskTitle(); }
+    void AskTitle() {
+        m_step = Title;
+        auto it = E->Doc().Properties().find(L"title");
+        E->Ask(TextPrompt(L"The drawing's title (the question, such as PROJECTIONS OF SOLIDS)", 0,
+                          it == E->Doc().Properties().end() ? L"" : it->second));
+    }
+    void AskPaper() {
+        m_step = Paper;
+        E->Ask(P(L"Paper size (landscape)", kAcceptKeyword | kAcceptEmpty, {{L"A4", L"A4"}, {L"A3", L"A3"}, {L"A2", L"A2"}}, g_examPaper));
+    }
+    void Make() {
+        Document& d = E->Doc();
+        d.BeginChange(L"Exam sheet");
+        ApplyMyDetails(d, true);
+        if (!UsesBisTitleBlock(d)) ApplyBisSetup(d, false);
+        d.EndChange();
+        if (!E->Host().NewExamSheet(g_examPaper)) {
+            E->Msg(L"The details are in the drawing's properties; add a sheet with SHEETNEW to see the title block.");
+            return E->Finish();
+        }
+        E->Msg(L"Exam sheet: " + g_examPaper + L" with the BIS title block and your details. "
+               L"Draw on the Drawing tab; the sheet shows it to scale. Ctrl+P prints.");
+        E->Finish();
+    }
+
+public:
+    void Start() override {
+        if (MyDetails()[L"name"].empty()) {
+            E->Msg(L"First, your details for the title block (asked once; MYDETAILS changes them).");
+            return AskDetail();
+        }
+        AskTitle();
+    }
+    bool OnText(const std::wstring& s) override {
+        if (m_step == Details) return DetailsCmd::OnText(s);
+        if (m_step == Title && !s.empty()) {
+            E->Doc().SetProperty(L"title", s);
+            AskPaper();
+            return true;
+        }
+        return false;
+    }
+    void OnKeyword(const std::wstring& k) override {
+        if (m_step != Paper) return;
+        g_examPaper = k;
+        Make();
+    }
+    void OnEnter() override {
+        if (m_step == Details) return DetailsCmd::OnEnter();
+        if (m_step == Title) return AskPaper();
+        Make();
+    }
+};
+
+// LANGUAGE: the language of the menus.
+class LanguageCmd : public Command {
+public:
+    void Start() override {
+        std::vector<Keyword> kw;
+        for (const Language& l : Languages()) kw.push_back({std::wstring(1, (wchar_t)std::towupper(l.code[0])), l.name});
+        std::wstring now;
+        for (const Language& l : Languages())
+            if (CurrentLanguage() == l.code) now = l.name;
+        E->Ask(P(L"Menus in", kAcceptKeyword | kAcceptEmpty, kw, now));
+    }
+    void OnKeyword(const std::wstring& k) override {
+        for (const Language& l : Languages())
+            if ((wchar_t)std::towupper(l.code[0]) == k[0]) SetLanguage(l.code);
+        E->Host().LanguageChanged();
+        E->Msg(std::wstring(L"Menus are now in ") +
+               (CurrentLanguage() == L"en" ? L"English." : L"the chosen language (a first draft; commands and prompts stay in English)."));
+        E->Finish();
+    }
+    void OnEnter() override { E->Finish(); }
+};
 }  // namespace
 
 std::unique_ptr<Command> CreateR3Command(const std::wstring& name) {
@@ -1202,5 +1330,8 @@ std::unique_ptr<Command> CreateR3Command(const std::wstring& name) {
     if (name == L"UNHIDE") return std::make_unique<HideCmd>(2);
     if (name == L"FIND") return std::make_unique<FindCmd>();
     if (name == L"TEXTSTYLE") return std::make_unique<TextStyleCmd>();
+    if (name == L"MYDETAILS") return std::make_unique<MyDetailsCmd>();
+    if (name == L"EXAMSHEET") return std::make_unique<ExamSheetCmd>();
+    if (name == L"LANGUAGE") return std::make_unique<LanguageCmd>();
     return nullptr;
 }

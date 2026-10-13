@@ -3,6 +3,7 @@
 
 #include <algorithm>
 
+#include "Personal.h"
 #include "Util.h"
 
 namespace {
@@ -90,6 +91,9 @@ void Settings::Load() {
     newPrecision = std::clamp((int)ReadDword(key, L"NewPrecision", 2), 0, 8);
     autosaveMinutes = std::clamp((int)ReadDword(key, L"AutosaveMinutes", 5), 0, 120);
     keepVersions = std::clamp((int)ReadDword(key, L"KeepVersions", 30), 5, 500);
+    const std::wstring lang = ReadString(key, L"Language");
+    if (!lang.empty()) language = lang;
+    for (const wchar_t* k : kMyDetailKeys) details[k] = ReadString(key, (std::wstring(L"My_") + k).c_str());
     RegCloseKey(key);
 }
 
@@ -122,6 +126,11 @@ void Settings::Save() const {
     WriteDword(key, L"NewPrecision", (DWORD)newPrecision);
     WriteDword(key, L"AutosaveMinutes", (DWORD)autosaveMinutes);
     WriteDword(key, L"KeepVersions", (DWORD)keepVersions);
+    WriteString(key, L"Language", language);
+    for (const wchar_t* k : kMyDetailKeys) {
+        auto it = details.find(k);
+        WriteString(key, (std::wstring(L"My_") + k).c_str(), it == details.end() ? L"" : it->second);
+    }
     RegCloseKey(key);
 }
 

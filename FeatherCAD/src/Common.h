@@ -21,7 +21,7 @@
 #include <vector>
 
 #define APP_NAME L"Feather CAD"
-#define APP_VERSION L"2.3.0"
+#define APP_VERSION L"2.4.0"
 #define APP_AUTHOR L"Akshaya Simha"
 #define APP_COPYRIGHT L"\x00A9 2026 Akshaya Simha"
 #define APP_WINDOW_CLASS L"FeatherCadMain"
@@ -37,6 +37,7 @@ enum : UINT {
     WM_APP_COMMAND_TYPING,             // command line: the text being typed changed (lParam = std::wstring*)
     WM_APP_CANVAS_EDIT,                // canvas: an object was double-clicked (lParam = const uint64_t* id)
     WM_APP_PROPERTIES,                 // fill the Properties panel again (after a change made in it)
+    WM_APP_EXAMSHEET,                  // EXAMSHEET has finished: add its sheet (MainWindow::m_examPaper)
 };
 
 // Command ids: menu items, toolbar buttons and accelerators. Items that
@@ -258,5 +259,6 @@ enum : int {
     ID_SWATCH_FIRST = 1000,    // + index of a colour swatch in the guide bar
     ID_SWATCH_MORE = 1030,     // the guide bar's "More..." colours
     ID_WEIGHT_MENU = 1031,     // the guide bar's thickness button
+    ID_LANG_FIRST = 1040,      // + index into Languages(): the menus' language
     kMaxTabs = 100,
 };
