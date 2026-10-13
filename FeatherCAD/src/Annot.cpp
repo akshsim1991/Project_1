@@ -173,6 +173,7 @@ struct Sketch {
             it.angle = angle;
             it.height = x.height;
             it.widthFactor = t.widthFactor > 0 ? t.widthFactor : 1;
+            it.oblique = t.oblique;
             it.width = TextWidth(it.text, it.height) * it.widthFactor;
             it.font = t.font;
             g.texts.push_back(std::move(it));
@@ -561,6 +562,7 @@ void LayoutText(const TextData& t, Vec2 at, const FieldValues* fields, AnnotGrap
         it.angle = t.rotation;
         it.height = h;
         it.widthFactor = t.widthFactor > 0 ? t.widthFactor : 1;
+        it.oblique = t.oblique;
         it.width = TextWidth(it.text, h) * it.widthFactor;
         it.font = t.font;
         g.boxes.push_back(TextBoxOf(it));

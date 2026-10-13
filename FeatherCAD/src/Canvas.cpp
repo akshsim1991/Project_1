@@ -817,28 +817,31 @@ void Canvas::DrawDimensionParts(ID2D1RenderTarget* rt, const std::vector<const E
     if (!m_dimFormat) return;
     D2D1_MATRIX_3X2_F saved;
     rt->GetTransform(&saved);
-    for (const Entity* e : dims) {
-        DimGraphics g;
-        DimLayout(*e->dim, g);
-        const double px = g.textHeight * m_scale;
-        if (g.text.empty() || px < 2.5 || px > 5000) continue;  // too small to read, or absurdly big
+    // A dimension's text, centred on `pos`.
+    auto draw = [&](const std::wstring& text, Vec2 pos, double height, double angle, double oblique) {
+        const double px = height * m_scale;
+        if (text.empty() || px < 2.5 || px > 5000) return;  // too small to read, or absurdly big
         IDWriteTextLayout* layout = nullptr;
-        if (FAILED(m_dwrite->CreateTextLayout(g.text.c_str(), (UINT32)g.text.size(), m_dimFormat, 100000, 1000, &layout)))
-            continue;
+        if (FAILED(m_dwrite->CreateTextLayout(text.c_str(), (UINT32)text.size(), m_dimFormat, 100000, 1000, &layout))) return;
         DWRITE_TEXT_METRICS tm{};
         layout->GetMetrics(&tm);
         DWRITE_LINE_METRICS lm{};
         UINT32 lines = 0;
         layout->GetLineMetrics(&lm, 1, &lines);
-        const float k = (float)(FontSizeForHeight(g.textHeight) * m_scale / kDimFontPx);
+        const float k = (float)(FontSizeForHeight(height) * m_scale / kDimFontPx);
         // The middle of the capitals sits on the text position.
         const float capMiddle = lm.baseline - (float)(0.716 * kDimFontPx / 2);
-        const D2D1_POINT_2F at = ToScreen(g.textPos);
-        rt->SetTransform(D2D1::Matrix3x2F::Scale(k, k) *
-                         D2D1::Matrix3x2F::Rotation((float)-ToDegrees(g.textAngle)) *
-                         D2D1::Matrix3x2F::Translation(at.x, at.y) * saved);
+        const D2D1_POINT_2F at = ToScreen(pos);
+        rt->SetTransform(D2D1::Matrix3x2F::Scale(k, k) * D2D1::Matrix3x2F::Skew((float)-ToDegrees(oblique), 0) *
+                         D2D1::Matrix3x2F::Rotation((float)-ToDegrees(angle)) * D2D1::Matrix3x2F::Translation(at.x, at.y) * saved);
         rt->DrawTextLayout(D2D1::Point2F(-tm.width / 2 - tm.left, -capMiddle), layout, brush);
         layout->Release();
+    };
+    for (const Entity* e : dims) {
+        DimGraphics g;
+        DimLayout(*e->dim, g);
+        draw(g.text, g.textPos, g.textHeight, g.textAngle, g.textOblique);
+        for (const DimText& x : g.extra) draw(x.text, x.pos, x.height, x.angle, x.oblique);
     }
     rt->SetTransform(saved);
 }
@@ -874,7 +877,8 @@ void Canvas::DrawTextItem(ID2D1RenderTarget* rt, const TextItem& t, ID2D1Brush* 
     D2D1_MATRIX_3X2_F saved;
     rt->GetTransform(&saved);
     const D2D1_POINT_2F at = ToScreen(t.pos);
-    rt->SetTransform(D2D1::Matrix3x2F::Scale(k * wf, k) * D2D1::Matrix3x2F::Rotation((float)-ToDegrees(t.angle)) *
+    rt->SetTransform(D2D1::Matrix3x2F::Scale(k * wf, k) * D2D1::Matrix3x2F::Skew((float)-ToDegrees(t.oblique), 0) *
+                     D2D1::Matrix3x2F::Rotation((float)-ToDegrees(t.angle)) *
                      D2D1::Matrix3x2F::Translation(at.x, at.y) * saved);
     rt->DrawTextLayout(D2D1::Point2F(x, -capMiddle), layout, brush);
     rt->SetTransform(saved);

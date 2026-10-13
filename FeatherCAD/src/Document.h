@@ -22,6 +22,19 @@ enum class Units : uint8_t { Unitless, Millimetres, Centimetres, Metres, Inches,
 const wchar_t* UnitsName(Units u);    // "Millimetres"
 const wchar_t* UnitsSymbol(Units u);  // "mm"
 
+// A named way of writing text (TEXTSTYLE): its font, letter width and slant.
+struct TextStyle {
+    std::wstring name, font = L"Arial";
+    double height = 0;       // 0: chosen when writing
+    double widthFactor = 1;
+    double oblique = 0;      // radians
+    bool operator==(const TextStyle& o) const {
+        return name == o.name && font == o.font && height == o.height && widthFactor == o.widthFactor && oblique == o.oblique;
+    }
+};
+// The styles every drawing has: Standard, Isometric right (+30 degrees), Isometric left (-30), Narrow.
+const std::vector<TextStyle>& BuiltInTextStyles();
+
 struct DrawingSettings {
     Units units = Units::Millimetres;
     int precision = 2;  // decimal places shown for lengths and coordinates
@@ -30,11 +43,16 @@ struct DrawingSettings {
     Vec2 origin;         // grid origin: coordinates are typed and shown from here
     // Relationships: kept when objects change; added while drawing; shown.
     bool maintainRelations = true, autoRelations = false, showRelations = true;
+    std::vector<TextStyle> textStyles;  // made in this drawing (besides the built-in ones)
+    std::wstring textStyle;             // the current one (empty: Standard)
     bool operator==(const DrawingSettings& o) const {
         return units == o.units && precision == o.precision && dimStyle == o.dimStyle && ltscale == o.ltscale &&
                origin == o.origin && maintainRelations == o.maintainRelations && autoRelations == o.autoRelations &&
-               showRelations == o.showRelations;
+               showRelations == o.showRelations && textStyles == o.textStyles && textStyle == o.textStyle;
     }
+    // The built-in styles and this drawing's, and one of them by name (not case sensitive; null if none).
+    std::vector<TextStyle> AllTextStyles() const;
+    const TextStyle* FindTextStyle(const std::wstring& name) const;
 };
 
 // A named value: a number or a formula of other variables and dimensions.
@@ -134,7 +152,13 @@ public:
     void SaveLayerState(const std::wstring& name);
     bool RestoreLayerState(const std::wstring& name);
     void DeleteLayerState(const std::wstring& name);
-    bool Visible(const Entity& e) const;   // its layer is on and not frozen
+    bool Visible(const Entity& e) const;   // its layer is on and not frozen, and it is not hidden
+    // Objects hidden for a while (HIDEOBJECTS, ISOLATE): not saved, not undone.
+    void HideObjects(const std::vector<uint64_t>& ids);
+    void UnhideAll();
+    size_t HiddenCount() const { return m_hiddenIds.size(); }
+    // A group number no object has yet (GROUP).
+    uint32_t NewGroupNumber() const;
     bool Editable(const Entity& e) const;  // visible and its layer not locked
     // `block`: the block reference the object is drawn in, for "by block".
     Look LookOf(const Entity& e, const Entity* block = nullptr) const;
@@ -238,6 +262,8 @@ private:
     std::vector<LayerState> m_states;
     BlockTable m_blocks;
     std::map<std::wstring, std::wstring> m_props;
+    std::set<uint64_t> m_hiddenIds;
+    bool m_keepGroups = false;  // Add keeps group numbers (AddGroup gives copies new ones)
     std::vector<Variable> m_vars;
     SolveReport m_lastSolve;
     bool m_solving = false;

@@ -3,6 +3,7 @@
 #include "Engine.h"
 
 #include <algorithm>
+#include <set>
 #include <cwctype>
 
 #include "EngGraphics.h"
@@ -409,7 +410,23 @@ void Engine::GetPreview(Vec2 cursor, Preview& out) {
 // Selection
 // ---------------------------------------------------------------------------
 
-void Engine::AddToSelection(const std::vector<uint64_t>& ids) {
+namespace {
+// The objects, with the rest of any group one of them is in (GROUP).
+std::vector<uint64_t> WithGroups(const Document& doc, const std::vector<uint64_t>& ids) {
+    std::set<uint32_t> groups;
+    for (uint64_t id : ids)
+        if (const Entity* e = doc.Find(id); e && e->group) groups.insert(e->group);
+    if (groups.empty()) return ids;
+    std::vector<uint64_t> out = ids;
+    std::set<uint64_t> have(ids.begin(), ids.end());
+    for (const auto& kv : doc.Entities())
+        if (kv.second.group && groups.count(kv.second.group) && !have.count(kv.first)) out.push_back(kv.first);
+    return out;
+}
+}  // namespace
+
+void Engine::AddToSelection(const std::vector<uint64_t>& picked) {
+    const std::vector<uint64_t> ids = WithGroups(m_doc, picked);
     size_t added = 0;
     for (uint64_t id : ids) {
         const Entity* e = m_doc.Find(id);
@@ -421,7 +438,8 @@ void Engine::AddToSelection(const std::vector<uint64_t>& ids) {
         m_host.Message(std::to_wstring(ids.size()) + L" found, " + std::to_wstring(m_selection.size()) + L" total");
 }
 
-void Engine::RemoveFromSelection(const std::vector<uint64_t>& ids) {
+void Engine::RemoveFromSelection(const std::vector<uint64_t>& picked) {
+    const std::vector<uint64_t> ids = WithGroups(m_doc, picked);
     size_t removed = 0;
     for (uint64_t id : ids) removed += m_selection.erase(id);
     if (removed) ++m_selRevision;

@@ -21,6 +21,7 @@ struct TextData {
     double height = 3.5;         // capital letters this tall
     double rotation = 0;         // radians
     double widthFactor = 1;      // wider (> 1) or narrower letters
+    double oblique = 0;          // letters slanted this much (radians; > 0 leans right, 30 degrees for isometric)
     double lineSpacing = 1;      // times the normal spacing (1.6667 x height)
     int justify = 0;             // 0 top left, 1 top centre, 2 top right, 3-5 middle, 6-8 bottom
     // 0 none, 1 box, 2 circle (a balloon); symbols made of the content:
@@ -28,10 +29,11 @@ struct TextData {
     // 8 a point's label (centred on its position; see ParseLabel).
     int frame = 0;
     std::wstring tag, prompt;    // an attribute definition: its tag and question
+    std::wstring style;          // the text style it was written in (TEXTSTYLE), or none
     bool operator==(const TextData& o) const {
         return content == o.content && font == o.font && height == o.height && rotation == o.rotation &&
-               widthFactor == o.widthFactor && lineSpacing == o.lineSpacing && justify == o.justify &&
-               frame == o.frame && tag == o.tag && prompt == o.prompt;
+               widthFactor == o.widthFactor && oblique == o.oblique && lineSpacing == o.lineSpacing &&
+               justify == o.justify && frame == o.frame && tag == o.tag && prompt == o.prompt && style == o.style;
     }
 };
 
@@ -49,6 +51,7 @@ struct TextItem {
     Vec2 pos;          // on the middle of the capitals: at its left, centre or right end
     int align = 0;     // 0 left, 1 centre, 2 right
     double angle = 0, height = 0, widthFactor = 1;
+    double oblique = 0;  // slant of the letters (radians)
     double width = 0;  // estimated
     std::wstring font;
 };

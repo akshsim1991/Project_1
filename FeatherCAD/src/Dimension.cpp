@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cwchar>
+#include <cwctype>
 #include <set>
 
 #include "Document.h"
@@ -366,6 +367,22 @@ void DimLayout(const DimData& d, DimGraphics& g) {
     const DimStyle& st = d.style;
     const double h = st.textHeight, as = st.arrowSize;
     g.text = DimDisplayText(d);
+    const bool tolerated = d.tol != DimData::TolNone && d.kind != DimData::Angular && d.kind != DimData::AngularCoord;
+    std::wstring limitHi, limitLo;
+    if (tolerated && (d.tol == DimData::TolFit || d.tol == DimData::TolFitDeviation)) g.text += d.fit;
+    if (tolerated && d.tol == DimData::TolLimits) {
+        // The largest and smallest sizes allowed, one over the other.
+        const std::wstring v = DimValueText(d);
+        size_t k = 0;
+        while (k < v.size() && !std::iswdigit(v[k]) && v[k] != L'-' && v[k] != L'.') ++k;
+        DimStyle three = d.style;
+        three.precision = std::max(3, d.style.precision);
+        three.trimZeros = false;
+        const double m = DimMeasure(d);
+        limitHi = v.substr(0, k) + DimNumber(m + d.tolUpper, three);
+        limitLo = v.substr(0, k) + DimNumber(m + d.tolLower, three);
+        g.text = limitHi.size() >= limitLo.size() ? limitHi : limitLo;
+    }
     g.textHeight = h;
     g.textWidth = TextWidth(g.text, h);
     auto seg = [&](Vec2 a, Vec2 b) {
@@ -384,8 +401,15 @@ void DimLayout(const DimData& d, DimGraphics& g) {
         case DimData::Linear:
         case DimData::Aligned: {
             const Vec2 u = LinearDir(d), n = Perp(u);
-            const Vec2 d0 = d.pts[0] + n * Dot(d.loc - d.pts[0], n);
-            const Vec2 d1 = d.pts[1] + n * Dot(d.loc - d.pts[1], n);
+            Vec2 d0 = d.pts[0] + n * Dot(d.loc - d.pts[0], n);
+            Vec2 d1 = d.pts[1] + n * Dot(d.loc - d.pts[1], n);
+            // Slanted extension lines: along w, to the line through loc parallel to u.
+            const Vec2 w{std::cos(AngleOf(u) + d.extAngle), std::sin(AngleOf(u) + d.extAngle)};
+            const bool slanted = d.slanted && std::fabs(Cross(w, u)) > 0.05;
+            if (slanted) {
+                d0 = d.pts[0] + w * (-Cross(d.pts[0] - d.loc, u) / Cross(w, u));
+                d1 = d.pts[1] + w * (-Cross(d.pts[1] - d.loc, u) / Cross(w, u));
+            }
             ext(d.pts[0], d0);
             ext(d.pts[1], d1);
             const double len = Dist(d0, d1);
@@ -393,7 +417,7 @@ void DimLayout(const DimData& d, DimGraphics& g) {
             const Vec2 mid = Lerp(d0, d1, 0.5);
             // Unidirectional: level text in a break of the line, if there is room.
             const double half = std::fabs(e.x) * (g.textWidth / 2 + st.textGap) + std::fabs(e.y) * (h / 2 + st.textGap);
-            const bool inBreak = st.unidirectional && len >= 2 * half + 2.5 * as;
+            const bool inBreak = st.unidirectional && !slanted && len >= 2 * half + 2.5 * as;
             if (len >= 2.5 * as) {
                 if (inBreak) {
                     seg(d0, mid - e * half);
@@ -408,7 +432,15 @@ void DimLayout(const DimData& d, DimGraphics& g) {
                 g.arrows.push_back(Arrow(d0, e, as));
                 g.arrows.push_back(Arrow(d1, -e, as));
             }
-            if (st.unidirectional) {
+            if (slanted) {
+                // Along the line, its letters leaning with the extension lines.
+                g.textAngle = Readable(AngleOf(e));
+                const Vec2 tu{std::cos(g.textAngle), std::sin(g.textAngle)};
+                const double along = Dot(w, tu), across = Dot(w, Perp(tu));
+                g.textOblique = std::clamp(std::atan2(along * (across < 0 ? -1 : 1), std::fabs(across)), -ToRadians(75), ToRadians(75));
+                const Vec2 lean = Perp(tu) + tu * std::tan(g.textOblique);  // "up" for the leaning letters
+                g.textPos = mid + lean * (st.textGap + h / 2);
+            } else if (st.unidirectional) {
                 g.textAngle = 0;
                 if (inBreak) {
                     g.textPos = mid;
@@ -538,6 +570,121 @@ void DimLayout(const DimData& d, DimGraphics& g) {
             break;
         }
     }
+    if (!tolerated) return;
+    // Tolerances after the value (or the limits in its place), smaller and stacked.
+    const Vec2 tu{std::cos(g.textAngle), std::sin(g.textAngle)};
+    const Vec2 up = Perp(tu) + tu * std::tan(g.textOblique);
+    auto piece = [&](const std::wstring& s, Vec2 at, double height) {
+        g.extra.push_back({s, at, g.textAngle, height, g.textOblique});
+    };
+    if (d.tol == DimData::TolLimits) {
+        const double lh = h * 0.8;
+        piece(limitHi, g.textPos + up * (lh * 0.65), lh);
+        piece(limitLo, g.textPos - up * (lh * 0.65), lh);
+        g.text.clear();
+        return;
+    }
+    if (d.tol == DimData::TolFit) return;
+    const std::wstring hi = DeviationText(d.tolUpper), lo = DeviationText(d.tolLower);
+    if (std::fabs(d.tolUpper + d.tolLower) < 1e-12 && d.tolUpper > 0) {  // equal both ways: +-0.02
+        const std::wstring pm = L"\x00B1" + DeviationText(d.tolUpper).substr(1);
+        piece(pm, g.textPos + tu * (g.textWidth / 2 + h * 0.2 + TextWidth(pm, h) / 2), h);
+        return;
+    }
+    const double th = h * 0.7;
+    const Vec2 start = g.textPos + tu * (g.textWidth / 2 + h * 0.3);
+    piece(hi, start + tu * (TextWidth(hi, th) / 2) + up * (th * 0.65), th);
+    piece(lo, start + tu * (TextWidth(lo, th) / 2) - up * (th * 0.65), th);
+}
+
+std::wstring DeviationText(double v) {
+    if (std::fabs(v) < 5e-7) return L"0";
+    wchar_t buf[48];
+    std::swprintf(buf, 48, L"%+.4f", v);
+    std::wstring s = buf;
+    while (s.back() == L'0') s.pop_back();
+    if (s.back() == L'.') s.pop_back();
+    return s;
+}
+
+namespace {
+// ISO 286-1: the size ranges (over the one before, up to and including this), in millimetres.
+const double kFitSizes[13] = {3, 6, 10, 18, 30, 50, 80, 120, 180, 250, 315, 400, 500};
+// Standard tolerance grades IT5..IT12, micrometres.
+const int kIt[8][13] = {
+    {4, 5, 6, 8, 9, 11, 13, 15, 18, 20, 23, 25, 27},
+    {6, 8, 9, 11, 13, 16, 19, 22, 25, 29, 32, 36, 40},
+    {10, 12, 15, 18, 21, 25, 30, 35, 40, 46, 52, 57, 63},
+    {14, 18, 22, 27, 33, 39, 46, 54, 63, 72, 81, 89, 97},
+    {25, 30, 36, 43, 52, 62, 74, 87, 100, 115, 130, 140, 155},
+    {40, 48, 58, 70, 84, 100, 120, 140, 160, 185, 210, 230, 250},
+    {60, 75, 90, 110, 130, 160, 190, 220, 250, 290, 320, 360, 400},
+    {100, 120, 150, 180, 210, 250, 300, 350, 400, 460, 520, 570, 630},
+};
+// Fundamental deviations of shafts, micrometres: the upper one (es) for
+// d..h, the lower one (ei) for k, m, n, p (k: grades 4 to 7).
+struct ShaftRow {
+    const wchar_t* letter;
+    bool upper;
+    int v[13];
+};
+const ShaftRow kShafts[] = {
+    {L"d", true, {-20, -30, -40, -50, -65, -80, -100, -120, -145, -170, -190, -210, -230}},
+    {L"e", true, {-14, -20, -25, -32, -40, -50, -60, -72, -85, -100, -110, -125, -135}},
+    {L"f", true, {-6, -10, -13, -16, -20, -25, -30, -36, -43, -50, -56, -62, -68}},
+    {L"g", true, {-2, -4, -5, -6, -7, -9, -10, -12, -14, -15, -17, -18, -20}},
+    {L"h", true, {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
+    {L"k", false, {0, 1, 1, 1, 2, 2, 2, 3, 3, 4, 4, 4, 5}},
+    {L"m", false, {2, 4, 6, 7, 8, 9, 11, 13, 15, 17, 20, 21, 23}},
+    {L"n", false, {4, 8, 10, 12, 15, 17, 20, 23, 27, 31, 34, 37, 40}},
+    {L"p", false, {6, 12, 15, 18, 22, 26, 32, 37, 43, 50, 56, 62, 68}},
+};
+}  // namespace
+
+bool IsoFit(const std::wstring& codeIn, double size, double& upper, double& lower, std::wstring& why) {
+    std::wstring code;
+    for (wchar_t c : codeIn)
+        if (!std::iswspace(c)) code.push_back(c);
+    size_t k = 0;
+    while (k < code.size() && std::iswalpha(code[k])) ++k;
+    if (k == 0 || k == code.size()) return why = L"Type a fit such as H7, g6 or js6: a letter and a grade.", false;
+    std::wstring letter = code.substr(0, k);
+    const bool hole = std::iswupper(letter[0]) != 0;
+    for (wchar_t& c : letter) c = (wchar_t)std::towlower(c);
+    int grade = 0;
+    for (size_t i = k; i < code.size(); ++i) {
+        if (!std::iswdigit(code[i])) return why = L"The grade must be a number, as in H7.", false;
+        grade = grade * 10 + (code[i] - L'0');
+    }
+    if (grade < 5 || grade > 12) return why = L"Grades 5 to 12 (IT5 to IT12) are known.", false;
+    if (!(size > 0) || size > 500) return why = L"Fits are known for sizes up to 500 mm.", false;
+    int r = 0;
+    while (size > kFitSizes[r] + 1e-9) ++r;
+    const double it = kIt[grade - 5][r] / 1000.0;
+    if (letter == L"js") {
+        upper = it / 2, lower = -it / 2;
+        return true;
+    }
+    for (const ShaftRow& s : kShafts) {
+        if (letter != s.letter) continue;
+        double es, ei;
+        if (s.upper) {
+            es = s.v[r] / 1000.0, ei = es - it;
+        } else {
+            ei = (letter == L"k" && (grade > 7)) ? 0 : s.v[r] / 1000.0;
+            es = ei + it;
+        }
+        if (!hole) {
+            upper = es, lower = ei;
+            return true;
+        }
+        // Holes D..H mirror the shafts: EI = -es.
+        if (!s.upper) return why = L"Holes K, M, N and P are not in the table; use A to H or JS.", false;
+        lower = -es, upper = lower + it;
+        return true;
+    }
+    return why = L"The fit letter \"" + code.substr(0, k) +
+                 L"\" is not in the table (holes D to H, JS; shafts d to h, js, k, m, n, p).", false;
 }
 
 // ---------------------------------------------------------------------------

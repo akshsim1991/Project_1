@@ -746,6 +746,7 @@ private:
                 t.prompt = Text(r.Str(3));
             }
             t.widthFactor = r.Num(41, 1) > 0 ? r.Num(41, 1) : 1;
+            if (std::fabs(r.Num(51, 0)) < 85) t.oblique = ToRadians(r.Num(51, 0));
             int h = r.Int(72), v = r.type == "ATTDEF" ? r.Int(74) : r.Int(73);
             at = (h == 0 && v == 0) ? r.Pt(10) : r.Pt(11);
             if (h == 3 || h == 5) {  // aligned or fit between two points: centred there

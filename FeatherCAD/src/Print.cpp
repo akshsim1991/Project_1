@@ -147,8 +147,40 @@ void DrawPlotPage(HDC dc, const PlotPage& page, double k, double x, double y) {
                 SetTextColor(dc, Ref(it.rgb));
                 SetTextAlign(dc, TA_BASELINE | (t.align == 1 ? TA_CENTER : t.align == 2 ? TA_RIGHT : TA_LEFT));
                 const Vec2 n{-std::sin(t.angle), std::cos(t.angle)};
-                const POINT at = pt(t.pos - n * (t.height / 2));  // on the baseline
-                TextOutW(dc, at.x, at.y, t.text.c_str(), (int)t.text.size());
+                if (t.oblique != 0) {
+                    // Slanted letters: drawn upright at the origin through a world transform that
+                    // leans, turns and places them (about the middle of the capitals).
+                    const POINT mid = pt(t.pos);
+                    const float sl = (float)std::tan(t.oblique), c = (float)std::cos(t.angle), s = (float)std::sin(t.angle);
+                    const float half = (float)(t.height / 2 * k);
+                    const int mode = SetGraphicsMode(dc, GM_ADVANCED);
+                    XFORM saved{};
+                    GetWorldTransform(dc, &saved);
+                    // Local x along the text, y down; up (negative y) leans to the right.
+                    XFORM x{c, -s, s - sl * c, c + sl * s, (float)mid.x, (float)mid.y};
+                    ModifyWorldTransform(dc, &x, MWT_LEFTMULTIPLY);
+                    HGDIOBJ upright = CreateFontW(-em, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                                  ANTIALIASED_QUALITY, DEFAULT_PITCH, face.c_str());
+                    SelectObject(dc, upright);
+                    if (t.widthFactor > 0 && std::fabs(t.widthFactor - 1) > 1e-6) {
+                        TEXTMETRICW tm{};
+                        GetTextMetricsW(dc, &tm);
+                        SelectObject(dc, f);
+                        DeleteObject(upright);
+                        upright = CreateFontW(-em, (int)std::lround(tm.tmAveCharWidth * t.widthFactor), 0, 0, FW_NORMAL, 0, 0, 0,
+                                              DEFAULT_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH,
+                                              face.c_str());
+                        SelectObject(dc, upright);
+                    }
+                    TextOutW(dc, 0, (int)std::lround(half), t.text.c_str(), (int)t.text.size());
+                    SelectObject(dc, f);
+                    DeleteObject(upright);
+                    SetWorldTransform(dc, &saved);
+                    SetGraphicsMode(dc, mode);
+                } else {
+                    const POINT at = pt(t.pos - n * (t.height / 2));  // on the baseline
+                    TextOutW(dc, at.x, at.y, t.text.c_str(), (int)t.text.size());
+                }
                 SelectObject(dc, old);
                 DeleteObject(f);
                 break;

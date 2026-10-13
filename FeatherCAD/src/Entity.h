@@ -48,6 +48,7 @@ struct Entity {
     int16_t lineweight = -1;
     float ltscale = 1;
     bool construction = false;
+    uint32_t group = 0;  // objects with the same number (not 0) are picked together (GROUP)
     // Array: shared and never changed in place (a change makes a new copy),
     // so copies of an array entity (undo history) cost nothing.
     std::shared_ptr<const ArrayData> array;

@@ -4,6 +4,7 @@
 //   cmake -DFEATHERCAD_TESTS=ON ...   then run CoreTests.exe
 #include <algorithm>
 #include <cstdio>
+#include <set>
 #include <string>
 
 #include "Annot.h"
@@ -4135,6 +4136,231 @@ void TestRound3Constructions() {
     }
 }
 
+void TestRound3Annotation() {
+    TestHost host;
+    {   // ISO 286 fits.
+        double up = 0, lo = 0;
+        std::wstring why;
+        CHECK(IsoFit(L"H7", 40, up, lo, why) && Close(up, 0.025) && Close(lo, 0));
+        CHECK(IsoFit(L"g6", 40, up, lo, why) && Close(up, -0.009) && Close(lo, -0.025));
+        CHECK(IsoFit(L"k6", 40, up, lo, why) && Close(up, 0.018) && Close(lo, 0.002));
+        CHECK(IsoFit(L"p6", 40, up, lo, why) && Close(up, 0.042) && Close(lo, 0.026));
+        CHECK(IsoFit(L"H8", 25, up, lo, why) && Close(up, 0.033) && Close(lo, 0));
+        CHECK(IsoFit(L"f7", 25, up, lo, why) && Close(up, -0.020) && Close(lo, -0.041));
+        CHECK(IsoFit(L"js6", 40, up, lo, why) && Close(up, 0.008) && Close(lo, -0.008));
+        CHECK(IsoFit(L"F8", 25, up, lo, why) && Close(up, 0.053) && Close(lo, 0.020));
+        CHECK(IsoFit(L"h7", 3, up, lo, why) && Close(up, 0) && Close(lo, -0.010));  // 3 is in the first range
+        CHECK(!IsoFit(L"H7", 600, up, lo, why) && !IsoFit(L"Q7", 40, up, lo, why) && !IsoFit(L"H", 40, up, lo, why) &&
+              !IsoFit(L"K7", 40, up, lo, why) && !why.empty());
+        CHECK(DeviationText(0.025) == L"+0.025" && DeviationText(0) == L"0" && DeviationText(-0.0090) == L"-0.009");
+    }
+    {   // Tolerances on a dimension.
+        DimData d;
+        d.kind = DimData::Linear;
+        d.pts[0] = {0, 0}, d.pts[1] = {40, 0}, d.loc = {20, 10};
+        d.tol = DimData::TolFitDeviation, d.fit = L"H7", d.tolUpper = 0.025, d.tolLower = 0;
+        DimGraphics g;
+        DimLayout(d, g);
+        CHECK(g.text == L"40H7" && g.extra.size() == 2 && g.extra[0].text == L"+0.025" && g.extra[1].text == L"0");
+        CHECK(g.extra[0].pos.x > g.textPos.x && g.extra[0].pos.y > g.extra[1].pos.y && g.extra[0].height < g.textHeight);
+        d.tol = DimData::TolDeviation, d.tolUpper = 0.02, d.tolLower = -0.02;
+        DimLayout(d, g);
+        CHECK(g.text == L"40" && g.extra.size() == 1 && g.extra[0].text == L"\x00B1" L"0.02");
+        d.tol = DimData::TolLimits, d.tolUpper = 0.025, d.tolLower = 0;
+        DimLayout(d, g);
+        CHECK(g.text.empty() && g.extra.size() == 2 && g.extra[0].text == L"40.025" && g.extra[1].text == L"40.000");
+        // Saved and read back.
+        Document doc;
+        doc.Add(MakeDimension(d));
+        Document back;
+        std::wstring err;
+        CHECK(back.FromText(doc.ToText(), err) && back.ToText() == doc.ToText());
+        const Entity& bd = back.Entities().begin()->second;
+        CHECK(bd.dim && bd.dim->tol == DimData::TolLimits && Close(bd.dim->tolUpper, 0.025));
+    }
+    {   // An isometric dimension: extension lines upright, figures slanted.
+        DimData d;
+        d.kind = DimData::Aligned;
+        const Vec2 u{std::cos(ToRadians(30)), std::sin(ToRadians(30))};
+        d.pts[0] = {0, 0}, d.pts[1] = u * 50, d.loc = Vec2{0, 15} + u * 25;
+        d.slanted = true, d.extAngle = ToRadians(60);
+        DimGraphics g;
+        DimLayout(d, g);
+        int upright = 0;
+        for (const Prim& p : g.lines)
+            if (std::fabs(p.a.x - p.b.x) < 1e-9 && Dist(p.a, p.b) > 1) ++upright;
+        CHECK(upright == 2);
+        CHECK(Close(std::fabs(ToDegrees(g.textOblique)), 30, 1e-6) && Close(ToDegrees(g.textAngle), 30, 1e-6));
+        CHECK(Close(DimMeasure(d), 50));
+        // The figures' upright strokes stand along the extension lines.
+        const Vec2 tu{std::cos(g.textAngle), std::sin(g.textAngle)};
+        const Vec2 lean = Perp(tu) + tu * std::tan(g.textOblique);
+        CHECK(std::fabs(lean.x) < 1e-9);
+        Document doc;
+        doc.Add(MakeDimension(d));
+        Document back;
+        std::wstring err;
+        CHECK(back.FromText(doc.ToText(), err) && back.Entities().begin()->second.dim->slanted &&
+              Close(back.Entities().begin()->second.dim->extAngle, ToRadians(60), 1e-9));
+    }
+    {   // Slanted text: saved, in PDF and SVG.
+        Document d;
+        TextData t;
+        t.content = L"ISO";
+        t.oblique = ToRadians(30);
+        t.style = L"Isometric right";
+        d.Add(MakeText({10, 50}, t));
+        d.Add(Entity::Line({0, 0}, {100, 0}));
+        Document back;
+        std::wstring err;
+        CHECK(back.FromText(d.ToText(), err) && back.ToText() == d.ToText());
+        PlotPage page;
+        PlotStyle style;
+        PlotDrawing(d, d.Extents(), 210, 297, 10, 1, style, FieldValues{}, page);
+        CHECK(WriteSvg(page).find("skewX(-30)") != std::string::npos);
+        CHECK(WritePdf({page}, L"Slant").find("Tm (ISO) Tj") != std::string::npos);
+    }
+    {   // ISOTEXT on each face.
+        Document d;
+        Engine e(d, host);
+        Type(e, {L"isotext", L"R", L"0,0", L"FRONT"});
+        const TextData* t = TextOf(Last(d));
+        CHECK(t && t->content == L"FRONT" && Close(ToDegrees(t->rotation), 30, 1e-9) && Close(ToDegrees(t->oblique), 30, 1e-9));
+        Type(e, {L"it", L"L", L"0,0", L"SIDE"});
+        t = TextOf(Last(d));
+        CHECK(t && Close(ToDegrees(t->rotation), -30, 1e-9) && Close(ToDegrees(t->oblique), -30, 1e-9));
+        Type(e, {L"it", L"T", L"0,0", L"TOP"});
+        t = TextOf(Last(d));
+        CHECK(t && Close(ToDegrees(t->rotation), 30, 1e-9) && Close(ToDegrees(t->oblique), -30, 1e-9));
+        // ISODIM along a 30 degree edge, the dimension line above it: upright extension lines.
+        const Vec2 b = Vec2{std::cos(ToRadians(30)), std::sin(ToRadians(30))} * 40;
+        d.Add(Entity::Line({0, 0}, b));
+        e.Text(L"isodim");
+        e.Text(L"0,0");
+        e.Text((std::to_wstring(b.x) + L"," + std::to_wstring(b.y)).c_str());
+        e.Text((std::to_wstring(b.x / 2) + L"," + std::to_wstring(b.y / 2 + 15)).c_str());
+        const Entity& dim = Last(d);
+        CHECK(dim.dim && dim.dim->slanted && Close(std::fabs(ToDegrees(dim.dim->extAngle)), 60, 1e-6) && Close(DimMeasure(*dim.dim), 40, 1e-4));
+    }
+    {   // QDIM: a chain of level dimensions over three rectangles' corners.
+        Document d;
+        Engine e(d, host);
+        const uint64_t a = d.Add(Entity::Rectangle({0, 0}, {20, 10}));
+        const uint64_t b = d.Add(Entity::Rectangle({20, 0}, {50, 10}));
+        e.AddToSelection({a, b});
+        Type(e, {L"qdim", L"25,30"});
+        int dims = 0;
+        double total = 0;
+        for (const auto& kv : d.Entities())
+            if (kv.second.dim) ++dims, total += DimMeasure(*kv.second.dim);
+        CHECK(dims == 2 && Close(total, 50, 1e-9));
+        e.AddToSelection({a, b});
+        Type(e, {L"qd", L"B", L"#-20,5"});  // baseline, upright, to the left
+        int upright = 0;
+        for (const auto& kv : d.Entities())
+            if (kv.second.dim && Close(kv.second.dim->angle, kPi / 2)) ++upright;
+        CHECK(upright == 1);
+    }
+    {   // DIMTOL through the command: a fit, then symmetric.
+        Document d;
+        Engine e(d, host);
+        DimData dd;
+        dd.kind = DimData::Linear;
+        dd.pts[0] = {0, 0}, dd.pts[1] = {40, 0}, dd.loc = {20, 10};
+        const uint64_t id = d.Add(MakeDimension(dd));
+        e.AddToSelection({id});
+        Type(e, {L"dimtol", L"F", L"g6", L""});
+        CHECK(d.Find(id)->dim->tol == DimData::TolFitDeviation && d.Find(id)->dim->fit == L"g6" && Close(d.Find(id)->dim->tolLower, -0.025));
+        e.AddToSelection({id});
+        Type(e, {L"dimtol", L"S", L"0.1"});
+        CHECK(d.Find(id)->dim->tol == DimData::TolDeviation && Close(d.Find(id)->dim->tolUpper, 0.1) && d.Find(id)->dim->fit.empty());
+        e.AddToSelection({id});
+        Type(e, {L"dimtol", L"N"});
+        CHECK(d.Find(id)->dim->tol == DimData::TolNone);
+    }
+    {   // GROUP: picked together, copied as a new group, saved; UNGROUP.
+        Document d;
+        Engine e(d, host);
+        const uint64_t a = d.Add(Entity::Line({0, 0}, {10, 0}));
+        const uint64_t b = d.Add(Entity::Circle({5, 5}, 2));
+        const uint64_t c = d.Add(Entity::Line({50, 0}, {60, 0}));
+        e.AddToSelection({a, b});
+        Type(e, {L"group"});
+        CHECK(d.Find(a)->group != 0 && d.Find(a)->group == d.Find(b)->group && d.Find(c)->group == 0);
+        e.AddToSelection({a});
+        CHECK(e.Selection().size() == 2);  // the whole group
+        Type(e, {L"copy", L"0,0", L"0,100", L""});
+        std::set<uint32_t> groups;
+        for (const auto& kv : d.Entities())
+            if (kv.second.group) groups.insert(kv.second.group);
+        CHECK(groups.size() == 2 && d.Count() == 5);
+        Document back;
+        std::wstring err;
+        CHECK(back.FromText(d.ToText(), err) && back.Find(a) && back.ToText() == d.ToText());
+        e.ClearSelection();
+        e.AddToSelection({b});
+        Type(e, {L"ungroup"});
+        CHECK(d.Find(a)->group == 0 && d.Find(b)->group == 0);
+        // A plain copy of a line made by other commands joins no group.
+        Entity x = *d.Find(c);
+        x.group = 7;
+        d.Add(x);
+        CHECK(Last(d).group == 0);
+    }
+    {   // HIDEOBJECTS, ISOLATE, UNHIDE.
+        Document d;
+        Engine e(d, host);
+        const uint64_t a = d.Add(Entity::Line({0, 0}, {10, 0}));
+        const uint64_t b = d.Add(Entity::Line({0, 5}, {10, 5}));
+        const uint64_t c = d.Add(Entity::Line({0, 9}, {10, 9}));
+        e.AddToSelection({a});
+        Type(e, {L"hideobjects"});
+        CHECK(!d.Visible(*d.Find(a)) && d.Visible(*d.Find(b)) && d.HiddenCount() == 1);
+        e.AddToSelection({a});
+        CHECK(e.Selection().empty());  // hidden: cannot be picked
+        e.AddToSelection({b});
+        Type(e, {L"isolate"});
+        CHECK(d.Visible(*d.Find(b)) && !d.Visible(*d.Find(c)) && d.HiddenCount() == 2);
+        CHECK(d.ToText().find("Hidden") == std::string::npos);
+        Type(e, {L"unhide"});
+        CHECK(d.HiddenCount() == 0 && d.Visible(*d.Find(a)) && d.Visible(*d.Find(c)));
+    }
+    {   // FIND and replace.
+        Document d;
+        Engine e(d, host);
+        TextData t;
+        t.content = L"Scale 1:2, SCALE as shown";
+        const uint64_t a = d.Add(MakeText({0, 0}, t));
+        t.content = L"Nothing here";
+        d.Add(MakeText({0, 10}, t));
+        Type(e, {L"find", L"scale", L""});
+        CHECK(e.Selection().size() == 1 && e.Selection().count(a));
+        Type(e, {L"find", L"scale", L"Size"});
+        CHECK(TextOf(*d.Find(a))->content == L"Size 1:2, Size as shown");
+        d.Undo();
+        CHECK(TextOf(*d.Find(a))->content == L"Scale 1:2, SCALE as shown");
+    }
+    {   // TEXTSTYLE: built-in isometric styles; a new one, saved; texts follow a change.
+        Document d;
+        Engine e(d, host);
+        CHECK(d.Settings().AllTextStyles().size() == 4 && d.Settings().FindTextStyle(L"isometric RIGHT"));
+        Type(e, {L"textstyle", L"Isometric left"});
+        CHECK(Close(ToDegrees(e.lastText.oblique), -30, 1e-9) && e.lastText.style == L"Isometric left" &&
+              d.Settings().textStyle == L"Isometric left");
+        Type(e, {L"st", L"N", L"Titles", L"Times New Roman", L"1.2", L"0"});
+        CHECK(e.lastText.font == L"Times New Roman" && Close(e.lastText.widthFactor, 1.2) && e.lastText.oblique == 0);
+        TextData t = e.lastText;
+        t.content = L"TITLE";
+        const uint64_t id = d.Add(MakeText({0, 0}, t));
+        Type(e, {L"st", L"N", L"Titles", L"", L"0.9", L"15"});
+        CHECK(Close(TextOf(*d.Find(id))->widthFactor, 0.9) && Close(ToDegrees(TextOf(*d.Find(id))->oblique), 15, 1e-9));
+        Document back;
+        std::wstring err;
+        CHECK(back.FromText(d.ToText(), err) && back.Settings().textStyles.size() == 1 && back.Settings().textStyle == L"Titles" &&
+              Close(back.Settings().textStyles[0].widthFactor, 0.9));
+    }
+}
+
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);  // failures show even if a later check crashes
     TestAngles();
@@ -4186,6 +4412,7 @@ int main() {
     TestSymbolsAndCurves();
     TestExamplesAndSvg();
     TestRound3Constructions();
+    TestRound3Annotation();
     std::printf("%d checks, %d failed\n", g_checks, g_failures);
     return g_failures;
 }

@@ -1,8 +1,14 @@
 // CommandsR3.cpp - construction helpers (BISECT, PARALLELTHRU, PERPTHRU,
 // TANFROM), ALIGN, and the engineering drawing constructions of EngMore.h:
-// SCALES, POINTPROJ, TRACES, TRANSITION, INTERSECT and PERSPECTIVE.
+// SCALES, POINTPROJ, TRACES, TRANSITION, INTERSECT and PERSPECTIVE; text and
+// dimensions on isometric drawings (ISOTEXT, ISODIM), QDIM, DIMTOL (limits
+// and fits), GROUP and UNGROUP, HIDEOBJECTS, ISOLATE and UNHIDE, FIND and
+// TEXTSTYLE.
+#include <algorithm>
 #include <cmath>
+#include <cwctype>
 #include <functional>
+#include <set>
 
 #include "Annot.h"
 #include "CommandUtil.h"
@@ -577,6 +583,600 @@ public:
         if (m_step == XY) out.guides.push_back({{std::min(m_f0.x, m_t0.x) - 20, c.y}, {std::max(m_f1.x, m_t1.x) + 20, c.y}});
     }
 };
+// ---------------------------------------------------------------------------
+// ISOTEXT: text lying on an isometric face (turned and slanted 30 degrees)
+// ---------------------------------------------------------------------------
+// The text's turn and slant on a face: left -30/-30, top +30/-30, right +30/+30.
+void IsoTextAngles(IsoPlane plane, double& rotation, double& oblique) {
+    const double t = ToRadians(30);
+    rotation = plane == IsoPlane::Left ? -t : t;
+    oblique = plane == IsoPlane::Right ? t : -t;
+}
+
+const std::vector<Keyword> kPlanes = {{L"L", L"Left"}, {L"T", L"Top"}, {L"R", L"Right"}};
+
+class IsoTextCmd : public Command {
+    IsoPlane m_plane = IsoPlane::Top;
+    bool m_placed = false;
+    Vec2 m_at;
+    TextData Make(const std::wstring& content) const {
+        TextData t = E->lastText;
+        t.content = content;
+        t.justify = 6;  // bottom left: the text stands on the point
+        t.style.clear();
+        IsoTextAngles(m_plane, t.rotation, t.oblique);
+        return t;
+    }
+    void Ask() {
+        E->Ask(P((std::wstring(L"Click where the text starts (on the ") + IsoPlaneName(m_plane) + L" face)").c_str(),
+                 kAcceptPoint, kPlanes));
+    }
+
+public:
+    void Start() override {
+        m_plane = (IsoPlane)E->Draft().isoPlane;
+        Ask();
+    }
+    void OnKeyword(const std::wstring& k) override {
+        m_plane = k == L"L" ? IsoPlane::Left : k == L"R" ? IsoPlane::Right : IsoPlane::Top;
+        Ask();
+    }
+    void OnPoint(Vec2 p) override {
+        if (m_placed) return;
+        m_placed = true;
+        m_at = p;
+        E->Ask(TextPrompt(L"Type the text (Enter: done)"));
+    }
+    bool OnText(const std::wstring& s) override {
+        if (!m_placed || s.empty()) return false;
+        AddKeepingStyle(E, L"Isometric text", {MakeText(m_at, Make(s))});
+        E->Finish();
+        return true;
+    }
+    void OnEnter() override { E->Finish(); }
+    void GetPreview(Vec2 c, Preview& out) override {
+        if (!m_placed) out.entities.push_back(MakeText(c, Make(L"TEXT")));
+    }
+};
+
+// ---------------------------------------------------------------------------
+// ISODIM: a dimension along an isometric edge, its extension lines along
+// another isometric axis and its figures slanted to match
+// ---------------------------------------------------------------------------
+class IsoDimCmd : public Command {
+    int m_n = 0;
+    DimData m_d;
+
+    DimData At(Vec2 loc) const {
+        DimData d = m_d;
+        d.loc = loc;
+        const Vec2 u = Normalized(d.pts[1] - d.pts[0]);
+        // Of the isometric axes not along the edge, the one that leads from its middle towards the cursor.
+        const Vec2 off = loc - Lerp(d.pts[0], d.pts[1], 0.5);
+        double best = -1;
+        Vec2 w{0, 1};
+        for (double deg : {30.0, 90.0, 150.0}) {
+            const Vec2 c{std::cos(ToRadians(deg)), std::sin(ToRadians(deg))};
+            if (std::fabs(Cross(c, u)) < 0.3) continue;  // along the edge
+            const double score = Length(off) > 1e-9 ? std::fabs(Dot(Normalized(off), c)) : std::fabs(Cross(c, u));
+            if (score > best) best = score, w = c;
+        }
+        d.slanted = true;
+        d.extAngle = AngleOf(w) - AngleOf(u);
+        return d;
+    }
+
+public:
+    void Start() override {
+        m_d.kind = DimData::Aligned;
+        m_d.style = E->Doc().Settings().dimStyle;
+        m_d.style.unidirectional = false;
+        E->Ask(P(L"Click the first end of the isometric edge", kAcceptPoint));
+    }
+    void OnPoint(Vec2 p) override {
+        if (m_n == 0) {
+            m_d.pts[0] = p;
+            m_d.refs[0] = FindRef(E->Doc(), p);
+            m_n = 1;
+            return E->Ask(From(P(L"Click its other end", kAcceptPoint), p));
+        }
+        if (m_n == 1) {
+            if (Dist(p, m_d.pts[0]) < 1e-9) return E->Msg(L"The two ends must be apart.");
+            m_d.pts[1] = p;
+            m_d.refs[1] = FindRef(E->Doc(), p);
+            m_n = 2;
+            return E->Ask(P(L"Click where the dimension line goes", kAcceptPoint));
+        }
+        const DimData d = At(p);
+        AddKeepingStyle(E, L"Isometric dimension", {MakeDimension(d)});
+        E->Msg(L"Isometric dimension " + DimDisplayText(d) + L".");
+        E->Finish();
+    }
+    void GetPreview(Vec2 c, Preview& out) override {
+        if (m_n == 2) out.entities.push_back(MakeDimension(At(c)));
+        else if (m_n == 1) out.guides.push_back({m_d.pts[0], c});
+    }
+};
+
+// ---------------------------------------------------------------------------
+// QDIM: dimension the chosen objects in one go, a chain (or from one base)
+// ---------------------------------------------------------------------------
+bool g_qdimBaseline = false;
+class QDimCmd : public Command {
+    std::vector<Vec2> m_pts;
+    int m_dir = -1;  // -1 as the cursor suggests, 0 level, 1 upright
+
+    std::vector<Entity> Make(Vec2 loc) const {
+        std::vector<Entity> out;
+        if (m_pts.size() < 2) return out;
+        Box box;
+        for (Vec2 p : m_pts) box.Add(p);
+        int dir = m_dir;
+        if (dir < 0) dir = (loc.y > box.maxY || loc.y < box.minY) ? 0 : 1;
+        // The distinct places along the direction measured, in order.
+        std::vector<Vec2> pts = m_pts;
+        auto key = [&](Vec2 p) { return dir == 0 ? p.x : p.y; };
+        std::sort(pts.begin(), pts.end(), [&](Vec2 a, Vec2 b) { return key(a) < key(b); });
+        std::vector<Vec2> uniq;
+        for (Vec2 p : pts)
+            if (uniq.empty() || key(p) - key(uniq.back()) > 1e-6) uniq.push_back(p);
+            else if ((dir == 0 && std::fabs(p.y - loc.y) < std::fabs(uniq.back().y - loc.y)) ||
+                     (dir == 1 && std::fabs(p.x - loc.x) < std::fabs(uniq.back().x - loc.x)))
+                uniq.back() = p;  // of points level with each other, the one nearer the dimension line
+        const DimStyle& st = E->Doc().Settings().dimStyle;
+        const double step = st.textHeight * 2.5;
+        for (size_t i = 0; i + 1 < uniq.size(); ++i) {
+            DimData d;
+            d.kind = DimData::Linear;
+            d.angle = dir == 0 ? 0 : kPi / 2;
+            d.style = st;
+            d.pts[0] = g_qdimBaseline ? uniq[0] : uniq[i];
+            d.pts[1] = uniq[i + 1];
+            d.loc = loc;
+            if (g_qdimBaseline) {  // each one further out than the last
+                const double away = dir == 0 ? (loc.y >= box.maxY ? 1 : -1) : (loc.x >= box.maxX ? 1 : -1);
+                (dir == 0 ? d.loc.y : d.loc.x) += away * step * (double)i;
+            }
+            d.refs[0] = FindRef(E->Doc(), d.pts[0]);
+            d.refs[1] = FindRef(E->Doc(), d.pts[1]);
+            out.push_back(MakeDimension(d));
+        }
+        return out;
+    }
+    void Ask() {
+        static const wchar_t* const dirs[] = {L"Direction: as the cursor", L"Direction: level", L"Direction: upright"};
+        E->Ask(P(L"Click where the dimension line goes", kAcceptPoint,
+                 {{L"D", dirs[m_dir + 1]}, {L"B", g_qdimBaseline ? L"Baseline (from one end)" : L"Chain (one after another)"}}));
+    }
+
+public:
+    void Start() override { E->AskSelection(); }
+    void OnSelected() override {
+        for (uint64_t id : SelectionIds(E)) {
+            const Entity* e = E->Doc().Find(id);
+            if (!e || e->type == EntityType::Dimension || e->type == EntityType::Text || e->type == EntityType::Hatch ||
+                e->type == EntityType::Relation || e->type == EntityType::Leader)
+                continue;
+            EndPoints(*e, m_pts);
+            Centres(*e, m_pts);
+        }
+        if (m_pts.size() < 2) {
+            E->Msg(L"Choose lines, circles or arcs to dimension.");
+            return E->Finish();
+        }
+        Ask();
+    }
+    void OnKeyword(const std::wstring& k) override {
+        if (k == L"D") m_dir = m_dir == 1 ? -1 : m_dir + 1;
+        if (k == L"B") g_qdimBaseline = !g_qdimBaseline;
+        Ask();
+    }
+    void OnPoint(Vec2 p) override {
+        const std::vector<Entity> dims = Make(p);
+        if (dims.empty()) return E->Msg(L"Nothing to dimension in that direction.");
+        AddKeepingStyle(E, L"Quick dimension", dims);
+        E->Msg(std::to_wstring(dims.size()) + L" dimension(s) added.");
+        E->ClearSelection();
+        E->Finish();
+    }
+    void GetPreview(Vec2 c, Preview& out) override { out.entities = Make(c); }
+};
+
+// ---------------------------------------------------------------------------
+// DIMTOL: a tolerance on a dimension: deviations, limits, or an ISO fit
+// ---------------------------------------------------------------------------
+class DimTolCmd : public Command {
+    enum Step { Pick_, Kind, FitCode, FitShow, Upper, Lower, Plus } m_step = Pick_;
+    uint64_t m_id = 0;
+    DimData m_d;
+    bool m_limits = false;
+
+    void Apply() {
+        Entity e = *E->Doc().Find(m_id);
+        e.dim = std::make_shared<const DimData>(m_d);
+        E->Doc().BeginChange(L"Tolerance");
+        E->Doc().Replace(e);
+        E->Doc().EndChange();
+        E->Msg(L"Tolerance set: " + DimDisplayText(m_d) + (m_d.tol == DimData::TolFit || m_d.tol == DimData::TolFitDeviation ? m_d.fit : L"") +
+               (m_d.tol == DimData::TolNone ? L"" : L" (" + DeviationText(m_d.tolUpper) + L" / " + DeviationText(m_d.tolLower) + L")"));
+        E->Finish();
+    }
+
+public:
+    void Start() override {
+        if (E->Selection().size() == 1) {
+            const Entity* e = E->Doc().Find(*E->Selection().begin());
+            if (e && e->dim) return OnPoint({});
+        }
+        E->Ask(Pick(L"Click the dimension"));
+    }
+    void OnPoint(Vec2 p) override {
+        if (m_step != Pick_) return;
+        uint64_t id = 0;
+        if (E->Selection().size() == 1 && !m_id) {
+            const Entity* e = E->Doc().Find(*E->Selection().begin());
+            if (e && e->dim) id = e->id;
+        }
+        if (!id) id = E->PickEntity(p, true);
+        const Entity* e = id ? E->Doc().Find(id) : nullptr;
+        if (!e || !e->dim || e->dim->kind == DimData::Angular || e->dim->kind == DimData::AngularCoord)
+            return E->Msg(L"Click a length, radius or diameter dimension.");
+        m_id = id;
+        m_d = *e->dim;
+        m_step = Kind;
+        E->Ask(P(L"Which tolerance", kAcceptKeyword | kAcceptEmpty,
+                 {{L"F", L"Fit (H7, g6)"}, {L"S", L"Symmetric (\x00B1)"}, {L"D", L"Deviations (+ and -)"}, {L"L", L"Limits"}, {L"N", L"None"}},
+                 L"Fit"));
+    }
+    void OnKeyword(const std::wstring& k) override {
+        if (m_step == Kind) {
+            if (k == L"N") {
+                m_d.tol = DimData::TolNone;
+                m_d.fit.clear();
+                return Apply();
+            }
+            if (k == L"F") {
+                m_step = FitCode;
+                return E->Ask(TextPrompt(L"Type the fit: a capital for a hole (H7, F8), a small letter for a shaft (g6, k6, p6)"));
+            }
+            if (k == L"S") {
+                m_step = Plus;
+                return E->Ask(P(L"Type the tolerance either way (0.02 makes \x00B1" L"0.02)", kAcceptNumber));
+            }
+            m_limits = k == L"L";
+            m_step = Upper;
+            return E->Ask(P(L"Type the upper deviation (such as 0.025, or -0.009)", kAcceptNumber));
+        }
+        if (m_step == FitShow) {
+            m_d.tol = k == L"L" ? DimData::TolFit : k == L"V" ? DimData::TolFitDeviation : DimData::TolLimits;
+            if (k == L"M") m_d.fit.clear();
+            Apply();
+        }
+    }
+    bool OnText(const std::wstring& s) override {
+        if (m_step != FitCode || s.empty()) return false;
+        double up, lo;
+        std::wstring why;
+        if (!IsoFit(s, DimMeasure(m_d), up, lo, why)) {
+            E->Msg(why);
+            return true;
+        }
+        std::wstring code;
+        for (wchar_t c : s)
+            if (!std::iswspace(c)) code.push_back(c);
+        m_d.fit = code;
+        m_d.tolUpper = up, m_d.tolLower = lo;
+        m_step = FitShow;
+        E->Msg(code + L" at " + DimNumber(DimMeasure(m_d), m_d.style) + L": " + DeviationText(up) + L" / " + DeviationText(lo) + L".");
+        E->Ask(P(L"Show", kAcceptKeyword | kAcceptEmpty,
+                 {{L"V", L"Fit and Values"}, {L"L", L"Letters only (H7)"}, {L"M", L"liMits (largest and smallest)"}}, L"Fit and Values"));
+        return true;
+    }
+    void OnNumber(double v) override {
+        if (m_step == Plus) {
+            if (!(v > 0)) return E->Msg(L"Type a number more than zero.");
+            m_d.tol = DimData::TolDeviation;
+            m_d.tolUpper = v, m_d.tolLower = -v;
+            m_d.fit.clear();
+            return Apply();
+        }
+        if (m_step == Upper) {
+            m_d.tolUpper = v;
+            m_step = Lower;
+            return E->Ask(P(L"Type the lower deviation (such as 0, or -0.025)", kAcceptNumber));
+        }
+        if (m_step == Lower) {
+            if (v > m_d.tolUpper) return E->Msg(L"The lower deviation must not be more than the upper one.");
+            m_d.tolLower = v;
+            m_d.tol = m_limits ? DimData::TolLimits : DimData::TolDeviation;
+            m_d.fit.clear();
+            Apply();
+        }
+    }
+    void OnEnter() override {
+        if (m_step == Kind) return OnKeyword(L"F");
+        if (m_step == FitShow) return OnKeyword(L"V");
+        E->Finish();
+    }
+};
+
+// ---------------------------------------------------------------------------
+// GROUP, UNGROUP: objects picked together
+// ---------------------------------------------------------------------------
+class GroupCmd : public Command {
+    bool m_make;
+
+public:
+    explicit GroupCmd(bool make) : m_make(make) {}
+    void Start() override { E->AskSelection(); }
+    void OnSelected() override {
+        const std::vector<uint64_t> ids = SelectionIds(E);
+        Document& d = E->Doc();
+        if (m_make && ids.size() < 2) {
+            E->Msg(L"Choose two or more objects to group.");
+            return E->Finish();
+        }
+        const uint32_t g = m_make ? d.NewGroupNumber() : 0;
+        size_t n = 0;
+        d.BeginChange(m_make ? L"Group" : L"Ungroup");
+        for (uint64_t id : ids) {
+            const Entity* e = d.Find(id);
+            if (!e || e->group == g) continue;
+            Entity x = *e;
+            x.group = g;
+            d.Replace(x);
+            ++n;
+        }
+        d.EndChange();
+        E->Msg(m_make ? std::to_wstring(ids.size()) + L" objects grouped: clicking one picks them all. UNGROUP parts them."
+                      : std::to_wstring(n) + L" object(s) taken out of their groups.");
+        E->ClearSelection();
+        E->Finish();
+    }
+};
+
+// ---------------------------------------------------------------------------
+// HIDEOBJECTS, ISOLATE, UNHIDE: objects out of sight for a while
+// ---------------------------------------------------------------------------
+class HideCmd : public Command {
+    int m_mode;  // 0 hide, 1 isolate, 2 show all
+
+public:
+    explicit HideCmd(int mode) : m_mode(mode) {}
+    void Start() override {
+        if (m_mode == 2) {
+            const size_t n = E->Doc().HiddenCount();
+            E->Doc().UnhideAll();
+            E->Msg(n ? std::to_wstring(n) + L" hidden object(s) shown again." : L"Nothing was hidden.");
+            return E->Finish();
+        }
+        E->AskSelection();
+    }
+    void OnSelected() override {
+        const std::vector<uint64_t> ids = SelectionIds(E);
+        Document& d = E->Doc();
+        std::vector<uint64_t> hide;
+        if (m_mode == 0) {
+            hide = ids;
+        } else {
+            const std::set<uint64_t> keep(ids.begin(), ids.end());
+            for (const auto& kv : d.Entities())
+                if (!keep.count(kv.first) && d.Visible(kv.second)) hide.push_back(kv.first);
+        }
+        d.HideObjects(hide);
+        E->ClearSelection();
+        E->Msg(std::to_wstring(hide.size()) + L" object(s) hidden for now (not deleted). UNHIDE shows them again.");
+        E->Finish();
+    }
+};
+
+// ---------------------------------------------------------------------------
+// FIND: find text in the drawing (and replace it)
+// ---------------------------------------------------------------------------
+std::wstring LowerOf(std::wstring s) {
+    for (wchar_t& c : s) c = (wchar_t)std::towlower(c);
+    return s;
+}
+// `s` with every `from` (any case) made `to`; how many.
+size_t ReplaceAll(std::wstring& s, const std::wstring& from, const std::wstring& to) {
+    const std::wstring low = LowerOf(s), f = LowerOf(from);
+    std::wstring out;
+    size_t n = 0, pos = 0;
+    for (size_t at = low.find(f); at != std::wstring::npos; at = low.find(f, pos)) {
+        out += s.substr(pos, at - pos) + to;
+        pos = at + f.size();
+        ++n;
+    }
+    if (n) s = out + s.substr(pos);
+    return n;
+}
+
+class FindCmd : public Command {
+    int m_step = 0;
+    std::wstring m_find;
+
+    void Run(bool replace, const std::wstring& to) {
+        Document& d = E->Doc();
+        std::vector<uint64_t> found;
+        size_t changes = 0;
+        if (replace) d.BeginChange(L"Replace text");
+        for (const auto& kv : d.Entities()) {
+            const Entity& e = kv.second;
+            Entity x = e;
+            size_t n = 0;
+            if (const TextData* t = TextOf(e)) {
+                std::wstring c = t->content;
+                n += ReplaceAll(c, m_find, to);
+                if (n && replace) EditAnnot(x).text.content = c;
+            }
+            if (e.type == EntityType::Insert && e.annot) {
+                std::vector<std::wstring> values = e.annot->values;
+                size_t k = 0;
+                for (std::wstring& v : values) k += ReplaceAll(v, m_find, to);
+                if (k && replace) EditAnnot(x).values = values;
+                n += k;
+            }
+            if (e.dim && !e.dim->text.empty()) {
+                DimData dd = *e.dim;
+                const size_t k = ReplaceAll(dd.text, m_find, to);
+                if (k && replace) x.dim = std::make_shared<const DimData>(dd);
+                n += k;
+            }
+            if (!n) continue;
+            found.push_back(kv.first);
+            changes += n;
+            if (replace) d.Replace(x);
+        }
+        if (replace) d.EndChange();
+        E->ClearSelection();
+        E->AddToSelection(found);
+        if (found.empty()) E->Msg(L"\"" + m_find + L"\" was not found.");
+        else if (replace) E->Msg(std::to_wstring(changes) + L" replaced in " + std::to_wstring(found.size()) + L" object(s) (selected). Undo takes it back.");
+        else E->Msg(std::to_wstring(changes) + L" found in " + std::to_wstring(found.size()) + L" object(s); they are selected.");
+        E->Finish();
+    }
+
+public:
+    void Start() override { E->Ask(TextPrompt(L"Type the text to find")); }
+    bool OnText(const std::wstring& s) override {
+        if (s.empty()) return false;
+        if (m_step == 0) {
+            m_find = s;
+            m_step = 1;
+            E->Ask(TextPrompt(L"Type what to put in its place (Enter: only find it)"));
+            return true;
+        }
+        Run(true, s);
+        return true;
+    }
+    void OnEnter() override {
+        if (m_step == 1) return Run(false, m_find);
+        E->Finish();
+    }
+};
+
+// ---------------------------------------------------------------------------
+// TEXTSTYLE: named ways of writing text (font, width, slant)
+// ---------------------------------------------------------------------------
+void UseTextStyle(Engine* E, const TextStyle& s) {
+    E->lastText.font = s.font;
+    E->lastText.widthFactor = s.widthFactor;
+    E->lastText.oblique = s.oblique;
+    E->lastText.style = s.name;
+    if (s.height > 0) E->lastText.height = s.height;
+}
+
+class TextStyleCmd : public Command {
+    int m_step = 0;  // 0 choose, 1 name, 2 font, 3 width, 4 slant
+    TextStyle m_new;
+
+    void AskChoice() {
+        const DrawingSettings& st = E->Doc().Settings();
+        std::wstring names;
+        for (const TextStyle& t : st.AllTextStyles()) names += (names.empty() ? L"" : L", ") + t.name;
+        E->Msg(L"Text styles: " + names + L".");
+        Prompt p = TextPrompt(L"Type the style to write in, or N for a new one", 0,
+                              st.textStyle.empty() ? std::wstring(L"Standard") : st.textStyle);
+        p.accept |= kAcceptKeyword;
+        p.keywords = {{L"N", L"New"}};
+        E->Ask(p);
+    }
+    void Choose(const TextStyle& t) {
+        DrawingSettings st = E->Doc().Settings();
+        st.textStyle = t.name;
+        E->Doc().SetSettings(st);
+        UseTextStyle(E, t);
+        E->Msg(L"New text is written in \"" + t.name + L"\" (" + t.font + (t.widthFactor != 1 ? L", width " + E->Len(t.widthFactor) : L"") +
+               (t.oblique != 0 ? L", slant " + E->Ang(t.oblique) + L"\x00B0" : L"") + L").");
+        E->Finish();
+    }
+    void Save() {
+        DrawingSettings st = E->Doc().Settings();
+        bool replaced = false;
+        for (TextStyle& t : st.textStyles)
+            if (LowerOf(t.name) == LowerOf(m_new.name)) t = m_new, replaced = true;
+        if (!replaced) st.textStyles.push_back(m_new);
+        E->Doc().SetSettings(st);
+        // Texts already in that style follow it.
+        Document& d = E->Doc();
+        size_t n = 0;
+        d.BeginChange(L"Text style");
+        for (const auto& kv : d.Entities()) {
+            const TextData* t = TextOf(kv.second);
+            if (!t || LowerOf(t->style) != LowerOf(m_new.name)) continue;
+            Entity x = kv.second;
+            TextData& tx = EditAnnot(x).text;
+            tx.font = m_new.font, tx.widthFactor = m_new.widthFactor, tx.oblique = m_new.oblique;
+            if (m_new.height > 0) tx.height = m_new.height;
+            d.Replace(x);
+            ++n;
+        }
+        d.EndChange();
+        if (n) E->Msg(std::to_wstring(n) + L" text(s) in that style changed with it.");
+        Choose(m_new);
+    }
+
+public:
+    void Start() override { AskChoice(); }
+    void OnKeyword(const std::wstring& k) override {
+        if (m_step == 0 && k == L"N") {
+            m_step = 1;
+            E->Ask(TextPrompt(L"Type the new style's name (an existing one is changed)"));
+        }
+    }
+    bool OnText(const std::wstring& s) override {
+        if (s.empty()) return false;
+        if (m_step == 0) {
+            if (LowerOf(s) == L"n" || LowerOf(s) == L"new") return false;  // the keyword
+            const TextStyle* t = E->Doc().Settings().FindTextStyle(s);
+            if (!t) {
+                E->Msg(L"There is no style \"" + s + L"\". Type N to make one.");
+                return true;
+            }
+            Choose(*t);
+            return true;
+        }
+        if (m_step == 1) {
+            const TextStyle* old = E->Doc().Settings().FindTextStyle(s);
+            m_new = old ? *old : TextStyle{};
+            m_new.name = s;
+            m_step = 2;
+            E->Ask(TextPrompt(L"Type the font (Enter keeps it)", 0, m_new.font));
+            return true;
+        }
+        if (m_step == 2) {
+            m_new.font = s;
+            m_step = 3;
+            E->Ask(P(L"Type the width of the letters (1 normal, 0.8 narrower)", kAcceptNumber | kAcceptEmpty, {}, E->Len(m_new.widthFactor)));
+            return true;
+        }
+        return false;
+    }
+    void OnNumber(double v) override {
+        if (m_step == 3) {
+            if (!(v > 0)) return E->Msg(L"The width must be more than zero.");
+            m_new.widthFactor = v;
+            m_step = 4;
+            return E->Ask(P(L"Type the slant of the letters in degrees (0 upright; 30 or -30 for isometric)", kAcceptNumber | kAcceptEmpty,
+                            {}, E->Ang(m_new.oblique)));
+        }
+        if (m_step == 4) {
+            if (std::fabs(v) >= 80) return E->Msg(L"The slant must be less than 80 degrees.");
+            m_new.oblique = ToRadians(v);
+            Save();
+        }
+    }
+    void OnEnter() override {
+        if (m_step == 0) return E->Finish();  // keeps the current one
+        if (m_step == 2) {
+            m_step = 3;
+            return E->Ask(P(L"Type the width of the letters (1 normal, 0.8 narrower)", kAcceptNumber | kAcceptEmpty, {}, E->Len(m_new.widthFactor)));
+        }
+        if (m_step == 3) return OnNumber(m_new.widthFactor);
+        if (m_step == 4) return Save();
+        E->Finish();
+    }
+};
 }  // namespace
 
 std::unique_ptr<Command> CreateR3Command(const std::wstring& name) {
@@ -591,5 +1191,16 @@ std::unique_ptr<Command> CreateR3Command(const std::wstring& name) {
     if (name == L"TRANSITION") return std::make_unique<TransitionCmd>();
     if (name == L"INTERSECT") return std::make_unique<IntersectCmd>();
     if (name == L"PERSPECTIVE") return std::make_unique<PerspectiveCmd>();
+    if (name == L"ISOTEXT") return std::make_unique<IsoTextCmd>();
+    if (name == L"ISODIM") return std::make_unique<IsoDimCmd>();
+    if (name == L"QDIM") return std::make_unique<QDimCmd>();
+    if (name == L"DIMTOL") return std::make_unique<DimTolCmd>();
+    if (name == L"GROUP") return std::make_unique<GroupCmd>(true);
+    if (name == L"UNGROUP") return std::make_unique<GroupCmd>(false);
+    if (name == L"HIDEOBJECTS") return std::make_unique<HideCmd>(0);
+    if (name == L"ISOLATE") return std::make_unique<HideCmd>(1);
+    if (name == L"UNHIDE") return std::make_unique<HideCmd>(2);
+    if (name == L"FIND") return std::make_unique<FindCmd>();
+    if (name == L"TEXTSTYLE") return std::make_unique<TextStyleCmd>();
     return nullptr;
 }

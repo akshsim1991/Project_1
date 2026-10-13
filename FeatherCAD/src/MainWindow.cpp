@@ -1440,6 +1440,10 @@ HMENU MainWindow::BuildMenu(int menuId) {
             Append(m, ID_SELECT_SIMILAR, L"Select si&milar", !Eng().Selection().empty());
             Append(m, ID_ERASE, L"&Erase\tDelete");
             Separator(m);
+            AppendCmd(m, L"FIND", L"&Find and replace text...\tFIND");
+            AppendCmd(m, L"GROUP", L"&Group\tG");
+            AppendCmd(m, L"UNGROUP", L"U&ngroup\tUG");
+            Separator(m);
             Append(m, ID_COMMAND_PALETTE, L"&Search commands...\tCtrl+K");
             break;
         case ID_MENU_VIEW: {
@@ -1449,6 +1453,10 @@ HMENU MainWindow::BuildMenu(int menuId) {
             Append(m, ID_ZOOM_IN, L"Zoom &in\tWheel");
             Append(m, ID_ZOOM_OUT, L"Zoom &out\tWheel");
             Append(m, ID_PAN, L"P&an\tMiddle drag");
+            Separator(m);
+            AppendCmd(m, L"HIDEOBJECTS", L"&Hide objects for now\tHO");
+            AppendCmd(m, L"ISOLATE", L"&Isolate (show only these)\tISOLATE");
+            AppendCmd(m, L"UNHIDE", L"Show hidden objects a&gain\tUNHIDE");
             Separator(m);
             Append(m, ID_NEXT_DRAWING, L"&Next drawing\tCtrl+Tab", m_drawings.size() > 1);
             Append(m, ID_PREV_DRAWING, L"Pre&vious drawing\tCtrl+Shift+Tab", m_drawings.size() > 1);
@@ -1542,6 +1550,7 @@ HMENU MainWindow::BuildMenu(int menuId) {
             break;
         case ID_MENU_DIMENSION:
             Append(m, ID_DIM_SMART, L"&Smart dimension\tDIM");
+            AppendCmd(m, L"QDIM", L"&Quick dimension (many at once)\tQD");
             Separator(m);
             Append(m, ID_DIM_LINEAR, L"&Linear\tDLI");
             Append(m, ID_DIM_ALIGNED, L"&Aligned\tDAL");
@@ -1556,6 +1565,8 @@ HMENU MainWindow::BuildMenu(int menuId) {
             Append(m, ID_DIM_BASELINE, L"&Baseline\tDBA");
             Append(m, ID_DIM_SPACE, L"S&pace evenly\tDSP");
             Append(m, ID_DIM_DRIVEN, L"Dri&ven / driving\tDDR");
+            AppendCmd(m, L"DIMTOL", L"&Tolerance and fits (H7/g6)...\tDTOL");
+            AppendCmd(m, L"ISODIM", L"&Isometric dimension\tIDIM");
             Separator(m);
             Append(m, ID_DIM_EDIT, L"&Edit dimension (or double-click it)\tDED");
             Append(m, ID_DIMLOCK, L"Loc&k / unlock (holds its value)\tDLO");
@@ -1588,6 +1599,7 @@ HMENU MainWindow::BuildMenu(int menuId) {
         case ID_MENU_ANNOTATE:
             Append(m, ID_TEXT, L"&Text\tT");
             Append(m, ID_TEXTEDIT, L"&Edit text (or double-click it)\tED");
+            AppendCmd(m, L"TEXTSTYLE", L"Text st&yle (font, width, slant)...\tST");
             Separator(m);
             Append(m, ID_LEADER, L"&Leader\tLE");
             Append(m, ID_BALLOON, L"&Balloon (callout)\tBALLOON");
@@ -1653,6 +1665,8 @@ HMENU MainWindow::BuildMenu(int menuId) {
             cmd(L"ISODRAFT", L"Isometric &scale or true lengths...\tISO");
             cmd(L"ISOCIRCLE", L"Isometric &circle\tIC");
             cmd(L"ISOSCALE", L"Draw the isometric scal&e\tISOSCALE");
+            cmd(L"ISOTEXT", L"Isometric te&xt\tIT");
+            cmd(L"ISODIM", L"Isometric dimension\tIDIM");
             Separator(m);
             cmd(L"PROJECTOR", L"P&rojector lines\tPJ");
             cmd(L"LABEL", L"&Label points (a, b, a1')\tLB");
@@ -2540,6 +2554,8 @@ void MainWindow::AnnotationRows(const Entity& e, std::vector<PropertiesPanel::Ro
                    t.justify, [](Entity& x, int i) { return EditAnnot(x).text.justify = i, true; });
         }
         number(L"Width factor", t.widthFactor, [](Entity& x, double v) { return v > 0 && (EditAnnot(x).text.widthFactor = v, true); });
+        number(L"Slant (oblique \x00B0)", ToDegrees(t.oblique),
+               [](Entity& x, double v) { return std::fabs(v) < 85 && (EditAnnot(x).text.oblique = ToRadians(v), true); });
         number(L"Line spacing", t.lineSpacing, [](Entity& x, double v) { return v > 0 && (EditAnnot(x).text.lineSpacing = v, true); });
         choice(L"Frame", {L"None", L"Box", L"Circle", L"Feature control frame", L"Datum", L"Surface texture", L"Weld", L"Table", L"Point label"}, t.frame,
                [](Entity& x, int i) { return EditAnnot(x).text.frame = i, true; });

@@ -73,6 +73,16 @@ struct DimData {
     bool locked = false;   // holds `value`: the geometry follows it (Relate.h)
     double value = 0;      // locked: the value it holds (radians for angles)
     std::wstring formula;  // locked to a formula of variables and dimensions ("Width / 2")
+    // Linear, aligned: extension lines slanted (isometric dimensions), at
+    // `extAngle` from the direction measured (radians; 90 degrees is square).
+    bool slanted = false;
+    double extAngle = kPi / 2;
+    // Tolerance shown after the value: 0 none, 1 deviations (+0.025 over 0,
+    // or +-0.02), 2 the fit (H7), 3 the fit and the deviations, 4 limits
+    // (40.025 over 40.000). Deviations in drawing units.
+    enum Tol : uint8_t { TolNone, TolDeviation, TolFit, TolFitDeviation, TolLimits } tol = TolNone;
+    double tolUpper = 0, tolLower = 0;
+    std::wstring fit;  // "H7", "g6"
 };
 
 Entity MakeDimension(DimData d);
@@ -80,6 +90,13 @@ const wchar_t* DimKindName(DimData::Kind k);
 
 // The direction a linear or aligned dimension measures along.
 Vec2 DimDirection(const DimData& d);
+// ISO 286 limits and fits: the upper and lower deviations (millimetres) of
+// a hole ("H7", capitals: A..H, JS) or shaft ("g6": a..h, js, k, m, n, p)
+// of a basic size up to 500 mm, grades IT5..IT12. False (and why) if not known.
+bool IsoFit(const std::wstring& code, double size, double& upper, double& lower, std::wstring& why);
+// "+0.025", "0", "-0.009".
+std::wstring DeviationText(double v);
+
 // The value measured: a length, a radius, a diameter or an angle (radians).
 double DimMeasure(const DimData& d);
 // "25", "R12.5", "\x00D8" "40" (O with a stroke: in every font), "45\x00B0"
@@ -88,6 +105,13 @@ std::wstring DimValueText(const DimData& d);
 std::wstring DimDisplayText(const DimData& d);
 // A number in the style's precision, trailing zeros removed if asked.
 std::wstring DimNumber(double v, const DimStyle& s);
+
+// A piece of a dimension's text besides the main one (tolerances).
+struct DimText {
+    std::wstring text;
+    Vec2 pos;  // its centre
+    double angle = 0, height = 0, oblique = 0;
+};
 
 // What a dimension looks like.
 struct DimGraphics {
@@ -98,6 +122,8 @@ struct DimGraphics {
     double textAngle = 0;     // radians, always readable (between -90 and 90 degrees)
     double textHeight = 0;
     double textWidth = 0;     // estimated (Arial)
+    double textOblique = 0;   // slant of the letters (isometric dimensions)
+    std::vector<DimText> extra;  // tolerances: small, stacked after the value
     std::array<Vec2, 4> TextBox() const;
 };
 void DimLayout(const DimData& d, DimGraphics& g);

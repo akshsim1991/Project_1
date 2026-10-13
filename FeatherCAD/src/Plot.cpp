@@ -84,6 +84,19 @@ private:
                     t.angle = g.textAngle;
                     t.height = g.textHeight;
                     t.width = g.textWidth;
+                    t.oblique = g.textOblique;
+                    t.align = 1;
+                    t.font = L"Arial";
+                    Text(t);
+                }
+                for (const DimText& x : g.extra) {  // tolerances
+                    TextItem t;
+                    t.text = x.text;
+                    t.pos = x.pos;
+                    t.angle = x.angle;
+                    t.height = x.height;
+                    t.width = TextWidth(x.text, x.height);
+                    t.oblique = x.oblique;
                     t.align = 1;
                     t.font = L"Arial";
                     Text(t);
@@ -499,10 +512,13 @@ std::string PageContent(const PlotPage& page, const std::map<std::wstring, int>&
                 const double size = t.height / cap;
                 const Vec2 u{std::cos(t.angle), std::sin(t.angle)}, n = Perp(u);
                 const double shift = t.align == 0 ? 0 : t.align == 1 ? -t.width / 2 : -t.width;
-                const Vec2 at = t.pos + u * shift - n * (t.height / 2);  // on the baseline
+                // Slanted letters lean about the middle of the capitals, as on screen.
+                const double slant = std::tan(t.oblique);
+                const Vec2 at = t.pos + u * (shift - slant * t.height / 2) - n * (t.height / 2);  // on the baseline
                 c += Colour(it.rgb, "rg");
                 c += "BT /F" + std::to_string(font) + " " + Num(size) + " Tf " + Num(100 * (t.widthFactor > 0 ? t.widthFactor : 1)) +
-                     " Tz " + Num(u.x) + " " + Num(u.y) + " " + Num(-u.y) + " " + Num(u.x) + " " + Num(at.x) + " " + Num(at.y) + " Tm ";
+                     " Tz " + Num(u.x) + " " + Num(u.y) + " " + Num(-u.y + u.x * slant) + " " + Num(u.x + u.y * slant) + " " +
+                     Num(at.x) + " " + Num(at.y) + " Tm ";
                 // Greek and mathematical signs from the Symbol font (F4), the rest in the text's font.
                 for (const auto& run : SymbolRuns(t.text)) {
                     if (run.first) c += "/F4 " + Num(size) + " Tf " + PdfSymbolString(run.second) + " Tj /F" + std::to_string(font) + " " + Num(size) + " Tf ";
@@ -585,11 +601,12 @@ std::string WriteSvg(const PlotPage& page) {
                 const int font = FontOf(t.font, cap);
                 const double size = t.height / cap;
                 const Vec2 u{std::cos(t.angle), std::sin(t.angle)}, n = Perp(u);
-                const Vec2 at = t.pos - n * (t.height / 2);  // on the baseline
+                const Vec2 at = t.pos - u * (std::tan(t.oblique) * t.height / 2) - n * (t.height / 2);  // on the baseline
                 const char* anchor = t.align == 1 ? "middle" : t.align == 2 ? "end" : "start";
                 const char* family = font == 2 ? "Times New Roman, Times, serif" : font == 3 ? "Courier New, monospace" : "Arial, Helvetica, sans-serif";
                 const double wf = t.widthFactor > 0 ? t.widthFactor : 1;
                 out += "<text transform=\"translate(" + X(at.x) + " " + Y(at.y) + ") rotate(" + Num(-ToDegrees(t.angle)) + ")" +
+                       (t.oblique != 0 ? " skewX(" + Num(-ToDegrees(t.oblique)) + ")" : std::string()) +
                        (wf != 1 ? " scale(" + Num(wf) + " 1)" : std::string()) + "\" font-family=\"" + family + "\" font-size=\"" +
                        Num(size) + "\" text-anchor=\"" + anchor + "\" fill=\"" + colour(it.rgb) + "\" stroke=\"none\"" + clip + ">" +
                        escape(t.text) + "</text>\n";

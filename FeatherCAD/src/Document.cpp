@@ -481,13 +481,63 @@ void Document::DeleteLayerState(const std::wstring& name) {
     m_settingsChanged = true;
 }
 
+uint32_t Document::NewGroupNumber() const {
+    uint32_t n = 0;
+    for (const auto& kv : m_entities) n = std::max(n, kv.second.group);
+    return n + 1;
+}
+
+void Document::HideObjects(const std::vector<uint64_t>& ids) {
+    for (uint64_t id : ids)
+        if (m_entities.count(id)) m_hiddenIds.insert(id);
+    Touch();
+}
+
+void Document::UnhideAll() {
+    m_hiddenIds.clear();
+    Touch();
+}
+
+const std::vector<TextStyle>& BuiltInTextStyles() {
+    static const std::vector<TextStyle> list = [] {
+        std::vector<TextStyle> v(4);
+        v[0].name = L"Standard";
+        v[1].name = L"Isometric right", v[1].oblique = ToRadians(30);
+        v[2].name = L"Isometric left", v[2].oblique = ToRadians(-30);
+        v[3].name = L"Narrow", v[3].widthFactor = 0.8;
+        return v;
+    }();
+    return list;
+}
+
+std::vector<TextStyle> DrawingSettings::AllTextStyles() const {
+    std::vector<TextStyle> all = BuiltInTextStyles();
+    for (const TextStyle& t : textStyles) {
+        bool replaced = false;
+        for (TextStyle& b : all)
+            if (Lower(b.name) == Lower(t.name)) b = t, replaced = true;
+        if (!replaced) all.push_back(t);
+    }
+    return all;
+}
+
+const TextStyle* DrawingSettings::FindTextStyle(const std::wstring& name) const {
+    for (const TextStyle& t : textStyles)
+        if (Lower(t.name) == Lower(name)) return &t;
+    for (const TextStyle& t : BuiltInTextStyles())
+        if (Lower(t.name) == Lower(name)) return &t;
+    return nullptr;
+}
+
 bool Document::Visible(const Entity& e) const {
+    if (m_hiddenIds.count(e.id)) return false;
     if (e.type == EntityType::Relation && !m_settings.showRelations) return false;
     const Layer* l = FindLayer(e.layer);
     return !l || (l->on && !l->frozen);
 }
 
 bool Document::Editable(const Entity& e) const {
+    if (m_hiddenIds.count(e.id)) return false;
     const Layer* l = FindLayer(e.layer);
     return !l || (l->on && !l->frozen && !l->locked);
 }
@@ -542,6 +592,7 @@ void Document::Record(uint64_t id, const Entity* before, const Entity* after) {
 uint64_t Document::Add(Entity e) {
     const bool implicit = !m_open;
     if (implicit) BeginChange(L"Add");
+    if (!m_keepGroups) e.group = 0;  // a new object (or a copy) is in no group
     const uint64_t id = m_nextId++;
     e.id = id;
     if (e.layer < 0 || !FindLayer(e.layer)) {
@@ -626,6 +677,20 @@ void Document::ReplaceAll(std::vector<Entity> entities, const std::wstring& name
 std::vector<uint64_t> Document::AddGroup(std::vector<Entity> entities) {
     const bool implicit = !m_open;
     if (implicit) BeginChange(L"Add");
+    // Copied groups become new groups of the copies.
+    std::map<uint32_t, uint32_t> groups;
+    uint32_t nextGroup = NewGroupNumber();
+    for (Entity& e : entities)
+        if (e.group) {
+            auto it = groups.find(e.group);
+            if (it == groups.end()) it = groups.emplace(e.group, nextGroup++).first;
+            e.group = it->second;
+        }
+    struct Keep {
+        bool& flag;
+        explicit Keep(bool& f) : flag(f) { flag = true; }
+        ~Keep() { flag = false; }
+    } keep(m_keepGroups);
     std::vector<uint64_t> ids(entities.size(), 0);
     std::map<uint64_t, uint64_t> idMap;
     // Objects first, then the dimensions, pointed at the new objects.
@@ -970,6 +1035,7 @@ void Document::Clear() {
     m_states.clear();
     m_blocks.clear();
     m_props.clear();
+    m_hiddenIds.clear();
     m_vars.clear();
     m_lastSolve = SolveReport{};
     m_undo.clear();
@@ -1071,6 +1137,8 @@ std::string TextWords(const TextData& t) {
     std::string w = " th=" + FormatNumber(t.height);
     if (t.rotation != 0) w += " tr=" + FormatNumber(ToDegrees(t.rotation));
     if (t.widthFactor != 1) w += " tw=" + FormatNumber(t.widthFactor);
+    if (t.oblique != 0) w += " to=" + FormatNumber(ToDegrees(t.oblique));
+    if (!t.style.empty()) w += " ts=" + EncodeWord(t.style);
     if (t.lineSpacing != 1) w += " tl=" + FormatNumber(t.lineSpacing);
     if (t.justify) w += " tj=" + std::to_string(t.justify);
     if (t.frame) w += " tf=" + std::to_string(t.frame);
@@ -1091,6 +1159,8 @@ void ReadTextWords(const std::vector<std::string>& w, TextData& t) {
         if (key == "th" && isNum && v > 0) t.height = v;
         else if (key == "tr" && isNum) t.rotation = ToRadians(v);
         else if (key == "tw" && isNum && v > 0) t.widthFactor = v;
+        else if (key == "to" && isNum && std::fabs(v) < 85) t.oblique = ToRadians(v);
+        else if (key == "ts") t.style = DecodeWord(val);
         else if (key == "tl" && isNum && v > 0) t.lineSpacing = v;
         else if (key == "tj" && isNum) t.justify = std::clamp((int)v, 0, 8);
         else if (key == "tf" && isNum) t.frame = std::clamp((int)v, 0, 8);
@@ -1179,6 +1249,10 @@ void WriteEntity(const Entity& e, std::string& out, const Ordinals* ordinals = n
             if (!d.name.empty()) out += " name=" + EncodeWord(d.name);
             if (d.locked) out += " locked=" + FormatNumber(d.value);
             if (!d.formula.empty()) out += " formula=" + EncodeWord(d.formula);
+            if (d.slanted) out += " slant=" + FormatNumber(ToDegrees(d.extAngle));
+            if (d.tol != DimData::TolNone)
+                out += " tol=" + std::to_string((int)d.tol) + " tolup=" + FormatNumber(d.tolUpper) + " tollo=" + FormatNumber(d.tolLower);
+            if (!d.fit.empty()) out += " fit=" + EncodeWord(d.fit);
             break;
         }
         case EntityType::Text:
@@ -1298,6 +1372,7 @@ std::string StyleWords(const Entity& e) {
     if (e.lineweight != kLwByLayer) w += " W=" + std::to_string(e.lineweight);
     if (e.ltscale != 1) w += " S=" + FormatNumber(e.ltscale);
     if (e.construction) w += " K=1";
+    if (e.group) w += " G=" + std::to_string(e.group);
     return w;
 }
 
@@ -1419,6 +1494,7 @@ struct Reader {
                 case 'W': e.lineweight = (int16_t)std::clamp((int)v, -3, 211); break;
                 case 'S': e.ltscale = v > 0 ? (float)v : 1.0f; break;
                 case 'K': e.construction = v != 0; break;
+                case 'G': e.group = v >= 1 && v < 4e9 ? (uint32_t)v : 0; break;
                 default: break;
             }
         }
@@ -1533,6 +1609,11 @@ struct Reader {
                 if (word.compare(0, 8, "formula=") == 0) d.formula = DecodeWord(word.substr(8));
                 double lv;
                 if (word.compare(0, 7, "locked=") == 0 && ParseNumber(word.substr(7), lv)) d.locked = true, d.value = lv;
+                if (word.compare(0, 6, "slant=") == 0 && ParseNumber(word.substr(6), lv)) d.slanted = true, d.extAngle = ToRadians(lv);
+                if (word.compare(0, 4, "tol=") == 0 && ParseNumber(word.substr(4), lv) && lv >= 0 && lv <= 4) d.tol = (DimData::Tol)(int)lv;
+                if (word.compare(0, 6, "tolup=") == 0 && ParseNumber(word.substr(6), lv)) d.tolUpper = lv;
+                if (word.compare(0, 6, "tollo=") == 0 && ParseNumber(word.substr(6), lv)) d.tolLower = lv;
+                if (word.compare(0, 4, "fit=") == 0) d.fit = DecodeWord(word.substr(4));
             }
             if (depth > 0)
                 for (DimRef& r : d.refs) r = {};
@@ -1721,6 +1802,10 @@ std::string Document::ToText() const {
     if (!m_settings.maintainRelations || m_settings.autoRelations || !m_settings.showRelations)
         out += std::string("relations ") + (m_settings.maintainRelations ? "1 " : "0 ") + (m_settings.autoRelations ? "1 " : "0 ") +
                (m_settings.showRelations ? "1" : "0") + "\n";
+    for (const TextStyle& t : m_settings.textStyles)
+        out += "textstyle name=" + EncodeWord(t.name) + " font=" + EncodeWord(t.font) + " h=" + FormatNumber(t.height) +
+               " w=" + FormatNumber(t.widthFactor) + " o=" + FormatNumber(ToDegrees(t.oblique)) + "\n";
+    if (!m_settings.textStyle.empty()) out += "textstylecurrent name=" + EncodeWord(m_settings.textStyle) + "\n";
     for (const Variable& v : m_vars)
         out += "var name=" + EncodeWord(v.name) + " formula=" + EncodeWord(v.formula) +
                (v.comment.empty() ? "" : " comment=" + EncodeWord(v.comment)) + "\n";
@@ -1848,6 +1933,23 @@ bool Document::FromText(const std::string& text, std::wstring& error) {
             for (const std::string& word : w)
                 if (word.compare(0, 5, "name=") == 0) ls.name = DecodeWord(word.substr(5));
             states.push_back(ls);
+        } else if (key == "textstyle" || key == "textstylecurrent") {
+            TextStyle t;
+            for (const std::string& word : w) {
+                const size_t eq = word.find('=');
+                if (eq == std::string::npos) continue;
+                const std::string k = word.substr(0, eq), val = word.substr(eq + 1);
+                double num = 0;
+                const bool isNum = ParseNumber(val, num);
+                if (k == "name") t.name = DecodeWord(val);
+                else if (k == "font") t.font = DecodeWord(val);
+                else if (k == "h" && isNum && num >= 0) t.height = num;
+                else if (k == "w" && isNum && num > 0) t.widthFactor = num;
+                else if (k == "o" && isNum && std::fabs(num) < 85) t.oblique = ToRadians(num);
+            }
+            if (t.name.empty()) continue;
+            if (key == "textstyle") settings.textStyles.push_back(t);
+            else settings.textStyle = t.name;
         } else if (key == "var") {
             Variable var;
             for (const std::string& word : w) {
@@ -2361,6 +2463,7 @@ std::string Document::ToDxf(const Document* paper, Vec2 paperSize) const {
             group(1, DxfText(t.text));
             num(50, ToDegrees(t.angle));
             if (t.widthFactor != 1) num(41, t.widthFactor);
+            if (t.oblique != 0) num(51, ToDegrees(t.oblique));
             group(72, std::to_string(t.align));
             point(11, t.pos);
             group(73, "2");
@@ -2491,25 +2594,29 @@ std::string Document::ToDxf(const Document* paper, Vec2 paperSize) const {
                     point(12, a[2]);
                     point(13, a[2]);
                 }
-                std::string t;
-                for (wchar_t c : g.text) {
-                    if (c == L'\x2300' || c == L'\x00D8') t += "%%c";
-                    else if (c == L'\x00B0') t += "%%d";
-                    else if (c == L'\x00B1') t += "%%p";
-                    else if (c >= 32 && c < 127) t += (char)c;
-                    else t += '?';
-                }
-                if (!t.empty()) {
+                auto dxfText = [&](const std::wstring& text, Vec2 pos, double height, double angle, double oblique) {
+                    std::string t;
+                    for (wchar_t c : text) {
+                        if (c == L'\x2300' || c == L'\x00D8') t += "%%c";
+                        else if (c == L'\x00B0') t += "%%d";
+                        else if (c == L'\x00B1') t += "%%p";
+                        else if (c >= 32 && c < 127) t += (char)c;
+                        else t += '?';
+                    }
+                    if (t.empty()) return;
                     group(0, "TEXT");
                     common(e);
-                    point(10, g.textPos);
-                    num(40, g.textHeight);
+                    point(10, pos);
+                    num(40, height);
                     group(1, t);
-                    num(50, ToDegrees(g.textAngle));
+                    num(50, ToDegrees(angle));
+                    if (oblique != 0) num(51, ToDegrees(oblique));
                     group(72, "1");
-                    point(11, g.textPos);
+                    point(11, pos);
                     group(73, "2");
-                }
+                };
+                dxfText(g.text, g.textPos, g.textHeight, g.textAngle, g.textOblique);
+                for (const DimText& x : g.extra) dxfText(x.text, x.pos, x.height, x.angle, x.oblique);
                 break;
             }
             case EntityType::Array: {
@@ -2595,6 +2702,7 @@ std::string Document::ToDxf(const Document* paper, Vec2 paperSize) const {
                     group(70, "0");
                     num(50, ToDegrees(ti.angle));
                     if (ti.widthFactor != 1) num(41, ti.widthFactor);
+                    if (ti.oblique != 0) num(51, ToDegrees(ti.oblique));
                     group(72, std::to_string(ti.align));
                     point(11, ti.pos);
                     group(74, "2");
