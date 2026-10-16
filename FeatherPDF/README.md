@@ -1,4 +1,4 @@
-# Feather PDF 2.3
+# Feather PDF 2.4
 
 A small, fast, native PDF **viewer and editor** for Windows 10 and 11.
 It opens PDFs in tabs and lets you scroll, jump to pages, zoom, search,
@@ -10,7 +10,8 @@ stamps, pictures and new text, and delete, reorder, rotate, insert, merge,
 split and extract pages, with undo/redo and crash-safe saving. It makes
 scanned pages searchable with the text recognition built into Windows, adds
 watermarks and page numbers, truly redacts text and pictures, compresses
-pictures, compares two versions of a document, protects documents with an
+pictures, compares two versions of a document (also side by side in one
+tab), protects documents with an
 AES-256 password, measures distances and angles (Geometry menu), and
 exports pages as pictures, plain text or Markdown. A command
 palette (Ctrl+K) finds any command by typing. It has no accounts, cloud features, telemetry or
@@ -498,6 +499,27 @@ added text in green, changed text in orange (its comment holds the old
 text) and a note where text was removed. Edit PDF › All comments lists
 them all, and the copy can be saved like any document.
 
+**Side by side (two documents in one tab):** the **Side by side** toolbar
+button, or Ctrl+Shift+O, opens another PDF beside the one you are reading,
+in the same tab. The menu also offers the documents already open in other
+tabs.
+
+* The tab strip shows both names (`old.pdf | new.pdf`). A bar above each side
+  shows its name; the highlighted name is the **active** document. Click a
+  side (or press F6) to make it active. The toolbar, search, editing,
+  saving, printing and the sidebar always work on the active document.
+* **Link scroll** and **Link zoom** (on to start with) keep the two sides
+  together, page against page: scroll or zoom either side and the other
+  follows. Click them off to move each side on its own.
+* **Swap** changes the documents over; **Stack** puts them one above the
+  other instead of side by side. Drag the divider between them to give one
+  more room.
+* **Differences** compares the text, and the right side then shows the second
+  document with every difference marked (as Compare does), beside the first.
+* The ✕ on a side closes that document and the other fills the tab; Ctrl+W
+  closes the active document; the ✕ on the tab closes both. A tab with two
+  documents comes back as it was the next time Feather PDF starts.
+
 **Password protection:** Edit PDF › Password protection:
 
 * **Require a password to open the document**, and/or **limit what others
@@ -555,6 +577,8 @@ and version info, and `.pdf` association.
 | Shortcut | Action |
 |---|---|
 | Ctrl+O / Ctrl+T | Open PDF (in a new tab) |
+| Ctrl+Shift+O | Open a PDF beside this one (side by side, same tab) |
+| F6 | Side by side: work in the other document |
 | Ctrl+W / Ctrl+F4 | Close tab |
 | Ctrl+Tab / Ctrl+Page Down | Next tab |
 | Ctrl+Shift+Tab / Ctrl+Page Up | Previous tab |

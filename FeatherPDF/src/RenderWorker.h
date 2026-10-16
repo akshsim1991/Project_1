@@ -122,10 +122,18 @@ private:
     CONDITION_VARIABLE m_cv = CONDITION_VARIABLE_INIT;
     bool m_quit = false;
     std::deque<Command> m_commands;
-    std::vector<TileRequest> m_wanted;
-    size_t m_wantedPos = 0;
-    uint32_t m_wantedDocId = 0;
+    // The tiles wanted now, one list per document on screen (two when a tab
+    // shows two documents side by side), served in turn.
+    struct Wanted {
+        uint32_t docId = 0;
+        std::vector<TileRequest> tiles;
+        size_t pos = 0;
+    };
+    std::vector<Wanted> m_wanted;
+    size_t m_wantedTurn = 0;
+    bool AnyWanted() const;
     TileRequest m_inFlight;
+    uint32_t m_inFlightDoc = 0;
     bool m_hasInFlight = false;
     bool m_searchActive = false;
     std::vector<TileRequest> m_thumbs;

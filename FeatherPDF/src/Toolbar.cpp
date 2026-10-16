@@ -315,7 +315,7 @@ void Toolbar::Paint(HDC hdc) {
                 RECT r = it.rc;
                 UINT align = (it.kind == Kind::Label && !it.clickable) ? DT_LEFT : DT_CENTER;
                 DrawTextW(mem, it.text.c_str(), (int)it.text.size(), &r,
-                          align | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+                          align | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
                 break;
             }
             case Kind::Child:

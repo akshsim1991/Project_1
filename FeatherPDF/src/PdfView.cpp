@@ -571,6 +571,7 @@ void PdfView::SetDocument(uint32_t docId, std::vector<SizeF>&& sizes, int startP
 void PdfView::BeginEdit(uint32_t newDocId) {
     if (m_inlineEdit) EndInlineEdit(false);
     ClearRuns();
+    if (m_worker && m_docId) m_worker->SetWantedTiles(m_docId, {});  // the old state's tiles are not wanted now
     m_docId = newDocId;
     m_editPending = true;
     m_cache.MarkAllStale();
@@ -619,6 +620,7 @@ void PdfView::CloseDocument() {
     m_measures.clear();
     m_marks.clear();
     m_angleArm = false;
+    if (m_worker && m_docId) m_worker->SetWantedTiles(m_docId, {});
     m_docId = 0;
     m_editPending = false;
     m_sizes.clear();
@@ -632,7 +634,6 @@ void PdfView::CloseDocument() {
     m_scrollX = m_scrollY = 0;
     Relayout();
     UpdateScrollBars();
-    if (m_worker) m_worker->SetWantedTiles(0, {});
     InvalidateRect(m_hwnd, nullptr, FALSE);
     Notify();
 }
@@ -967,6 +968,37 @@ int PdfView::CurrentPage() const {
         }
     }
     return best;
+}
+
+PdfView::Place PdfView::GetPlace() const {
+    Place p;
+    if (!HasDocument()) return p;
+    const int64_t maxX = MaxScrollX();
+    p.across = maxX > 0 ? (double)m_scrollX / (double)maxX : 0;
+    if (IsPaged()) {
+        p.page = m_singlePage;
+        const int64_t maxY = MaxScrollY();
+        p.down = maxY > 0 ? (double)m_scrollY / (double)maxY : 0;
+        return p;
+    }
+    int first, last;
+    VisibleRange(m_scrollY, m_scrollY + 1, first, last);
+    p.page = Clamp(first, 0, PageCount() - 1);
+    const PageLayout& L = m_layout[(size_t)p.page];
+    p.down = L.h > 0 ? (double)(m_scrollY - L.top) / (double)L.h : 0;
+    return p;
+}
+
+void PdfView::SetPlace(const Place& place) {
+    if (!HasDocument()) return;
+    const int page = Clamp(place.page, 0, PageCount() - 1);
+    if (IsPaged()) {
+        if (page != m_singlePage) GoToPage(page);
+        ScrollTo((int64_t)(place.across * (double)MaxScrollX()), (int64_t)(place.down * (double)MaxScrollY()));
+        return;
+    }
+    const PageLayout& L = m_layout[(size_t)page];
+    ScrollTo((int64_t)(place.across * (double)MaxScrollX()), L.top + (int64_t)(place.down * (double)L.h));
 }
 
 void PdfView::GoToPage(int page) {

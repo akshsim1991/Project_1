@@ -29,10 +29,17 @@ struct Settings {
 
     int themeMode = 0;     // ThemeMode: 0 = system, 1 = light, 2 = dark
 
+    // Two documents side by side in one tab.
+    bool splitSyncScroll = true;  // scroll together, page against page
+    bool splitSyncZoom = true;    // zoom together
+    bool splitStacked = false;    // one above the other instead of side by side
+    int splitPermille = 500;      // where the divider is (left or top part, 1/1000)
+
     // Tabs open at exit, reopened when the app starts without a file.
     struct OpenFile {
         std::wstring path;
         int page = 0;
+        bool beside = false;  // shown beside the tab before it (side by side)
     };
     std::vector<OpenFile> session;
     int activeTab = 0;

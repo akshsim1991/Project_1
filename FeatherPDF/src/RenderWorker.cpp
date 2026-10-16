@@ -64,10 +64,8 @@ void RenderWorker::OpenDocument(uint32_t docId, const std::wstring& path,
 void RenderWorker::CloseDocument(uint32_t docId) {
     {
         LockGuard g(m_lock);
-        if (m_wantedDocId == docId) {
-            m_wanted.clear();
-            m_wantedPos = 0;
-        }
+        for (size_t i = 0; i < m_wanted.size(); ++i)
+            if (m_wanted[i].docId == docId) m_wanted.erase(m_wanted.begin() + (ptrdiff_t)i--);
     }
     Command c;
     c.type = Command::Close;
@@ -75,11 +73,17 @@ void RenderWorker::CloseDocument(uint32_t docId) {
     Push(std::move(c));
 }
 
+bool RenderWorker::AnyWanted() const {
+    for (const Wanted& w : m_wanted)
+        if (w.pos < w.tiles.size()) return true;
+    return false;
+}
+
 void RenderWorker::SetWantedTiles(uint32_t docId, std::vector<TileRequest>&& tiles) {
     {
         LockGuard g(m_lock);
         // Do not queue the tile that is being rendered right now again.
-        if (m_hasInFlight) {
+        if (m_hasInFlight && m_inFlightDoc == docId) {
             for (size_t i = 0; i < tiles.size(); ++i) {
                 if (tiles[i].SameTile(m_inFlight)) {
                     tiles.erase(tiles.begin() + (ptrdiff_t)i);
@@ -87,9 +91,22 @@ void RenderWorker::SetWantedTiles(uint32_t docId, std::vector<TileRequest>&& til
                 }
             }
         }
-        m_wanted = std::move(tiles);
-        m_wantedPos = 0;
-        m_wantedDocId = docId;
+        // This document's list replaces its previous one; the other
+        // documents on screen keep theirs.
+        size_t i = 0;
+        while (i < m_wanted.size() && m_wanted[i].docId != docId) ++i;
+        if (tiles.empty()) {
+            if (i < m_wanted.size()) m_wanted.erase(m_wanted.begin() + (ptrdiff_t)i);
+        } else {
+            if (i == m_wanted.size()) {
+                if (m_wanted.size() >= 4) m_wanted.erase(m_wanted.begin());  // only what can be on screen
+                m_wanted.emplace_back();
+                i = m_wanted.size() - 1;
+            }
+            m_wanted[i].docId = docId;
+            m_wanted[i].tiles = std::move(tiles);
+            m_wanted[i].pos = 0;
+        }
     }
     WakeConditionVariable(&m_cv);
 }
@@ -303,7 +320,7 @@ void RenderWorker::Run() {
         {
             LockGuard g(m_lock);
             // Sleep (zero CPU) until there is something to do.
-            while (!m_quit && m_commands.empty() && m_wantedPos >= m_wanted.size() &&
+            while (!m_quit && m_commands.empty() && !AnyWanted() &&
                    m_thumbPos >= m_thumbs.size() && !m_printActive && !m_exportActive && !m_searchActive) {
                 SleepConditionVariableSRW(&m_cv, &m_lock, INFINITE, 0);
             }
@@ -312,10 +329,18 @@ void RenderWorker::Run() {
                 cmd = std::move(m_commands.front());
                 m_commands.pop_front();
                 work = DoCommand;
-            } else if (m_wantedPos < m_wanted.size()) {
-                tile = m_wanted[m_wantedPos++];
-                tileDoc = m_wantedDocId;
+            } else if (AnyWanted()) {
+                // Take turns between the documents on screen.
+                for (size_t k = 0; k < m_wanted.size(); ++k) {
+                    Wanted& w = m_wanted[(m_wantedTurn + k) % m_wanted.size()];
+                    if (w.pos >= w.tiles.size()) continue;
+                    tile = w.tiles[w.pos++];
+                    tileDoc = w.docId;
+                    m_wantedTurn = (m_wantedTurn + k + 1) % m_wanted.size();
+                    break;
+                }
                 m_inFlight = tile;
+                m_inFlightDoc = tileDoc;
                 m_hasInFlight = true;
                 work = DoTile;
             } else if (m_thumbPos < m_thumbs.size()) {

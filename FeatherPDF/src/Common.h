@@ -22,7 +22,7 @@
 #include <vector>
 
 #define APP_NAME L"Feather PDF"
-#define APP_VERSION L"2.3.0"
+#define APP_VERSION L"2.4.0"
 #define APP_COPYRIGHT L"\x00A9 2026 Akshaya Simha"
 #define APP_WINDOW_CLASS L"FeatherPdfMain"
 #define APP_REG_KEY L"Software\\FeatherPDF"
@@ -192,6 +192,19 @@ enum : int {
     ID_MEASURE_KEEP_ALL,
     ID_MEASURE_REMOVE,
     ID_MEASURE_CLEAR,
+    // two documents side by side in one tab (2.4)
+    ID_OPEN_BESIDE,        // the toolbar's "Side by side" menu
+    ID_BESIDE_FILE,        // open a file beside the current document (Ctrl+Shift+O)
+    ID_SPLIT_SYNC_SCROLL,  // the two sides scroll together, page against page
+    ID_SPLIT_SYNC_ZOOM,    // ... and zoom together
+    ID_SPLIT_SWAP,         // left and right change places
+    ID_SPLIT_ORIENT,       // side by side, or one above the other
+    ID_SPLIT_MARK,         // mark the differences (Compare) in the other side
+    ID_SPLIT_OTHER,        // F6: work in the other side
+    ID_PANE_NAME_L,        // the panes' names: a click makes that side active
+    ID_PANE_NAME_R,
+    ID_PANE_CLOSE_L,       // close one side; the other fills the tab
+    ID_PANE_CLOSE_R,
     ID_ZOOM_PRESET_FIRST = 300,  // + index into kZoomPresets
     ID_STAMP_FIRST = 400,        // + index into kStamps
     ID_DRAWCOLOR_FIRST = 420,    // + index into kDrawColors
@@ -201,7 +214,9 @@ enum : int {
     ID_UNIT_FIRST = 600,         // + index into kUnits
     ID_SCALE_FIRST = 620,        // + index into kScales
     ID_COMPARE_TAB_FIRST = 640,  // + tab index (compare with an open tab)
+    ID_BESIDE_TAB_FIRST = 700,   // + tab index (show an open document beside this one)
 };
+static_assert(ID_PANE_CLOSE_R < ID_ZOOM_PRESET_FIRST, "command ids overlap");
 
 // Page geometry in PDF points (1/72 inch), already adjusted for /Rotate.
 struct SizeF {

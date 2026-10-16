@@ -105,6 +105,15 @@ public:
     void PrevPage();
     void GoToTarget(const LinkTarget& target);  // bookmark / link destination
 
+    // --- where the reader is (two documents side by side scroll together) ---
+    struct Place {
+        int page = 0;       // the page at the top of the window
+        double down = 0;    // how far down that page the window's top edge is (0..1)
+        double across = 0;  // horizontal scroll, as a fraction of its range
+    };
+    Place GetPlace() const;
+    void SetPlace(const Place& place);
+
     // --- zoom --------------------------------------------------------------
     double Zoom() const { return m_zoom; }  // 1.0 == 100 % (actual size)
     ZoomMode GetZoomMode() const { return m_mode; }

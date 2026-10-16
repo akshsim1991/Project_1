@@ -77,6 +77,11 @@ void Settings::Load() {
     measureScale = (int)ReadDword(key, L"MeasureScale", 1);
     if (measureScale < 1 || measureScale > 1000000) measureScale = 1;
     showRulers = ReadDword(key, L"ShowRulers", 0) != 0;
+    splitSyncScroll = ReadDword(key, L"SplitSyncScroll", 1) != 0;
+    splitSyncZoom = ReadDword(key, L"SplitSyncZoom", 1) != 0;
+    splitStacked = ReadDword(key, L"SplitStacked", 0) != 0;
+    splitPermille = (int)ReadDword(key, L"SplitPermille", 500);
+    if (splitPermille < 150 || splitPermille > 850) splitPermille = 500;
     recent = ReadList(key, L"Recent");
 
     // Session: REG_MULTI_SZ of "page|path" entries.
@@ -91,7 +96,9 @@ void Settings::Load() {
                 std::wstring entry = p;
                 size_t bar = entry.find(L'|');
                 if (bar == std::wstring::npos || bar + 1 >= entry.size()) continue;
-                session.push_back({entry.substr(bar + 1), _wtoi(entry.substr(0, bar).c_str())});
+                // "B12|path": shown beside the tab before it (older versions read B12 as 0).
+                const bool beside = entry[0] == L'B';
+                session.push_back({entry.substr(bar + 1), _wtoi(entry.substr(beside ? 1 : 0, bar).c_str()), beside});
             }
         }
     }
@@ -123,10 +130,14 @@ void Settings::Save() const {
     WriteDword(key, L"MeasureUnit", (DWORD)measureUnit);
     WriteDword(key, L"MeasureScale", (DWORD)measureScale);
     WriteDword(key, L"ShowRulers", showRulers ? 1 : 0);
+    WriteDword(key, L"SplitSyncScroll", splitSyncScroll ? 1 : 0);
+    WriteDword(key, L"SplitSyncZoom", splitSyncZoom ? 1 : 0);
+    WriteDword(key, L"SplitStacked", splitStacked ? 1 : 0);
+    WriteDword(key, L"SplitPermille", (DWORD)splitPermille);
     WriteList(key, L"Recent", recent);
     std::wstring multi;
     for (const OpenFile& f : session) {
-        multi += std::to_wstring(f.page) + L"|" + f.path;
+        multi += (f.beside ? L"B" : L"") + std::to_wstring(f.page) + L"|" + f.path;
         multi.push_back(L'\0');
     }
     multi.push_back(L'\0');

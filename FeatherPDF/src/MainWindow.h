@@ -42,6 +42,14 @@ private:
         uint32_t saveDocId = 0;       // id the last save was requested under
         bool discardOnQuit = false;   // "Don't save" was chosen while exiting
         bool unlocking = false;       // re-opened with what should be the owner password
+        // Two documents side by side in one tab: the tab in the tab strip
+        // holds the left (or top) one; `partner` is the other. The right
+        // side is a tab of its own in m_tabs, kept out of the tab strip
+        // (`side`), so everything that works on the active tab works on
+        // whichever side is active.
+        Tab* partner = nullptr;
+        bool side = false;
+        bool lastRight = false;       // left side: the right one was active when the tab was left
     };
 
     static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
@@ -64,6 +72,24 @@ private:
     void UpdateTabs();
     int TabByDocId(uint32_t docId) const;
     void OnTabBar(TabAction action, int index);
+
+    // two documents side by side in one tab
+    int IndexOf(const Tab* tab) const;
+    int BarIndexOf(int index) const;  // its place in the tab strip
+    int TabOfBar(int bar) const;      // the tab (left side) at that place
+    Tab* LeftOf(Tab& t) { return t.side ? t.partner : &t; }
+    Tab* RightOf(Tab& t) { return t.side ? &t : t.partner; }
+    void ShowBesideMenu();
+    HMENU CreateBesideMenu();
+    void OpenBeside(const std::wstring& path, int page = 0);  // a file beside the active document
+    void ShowTabBeside(int index);  // an open tab's document beside the active one
+    void FocusSide(int index);      // the other side of the same tab becomes active
+    void CloseSide(bool right);
+    void SwapSides();
+    void SyncPartner(Tab& from);    // scroll and zoom the other side to match
+    void UpdatePaneBars();
+    RECT PaneSplitterRect() const;
+    Tab* m_markInto = nullptr;      // a comparison's marked copy goes into this side (Mark differences)
 
     // documents
     void OpenFile(const std::wstring& path, int page, const std::string& password = {},
@@ -202,6 +228,9 @@ private:
     bool m_splitDrag = false;
     Toolbar m_toolbar;
     Toolbar m_searchBar;
+    Toolbar m_paneBar[2];  // above each side of a split tab: its name, the options, close
+    bool m_paneDrag = false;
+    bool m_syncing = false;
     HWND m_pageEdit = nullptr;
     HWND m_searchEdit = nullptr;
     HWND m_lastFocus = nullptr;

@@ -213,15 +213,28 @@ bool MainWindow::Create(HINSTANCE inst, int showCmd, const std::wstring& file, i
         }
         OpenFile(file, start);
     } else {
-        int restored = 0, activeIndex = -1;
+        Tab* activeTab = nullptr;
+        Tab* last = nullptr;  // the tab just restored (a "beside" entry goes into it)
         for (size_t i = 0; i < m_settings.session.size(); ++i) {
             const auto& f = m_settings.session[i];
-            if (!FileExists(f.path)) continue;
+            if (!FileExists(f.path)) {
+                if (!f.beside) last = nullptr;
+                continue;
+            }
+            if (f.beside) {
+                if (last && !last->partner) {
+                    ActivateTab(IndexOf(last));
+                    OpenBeside(f.path, f.page);
+                }
+                continue;
+            }
             OpenFile(f.path, f.page, {}, -1, false);
-            if ((int)i == m_settings.activeTab) activeIndex = restored;
-            ++restored;
+            last = nullptr;
+            for (auto& t : m_tabs)
+                if (!t->side && t->pendingDocId && SamePath(t->path, FullPath(f.path))) last = t.get();
+            if ((int)i == m_settings.activeTab) activeTab = last;
         }
-        if (restored) ActivateTab(activeIndex >= 0 ? activeIndex : 0);
+        if (!m_tabs.empty()) ActivateTab(activeTab ? IndexOf(activeTab) : 0);
     }
     UpdateTabs();
     UpdateUi();
@@ -247,6 +260,8 @@ void MainWindow::CreateChildren() {
                             L"Highlight, draw, add text, stamps, signatures and pictures", 78);
     m_toolbar.AddTextButton(ID_ADD_COMMENT, L"Comment", L"Add a comment: click where it should go (Ctrl+M)", 78);
     m_toolbar.AddTextButton(ID_GEOMETRY_MENU, L"Geometry", L"Ruler and protractor: measure distances and angles", 78);
+    m_toolbar.AddTextButton(ID_OPEN_BESIDE, L"Side by side",
+                            L"Show another PDF beside this one in the same tab, to compare them (Ctrl+Shift+O)", 96);
     m_toolbar.AddSeparator();
     m_toolbar.AddButton(ID_PREV_PAGE, kGlyphPrev, L"Previous page (Page Up)");
     m_toolbar.AddButton(ID_NEXT_PAGE, kGlyphNext, L"Next page (Page Down)");
@@ -278,6 +293,33 @@ void MainWindow::CreateChildren() {
     m_searchBar.SetChecked(ID_MATCH_CASE, m_settings.matchCase);
     ShowWindow(m_searchBar.Hwnd(), SW_HIDE);
 
+    // A bar above each side of a split tab: the document's name (a click
+    // works in it), the options, and a close button.
+    for (int i = 0; i < 2; ++i) {
+        Toolbar& bar = m_paneBar[i];
+        bar.Create(m_hwnd, m_hwnd, 32);
+        // The name first, then its close button, so they show even in a narrow
+        // window; the options follow (all of them are also in the toolbar's
+        // "Side by side" menu).
+        bar.AddLabel(i == 0 ? ID_PANE_NAME_L : ID_PANE_NAME_R, 170, true,
+                     L"Click to work in this document (F6 switches); the highlighted one is active");
+        bar.AddButton(i == 0 ? ID_PANE_CLOSE_L : ID_PANE_CLOSE_R, kGlyphClose,
+                      L"Close this document (the other one fills the tab)");
+        bar.AddSpacer();
+        if (i == 0) {
+            bar.AddTextButton(ID_SPLIT_SWAP, L"Swap", L"Change the two documents over", 52);
+            bar.AddTextButton(ID_SPLIT_ORIENT, L"Stack",
+                              L"Show the documents one above the other instead of side by side", 56);
+        } else {
+            bar.AddTextButton(ID_SPLIT_SYNC_SCROLL, L"Link scroll",
+                              L"Both documents scroll together, page against page (click to scroll them separately)", 80);
+            bar.AddTextButton(ID_SPLIT_SYNC_ZOOM, L"Link zoom", L"Both documents zoom together", 74);
+            bar.AddTextButton(ID_SPLIT_MARK, L"Differences",
+                              L"Compare the text: this side shows the differences from the left document marked", 84);
+        }
+        ShowWindow(bar.Hwnd(), SW_HIDE);
+    }
+
     SetWindowSubclass(m_pageEdit, &MainWindow::EditProc, 1, (DWORD_PTR)this);
     SetWindowSubclass(m_searchEdit, &MainWindow::EditProc, 1, (DWORD_PTR)this);
 
@@ -288,6 +330,8 @@ void MainWindow::CreateChildren() {
 void MainWindow::CreateAccelerators() {
     ACCEL acc[] = {
         {FCONTROL | FVIRTKEY, 'O', ID_OPEN},
+        {FCONTROL | FSHIFT | FVIRTKEY, 'O', ID_BESIDE_FILE},
+        {FVIRTKEY, VK_F6, ID_SPLIT_OTHER},
         {FCONTROL | FVIRTKEY, 'T', ID_OPEN},
         {FCONTROL | FVIRTKEY, 'W', ID_CLOSE_TAB},
         {FCONTROL | FVIRTKEY, VK_F4, ID_CLOSE_TAB},
@@ -370,17 +414,50 @@ void MainWindow::Layout() {
     } else {
         ShowWindow(m_sidebar.Hwnd(), SW_HIDE);
     }
-    InvalidateRect(m_hwnd, nullptr, TRUE);  // repaint the splitter strip
-    // Only the active tab's view is visible (and therefore renders).
+    InvalidateRect(m_hwnd, nullptr, TRUE);  // repaint the splitter strips
+    // Only the active tab's view (both views of a split tab) is visible, and
+    // therefore renders.
+    Tab& act = Active();
+    Tab* left = act.partner ? LeftOf(act) : &act;
+    Tab* right = act.partner ? RightOf(act) : nullptr;
     for (size_t i = 0; i < m_tabs.size(); ++i) {
-        HWND view = m_tabs[i]->view->Hwnd();
-        if ((int)i == m_active) {
-            MoveWindow(view, x, y, std::max(0, (int)rc.right - x), h, TRUE);
-            ShowWindow(view, SW_SHOWNA);
-        } else {
-            ShowWindow(view, SW_HIDE);
-        }
+        Tab* t = m_tabs[i].get();
+        if (t != left && t != right) ShowWindow(t->view->Hwnd(), SW_HIDE);
     }
+    const int w = std::max(0, (int)rc.right - x);
+    if (!right) {
+        for (Toolbar& bar : m_paneBar) ShowWindow(bar.Hwnd(), SW_HIDE);
+        MoveWindow(left->view->Hwnd(), x, y, w, h, TRUE);
+        ShowWindow(left->view->Hwnd(), SW_SHOWNA);
+        return;
+    }
+    // Split: the two sides with a bar above each and a divider between them.
+    const int dpi = GetWindowDpi(m_hwnd);
+    const int gap = Dpi(6, dpi), barH = m_paneBar[0].Height();
+    const int permille = m_settings.splitPermille;
+    RECT a, b;
+    if (m_settings.splitStacked) {
+        const int first = std::max(0, h - gap) * permille / 1000;
+        a = {x, y, x + w, y + first};
+        b = {x, y + first + gap, x + w, y + h};
+    } else {
+        const int first = std::max(0, w - gap) * permille / 1000;
+        a = {x, y, x + first, y + h};
+        b = {x + first + gap, y, x + w, y + h};
+    }
+    const RECT areas[2] = {a, b};
+    Tab* sides[2] = {left, right};
+    for (int i = 0; i < 2; ++i) {
+        const RECT& r = areas[i];
+        const int bh = std::min(barH, (int)(r.bottom - r.top));
+        MoveWindow(m_paneBar[i].Hwnd(), r.left, r.top, r.right - r.left, bh, TRUE);
+        ShowWindow(m_paneBar[i].Hwnd(), SW_SHOWNA);
+        // SWP_NOCOPYBITS: when the two sides change places, their old pixels must not move with them.
+        SetWindowPos(sides[i]->view->Hwnd(), nullptr, r.left, r.top + bh, r.right - r.left,
+                     std::max(0, (int)(r.bottom - r.top) - bh), SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOCOPYBITS | SWP_SHOWWINDOW);
+        InvalidateRect(sides[i]->view->Hwnd(), nullptr, FALSE);
+    }
+    UpdatePaneBars();
 }
 
 // ===========================================================================
@@ -395,6 +472,7 @@ int MainWindow::NewTab() {
     tab->view->SetSearch(&raw->search);
     tab->view->onViewChanged = [this, raw] {
         if (m_active >= 0 && raw == &Active()) UpdateUi();
+        if (raw->partner && !m_syncing) SyncPartner(*raw);  // the other side follows
     };
     tab->view->onEdit = [this, raw](EditOp&& op) {
         if (m_active >= 0 && raw == &Active()) SendEdit(std::move(op));
@@ -438,11 +516,16 @@ int MainWindow::NewTab() {
 void MainWindow::ActivateTab(int index) {
     if (index < 0 || index >= (int)m_tabs.size()) return;
     if (index != m_active && m_active >= 0 && m_active < (int)m_tabs.size()) {
+        Tab& old = Active();
+        if (old.partner == m_tabs[(size_t)index].get()) return FocusSide(index);  // the other side of this tab
         // Leaving a tab: stop its search and give its rendered tiles back
         // (they are re-rendered in a few ms when the tab is shown again).
-        Tab& old = Active();
         if (old.search.running) CancelSearch();
         old.view->TrimMemory();
+        if (old.partner) {
+            old.partner->view->TrimMemory();
+            LeftOf(old)->lastRight = old.side;
+        }
     }
     m_active = index;
     Layout();
@@ -464,6 +547,26 @@ void MainWindow::CloseTab(int index, bool force) {
     Tab& tab = *m_tabs[(size_t)index];
     if (index == m_active && tab.search.running) CancelSearch();
     if (tab.docId) m_worker.CloseDocument(tab.docId);
+
+    if (Tab* other = tab.partner) {
+        // One side of a split tab: the other document fills the tab (and
+        // takes its place in the tab strip if this was the left one).
+        Tab* activeBefore = &Active();
+        const bool closingActive = activeBefore == &tab;
+        other->partner = nullptr;
+        other->side = false;
+        other->lastRight = false;
+        if (!tab.side) {
+            std::unique_ptr<Tab> keep = std::move(m_tabs[(size_t)IndexOf(other)]);
+            m_tabs.erase(m_tabs.begin() + IndexOf(nullptr));
+            m_tabs[(size_t)IndexOf(&tab)] = std::move(keep);  // destroys this side's view
+        } else {
+            m_tabs.erase(m_tabs.begin() + index);
+        }
+        m_active = -1;
+        ActivateTab(IndexOf(closingActive ? other : activeBefore));
+        return;
+    }
 
     if (m_tabs.size() == 1) {  // keep one empty tab rather than no view at all
         tab.docId = tab.pendingDocId = 0;
@@ -494,19 +597,25 @@ void MainWindow::CloseTab(int index, bool force) {
 }
 
 void MainWindow::UpdateTabs() {
+    auto name = [](const Tab& t) -> std::wstring {
+        if (t.docId) return (t.dirty ? L"\x2022 " : L"") + FileNameFromPath(t.path);
+        if (t.pendingDocId) return L"Opening\x2026";
+        return L"New tab";
+    };
     std::vector<TabBar::TabInfo> infos;
     for (const auto& t : m_tabs) {
+        if (t->side) continue;  // shown beside its tab, not in the strip
         TabBar::TabInfo info;
-        if (t->docId)
-            info.title = (t->dirty ? L"\x2022 " : L"") + FileNameFromPath(t->path);
-        else if (t->pendingDocId)
-            info.title = L"Opening\x2026";
-        else
-            info.title = L"New tab";
+        info.title = name(*t);
         info.tip = t->path;
+        if (t->partner) {  // two documents side by side
+            info.title += L"  |  " + name(*t->partner);
+            info.tip += L"\n" + t->partner->path;
+        }
         infos.push_back(std::move(info));
     }
-    m_tabBar.SetTabs(std::move(infos), m_active);
+    m_tabBar.SetTabs(std::move(infos), BarIndexOf(m_active));
+    UpdatePaneBars();
 }
 
 int MainWindow::TabByDocId(uint32_t docId) const {
@@ -517,10 +626,243 @@ int MainWindow::TabByDocId(uint32_t docId) const {
 
 void MainWindow::OnTabBar(TabAction action, int index) {
     switch (action) {
-        case TabAction::Select: ActivateTab(index); break;
-        case TabAction::Close: CloseTab(index); break;
+        case TabAction::Select: {
+            int i = TabOfBar(index);
+            if (i < 0) break;
+            Tab& t = *m_tabs[(size_t)i];
+            if (t.partner && t.lastRight) i = IndexOf(t.partner);  // the side last worked in
+            ActivateTab(i);
+            break;
+        }
+        case TabAction::Close: {
+            const int i = TabOfBar(index);
+            if (i < 0) break;
+            Tab* left = m_tabs[(size_t)i].get();
+            if (Tab* right = left->partner) {  // both documents of a split tab
+                const int ri = IndexOf(right);
+                if (!ConfirmCloseTab(ri)) break;
+                CloseTab(ri, true);
+            }
+            CloseTab(IndexOf(left));
+            break;
+        }
         case TabAction::New: ShowOpenDialog(); break;
     }
+}
+
+// ===========================================================================
+// Two documents side by side in one tab
+// ===========================================================================
+int MainWindow::IndexOf(const Tab* tab) const {
+    for (size_t i = 0; i < m_tabs.size(); ++i)
+        if (m_tabs[i].get() == tab) return (int)i;
+    return -1;
+}
+
+int MainWindow::BarIndexOf(int index) const {
+    if (index < 0 || index >= (int)m_tabs.size()) return -1;
+    const Tab* t = m_tabs[(size_t)index].get();
+    if (t->side && t->partner) t = t->partner;
+    int bar = 0;
+    for (const auto& p : m_tabs) {
+        if (p->side) continue;
+        if (p.get() == t) return bar;
+        ++bar;
+    }
+    return -1;
+}
+
+int MainWindow::TabOfBar(int bar) const {
+    int n = 0;
+    for (size_t i = 0; i < m_tabs.size(); ++i) {
+        if (m_tabs[i]->side) continue;
+        if (n++ == bar) return (int)i;
+    }
+    return -1;
+}
+
+HMENU MainWindow::CreateBesideMenu() {
+    HMENU m = CreatePopupMenu();
+    const Tab& act = Active();
+    const bool split = act.partner != nullptr;
+    AppendMenuW(m, MF_STRING, ID_BESIDE_FILE,
+                split ? L"Show a different &file on the other side\x2026\tCtrl+Shift+O" : L"A &file\x2026\tCtrl+Shift+O");
+    int others = 0;
+    for (size_t i = 0; i < m_tabs.size() && i < 40; ++i) {
+        const Tab& t = *m_tabs[i];
+        if (&t == &act || &t == act.partner || t.side || t.partner || !t.docId || t.pendingDocId) continue;
+        if (!others++) AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+        std::wstring name = FileNameFromPath(t.path);
+        for (size_t at = 0; (at = name.find(L'&', at)) != std::wstring::npos; at += 2) name.insert(at, 1, L'&');
+        AppendMenuW(m, MF_STRING, ID_BESIDE_TAB_FIRST + (UINT)i, (L"Open tab: " + name).c_str());
+    }
+    if (split) {
+        auto check = [](bool on) -> UINT { return on ? MF_CHECKED : 0; };
+        AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(m, MF_STRING | check(m_settings.splitSyncScroll), ID_SPLIT_SYNC_SCROLL, L"&Scroll together");
+        AppendMenuW(m, MF_STRING | check(m_settings.splitSyncZoom), ID_SPLIT_SYNC_ZOOM, L"&Zoom together");
+        AppendMenuW(m, MF_STRING | check(m_settings.splitStacked), ID_SPLIT_ORIENT, L"One &above the other");
+        AppendMenuW(m, MF_STRING, ID_SPLIT_SWAP, L"S&wap the documents");
+        AppendMenuW(m, MF_STRING | (m_comparing ? MF_GRAYED : 0), ID_SPLIT_MARK, L"&Mark the differences");
+        AppendMenuW(m, MF_STRING, ID_SPLIT_OTHER, L"Work in the &other document\tF6");
+        AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(m, MF_STRING, act.side ? ID_PANE_CLOSE_L : ID_PANE_CLOSE_R, L"&Close the other document");
+    }
+    return m;
+}
+
+void MainWindow::ShowBesideMenu() {
+    HMENU m = CreateBesideMenu();
+    RECT rc = m_toolbar.ItemScreenRect(ID_OPEN_BESIDE);
+    TrackPopupMenu(m, TPM_LEFTALIGN | TPM_TOPALIGN, rc.left, rc.bottom, 0, m_hwnd, nullptr);
+    DestroyMenu(m);
+}
+
+void MainWindow::OpenBeside(const std::wstring& path, int page) {
+    Tab& act = Active();
+    if (!act.docId && !act.pendingDocId) {  // nothing open here yet: just open it
+        OpenFile(path, page);
+        return;
+    }
+    if (!FileExists(FullPath(path))) {
+        OpenFile(path, page);  // says it is not found
+        return;
+    }
+    if (Tab* other = act.partner) {  // already two: the other side shows this file instead
+        const int oi = IndexOf(other);
+        if (!ConfirmCloseTab(oi)) return;
+        OpenFile(path, page, {}, IndexOf(other), false);
+        if (&Active() != other) FocusSide(IndexOf(other));
+        return;
+    }
+    Tab* left = &act;
+    // Half the width each: fit the pages to it (both sides, as the new one copies this one).
+    if (left->view->GetZoomMode() == ZoomMode::Custom) left->view->SetZoomMode(ZoomMode::FitWidth);
+    const int ri = NewTab();  // the same view settings as this side
+    Tab* right = m_tabs[(size_t)ri].get();
+    right->side = true;
+    right->partner = left;
+    left->partner = right;
+    OpenFile(path, page, {}, ri, false);
+    Layout();
+    FocusSide(IndexOf(right));
+}
+
+void MainWindow::ShowTabBeside(int index) {
+    if (index < 0 || index >= (int)m_tabs.size()) return;
+    Tab* moving = m_tabs[(size_t)index].get();
+    Tab* act = &Active();
+    if (moving == act || moving == act->partner || moving->side || moving->partner || !moving->docId) return;
+    if (!act->docId && !act->pendingDocId) return ActivateTab(index);
+    if (Tab* other = act->partner) {  // already two: that one goes, this one comes
+        const int oi = IndexOf(other);
+        if (!ConfirmCloseTab(oi)) return;
+        CloseTab(IndexOf(other), true);
+        act = LeftOf(Active());
+    }
+    if (moving->search.running) CancelSearch();
+    moving->side = true;
+    moving->partner = act;
+    act->partner = moving;
+    Layout();
+    FocusSide(IndexOf(moving));
+    SyncPartner(*act);
+}
+
+void MainWindow::FocusSide(int index) {
+    if (index < 0 || index >= (int)m_tabs.size() || index == m_active) return;
+    Tab& old = Active();
+    if (old.partner != m_tabs[(size_t)index].get()) return ActivateTab(index);
+    if (old.search.running) CancelSearch();
+    m_active = index;
+    LeftOf(Active())->lastRight = Active().side;
+    if (GetFocus() != m_searchEdit) SetFocus(View().Hwnd());
+    if (m_searchVisible && !GetText(m_searchEdit).empty() && GetText(m_searchEdit) != Active().search.query &&
+        View().HasDocument())
+        StartSearch();
+    UpdateTabs();
+    UpdateTitle();
+    SyncSidebar();
+    UpdateUi();
+    UpdateSearchStatus();
+}
+
+void MainWindow::CloseSide(bool right) {
+    Tab& act = Active();
+    if (!act.partner) return;
+    CloseTab(IndexOf(right ? RightOf(act) : LeftOf(act)));
+}
+
+void MainWindow::SwapSides() {
+    Tab& act = Active();
+    if (!act.partner) return;
+    Tab* left = LeftOf(act);
+    Tab* right = RightOf(act);
+    const int li = IndexOf(left), ri = IndexOf(right);
+    std::swap(m_tabs[(size_t)li], m_tabs[(size_t)ri]);  // the new left one takes the tab strip's place
+    left->side = true;
+    right->side = false;
+    m_active = IndexOf(&act);
+    right->lastRight = act.side;
+    Layout();
+    UpdateTabs();
+}
+
+void MainWindow::SyncPartner(Tab& from) {
+    Tab* other = from.partner;
+    if (!other || m_syncing || !from.view->HasDocument() || !other->view->HasDocument()) return;
+    if (!m_settings.splitSyncZoom && !m_settings.splitSyncScroll) return;
+    m_syncing = true;
+    PdfView& a = *from.view;
+    PdfView& b = *other->view;
+    if (m_settings.splitSyncZoom) {
+        if (a.GetZoomMode() != ZoomMode::Custom) {
+            if (b.GetZoomMode() != a.GetZoomMode()) b.SetZoomMode(a.GetZoomMode());
+        } else if (b.GetZoomMode() != ZoomMode::Custom || std::fabs(b.Zoom() - a.Zoom()) > 1e-6) {
+            b.SetZoom(a.Zoom());
+        }
+    }
+    if (m_settings.splitSyncScroll) b.SetPlace(a.GetPlace());
+    m_syncing = false;
+    if (other == &Active()) UpdateUi();
+}
+
+void MainWindow::UpdatePaneBars() {
+    if (m_tabs.empty() || m_active < 0) return;
+    Tab& act = Active();
+    if (!act.partner) return;
+    Tab* sides[2] = {LeftOf(act), RightOf(act)};
+    for (int i = 0; i < 2; ++i) {
+        const Tab& t = *sides[i];
+        std::wstring name = t.docId ? FileNameFromPath(t.path) : t.pendingDocId ? L"Opening\x2026" : L"";
+        if (t.dirty) name = L"\x2022 " + name;
+        // The highlighted name is the document the toolbar, search and saving work on.
+        const int id = i == 0 ? ID_PANE_NAME_L : ID_PANE_NAME_R;
+        m_paneBar[i].SetText(id, name);
+        m_paneBar[i].SetChecked(id, &t == &act);
+    }
+    m_paneBar[0].SetChecked(ID_SPLIT_ORIENT, m_settings.splitStacked);
+    m_paneBar[1].SetChecked(ID_SPLIT_SYNC_SCROLL, m_settings.splitSyncScroll);
+    m_paneBar[1].SetChecked(ID_SPLIT_SYNC_ZOOM, m_settings.splitSyncZoom);
+    m_paneBar[1].SetEnabled(ID_SPLIT_MARK, !m_comparing && sides[0]->docId && sides[1]->docId);
+}
+
+RECT MainWindow::PaneSplitterRect() const {
+    RECT r{};
+    if (m_tabs.empty() || m_active < 0 || !m_tabs[(size_t)m_active]->partner || !IsWindowVisible(m_paneBar[1].Hwnd()))
+        return r;
+    const Tab& act = *m_tabs[(size_t)m_active];
+    const Tab* left = act.side ? act.partner : &act;
+    RECT a, b;
+    GetWindowRect(left->view->Hwnd(), &a);
+    GetWindowRect(m_paneBar[1].Hwnd(), &b);
+    MapWindowPoints(nullptr, m_hwnd, (POINT*)&a, 2);
+    MapWindowPoints(nullptr, m_hwnd, (POINT*)&b, 2);
+    if (m_settings.splitStacked) return {a.left, a.bottom, a.right, b.top};
+    RECT top;
+    GetWindowRect(m_paneBar[0].Hwnd(), &top);
+    MapWindowPoints(nullptr, m_hwnd, (POINT*)&top, 2);
+    return {a.right, top.top, b.left, a.bottom};
 }
 
 // ===========================================================================
@@ -629,6 +971,11 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
                     SetCursor(LoadCursorW(nullptr, IDC_SIZEWE));
                     return TRUE;
                 }
+                RECT pr = PaneSplitterRect();
+                if (m_paneDrag || PtInRect(&pr, pt)) {
+                    SetCursor(LoadCursorW(nullptr, m_settings.splitStacked ? IDC_SIZENS : IDC_SIZEWE));
+                    return TRUE;
+                }
             }
             break;
         case WM_LBUTTONDOWN: {
@@ -636,6 +983,11 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             POINT pt = {GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
             if (PtInRect(&sr, pt)) {
                 m_splitDrag = true;
+                SetCapture(m_hwnd);
+            }
+            RECT pr = PaneSplitterRect();
+            if (PtInRect(&pr, pt)) {
+                m_paneDrag = true;
                 SetCapture(m_hwnd);
             }
             return 0;
@@ -647,13 +999,40 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
                 m_settings.sidebarWidth = std::max(120, std::min(800, MulDiv(x, 96, dpi)));
                 Layout();
             }
+            if (m_paneDrag && Active().partner) {
+                // The divider between the two documents: where it is, as a share of both.
+                RECT a, b;
+                GetWindowRect(m_paneBar[0].Hwnd(), &a);
+                GetWindowRect(RightOf(Active())->view->Hwnd(), &b);
+                MapWindowPoints(nullptr, m_hwnd, (POINT*)&a, 2);
+                MapWindowPoints(nullptr, m_hwnd, (POINT*)&b, 2);
+                const int from = m_settings.splitStacked ? a.top : a.left;
+                const int to = m_settings.splitStacked ? b.bottom : b.right;
+                const int at = m_settings.splitStacked ? GET_Y_LPARAM(lp) : GET_X_LPARAM(lp);
+                if (to > from) {
+                    m_settings.splitPermille = std::max(150, std::min(850, MulDiv(at - from, 1000, to - from)));
+                    Layout();
+                }
+            }
             return 0;
         case WM_LBUTTONUP:
-            if (m_splitDrag) ReleaseCapture();
+            if (m_splitDrag || m_paneDrag) ReleaseCapture();
             return 0;
         case WM_CAPTURECHANGED:
             m_splitDrag = false;
+            m_paneDrag = false;
             return 0;
+        case WM_PARENTNOTIFY:
+            // A click in the other side of a split tab makes it the active one first.
+            if ((LOWORD(wp) == WM_LBUTTONDOWN || LOWORD(wp) == WM_RBUTTONDOWN || LOWORD(wp) == WM_MBUTTONDOWN) &&
+                !m_tabs.empty() && Active().partner) {
+                POINT pt = {GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+                RECT r;
+                GetWindowRect(Active().partner->view->Hwnd(), &r);
+                MapWindowPoints(nullptr, m_hwnd, (POINT*)&r, 2);
+                if (PtInRect(&r, pt)) FocusSide(IndexOf(Active().partner));
+            }
+            break;
         case WM_ERASEBKGND: {  // only the splitter strip is ever visible
             RECT rc;
             GetClientRect(m_hwnd, &rc);
@@ -730,6 +1109,7 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             m_tabBar.OnDpiChanged();
             m_toolbar.OnDpiChanged();
             m_searchBar.OnDpiChanged();
+            for (Toolbar& bar : m_paneBar) bar.OnDpiChanged();
             m_sidebar.OnDpiChanged();
             for (auto& t : m_tabs) t->view->OnDpiChanged();
             const RECT* r = (const RECT*)lp;
@@ -855,6 +1235,10 @@ void MainWindow::OnCommand(int id, int code, HWND ctl) {
     if (id >= ID_SCALE_FIRST && id < ID_SCALE_FIRST + (int)(sizeof(kScales) / sizeof(kScales[0]))) {
         m_settings.measureScale = kScales[id - ID_SCALE_FIRST];
         ApplyMeasureOptions();
+        return;
+    }
+    if (id >= ID_BESIDE_TAB_FIRST && id < ID_BESIDE_TAB_FIRST + 40) {
+        ShowTabBeside(id - ID_BESIDE_TAB_FIRST);
         return;
     }
     if (id >= ID_COMPARE_TAB_FIRST && id < ID_COMPARE_TAB_FIRST + 40) {
@@ -1010,10 +1394,54 @@ void MainWindow::OnCommand(int id, int code, HWND ctl) {
         case ID_UNDERLINE: AddMarkup(kMarkupUnderline); break;
         case ID_STRIKEOUT: AddMarkup(kMarkupStrikeOut); break;
         case ID_CLOSE_TAB: CloseTab(m_active); break;
-        case ID_NEXT_TAB: ActivateTab((m_active + 1) % (int)m_tabs.size()); break;
-        case ID_PREV_TAB:
-            ActivateTab((m_active + (int)m_tabs.size() - 1) % (int)m_tabs.size());
+        case ID_NEXT_TAB:
+        case ID_PREV_TAB: {  // through the tab strip (a split tab is one tab)
+            int bars = 0;
+            for (const auto& t : m_tabs) bars += t->side ? 0 : 1;
+            if (bars > 1)
+                OnTabBar(TabAction::Select, (BarIndexOf(m_active) + (id == ID_NEXT_TAB ? 1 : bars - 1)) % bars);
             break;
+        }
+        case ID_OPEN_BESIDE: ShowBesideMenu(); break;
+        case ID_BESIDE_FILE: {
+            const auto files = PickPdfFiles(false, L"Choose the PDF to show beside this one");
+            if (!files.empty()) OpenBeside(files[0]);
+            break;
+        }
+        case ID_SPLIT_SYNC_SCROLL:
+            m_settings.splitSyncScroll = !m_settings.splitSyncScroll;
+            if (m_settings.splitSyncScroll) SyncPartner(Active());
+            UpdatePaneBars();
+            break;
+        case ID_SPLIT_SYNC_ZOOM:
+            m_settings.splitSyncZoom = !m_settings.splitSyncZoom;
+            if (m_settings.splitSyncZoom) SyncPartner(Active());
+            UpdatePaneBars();
+            break;
+        case ID_SPLIT_SWAP: SwapSides(); break;
+        case ID_SPLIT_ORIENT:
+            m_settings.splitStacked = !m_settings.splitStacked;
+            Layout();
+            break;
+        case ID_SPLIT_MARK:
+            if (Tab* right = RightOf(Active())) {
+                // The left document is the older one: the right side shows the newer with the differences marked.
+                Tab* left = LeftOf(Active());
+                if (&Active() != left) FocusSide(IndexOf(left));
+                m_markInto = right;
+                CompareWith(IndexOf(right));
+                if (!m_comparing) m_markInto = nullptr;
+            }
+            break;
+        case ID_SPLIT_OTHER:
+            if (Active().partner) FocusSide(IndexOf(Active().partner));
+            break;
+        case ID_PANE_NAME_L:
+        case ID_PANE_NAME_R:
+            if (Active().partner) FocusSide(IndexOf(id == ID_PANE_NAME_L ? LeftOf(Active()) : RightOf(Active())));
+            break;
+        case ID_PANE_CLOSE_L: CloseSide(false); break;
+        case ID_PANE_CLOSE_R: CloseSide(true); break;
         case ID_PREV_PAGE: view.PrevPage(); break;
         case ID_NEXT_PAGE: view.NextPage(); break;
         case ID_FIRST_PAGE:
@@ -1166,6 +1594,7 @@ void MainWindow::ShowMoreMenu() {
     else
         AppendMenuW(m, MF_STRING | docFlag, ID_EXPORT, L"&Export as pictures or text\x2026");
     AppendMenuW(m, MF_POPUP | docFlag, (UINT_PTR)CreateCompareMenu(), L"Co&mpare with");
+    AppendMenuW(m, MF_POPUP | docFlag, (UINT_PTR)CreateBesideMenu(), L"Side &by side (two in one tab)");
     AppendMenuW(m, MF_STRING, ID_CLOSE_TAB, L"&Close tab\tCtrl+W");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(m, MF_STRING | (doc && tab.canUndo ? 0 : MF_GRAYED), ID_UNDO, L"&Undo\tCtrl+Z");
@@ -1273,8 +1702,10 @@ void MainWindow::UpdateUi() {
                          doc && (view.Tool() == ViewTool::Ruler || view.Tool() == ViewTool::Protractor));
     m_toolbar.SetEnabled(ID_UNDO, doc && tab.canUndo);
     m_toolbar.SetEnabled(ID_REDO, doc && tab.canRedo);
+    m_toolbar.SetChecked(ID_OPEN_BESIDE, tab.partner != nullptr);
     if (doc && m_sidebar.Mode() == SidebarMode::Thumbnails)
         m_sidebar.Thumbs().SetCurrentPage(view.CurrentPage());
+    UpdatePaneBars();
 }
 
 void MainWindow::UpdateTitle() {
@@ -1596,6 +2027,7 @@ void MainWindow::OnThemeChanged() {
     m_sidebar.OnThemeChanged();
     m_toolbar.OnThemeChanged();
     m_searchBar.OnThemeChanged();
+    for (Toolbar& bar : m_paneBar) bar.OnThemeChanged();
     for (auto& t : m_tabs) t->view->OnThemeChanged();
     // Nudge the frame so DWM repaints the title bar colour.
     SetWindowPos(m_hwnd, nullptr, 0, 0, 0, 0,
@@ -1628,9 +2060,12 @@ void MainWindow::SaveSettings() {
     m_settings.activeTab = 0;
     for (size_t i = 0; i < m_tabs.size(); ++i) {
         const Tab& t = *m_tabs[i];
-        if (!t.docId) continue;
-        if ((int)i == m_active) m_settings.activeTab = (int)m_settings.session.size();
-        m_settings.session.push_back({t.path, t.view->CurrentPage()});
+        if (!t.docId || t.side) continue;  // a right side is saved after its tab
+        if ((int)i == m_active || (t.partner && t.partner == &Active()))
+            m_settings.activeTab = (int)m_settings.session.size();
+        m_settings.session.push_back({t.path, t.view->CurrentPage(), false});
+        if (t.partner && t.partner->docId)
+            m_settings.session.push_back({t.partner->path, t.partner->view->CurrentPage(), true});
     }
     m_settings.Save();
 }
@@ -3286,13 +3721,23 @@ void MainWindow::OnCompared(CompareResult* result) {
                     MB_ICONINFORMATION);
         return;
     }
-    OpenFile(res->path, 0);
+    Tab* into = m_markInto;
+    m_markInto = nullptr;
+    const int intoIndex = into ? IndexOf(into) : -1;
+    const bool beside = intoIndex >= 0 && into->partner && ConfirmCloseTab(intoIndex);
+    if (beside)
+        OpenFile(res->path, 0, {}, intoIndex, false);  // Mark differences: in the right side
+    else
+        OpenFile(res->path, 0);
     const std::wstring msg = L"Compared " + m_compareNames + L": " + std::to_wstring(total) +
                              (total == 1 ? L" difference" : L" differences") + L".\n\n" +
                              std::to_wstring(res->added) + L" added (green), " + std::to_wstring(res->changed) +
                              L" changed (orange, the old text in its comment), " + std::to_wstring(res->removed) +
-                             L" removed (a note where the text was).\n\nThe new tab shows the second document with the "
-                             L"differences marked. Edit PDF \x203A All comments lists them all.";
+                             L" removed (a note where the text was).\n\n" +
+                             (beside ? std::wstring(L"The right side now shows the second document with the differences marked, "
+                                                    L"beside the first.")
+                                     : std::wstring(L"The new tab shows the second document with the differences marked.")) +
+                             L" Edit PDF \x203A All comments lists them all.";
     MessageBoxW(m_hwnd, msg.c_str(), APP_NAME, MB_ICONINFORMATION);
 }
 
@@ -3567,6 +4012,13 @@ void MainWindow::ShowCommandPalette() {
         {ID_EXPORT, L"Export as pictures, text or Markdown", L"", L"png jpeg jpg image txt md convert save", doc && !m_exporting},
         {ID_COMPRESS, L"Compress (make the file smaller)", L"", L"reduce size optimize shrink", doc},
         {ID_COMPARE, L"Compare with another PDF", L"", L"difference diff versions changes", doc && !m_comparing},
+        {ID_BESIDE_FILE, L"Open another file beside this one (side by side)", L"Ctrl+Shift+O", L"split two documents compare view parallel same tab", true},
+        {ID_SPLIT_OTHER, L"Side by side: work in the other document", L"F6", L"switch pane split", tab.partner != nullptr},
+        {ID_SPLIT_SWAP, L"Side by side: swap the documents", L"", L"exchange left right split", tab.partner != nullptr},
+        {ID_SPLIT_SYNC_SCROLL, L"Side by side: scroll together on or off", L"", L"sync synchronise linked split", tab.partner != nullptr},
+        {ID_SPLIT_SYNC_ZOOM, L"Side by side: zoom together on or off", L"", L"sync synchronise linked split", tab.partner != nullptr},
+        {ID_SPLIT_ORIENT, L"Side by side: one above the other, or side by side", L"", L"stacked vertical horizontal split", tab.partner != nullptr},
+        {ID_SPLIT_MARK, L"Side by side: mark the differences", L"", L"compare diff split", tab.partner != nullptr && !m_comparing},
         {ID_PASSWORD, L"Password protection", L"", L"encrypt protect lock security unlock remove password", doc},
         {ID_TOOL_REDACT, L"Redact: mark areas", L"", L"black out remove hide sensitive censor", doc},
         {ID_REDACT_SELECTION, L"Redact the selected text", L"", L"black out remove hide", doc && sel},
