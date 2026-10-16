@@ -168,12 +168,21 @@ struct TextRun {
     int first = 0, count = 0; // page object indices
     float size = 0;           // font size as shown, in points
     bool bold = false, italic = false, serif = false, mono = false;
+    bool underline = false, strike = false;  // drawn lines under / through it
+    COLORREF color = 0;
+};
+
+// A picture placed directly on a page (not inside a group of objects).
+struct PageImage {
+    RectF rect;               // page points, top-left origin, unrotated
+    int index = 0;            // page object index
 };
 
 struct TextRunsResult {
     uint32_t docId = 0;
     int page = 0;
     std::vector<TextRun> runs;
+    std::vector<PageImage> images;
 };
 
 struct CommentListResult {
@@ -334,6 +343,13 @@ struct EditOp {
         Redact,       // removes everything under `marks` and paints them black
         SetSecurity,  // the password used when saving: encrypt, passwords, permissions
         AddMeasure,   // a measurement drawn on `page`: points (2: distance, 3: angle), text
+        MoveObjects,  // page objects `objects` of `page` move by (x, y) display points, or each by
+                      // its own `points` entry; thin lines (underlines) inside `rect` move along
+        DeleteObjects,// page objects `objects` of `page` (and thin lines inside `rect`)
+        SetImageRect, // picture `index` of `page` fills `rect` (display points)
+        ReplaceImage, // picture `index` of `page` shows `pixels` instead, fitted in its place
+        FormatText,   // text runs `runs` of `page` get `format` (all of each run, or its
+                      // characters [from, to) when to >= 0)
     } kind = DeletePages;
     std::vector<int> pages;  // Delete/Move/Rotate: ascending page indices
     int index = 0;           // Move: new index of the first moved page;
@@ -380,6 +396,22 @@ struct EditOp {
     bool encrypt = false;        // false: save without any password
     std::string userPassword, ownerPassword;
     uint32_t permissions = 0xFFFFFFFF;  // PDF /P bits allowed to others
+    // moving, deleting and formatting
+    std::vector<int> objects;    // MoveObjects / DeleteObjects: page object indices
+    struct Format {
+        int bold = -1, italic = -1;        // 1 on, 0 off, -1 as it is
+        int underline = -1, strike = -1;   // 1 on, 0 off, -1 as it is
+        std::wstring face;                 // a font family ("Arial"), empty: as it is
+        float size = 0;                    // points, 0: as it is
+        COLORREF color = CLR_INVALID;      // CLR_INVALID: as it is
+    } format;
+    struct RunRef {
+        int index = 0, count = 0;  // the run's page objects
+        std::wstring text;         // its text now (checked before changing it)
+        std::wstring newText;      // typed in the same go (empty: unchanged)
+        int from = 0, to = -1;     // the characters formatted (to < 0: all)
+    };
+    std::vector<RunRef> runs;    // FormatText
 };
 
 enum class EditAction { Edit, Undo, Redo, Save };
@@ -402,6 +434,7 @@ struct EditResult {
     uint32_t flags = 0;       // Save: echoed from the request (kAfterSave*)
     std::wstring note;        // shown after a successful edit (e.g. how many replaced)
     bool fontChanged = false; // edited text needed a font other than the original
+    std::wstring fontNote;    // a chosen font could not be used (told once)
 };
 
 enum : uint32_t { kAfterSaveCloseTab = 1, kAfterSaveQuit = 2 };

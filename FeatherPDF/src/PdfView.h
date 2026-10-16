@@ -166,6 +166,22 @@ public:
     // Presentation: black surroundings, a click shows the next page.
     void SetPresenting(bool on);
 
+    // --- moving blocks and pictures, formatting (EditText tool) ----------
+    // Blocks of text (paragraphs, headings, cells) and pictures can be
+    // selected: a click selects (and edits the line), Ctrl+click adds,
+    // a box selects the lines inside it. Selections are dragged, nudged
+    // with the arrow keys and deleted with Delete.
+    // The style of the line being typed in, or of the first selected line.
+    bool FormatTarget(TextRun& run) const;
+    // Formats the selected letters of the line being typed in, or all of the
+    // selected lines. False if nothing is selected.
+    bool ApplyFormat(const EditOp::Format& format);
+    // Lines up the selected lines (or the block being typed in): 0 left,
+    // 1 centre, 2 right. False if nothing is selected.
+    bool AlignSelection(int how);
+    bool SelectedImage(int& page, int& index) const;  // the selected picture
+    void HoldInline(bool hold) { m_inlineHold = hold; }  // a dialog is open: keep the text box
+
     // --- Geometry: rulers, distance and angle measurements -------------
     void SetMeasureOptions(const MeasureOptions& options);
     bool HasMeasurements() const { return !m_measures.empty(); }
@@ -298,6 +314,30 @@ private:
     void PositionInlineEdit();
     static LRESULT CALLBACK InlineEditProc(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
     void ClearRuns();
+    // blocks and pictures (ViewEditing.cpp)
+    enum class EditDrag { None, Armed, Move, Box, Resize };
+    const std::vector<PageImage>* GetImages(int page) const;
+    const std::vector<int>* GetBlocks(int page);
+    bool HitImage(POINT pt, int& page, int& image);
+    int HitHandle(POINT pt) const;  // a corner of the selected picture: 0..3, or -1
+    std::vector<int> SelectedRuns() const;  // indices into the selection page's runs
+    const PageImage* SelectedImageInfo() const;
+    bool SelectionRect(RectF& out) const;
+    void SelectBlock(int page, int run, bool toggle);
+    void ClearEditSelection();
+    void MoveSelection(float dx, float dy);
+    void DeleteSelection();
+    PointF ClampedPagePoint(POINT pt, int page) const;
+    RectF DraggedImageRect() const;
+    void DrawEditSelection(HDC dc, int page, const RECT& vis);
+    void DrawEditDrag(HDC dc);
+    bool EditMouseDown(POINT pt, WPARAM wp);
+    void EditMouseMove(POINT pt);
+    void EditMouseUp(POINT pt);
+    bool EditKeyDown(WPARAM wp);
+    bool ShowImageMenu(POINT screen, POINT client);
+    void FormatRun(int page, int run, const EditOp::Format& format);
+    void Reselect(int page, const std::vector<TextRun>& runs);
     void FollowLink(const LinkTarget& target);
     void RequestImage(int page, RECT pagePixels);  // rect in page pixels at m_scale
     const TextLayer* GetTextLayer(int page, bool request);
@@ -371,6 +411,19 @@ private:
     ViewTool m_tool = ViewTool::Select;
     std::unordered_map<int, std::vector<TextRun>> m_runs;  // pages near the view
     std::unordered_set<int> m_runsPending;
+    std::unordered_map<int, std::vector<PageImage>> m_images;  // arrive with the runs
+    std::unordered_map<int, std::vector<int>> m_blocks;        // block number of each run
+    int m_selPage = -1;               // the page of the selected lines or picture
+    std::vector<int> m_selFirsts;     // selected lines (their first page object)
+    int m_selImage = -1;              // selected picture (its page object), or -1
+    EditDrag m_editDrag = EditDrag::None;
+    POINT m_pressPt{};
+    int m_pressPage = -1, m_pressRun = -1, m_corner = -1;
+    PointF m_pressAt{}, m_dragAt{};   // page points
+    bool m_inlineHold = false;
+    bool m_returnToEdit = false;      // a picture placed from the Edit tool goes back to it
+    int m_reselectPage = -1;          // after formatting: select the lines in this area again
+    RectF m_reselectRect;
     int m_hoverPage = -1, m_hoverRun = -1;
     HWND m_inlineEdit = nullptr;
     HFONT m_inlineFont = nullptr;

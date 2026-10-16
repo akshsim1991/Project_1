@@ -293,6 +293,27 @@ void MainWindow::CreateChildren() {
     m_searchBar.SetChecked(ID_MATCH_CASE, m_settings.matchCase);
     ShowWindow(m_searchBar.Hwnd(), SW_HIDE);
 
+    // Formatting bar (shown while editing text).
+    m_formatBar.Create(m_hwnd, m_hwnd, 36);
+    m_formatBar.AddTextButton(ID_FMT_BOLD, L"B", L"Bold (Ctrl+B)", 30);
+    m_formatBar.AddTextButton(ID_FMT_ITALIC, L"I", L"Italic (Ctrl+I)", 30);
+    m_formatBar.AddTextButton(ID_FMT_UNDERLINE, L"U", L"Underline (Ctrl+U)", 30);
+    m_formatBar.AddTextButton(ID_FMT_STRIKE, L"S", L"Strike through", 30);
+    m_formatBar.AddSeparator();
+    m_formatBar.AddTextButton(ID_FMT_FONT, L"Font", L"Font: Arial, Times New Roman, Courier New or another installed font", 54);
+    m_formatBar.AddTextButton(ID_FMT_SIZE, L"Size", L"Text size", 48);
+    m_formatBar.AddTextButton(ID_FMT_COLOR, L"Colour", L"Text colour", 60);
+    m_formatBar.AddSeparator();
+    m_formatBar.AddTextButton(ID_FMT_LEFT, L"Left", L"Line up the selected lines on the left", 44);
+    m_formatBar.AddTextButton(ID_FMT_CENTER, L"Centre", L"Centre the selected lines", 58);
+    m_formatBar.AddTextButton(ID_FMT_RIGHT, L"Right", L"Line up the selected lines on the right", 48);
+    m_formatBar.AddSeparator();
+    m_formatBar.AddTextButton(ID_INSERT_IMAGE, L"Insert picture", L"Insert a picture from a file", 100);
+    m_formatBar.AddTextButton(ID_PASTE_IMAGE, L"Paste picture", L"Paste a picture you copied (Ctrl+V)", 96);
+    m_formatBar.AddSpacer();
+    m_formatBar.AddTextButton(ID_EDIT_TEXT, L"Done", L"Stop editing (Esc)", 52);
+    ShowWindow(m_formatBar.Hwnd(), SW_HIDE);
+
     // A bar above each side of a split tab: the document's name (a click
     // works in it), the options, and a close button.
     for (int i = 0; i < 2; ++i) {
@@ -401,6 +422,14 @@ void MainWindow::Layout() {
         y += sh;
     } else {
         ShowWindow(m_searchBar.Hwnd(), SW_HIDE);
+    }
+    if (m_formatVisible && !m_fullscreen) {
+        const int fh = m_formatBar.Height();
+        MoveWindow(m_formatBar.Hwnd(), 0, y, rc.right, fh, TRUE);
+        ShowWindow(m_formatBar.Hwnd(), SW_SHOWNA);
+        y += fh;
+    } else {
+        ShowWindow(m_formatBar.Hwnd(), SW_HIDE);
     }
     // Optional sidebar on the left, then a thin splitter.
     int x = 0;
@@ -1110,6 +1139,7 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             m_toolbar.OnDpiChanged();
             m_searchBar.OnDpiChanged();
             for (Toolbar& bar : m_paneBar) bar.OnDpiChanged();
+            m_formatBar.OnDpiChanged();
             m_sidebar.OnDpiChanged();
             for (auto& t : m_tabs) t->view->OnDpiChanged();
             const RECT* r = (const RECT*)lp;
@@ -1361,6 +1391,20 @@ void MainWindow::OnCommand(int id, int code, HWND ctl) {
             MessageBoxW(m_hwnd, L"The saved signature was removed from this PC.", APP_NAME, MB_ICONINFORMATION);
             break;
         case ID_INSERT_IMAGE: InsertImage(); break;
+        case ID_PASTE_IMAGE: PasteImage(); break;
+        case ID_REPLACE_IMAGE: ReplaceImage(); break;
+        case ID_FMT_BOLD:
+        case ID_FMT_ITALIC:
+        case ID_FMT_UNDERLINE:
+        case ID_FMT_STRIKE:
+        case ID_FMT_FONT:
+        case ID_FMT_SIZE:
+        case ID_FMT_COLOR:
+        case ID_FMT_LEFT:
+        case ID_FMT_CENTER:
+        case ID_FMT_RIGHT:
+            FormatCommand(id);
+            break;
         case ID_DRAWCOLOR_MORE: {
             static COLORREF custom[16] = {};
             CHOOSECOLORW cc{sizeof(cc)};
@@ -1482,6 +1526,10 @@ void MainWindow::OnCommand(int id, int code, HWND ctl) {
         case ID_COLORS_DARK: SetPageColors(kColorsDark); break;
         case ID_COLORS_DIM: SetPageColors(kColorsDim); break;
         case ID_SIDEBAR_BOOKMARKS:
+            if (view.Tool() == ViewTool::EditText) {  // Ctrl+B while editing: bold
+                FormatCommand(ID_FMT_BOLD);
+                break;
+            }
             SetSidebarMode(m_sidebar.Mode() == SidebarMode::Bookmarks ? SidebarMode::None
                                                                       : SidebarMode::Bookmarks);
             break;
@@ -1705,6 +1753,20 @@ void MainWindow::UpdateUi() {
     m_toolbar.SetChecked(ID_OPEN_BESIDE, tab.partner != nullptr);
     if (doc && m_sidebar.Mode() == SidebarMode::Thumbnails)
         m_sidebar.Thumbs().SetCurrentPage(view.CurrentPage());
+    // The formatting bar while editing text, showing the style of the line chosen.
+    const bool format = doc && view.Tool() == ViewTool::EditText;
+    if (format != m_formatVisible) {
+        m_formatVisible = format;
+        Layout();
+    }
+    if (format) {
+        TextRun run;
+        const bool any = view.FormatTarget(run);
+        m_formatBar.SetChecked(ID_FMT_BOLD, any && run.bold);
+        m_formatBar.SetChecked(ID_FMT_ITALIC, any && run.italic);
+        m_formatBar.SetChecked(ID_FMT_UNDERLINE, any && run.underline);
+        m_formatBar.SetChecked(ID_FMT_STRIKE, any && run.strike);
+    }
     UpdatePaneBars();
 }
 
@@ -2028,6 +2090,7 @@ void MainWindow::OnThemeChanged() {
     m_toolbar.OnThemeChanged();
     m_searchBar.OnThemeChanged();
     for (Toolbar& bar : m_paneBar) bar.OnThemeChanged();
+    m_formatBar.OnThemeChanged();
     for (auto& t : m_tabs) t->view->OnThemeChanged();
     // Nudge the frame so DWM repaints the title bar colour.
     SetWindowPos(m_hwnd, nullptr, 0, 0, 0, 0,
@@ -2533,6 +2596,10 @@ void MainWindow::OnDocEdited(EditResult* result) {
     }
     if (res->action == EditAction::Edit && current && index == m_active) {
         if (!res->note.empty()) MessageBoxW(m_hwnd, res->note.c_str(), APP_NAME, MB_ICONINFORMATION);
+        if (!res->fontNote.empty() && !m_toldAboutFontPick) {
+            m_toldAboutFontPick = true;
+            MessageBoxW(m_hwnd, res->fontNote.c_str(), APP_NAME, MB_ICONINFORMATION);
+        }
         if (res->fontChanged && !m_toldAboutFonts) {
             m_toldAboutFonts = true;
             MessageBoxW(m_hwnd,
@@ -3365,6 +3432,175 @@ void MainWindow::InsertImage() {
     o.imageH = pic.height;
     View().SetToolOptions(o);
     SetTool(ViewTool::Image);
+}
+
+// Ctrl+V: a picture copied in another program (or a picture file copied in
+// File Explorer) is placed like "Insert picture": click where it goes.
+void MainWindow::PasteImage() {
+    if (!CanEdit()) return;
+    Picture pic;
+    if (!PictureFromClipboard(m_hwnd, pic, 2400)) {
+        if (View().Tool() == ViewTool::EditText)
+            MessageBoxW(m_hwnd,
+                        L"There is no picture to paste. Copy a picture first (for example right-click a "
+                        L"picture in your browser and choose \x201C" L"Copy image\x201D), then press Ctrl+V.",
+                        APP_NAME, MB_ICONINFORMATION);
+        return;
+    }
+    ToolOptions o;
+    o.pixels = std::move(pic.pixels);
+    o.imageW = pic.width;
+    o.imageH = pic.height;
+    View().SetToolOptions(o);
+    SetTool(ViewTool::Image);
+}
+
+// The selected picture shows another one, in the same place and size.
+void MainWindow::ReplaceImage() {
+    if (!CanEdit()) return;
+    int page, index;
+    if (!View().SelectedImage(page, index)) {
+        MessageBoxW(m_hwnd, L"Click a picture first (while editing), then choose \x201CReplace picture\x201D.",
+                    APP_NAME, MB_ICONINFORMATION);
+        return;
+    }
+    std::vector<wchar_t> file(32768, L'\0');
+    OPENFILENAMEW ofn{sizeof(ofn)};
+    ofn.hwndOwner = m_hwnd;
+    ofn.lpstrFilter = L"Pictures (*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.tif)\0*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.tif;*.tiff\0";
+    ofn.lpstrFile = file.data();
+    ofn.nMaxFile = (DWORD)file.size();
+    ofn.lpstrTitle = L"Replace picture";
+    ofn.Flags = OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_HIDEREADONLY;
+    if (!GetOpenFileNameW(&ofn)) return;
+    Picture pic;
+    if (!LoadPictureFile(file.data(), 2400, pic)) {
+        MessageBoxW(m_hwnd, L"That picture could not be read.", APP_NAME, MB_ICONWARNING);
+        return;
+    }
+    EditOp op;
+    op.kind = EditOp::ReplaceImage;
+    op.page = page;
+    op.index = index;
+    op.pixels = std::move(pic.pixels);
+    op.imageW = pic.width;
+    op.imageH = pic.height;
+    SendEdit(std::move(op));
+}
+
+// Installed fonts that can be put into a PDF (TrueType), by family name.
+const std::vector<std::wstring>& MainWindow::FontFaces() {
+    if (!m_fontFaces.empty()) return m_fontFaces;
+    HDC dc = GetDC(m_hwnd);
+    LOGFONTW lf{};
+    lf.lfCharSet = DEFAULT_CHARSET;
+    EnumFontFamiliesExW(
+        dc, &lf,
+        [](const LOGFONTW* f, const TEXTMETRICW*, DWORD type, LPARAM param) -> int {
+            auto* out = reinterpret_cast<std::vector<std::wstring>*>(param);
+            if ((type & TRUETYPE_FONTTYPE) && f->lfFaceName[0] != L'@') out->push_back(f->lfFaceName);
+            return out->size() < 2000;
+        },
+        (LPARAM)&m_fontFaces, 0);
+    ReleaseDC(m_hwnd, dc);
+    std::sort(m_fontFaces.begin(), m_fontFaces.end(),
+              [](const std::wstring& a, const std::wstring& b) { return _wcsicmp(a.c_str(), b.c_str()) < 0; });
+    m_fontFaces.erase(std::unique(m_fontFaces.begin(), m_fontFaces.end(),
+                                  [](const std::wstring& a, const std::wstring& b) { return _wcsicmp(a.c_str(), b.c_str()) == 0; }),
+                      m_fontFaces.end());
+    return m_fontFaces;
+}
+
+// The formatting bar (and Ctrl+B / I / U while editing text).
+void MainWindow::FormatCommand(int id) {
+    if (!CanEdit()) return;
+    PdfView& view = View();
+    if (view.Tool() != ViewTool::EditText) SetTool(ViewTool::EditText);
+    TextRun run;
+    if (!view.FormatTarget(run)) {
+        MessageBoxW(m_hwnd,
+                    L"First choose the text to change:\n\n"
+                    L"\x2022 click a line and select the words (or leave nothing selected for the whole line), or\n"
+                    L"\x2022 click a block, Ctrl+click more blocks, or draw a box around the lines you want.",
+                    APP_NAME, MB_ICONINFORMATION);
+        return;
+    }
+    EditOp::Format f;
+    if (id == ID_FMT_LEFT || id == ID_FMT_CENTER || id == ID_FMT_RIGHT) {
+        view.AlignSelection(id == ID_FMT_LEFT ? 0 : id == ID_FMT_CENTER ? 1 : 2);
+        return;
+    }
+    switch (id) {
+        case ID_FMT_BOLD: f.bold = run.bold ? 0 : 1; break;
+        case ID_FMT_ITALIC: f.italic = run.italic ? 0 : 1; break;
+        case ID_FMT_UNDERLINE: f.underline = run.underline ? 0 : 1; break;
+        case ID_FMT_STRIKE: f.strike = run.strike ? 0 : 1; break;
+        case ID_FMT_FONT: {
+            // The standard three first (they need nothing put into the PDF),
+            // then every installed font.
+            const wchar_t* standard[] = {L"Arial", L"Times New Roman", L"Courier New"};
+            HMENU m = CreatePopupMenu();
+            for (int i = 0; i < 3; ++i) AppendMenuW(m, MF_STRING, 1 + i, standard[i]);
+            AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+            HMENU more = CreatePopupMenu();
+            const std::vector<std::wstring>& faces = FontFaces();
+            for (size_t i = 0; i < faces.size() && i < 1500; ++i)
+                AppendMenuW(more, MF_STRING | (i > 0 && i % 30 == 0 ? MF_MENUBARBREAK : 0), 100 + i, faces[i].c_str());
+            AppendMenuW(m, MF_POPUP | (faces.empty() ? MF_GRAYED : 0), (UINT_PTR)more, L"&Other fonts");
+            const RECT r = m_formatBar.ItemScreenRect(ID_FMT_FONT);
+            const int cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, r.left, r.bottom, 0, m_hwnd, nullptr);
+            DestroyMenu(m);
+            if (cmd >= 1 && cmd <= 3) f.face = standard[cmd - 1];
+            else if (cmd >= 100 && cmd - 100 < (int)faces.size()) f.face = faces[(size_t)cmd - 100];
+            else return;
+            break;
+        }
+        case ID_FMT_SIZE: {
+            static const int kSizes[] = {6, 7, 8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 32, 36, 48, 72};
+            HMENU m = CreatePopupMenu();
+            const int now = (int)std::lround(run.size);
+            for (int i = 0; i < (int)(sizeof(kSizes) / sizeof(kSizes[0])); ++i)
+                AppendMenuW(m, MF_STRING | (kSizes[i] == now ? MF_CHECKED : 0), 1 + i, (std::to_wstring(kSizes[i]) + L" pt").c_str());
+            const RECT r = m_formatBar.ItemScreenRect(ID_FMT_SIZE);
+            const int cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, r.left, r.bottom, 0, m_hwnd, nullptr);
+            DestroyMenu(m);
+            if (cmd <= 0) return;
+            f.size = (float)kSizes[cmd - 1];
+            break;
+        }
+        case ID_FMT_COLOR: {
+            static const COLORREF kColors[] = {RGB(0, 0, 0), RGB(90, 90, 90), RGB(200, 0, 0), RGB(0, 70, 200),
+                                               RGB(0, 130, 50), RGB(230, 120, 0), RGB(120, 40, 160)};
+            static const wchar_t* kNames[] = {L"&Black", L"&Grey", L"&Red", L"B&lue", L"Gr&een", L"&Orange", L"&Purple"};
+            HMENU m = CreatePopupMenu();
+            for (int i = 0; i < 7; ++i) AppendMenuW(m, MF_STRING | (run.color == kColors[i] ? MF_CHECKED : 0), 1 + i, kNames[i]);
+            AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+            AppendMenuW(m, MF_STRING, 99, L"&More colours\x2026");
+            const RECT r = m_formatBar.ItemScreenRect(ID_FMT_COLOR);
+            const int cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, r.left, r.bottom, 0, m_hwnd, nullptr);
+            DestroyMenu(m);
+            if (cmd >= 1 && cmd <= 7) {
+                f.color = kColors[cmd - 1];
+            } else if (cmd == 99) {
+                static COLORREF custom[16] = {};
+                CHOOSECOLORW cc{sizeof(cc)};
+                cc.hwndOwner = m_hwnd;
+                cc.lpCustColors = custom;
+                cc.rgbResult = run.color;
+                cc.Flags = CC_FULLOPEN | CC_RGBINIT;
+                view.HoldInline(true);  // the text box stays open while the dialog has the focus
+                const BOOL chosen = ChooseColorW(&cc);
+                view.HoldInline(false);
+                if (!chosen) return;
+                f.color = cc.rgbResult;
+            } else {
+                return;
+            }
+            break;
+        }
+        default: return;
+    }
+    view.ApplyFormat(f);
 }
 
 // ===========================================================================

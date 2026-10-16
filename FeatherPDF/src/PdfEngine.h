@@ -69,7 +69,7 @@ public:
                          std::vector<CommentInfo>& comments, std::vector<FormField>& fields);
 
     // The editable lines of text on one page (see TextRun).
-    void GetTextRuns(int page, std::vector<TextRun>& runs);
+    void GetTextRuns(int page, std::vector<TextRun>& runs, std::vector<PageImage>* images = nullptr);
     // Every comment in the document (sticky notes, and markup with a comment).
     void ListComments(std::vector<std::pair<int, CommentInfo>>& out);
 
@@ -107,6 +107,8 @@ public:
     // had to use a different font because the original lacks some letters.
     int LastEditCount() const { return m_editCount; }
     bool LastEditChangedFont() const { return m_editFontChanged; }
+    // A font chosen for formatting that could not be used (empty: none).
+    const std::wstring& LastEditFontNote() const { return m_editFontNote; }
     // Current page sizes (in points, after /Rotate), e.g. after an edit.
     void GetPageSizes(std::vector<SizeF>& out);
     // Writes the whole document (all edits included) to a new file, with
@@ -154,6 +156,9 @@ private:
     bool Compress(const EditOp& op);
     bool Redact(const EditOp& op, std::wstring& error);
     bool AddMeasure(const EditOp& op, std::wstring& error);
+    bool MoveObjects(const EditOp& op, std::wstring& error);
+    bool ChangeImage(const EditOp& op, std::wstring& error);
+    bool FormatText(const EditOp& op, std::wstring& error);
     // Pages loaded for an edit, with the form-filling layer attached.
     FPDF_PAGE LoadEditPage(int index);
     void CloseEditPage(FPDF_PAGE page);
@@ -185,4 +190,5 @@ private:
 
     int m_editCount = 0;
     bool m_editFontChanged = false;
+    std::wstring m_editFontNote;
 };

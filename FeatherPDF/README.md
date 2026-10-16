@@ -1,10 +1,12 @@
-# Feather PDF 2.4
+# Feather PDF 2.5
 
 A small, fast, native PDF **viewer and editor** for Windows 10 and 11.
 It opens PDFs in tabs and lets you scroll, jump to pages, zoom, search,
 follow links, browse bookmarks and thumbnails, read in two-page, rotated or
 night mode, select and copy text or images, print and present. With **Edit
-PDF** and **Annotate** you can change the text of a PDF in place, find and
+PDF** and **Annotate** you can change the text of a PDF in place, make it
+bold, italic or underlined, change its font, size and colour, move blocks
+of text and pictures, replace or paste pictures, find and
 replace text, fill in forms, sign, add comments, highlights, drawings,
 stamps, pictures and new text, and delete, reorder, rotate, insert, merge,
 split and extract pages, with undo/redo and crash-safe saving. It makes
@@ -550,7 +552,61 @@ tabs.
   the page** (it is drawn into the document) or remove it.
 
 **Text size and colour:** in Edit text mode (Ctrl+E), right-click a line of
-text › Text size or Text colour (or Delete this text).
+text › Text size or Text colour (or Delete this line).
+
+**Formatting text (new in 2.5):** in Edit text mode a formatting bar
+appears under the toolbar: **B** (bold), **I** (italic), **U** (underline),
+**S** (strike through), **Font**, **Size**, **Colour**, and **Left / Centre
+/ Right**.
+
+* Click a line and select some words in the box: the buttons (or Ctrl+B,
+  Ctrl+I, Ctrl+U) change just those words. With nothing selected they
+  change the whole line. Anything typed in the box is kept as well.
+* Or select whole blocks (see below): the buttons change every selected line.
+* **Font:** Arial, Times New Roman and Courier New need nothing added to
+  the PDF. **Other fonts** lists every installed font; such a font is put
+  into the PDF (which makes the file larger). Fonts Windows keeps in a
+  form that cannot go into a PDF, or that lack some letters, are replaced
+  by a similar standard font, and Feather PDF says so the first time.
+* Underline and strike through are drawn as thin lines in the text's
+  colour; they move with the text and are removed again with **U** / **S**.
+* **Left / Centre / Right** lines up the selected lines with each other
+  (a single line: with the page's text, or the page centre).
+* The rest of the line moves up when formatted words become wider or
+  narrower, so words do not overlap.
+
+**Moving blocks of text (new in 2.5):** in Edit text mode, the mouse
+pointer shows a frame around the block under it (a paragraph, a heading or
+a table cell).
+
+* **Click** a line: its block is selected and the line opens for typing.
+  Press Esc to stop typing and keep the block selected.
+* **Drag** a block to move it anywhere on the page. **Arrow keys** nudge
+  the selection by 1 point, **Shift+arrow** by 10 points. **Delete**
+  removes it.
+* **Ctrl+click** adds more blocks to the selection (Ctrl+click again
+  removes one). **Drawing a box** on an empty part of the page selects
+  exactly the lines inside it.
+* Right-click a line › **Select the whole block** does the same as a click.
+* Scanned pages are pictures: use Recognise text first (the recognised
+  text is invisible and cannot be moved; the scan itself is the picture).
+
+**Pictures (new in 2.5):** in Edit text mode every picture has a dotted
+orange outline.
+
+* **Click** a picture to select it (a frame with four corner handles),
+  **drag** it to move it, drag a **corner** to resize it (it keeps its
+  proportions; hold Shift to stretch it), use the **arrow keys** to nudge
+  it and **Delete** to remove it.
+* Right-click a picture › **Replace picture…** puts another picture in its
+  place, as large as fits without stretching it.
+* **Insert picture** (formatting bar, or Annotate) places a picture from a
+  file; **Ctrl+V** or **Paste picture** places a picture copied in another
+  program (or a picture file copied in File Explorer). Click where it
+  goes, or drag to set its size.
+* Pictures that fill the whole page (a scan or a page background) are left
+  alone, so clicks on the page still select text. Pictures that a PDF keeps
+  inside a group of objects are not offered for moving.
 
 **Text markup:** select text, then right-click › Highlight (Ctrl+H),
 Underline (Ctrl+U) or Strikethrough (Ctrl+Shift+K), or use Annotate.
@@ -590,6 +646,11 @@ and version info, and `.pdf` association.
 | Ctrl+K | Command palette |
 | Ctrl+H / Ctrl+U / Ctrl+Shift+K | Highlight / underline / strike through the selected text |
 | Ctrl+E | Edit text on/off (click a line to change it; Enter keeps, Esc cancels) |
+| Ctrl+B / Ctrl+I / Ctrl+U (editing text) | Bold / italic / underline the selected words or lines |
+| Delete (editing text) | Delete the selected block or picture |
+| Arrow keys / Shift+arrows (editing text) | Nudge the selected block or picture by 1 / 10 points |
+| Ctrl+click (editing text) | Add a block to the selection |
+| Ctrl+V | Paste a picture onto the page (click where it goes) |
 | Ctrl+Shift+H | Find and replace text |
 | Ctrl+M | Add a comment (then click on the page) |
 | Ctrl+Shift+M | Comment on the selected text |
@@ -597,7 +658,7 @@ and version info, and `.pdf` association.
 | Ctrl+A (in thumbnails) | Select all pages |
 | Ctrl+P | Print |
 | Ctrl+D | Document properties |
-| Ctrl+B | Bookmarks panel |
+| Ctrl+B | Bookmarks panel (while editing text: bold) |
 | Ctrl+Shift+B | Thumbnails panel |
 | Ctrl+L / Ctrl+R | Rotate left / right |
 | Ctrl+A | Select all text |

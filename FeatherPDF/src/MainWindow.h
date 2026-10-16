@@ -155,6 +155,11 @@ private:
     void StartSignature(bool newOne);
     void SignField(int page, const RectF& rect);
     void InsertImage();
+    // Editing blocks, pictures and text formatting (the bar shown while editing)
+    void PasteImage();
+    void ReplaceImage();
+    void FormatCommand(int id);
+    const std::vector<std::wstring>& FontFaces();
     // Recognise text (OCR), watermarks, page numbers, export
     PageChoice NewPageChoice(const PageChoice& last);
     void RecogniseText();
@@ -228,6 +233,10 @@ private:
     bool m_splitDrag = false;
     Toolbar m_toolbar;
     Toolbar m_searchBar;
+    Toolbar m_formatBar;   // B I U S, font, size, colour, alignment: shown while editing text
+    bool m_formatVisible = false;
+    std::vector<std::wstring> m_fontFaces;  // installed fonts (read once)
+    bool m_toldAboutFontPick = false;
     Toolbar m_paneBar[2];  // above each side of a split tab: its name, the options, close
     bool m_paneDrag = false;
     bool m_syncing = false;

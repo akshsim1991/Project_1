@@ -22,7 +22,7 @@
 #include <vector>
 
 #define APP_NAME L"Feather PDF"
-#define APP_VERSION L"2.4.0"
+#define APP_VERSION L"2.5.0"
 #define APP_COPYRIGHT L"\x00A9 2026 Akshaya Simha"
 #define APP_WINDOW_CLASS L"FeatherPdfMain"
 #define APP_REG_KEY L"Software\\FeatherPDF"
@@ -205,6 +205,19 @@ enum : int {
     ID_PANE_NAME_R,
     ID_PANE_CLOSE_L,       // close one side; the other fills the tab
     ID_PANE_CLOSE_R,
+    // editing blocks, pictures and text formatting (2.5)
+    ID_FMT_BOLD,
+    ID_FMT_ITALIC,
+    ID_FMT_UNDERLINE,
+    ID_FMT_STRIKE,
+    ID_FMT_FONT,
+    ID_FMT_SIZE,
+    ID_FMT_COLOR,
+    ID_FMT_LEFT,
+    ID_FMT_CENTER,
+    ID_FMT_RIGHT,
+    ID_PASTE_IMAGE,      // Ctrl+V: a picture from the clipboard
+    ID_REPLACE_IMAGE,    // the selected picture shows another one
     ID_ZOOM_PRESET_FIRST = 300,  // + index into kZoomPresets
     ID_STAMP_FIRST = 400,        // + index into kStamps
     ID_DRAWCOLOR_FIRST = 420,    // + index into kDrawColors
@@ -216,7 +229,7 @@ enum : int {
     ID_COMPARE_TAB_FIRST = 640,  // + tab index (compare with an open tab)
     ID_BESIDE_TAB_FIRST = 700,   // + tab index (show an open document beside this one)
 };
-static_assert(ID_PANE_CLOSE_R < ID_ZOOM_PRESET_FIRST, "command ids overlap");
+static_assert(ID_REPLACE_IMAGE < ID_ZOOM_PRESET_FIRST, "command ids overlap");
 
 // Page geometry in PDF points (1/72 inch), already adjusted for /Rotate.
 struct SizeF {

@@ -12,6 +12,8 @@ struct Picture {
 
 // PNG, JPEG, BMP, GIF or TIFF, scaled down to at most `maxSide` pixels.
 bool LoadPictureFile(const std::wstring& path, int maxSide, Picture& out);
+// A picture copied to the clipboard (or a picture file copied in File Explorer).
+bool PictureFromClipboard(HWND owner, Picture& out, int maxSide);
 
 // The signature remembered between sessions (%APPDATA%\FeatherPDF).
 bool LoadSavedSignature(Picture& out);

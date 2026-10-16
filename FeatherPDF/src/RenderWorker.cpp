@@ -431,7 +431,7 @@ void RenderWorker::Execute(Command& cmd) {
             auto* res = new TextRunsResult;
             res->docId = cmd.docId;
             res->page = cmd.page;
-            engine->GetTextRuns(cmd.page, res->runs);
+            engine->GetTextRuns(cmd.page, res->runs, &res->images);
             Post(WM_APP_TEXT_RUNS, res);
             break;
         }
@@ -680,6 +680,7 @@ void RenderWorker::ExecuteEdit(Command& cmd) {
                                 L"\x201CSave as\x201D to keep the original) to make it permanent; until then "
                                 L"Undo (Ctrl+Z) brings them back.";
                 res->fontChanged = doc.Engine()->LastEditChangedFont();
+                res->fontNote = doc.Engine()->LastEditFontNote();
             }
             break;
         }

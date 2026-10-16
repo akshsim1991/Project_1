@@ -64,6 +64,11 @@ void DocEditor::Describe(const EditOp& op, int before, int after, int& focus,
         case EditOp::Redact:
         case EditOp::SetSecurity:
         case EditOp::AddMeasure:
+        case EditOp::MoveObjects:
+        case EditOp::DeleteObjects:
+        case EditOp::SetImageRect:
+        case EditOp::ReplaceImage:
+        case EditOp::FormatText:
             break;  // the reader stays where they are
     }
 }

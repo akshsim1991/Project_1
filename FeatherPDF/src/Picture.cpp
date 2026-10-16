@@ -6,6 +6,7 @@
 #include <memory>
 
 #include <commdlg.h>
+#include <shellapi.h>
 #include <shlobj.h>
 #include <windowsx.h>
 
@@ -112,6 +113,73 @@ bool LoadPictureFile(const std::wstring& path, int maxSide, Picture& out) {
         g.DrawImage(&src, Rect(0, 0, w, h), 0, 0, (INT)src.GetWidth(), (INT)src.GetHeight(), UnitPixel);
     }
     return FromBitmap(scaled, out);
+}
+
+namespace {
+// `src` scaled down to at most `maxSide` pixels.
+bool ScaledCopy(Bitmap& src, int maxSide, Picture& out) {
+    if (src.GetLastStatus() != Ok || src.GetWidth() == 0 || src.GetHeight() == 0) return false;
+    int w = (int)src.GetWidth(), h = (int)src.GetHeight();
+    const double k = std::min(1.0, (double)maxSide / std::max(w, h));
+    w = std::max(1, (int)std::lround(w * k));
+    h = std::max(1, (int)std::lround(h * k));
+    Bitmap scaled(w, h, PixelFormat32bppARGB);
+    {
+        Graphics g(&scaled);
+        g.SetInterpolationMode(InterpolationModeHighQualityBicubic);
+        g.SetPixelOffsetMode(PixelOffsetModeHalf);
+        g.DrawImage(&src, Rect(0, 0, w, h), 0, 0, (INT)src.GetWidth(), (INT)src.GetHeight(), UnitPixel);
+    }
+    return FromBitmap(scaled, out);
+}
+}  // namespace
+
+bool PictureFromClipboard(HWND owner, Picture& out, int maxSide) {
+    if (!OpenClipboard(owner)) return false;
+    bool ok = false;
+    // A picture file copied in File Explorer.
+    if (IsClipboardFormatAvailable(CF_HDROP)) {
+        if (HDROP drop = (HDROP)GetClipboardData(CF_HDROP)) {
+            wchar_t path[MAX_PATH] = L"";
+            if (DragQueryFileW(drop, 0, path, MAX_PATH)) ok = LoadPictureFile(path, maxSide, out);
+        }
+    }
+    // A PNG (browsers and many programs copy pictures this way; it keeps
+    // transparent parts).
+    const UINT png = RegisterClipboardFormatW(L"PNG");
+    if (!ok && png && IsClipboardFormatAvailable(png)) {
+        if (HGLOBAL data = GetClipboardData(png)) {
+            const SIZE_T size = GlobalSize(data);
+            const void* src = GlobalLock(data);
+            HGLOBAL copy = src && size ? GlobalAlloc(GMEM_MOVEABLE, size) : nullptr;
+            if (copy) {
+                memcpy(GlobalLock(copy), src, size);
+                GlobalUnlock(copy);
+                IStream* stream = nullptr;
+                if (SUCCEEDED(CreateStreamOnHGlobal(copy, TRUE, &stream))) {
+                    {
+                        Bitmap bmp(stream);
+                        ok = ScaledCopy(bmp, maxSide, out);
+                    }
+                    stream->Release();
+                } else {
+                    GlobalFree(copy);
+                }
+            }
+            if (src) GlobalUnlock(data);
+        }
+    }
+    // Any other picture.
+    if (!ok && IsClipboardFormatAvailable(CF_BITMAP)) {
+        if (HBITMAP h = (HBITMAP)GetClipboardData(CF_BITMAP)) {
+            Bitmap src(h, nullptr);
+            ok = ScaledCopy(src, maxSide, out);
+            // Bitmaps from the clipboard have no transparency.
+            for (size_t i = 3; ok && i < out.pixels.size(); i += 4) out.pixels[i] = 255;
+        }
+    }
+    CloseClipboard();
+    return ok;
 }
 
 bool LoadSavedSignature(Picture& out) {
