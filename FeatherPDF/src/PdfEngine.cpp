@@ -16,10 +16,12 @@
 #include "fpdf_annot.h"
 #include "fpdf_doc.h"
 #include "fpdf_edit.h"
+#include "fpdf_flatten.h"
 #include "fpdf_formfill.h"
 #include "fpdf_ppo.h"
 #include "fpdf_save.h"
 #include "fpdf_text.h"
+#include "fpdf_transformpage.h"
 #include "fpdfview.h"
 
 // ---------------------------------------------------------------------------
@@ -648,6 +650,12 @@ void PdfEngine::GetInfo(DocInfo& info) {
         info.author = meta("Author");
         info.subject = meta("Subject");
         info.keywords = meta("Keywords");
+        if (m_info.size() >= 4) {  // changed (SetInfo), not saved yet
+            info.title = m_info[0];
+            info.author = m_info[1];
+            info.subject = m_info[2];
+            info.keywords = m_info[3];
+        }
         info.creator = meta("Creator");
         info.producer = meta("Producer");
         info.created = meta("CreationDate");
@@ -811,10 +819,10 @@ namespace {
 // The document as PDFium writes it, without objects nothing refers to any
 // more (see DropUnusedObjects), optionally encrypted.
 bool WriteClean(FPDF_DOCUMENT doc, unsigned long flags, const std::wstring& path,
-                const PdfEngine::Security* encrypt) {
+                const PdfEngine::Security* encrypt, const std::string& info = {}) {
     std::string raw, clean, sealed;
     if (!SaveToMemory(doc, flags, raw)) return false;
-    const std::string& kept = DropUnusedObjects(raw, clean) ? clean : raw;
+    const std::string& kept = DropUnusedObjects(raw, clean, info.empty() ? nullptr : &info) ? clean : raw;
     bool ok = true;
     if (encrypt) ok = EncryptPdf(kept, encrypt->user, encrypt->owner, encrypt->permissions, sealed);
     ok = ok && WriteData(path, encrypt ? sealed : kept);
@@ -825,16 +833,53 @@ bool WriteClean(FPDF_DOCUMENT doc, unsigned long flags, const std::wstring& path
 }
 }  // namespace
 
+// The document information dictionary with the information set by SetInfo
+// (strings as UTF-16 hex), keeping the creator, producer and creation date.
+std::string PdfEngine::InfoDictionary() {
+    if (m_info.size() < 4) return {};
+    auto hex = [](const std::wstring& s) {
+        std::string out = "<FEFF";
+        char buf[8];
+        for (wchar_t c : s) {
+            snprintf(buf, sizeof(buf), "%04X", (unsigned)(unsigned short)c);
+            out += buf;
+        }
+        return out + ">";
+    };
+    auto meta = [&](const char* tag) {
+        std::wstring v;
+        Guarded([&] {
+            const unsigned long bytes = FPDF_GetMetaText(m_doc, tag, nullptr, 0);
+            if (bytes <= 2 || bytes > 65536) return;
+            std::vector<unsigned short> buf(bytes / 2);
+            FPDF_GetMetaText(m_doc, tag, buf.data(), bytes);
+            v.assign(reinterpret_cast<const wchar_t*>(buf.data()), bytes / 2 - 1);
+        });
+        return v;
+    };
+    std::string d = "<<";
+    const char* keys[4] = {"Title", "Author", "Subject", "Keywords"};
+    for (int i = 0; i < 4; ++i)
+        if (!m_info[(size_t)i].empty()) d += std::string("/") + keys[i] + " " + hex(m_info[(size_t)i]);
+    for (const char* key : {"Creator", "Producer", "CreationDate"}) {
+        const std::wstring v = meta(key);
+        if (!v.empty()) d += std::string("/") + key + " " + hex(v);
+    }
+    d += "/ModDate " + hex(PdfDateNow()) + ">>";
+    return d;
+}
+
 bool PdfEngine::WriteTo(const std::wstring& path) {
     if (!m_doc) return false;
+    const std::string info = InfoDictionary();
     // Without a change of password PDFium keeps the file's own encryption.
-    if (!m_security.set) return WriteClean(m_doc, FPDF_NO_INCREMENTAL, path, nullptr);
+    if (!m_security.set) return WriteClean(m_doc, FPDF_NO_INCREMENTAL, path, nullptr, info);
     return WriteClean(m_doc, FPDF_NO_INCREMENTAL | FPDF_REMOVE_SECURITY, path,
-                      m_security.encrypt ? &m_security : nullptr);
+                      m_security.encrypt ? &m_security : nullptr, info);
 }
 
 bool PdfEngine::WritePlainCopy(const std::wstring& path) {
-    return m_doc && WriteClean(m_doc, FPDF_NO_INCREMENTAL | FPDF_REMOVE_SECURITY, path, nullptr);
+    return m_doc && WriteClean(m_doc, FPDF_NO_INCREMENTAL | FPDF_REMOVE_SECURITY, path, nullptr, InfoDictionary());
 }
 
 std::string PdfEngine::PasswordAfterSave(const std::string& current) const {
@@ -862,6 +907,153 @@ bool PdfEngine::WritePagesTo(const std::vector<int>& pages, const std::wstring& 
     if (!ok || !out) return false;
     ok = SaveDocument(out, path);
     Guarded([&] { FPDF_CloseDocument(out); });
+    return ok;
+}
+
+bool PdfEngine::WriteLayout(const LayoutJob& job, const std::wstring& path) {
+    if (!m_doc || job.pages.empty()) return false;
+    for (int p : job.pages)
+        if (p < 0 || p >= m_pageCount) return false;
+    // A copy with comments, highlights and filled-in fields drawn into the
+    // pages (flattened), so they print as they are seen.
+    std::string data;
+    if (!SaveToMemory(m_doc, FPDF_NO_INCREMENTAL | FPDF_REMOVE_SECURITY, data)) return false;
+    bool ok = false;
+    Guarded([&] {
+        FPDF_DOCUMENT src = FPDF_LoadMemDocument64(data.data(), data.size(), nullptr);
+        if (!src) return;
+        FPDF_DOCUMENT out = FPDF_CreateNewDocument();
+        if (!out) {
+            FPDF_CloseDocument(src);
+            return;
+        }
+        // Each page's box (as shown), rotation and size as seen.
+        struct Src {
+            float l = 0, b = 0, w = 0, h = 0;
+            int rot = 0;
+            float dw() const { return rot % 2 ? h : w; }
+            float dh() const { return rot % 2 ? w : h; }
+        };
+        std::map<int, Src> info;
+        for (int p : job.pages) {
+            if (info.count(p)) continue;
+            FPDF_PAGE page = FPDF_LoadPage(src, p);
+            Src s;
+            if (page) {
+                FPDFPage_Flatten(page, FLAT_PRINT);
+                float l, b, r, t;
+                if (!(FPDFPage_GetCropBox(page, &l, &b, &r, &t) && r - l > 1 && t - b > 1))
+                    FPDFPage_GetMediaBox(page, &l, &b, &r, &t);
+                s = {std::min(l, r), std::min(b, t), std::fabs(r - l), std::fabs(t - b),
+                     std::max(0, FPDFPage_GetRotation(page)) % 4};
+                FPDF_ClosePage(page);
+            }
+            info[p] = s;
+        }
+        // Sheets: which page goes in which cell (-1: an empty cell).
+        int cols = 2, rows = 1;
+        bool landscape = true;
+        if (!job.booklet) {
+            switch (job.perSheet) {
+                case 4: cols = 2, rows = 2, landscape = false; break;
+                case 6: cols = 3, rows = 2, landscape = true; break;
+                case 9: cols = 3, rows = 3, landscape = false; break;
+                default: cols = 2, rows = 1, landscape = true; break;
+            }
+            const Src& first = info[job.pages.front()];
+            if (first.dw() > first.dh()) {  // landscape pages: the grid turns too
+                std::swap(cols, rows);
+                landscape = !landscape;
+            }
+        }
+        std::vector<std::vector<int>> sheets;
+        if (job.booklet) {
+            const int n = (int)job.pages.size();
+            const int padded = (n + 3) / 4 * 4;
+            auto at = [&](int i) { return i < n ? job.pages[(size_t)i] : -1; };
+            for (int s = 0; s < padded / 4; ++s) {
+                sheets.push_back({at(padded - 1 - 2 * s), at(2 * s)});      // front
+                sheets.push_back({at(2 * s + 1), at(padded - 2 - 2 * s)});  // back
+            }
+        } else {
+            const size_t per = (size_t)(cols * rows);
+            for (size_t i = 0; i < job.pages.size(); i += per) {
+                std::vector<int> cells;
+                for (size_t k = 0; k < per; ++k) cells.push_back(i + k < job.pages.size() ? job.pages[i + k] : -1);
+                sheets.push_back(cells);
+            }
+        }
+        float sw = job.sheetW, sh = job.sheetH;
+        if (sw <= 0 || sh <= 0) {
+            const Src& first = info[job.pages.front()];
+            sw = std::min(first.dw(), first.dh());
+            sh = std::max(first.dw(), first.dh());
+        }
+        if (landscape) std::swap(sw, sh);
+        const float margin = job.booklet ? 12.0f : 18.0f, gap = job.booklet ? 0.0f : 12.0f;
+        const float cw = (sw - 2 * margin - (cols - 1) * gap) / cols, ch = (sh - 2 * margin - (rows - 1) * gap) / rows;
+        std::map<int, FPDF_XOBJECT> xobjects;
+        ok = cw > 10 && ch > 10;
+        for (size_t si = 0; si < sheets.size() && ok; ++si) {
+            FPDF_PAGE sheet = FPDFPage_New(out, (int)si, sw, sh);
+            if (!sheet) {
+                ok = false;
+                break;
+            }
+            for (int cell = 0; cell < (int)sheets[si].size(); ++cell) {
+                const int p = sheets[si][(size_t)cell];
+                if (p < 0) continue;
+                auto it = xobjects.find(p);
+                if (it == xobjects.end()) it = xobjects.emplace(p, FPDF_NewXObjectFromPage(out, src, p)).first;
+                FPDF_PAGEOBJECT form = it->second ? FPDF_NewFormObjectFromXObject(it->second) : nullptr;
+                if (!form) continue;
+                const Src& s = info[p];
+                const int col = cell % cols, row = cell / cols;
+                const float k = std::min(cw / std::max(1.0f, s.dw()), ch / std::max(1.0f, s.dh()));
+                const float pw = s.dw() * k, ph = s.dh() * k;
+                float cx = margin + col * (cw + gap) + (cw - pw) / 2;
+                if (job.booklet) cx = col == 0 ? margin + cw - pw : margin + cw;  // against the fold
+                const float cy = sh - margin - row * (ch + gap) - ch + (ch - ph) / 2;
+                // Page space -> the cell, turned as the page is shown.
+                FS_MATRIX m{};
+                switch (s.rot) {
+                    case 1: m = {0, -k, k, 0, cx - k * s.b, cy + k * (s.w + s.l)}; break;
+                    case 2: m = {-k, 0, 0, -k, cx + k * (s.w + s.l), cy + k * (s.h + s.b)}; break;
+                    case 3: m = {0, k, -k, 0, cx + k * (s.h + s.b), cy - k * s.l}; break;
+                    default: m = {k, 0, 0, k, cx - k * s.l, cy - k * s.b}; break;
+                }
+                FPDFPageObj_SetMatrix(form, &m);
+                FPDFPage_InsertObject(sheet, form);
+            }
+            if (job.lines) {  // where to cut (or, for a booklet, fold)
+                auto line = [&](float x0, float y0, float x1, float y1) {
+                    FPDF_PAGEOBJECT path = FPDFPageObj_CreateNewPath(x0, y0);
+                    if (!path) return;
+                    FPDFPath_LineTo(path, x1, y1);
+                    FPDFPageObj_SetStrokeColor(path, 150, 150, 150, 255);
+                    FPDFPageObj_SetStrokeWidth(path, 0.5f);
+                    FPDFPath_SetDrawMode(path, FPDF_FILLMODE_NONE, 1);
+                    FPDFPage_InsertObject(sheet, path);
+                };
+                for (int c = 1; c < cols; ++c) {
+                    const float x = margin + c * (cw + gap) - gap / 2;
+                    line(x, margin / 2, x, sh - margin / 2);
+                }
+                for (int r = 1; r < rows; ++r) {
+                    const float y = sh - margin - r * (ch + gap) + gap / 2;
+                    line(margin / 2, y, sw - margin / 2, y);
+                }
+            }
+            ok = FPDFPage_GenerateContent(sheet) != 0;
+            FPDF_ClosePage(sheet);
+        }
+        for (auto& x : xobjects)
+            if (x.second) FPDF_CloseXObject(x.second);
+        if (ok) ok = SaveDocument(out, path);
+        FPDF_CloseDocument(out);
+        FPDF_CloseDocument(src);
+    });
+    SecureZeroMemory(data.data(), data.size());
     return ok;
 }
 
@@ -991,6 +1183,20 @@ bool PdfEngine::ApplyEdit(const EditOp& op, std::wstring& error) {
         case EditOp::SetImageRect:
         case EditOp::ReplaceImage: ok = ChangeImage(op, error); break;
         case EditOp::FormatText: ok = FormatText(op, error); break;
+        case EditOp::CropPages: ok = CropPages(op, error); break;
+        case EditOp::SetInfo:
+            // A file that keeps its own encryption is written by PDFium as
+            // it is; new information could not be encrypted with it.
+            if (FPDF_GetSecurityHandlerRevision(m_doc) != -1 && !(m_security.set)) {
+                error = L"This document is password-protected, so its information can be changed only "
+                        L"together with its protection: use Edit PDF \x203A Password protection (protect it again "
+                        L"or remove the protection) first.";
+                return false;
+            }
+            m_info = op.info;
+            m_info.resize(4);
+            ok = true;
+            break;
         case EditOp::SetSecurity:
             m_security.set = true;
             m_security.encrypt = op.encrypt;
@@ -2119,6 +2325,126 @@ bool PdfEngine::ChangeImage(const EditOp& op, std::wstring& error) {
         FPDF_ClosePage(page);
     });
     return ok;
+}
+
+
+// ---------------------------------------------------------------------------
+// Cropping pages
+// ---------------------------------------------------------------------------
+namespace {
+// The part of a page that is shown: its crop box, or else its media box (PDF user space).
+bool ShownBox(FPDF_PAGE page, float& l, float& b, float& r, float& t) {
+    if (FPDFPage_GetCropBox(page, &l, &b, &r, &t) && r - l > 1 && t - b > 1) return true;
+    return FPDFPage_GetMediaBox(page, &l, &b, &r, &t) != 0;
+}
+
+// What is drawn on a rendered page (white background), in pixels; false if nothing.
+bool InkBounds(const PixelBuffer& px, int& x0, int& y0, int& x1, int& y1) {
+    x0 = px.width;
+    y0 = px.height;
+    x1 = y1 = -1;
+    for (int y = 0; y < px.height; ++y) {
+        const uint8_t* row = px.bits + (size_t)y * px.width * 4;
+        for (int x = 0; x < px.width; ++x) {
+            const uint8_t* p = row + (size_t)x * 4;
+            if (p[0] < 240 || p[1] < 240 || p[2] < 240) {
+                x0 = std::min(x0, x);
+                x1 = std::max(x1, x);
+                y0 = std::min(y0, y);
+                y1 = std::max(y1, y);
+            }
+        }
+    }
+    return x1 >= 0;
+}
+}  // namespace
+
+bool PdfEngine::CropPages(const EditOp& op, std::wstring& error) {
+    if (op.pages.empty()) return false;
+    for (int p : op.pages)
+        if (p < 0 || p >= m_pageCount) return false;
+    int changed = 0;
+    for (int index : op.pages) {
+        // What is drawn on the page, found on a small rendering, before the
+        // page is loaded for changing.
+        RectF content;
+        bool hasContent = false;
+        if (op.option == kCropContent) {
+            PixelBuffer px;
+            const float scale = 0.75f;  // 54 dpi: enough to find the edges
+            if (RenderPage(index, scale, true, px)) {
+                int x0, y0, x1, y1;
+                if (InkBounds(px, x0, y0, x1, y1)) {
+                    content = {x0 / scale, y0 / scale, (x1 + 1) / scale, (y1 + 1) / scale};
+                    hasContent = true;
+                }
+                px.Free();
+            }
+            if (!hasContent) continue;  // a blank page stays as it is
+        }
+        bool ok = false;
+        Guarded([&] {
+            FPDF_PAGE page = FPDF_LoadPage(m_doc, index);
+            if (!page) return;
+            const float w = FPDF_GetPageWidthF(page), h = FPDF_GetPageHeightF(page);  // as seen
+            float l, b, r, t;
+            if (!ShownBox(page, l, b, r, t)) {
+                FPDF_ClosePage(page);
+                return;
+            }
+            if (op.option == kCropPaper) {
+                // The page as seen becomes the paper size (turned like the
+                // page), its content made to fit and centred.
+                float pw = op.size.w, ph = op.size.h;
+                if ((w > h) != (pw > ph)) std::swap(pw, ph);
+                const int rot = std::max(0, FPDFPage_GetRotation(page)) % 2;
+                const float tw = rot ? ph : pw, th = rot ? pw : ph;  // in page space
+                const float bw = r - l, bh = t - b;
+                const float k = std::min(tw / bw, th / bh);
+                const FS_MATRIX m{k, 0, 0, k, (tw - bw * k) / 2 - l * k, (th - bh * k) / 2 - b * k};
+                const FS_RECTF clip{0, th, tw, 0};
+                if (FPDFPage_TransFormWithClip(page, &m, &clip)) {
+                    FPDFPage_TransformAnnots(page, m.a, m.b, m.c, m.d, m.e, m.f);
+                    FPDFPage_SetMediaBox(page, 0, 0, tw, th);
+                    FPDFPage_SetCropBox(page, 0, 0, tw, th);
+                    float x0, y0, x1, y1;
+                    if (FPDFPage_GetTrimBox(page, &x0, &y0, &x1, &y1)) FPDFPage_SetTrimBox(page, 0, 0, tw, th);
+                    if (FPDFPage_GetBleedBox(page, &x0, &y0, &x1, &y1)) FPDFPage_SetBleedBox(page, 0, 0, tw, th);
+                    if (FPDFPage_GetArtBox(page, &x0, &y0, &x1, &y1)) FPDFPage_SetArtBox(page, 0, 0, tw, th);
+                    ok = true;
+                }
+            } else {
+                // The area to keep, as seen on the page.
+                RectF keep{0, 0, w, h};
+                if (op.option == kCropContent) {
+                    const float pad = std::max(0.0f, op.width);
+                    keep = {content.left - pad, content.top - pad, content.right + pad, content.bottom + pad};
+                } else if (op.option == kCropMargins) {
+                    keep = {op.rect.left, op.rect.top, w - op.rect.right, h - op.rect.bottom};
+                } else {
+                    keep = op.rect;
+                }
+                keep.left = std::max(0.0f, keep.left);
+                keep.top = std::max(0.0f, keep.top);
+                keep.right = std::min(w, keep.right);
+                keep.bottom = std::min(h, keep.bottom);
+                if (keep.right - keep.left >= 18 && keep.bottom - keep.top >= 18) {
+                    const FS_RECTF k = ToPageRect(page, keep);  // left, top, right, bottom (top > bottom)
+                    FPDFPage_SetCropBox(page, std::max(l, k.left), std::max(b, k.bottom), std::min(r, k.right),
+                                        std::min(t, k.top));
+                    ok = true;
+                }
+            }
+            FPDF_ClosePage(page);
+        });
+        if (ok) ++changed;
+    }
+    if (changed == 0) {
+        error = op.option == kCropContent ? L"Nothing could be cropped: the pages are empty, or there is no white margin to remove."
+                                          : L"Nothing could be cropped: what would be left of the pages is too small.";
+        return false;
+    }
+    return true;
 }
 
 // Formatting rebuilds a line of text as up to three text objects: the part

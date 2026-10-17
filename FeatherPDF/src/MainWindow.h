@@ -2,6 +2,7 @@
 // one page view per tab, the render worker and settings, and wires user
 // commands to them.
 #pragma once
+#include <map>
 #include <memory>
 
 #include "PdfView.h"
@@ -50,6 +51,12 @@ private:
         Tab* partner = nullptr;
         bool side = false;
         bool lastRight = false;       // left side: the right one was active when the tab was left
+        // Recovery of unsaved changes after a crash (see Recovery.cpp)
+        std::wstring recoveryFile;    // the latest copy of its unsaved state
+        uint32_t autosavedDocId = 0;  // the state that copy holds
+        std::wstring autosavingTo;    // a copy being written
+        std::wstring recoveredFrom;   // reopened from a recovery copy: the file it belongs to
+        std::wstring recoveryBase;    // ... and that copy (the document's base until saved)
     };
 
     static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
@@ -155,6 +162,25 @@ private:
     void StartSignature(bool newOne);
     void SignField(int page, const RectF& rect);
     void InsertImage();
+    // Copying, cutting and pasting pages (between tabs and windows)
+    void CopyPages(bool cut, Tab* dropTab = nullptr, int dropIndex = -1);
+    void OnPagesCopied(ExtractResult* result);
+    void PastePages(int where);  // ID_PASTE_PAGES_AFTER / BEFORE / START / END
+    void PastePagesIntoTabs();
+    void PastePagesInto(Tab& tab, int index, const std::wstring& file);
+    void DropPages(POINT screen);
+    // Cropping pages, pages per sheet and booklets
+    void CropPagesDialog();
+    void OnCropBox(int page, const RectF& rect);
+    void MakePagesPerSheet();
+    // Recovery of unsaved changes (Recovery.cpp)
+    void InitRecovery();             // offers to restore what a crash left; returns after opening it
+    void AutosaveTick();             // every few seconds: copies of changed documents
+    void OnAutosaved(AutosaveResult* result);
+    void ForgetRecovery(Tab& tab, bool closing);  // saved or made clean (or closed: everything)
+    void WriteRecoveryList();
+    void EndRecovery();              // a normal exit: nothing to recover
+    std::vector<std::wstring> RecoveredOriginals() const;
     // Editing blocks, pictures and text formatting (the bar shown while editing)
     void PasteImage();
     void ReplaceImage();
@@ -237,6 +263,22 @@ private:
     bool m_formatVisible = false;
     std::vector<std::wstring> m_fontFaces;  // installed fonts (read once)
     bool m_toldAboutFontPick = false;
+    struct ClipJob {          // pages being written for the clipboard
+        bool cut = false;
+        Tab* tab = nullptr;   // where they come from
+        uint32_t docId = 0;   // its state then
+        std::vector<int> pages;
+        std::wstring name;    // the document's name
+        Tab* dropTab = nullptr;  // dragged onto another document: pasted there
+        int dropIndex = -1;
+    };
+    static constexpr UINT_PTR kAutosaveTimer = 7;
+    std::wstring m_recoveryId;       // this window's session: "<process>-<start time>"
+    HANDLE m_recoveryLock = INVALID_HANDLE_VALUE;  // held while it runs (released if it crashes)
+    std::wstring m_recoveryDir;      // %LOCALAPPDATA%\FeatherPDF\Recovery
+    uint32_t m_recoverySerial = 1;
+    std::map<uint32_t, ClipJob> m_clipJobs;
+    uint32_t m_nextClipId = 1;
     Toolbar m_paneBar[2];  // above each side of a split tab: its name, the options, close
     bool m_paneDrag = false;
     bool m_syncing = false;
@@ -276,6 +318,8 @@ private:
     WatermarkOptions m_watermarkOptions;
     PageNumberOptions m_numberOptions;
     ExportOptions m_exportOptions;
+    CropOptions m_cropOptions;
+    NupOptions m_nupOptions;
     // export (one at a time)
     bool m_exporting = false;
     int m_exportDone = 0, m_exportTotal = 0;

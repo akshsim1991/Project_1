@@ -22,7 +22,7 @@
 #include <vector>
 
 #define APP_NAME L"Feather PDF"
-#define APP_VERSION L"2.5.0"
+#define APP_VERSION L"2.6.0"
 #define APP_COPYRIGHT L"\x00A9 2026 Akshaya Simha"
 #define APP_WINDOW_CLASS L"FeatherPdfMain"
 #define APP_REG_KEY L"Software\\FeatherPDF"
@@ -51,6 +51,7 @@ enum : UINT {
     WM_APP_EXPORT_PROGRESS,          // ExportProgress*
     WM_APP_COMPARED,                 // CompareResult*
     WM_APP_REDACT_FOUND,             // RedactFindResult*
+    WM_APP_AUTOSAVED,                // AutosaveResult* (a recovery copy was written)
 };
 
 // WM_APP_SIDEBAR notifications: lParam = outline index / page index.
@@ -63,6 +64,8 @@ enum : WPARAM {
     kSidebarPagesMoved = 2,
     kSidebarPagesMenu = 3,
     kSidebarDeletePages = 4,
+    kSidebarPagesDropOut = 5,   // selected thumbnails dropped outside the panel: lParam = MAKELPARAM(screen x, y)
+    kSidebarPagesCommand = 6,   // lParam = a command (Ctrl+C / X / V in the thumbnails)
 };
 
 // ---------------------------------------------------------------------------
@@ -218,6 +221,17 @@ enum : int {
     ID_FMT_RIGHT,
     ID_PASTE_IMAGE,      // Ctrl+V: a picture from the clipboard
     ID_REPLACE_IMAGE,    // the selected picture shows another one
+    // pages: copy and paste, crop, pages per sheet, properties (2.6)
+    ID_COPY_PAGES,
+    ID_CUT_PAGES,
+    ID_PASTE_PAGES_AFTER,
+    ID_PASTE_PAGES_BEFORE,
+    ID_PASTE_PAGES_START,
+    ID_PASTE_PAGES_END,
+    ID_PASTE_PAGES_TABS,
+    ID_CROP_PAGES,       // the crop dialog
+    ID_TOOL_CROP,        // draw the area to keep on the page
+    ID_NUP,              // pages per sheet and booklets
     ID_ZOOM_PRESET_FIRST = 300,  // + index into kZoomPresets
     ID_STAMP_FIRST = 400,        // + index into kStamps
     ID_DRAWCOLOR_FIRST = 420,    // + index into kDrawColors
@@ -229,7 +243,7 @@ enum : int {
     ID_COMPARE_TAB_FIRST = 640,  // + tab index (compare with an open tab)
     ID_BESIDE_TAB_FIRST = 700,   // + tab index (show an open document beside this one)
 };
-static_assert(ID_REPLACE_IMAGE < ID_ZOOM_PRESET_FIRST, "command ids overlap");
+static_assert(ID_NUP < ID_ZOOM_PRESET_FIRST, "command ids overlap");
 
 // Page geometry in PDF points (1/72 inch), already adjusted for /Rotate.
 struct SizeF {

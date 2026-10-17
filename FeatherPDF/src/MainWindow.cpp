@@ -204,8 +204,19 @@ bool MainWindow::Create(HINSTANCE inst, int showCmd, const std::wstring& file, i
     UpdateWindow(m_hwnd);  // show the window before any PDF work
     SetFocus(View().Hwnd());
 
+    // Documents with unsaved changes that a crash left behind.
+    InitRecovery();
+    const std::vector<std::wstring> recovered = RecoveredOriginals();
+    auto wasRecovered = [&](const std::wstring& path) {
+        for (const auto& r : recovered)
+            if (SamePath(r, FullPath(path))) return true;
+        return false;
+    };
+
     // Open the requested file, or restore the tabs of the last session.
-    if (!file.empty()) {
+    if (!file.empty() && wasRecovered(file)) {
+        // reopened above, with its changes
+    } else if (!file.empty()) {
         int start = page >= 0 ? page : 0;
         if (page < 0) {
             for (const auto& f : m_settings.session)
@@ -217,7 +228,7 @@ bool MainWindow::Create(HINSTANCE inst, int showCmd, const std::wstring& file, i
         Tab* last = nullptr;  // the tab just restored (a "beside" entry goes into it)
         for (size_t i = 0; i < m_settings.session.size(); ++i) {
             const auto& f = m_settings.session[i];
-            if (!FileExists(f.path)) {
+            if (!FileExists(f.path) || wasRecovered(f.path)) {
                 if (!f.beside) last = nullptr;
                 continue;
             }
@@ -236,6 +247,12 @@ bool MainWindow::Create(HINSTANCE inst, int showCmd, const std::wstring& file, i
         }
         if (!m_tabs.empty()) ActivateTab(activeTab ? IndexOf(activeTab) : 0);
     }
+    // A document brought back after a crash is shown first.
+    for (size_t i = 0; i < m_tabs.size(); ++i)
+        if (!m_tabs[i]->recoveredFrom.empty() && !m_tabs[i]->side) {
+            ActivateTab((int)i);
+            break;
+        }
     UpdateTabs();
     UpdateUi();
     return true;
@@ -515,6 +532,9 @@ int MainWindow::NewTab() {
     tab->view->onSignField = [this, raw](int page, const RectF& rect) {
         if (m_active >= 0 && raw == &Active()) SignField(page, rect);
     };
+    tab->view->onCropBox = [this, raw](int page, const RectF& rect) {
+        if (m_active >= 0 && raw == &Active()) OnCropBox(page, rect);
+    };
     tab->view->onMarksChanged = [this, raw] {
         if (m_active >= 0 && raw == &Active()) UpdateUi();
     };
@@ -574,6 +594,7 @@ void MainWindow::CloseTab(int index, bool force) {
     if (index < 0 || index >= (int)m_tabs.size()) return;
     if (!force && !ConfirmCloseTab(index)) return;
     Tab& tab = *m_tabs[(size_t)index];
+    ForgetRecovery(tab, true);
     if (index == m_active && tab.search.running) CancelSearch();
     if (tab.docId) m_worker.CloseDocument(tab.docId);
 
@@ -973,6 +994,9 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         case WM_APP_EXTRACTED:
             OnExtracted((ExtractResult*)lp);
             return 0;
+        case WM_APP_AUTOSAVED:
+            OnAutosaved((AutosaveResult*)lp);
+            return 0;
         case WM_APP_OCR_IMAGE:
             OnOcrImage((OcrImage*)lp);
             return 0;
@@ -1109,6 +1133,7 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
                 KillTimer(m_hwnd, kSearchTimer);
                 if (GetText(m_searchEdit) != Active().search.query) StartSearch();
             }
+            if (wp == kAutosaveTimer) AutosaveTick();
             return 0;
 
         case WM_DROPFILES: {
@@ -1159,6 +1184,7 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             if (m_quitSaves > 0) return 0;  // still saving; closes when done
             if (!ConfirmQuit()) return 0;
             SaveSettings();
+            EndRecovery();  // a normal exit: nothing to recover next time
             DestroyWindow(m_hwnd);
             return 0;
 
@@ -1392,6 +1418,21 @@ void MainWindow::OnCommand(int id, int code, HWND ctl) {
             break;
         case ID_INSERT_IMAGE: InsertImage(); break;
         case ID_PASTE_IMAGE: PasteImage(); break;
+        case ID_COPY_PAGES: CopyPages(false); break;
+        case ID_CUT_PAGES: CopyPages(true); break;
+        case ID_PASTE_PAGES_AFTER:
+        case ID_PASTE_PAGES_BEFORE:
+        case ID_PASTE_PAGES_START:
+        case ID_PASTE_PAGES_END: PastePages(id); break;
+        case ID_PASTE_PAGES_TABS: PastePagesIntoTabs(); break;
+        case ID_CROP_PAGES: CropPagesDialog(); break;
+        case ID_TOOL_CROP:
+            if (CanEdit()) {
+                SetTool(view.Tool() == ViewTool::Crop ? ViewTool::Select : ViewTool::Crop);
+                view.ShowNote(L"Drag a box around the part of the page to keep.");
+            }
+            break;
+        case ID_NUP: MakePagesPerSheet(); break;
         case ID_REPLACE_IMAGE: ReplaceImage(); break;
         case ID_FMT_BOLD:
         case ID_FMT_ITALIC:
@@ -1904,6 +1945,11 @@ void MainWindow::OnDocLoaded(DocLoadResult* result) {
     tab.outline = std::move(res->outline);
     tab.info = std::move(res->info);
     tab.dirty = tab.canUndo = tab.canRedo = false;
+    if (!tab.recoveredFrom.empty()) {
+        // A recovery copy: it shows (and is saved to) the document it belongs to.
+        tab.path = tab.recoveredFrom;
+        tab.dirty = true;
+    }
     tab.view->SetDocument(tab.docId, std::move(res->pageSizes), tab.pendingPage);
     tab.view->SetCopyAllowed((tab.info.permissions & kPermCopy) != 0);
     if (tab.unlocking) {
@@ -2175,6 +2221,10 @@ void MainWindow::OnSidebar(WPARAM event, LPARAM value) {
         ShowPagesMenu({GET_X_LPARAM(value), GET_Y_LPARAM(value)});
     } else if (event == kSidebarDeletePages) {
         DeletePages();
+    } else if (event == kSidebarPagesDropOut) {
+        DropPages({GET_X_LPARAM(value), GET_Y_LPARAM(value)});
+    } else if (event == kSidebarPagesCommand) {
+        OnCommand((int)value, 0, nullptr);
     } else if (event == kSidebarOutlineClicked && value >= 0 &&
                (size_t)value < tab.outline.size()) {
         const LinkTarget& target = tab.outline[(size_t)value].target;
@@ -2337,16 +2387,10 @@ void MainWindow::ShowProperties() {
     if (GetFileAttributesExW(tab.path.c_str(), GetFileExInfoStandard, &fad))
         line(L"File size:",
              FormatBytes(((ULONGLONG)fad.nFileSizeHigh << 32) | fad.nFileSizeLow));
-    text += L"\n";
-    line(L"Title:", info.title);
-    line(L"Author:", info.author);
-    line(L"Subject:", info.subject);
-    line(L"Keywords:", info.keywords);
     line(L"Created:", FormatInfoDate(info.created));
     line(L"Modified:", FormatInfoDate(info.modified));
     line(L"Creator:", info.creator);
     line(L"Producer:", info.producer);
-    text += L"\n";
     if (info.version)
         line(L"Version:", L"PDF " + std::to_wstring(info.version / 10) + L"." + std::to_wstring(info.version % 10));
     line(L"Pages:", std::to_wstring(tab.view->PageCount()));
@@ -2359,7 +2403,24 @@ void MainWindow::ShowProperties() {
         line(L"Page size:", buf);
     }
     line(L"Encrypted:", info.encrypted ? L"Yes" : L"No");
-    MessageBoxW(m_hwnd, text.c_str(), L"Document properties", MB_OK | MB_ICONINFORMATION);
+
+    PropertiesOptions o;
+    o.info = text;
+    o.title = info.title;
+    o.author = info.author;
+    o.subject = info.subject;
+    o.keywords = info.keywords;
+    o.canEdit = !tab.pendingDocId && !m_printing && (info.permissions & kPermModify) != 0;
+    o.note = o.canEdit ? L"Change the title, author, subject or keywords above; they are written into the "
+                         L"document when you save it. Undo (Ctrl+Z) takes the change back."
+                       : L"The author of this document does not allow changes to it.";
+    if (!ShowPropertiesDialog(m_inst, m_hwnd, o) || !o.canEdit) return;
+    if (o.title == info.title && o.author == info.author && o.subject == info.subject && o.keywords == info.keywords)
+        return;
+    EditOp op;
+    op.kind = EditOp::SetInfo;
+    op.info = {o.title, o.author, o.subject, o.keywords};
+    SendEdit(std::move(op));
 }
 
 // ===========================================================================
@@ -2552,10 +2613,14 @@ void MainWindow::OnDocEdited(EditResult* result) {
     const bool current = tab.docId == res->docId;  // no newer edit sent since
 
     if (current) {
-        tab.dirty = res->dirty;
+        // A recovered document stays unsaved (and keeps its own name) until it is saved.
+        const bool recovered = !tab.recoveredFrom.empty() && !(res->action == EditAction::Save && res->ok);
+        tab.dirty = res->dirty || recovered;
         tab.canUndo = res->canUndo;
         tab.canRedo = res->canRedo;
-        tab.path = res->path;
+        tab.path = recovered ? tab.recoveredFrom : res->path;
+        if (!recovered) tab.recoveredFrom.clear();
+        if (!tab.dirty) ForgetRecovery(tab, false);
         tab.info = std::move(res->info);
         tab.view->SetCopyAllowed((tab.info.permissions & kPermCopy) != 0);
         if (res->action != EditAction::Save) {
@@ -2828,6 +2893,10 @@ void MainWindow::ExtractPages() {
 }
 
 void MainWindow::OnExtracted(ExtractResult* result) {
+    if (result->clipId) {
+        OnPagesCopied(result);
+        return;
+    }
     std::unique_ptr<ExtractResult> res(result);
     if (!res->ok) {
         MessageBoxW(m_hwnd, res->error.c_str(), APP_NAME, MB_ICONWARNING);
@@ -2866,11 +2935,25 @@ HMENU MainWindow::CreatePagesMenu() {
     AppendMenuW(m, MF_STRING, ID_ROTATE_PAGES_CW, L"Rotate &clockwise");
     AppendMenuW(m, MF_STRING, ID_ROTATE_PAGES_CCW, L"Rotate c&ounterclockwise");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    const bool canPaste = IsClipboardFormatAvailable(RegisterClipboardFormatW(L"FeatherPDF.Pages")) != 0;
+    const UINT pasteFlag = MF_STRING | (canPaste ? 0 : MF_GRAYED);
+    AppendMenuW(m, MF_STRING, ID_COPY_PAGES, several ? L"Cop&y pages\tCtrl+C" : L"Cop&y page\tCtrl+C");
+    AppendMenuW(m, MF_STRING, ID_CUT_PAGES, several ? L"Cu&t pages\tCtrl+X" : L"Cu&t page\tCtrl+X");
+    AppendMenuW(m, pasteFlag, ID_PASTE_PAGES_AFTER, L"&Paste pages after\tCtrl+V");
+    AppendMenuW(m, pasteFlag, ID_PASTE_PAGES_BEFORE, L"Paste pages &before");
+    AppendMenuW(m, pasteFlag, ID_PASTE_PAGES_START, L"Paste pages at the &start");
+    AppendMenuW(m, pasteFlag, ID_PASTE_PAGES_END, L"Paste pages at the &end");
+    AppendMenuW(m, pasteFlag | (m_tabs.size() > 1 ? 0 : MF_GRAYED), ID_PASTE_PAGES_TABS, L"Paste pages into &several tabs\x2026");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(m, MF_STRING, ID_INSERT_BLANK, L"Insert &blank page after");
     AppendMenuW(m, MF_STRING, ID_INSERT_FILE, L"&Insert pages from file\x2026");
     AppendMenuW(m, MF_STRING, ID_MERGE_FILES, L"&Merge PDFs into this document\x2026");
     AppendMenuW(m, MF_STRING | (m_tabs.size() > 1 ? 0 : MF_GRAYED), ID_MERGE_TABS,
                 L"Merge open &tabs into this document");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_STRING, ID_CROP_PAGES, L"Cr&op pages\x2026");
+    AppendMenuW(m, MF_STRING, ID_TOOL_CROP, L"Crop by &drawing a box");
+    AppendMenuW(m, MF_STRING, ID_NUP, L"Pages per s&heet and booklets\x2026");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(m, MF_STRING, ID_EXTRACT_PAGES, L"E&xtract or split pages\x2026");
     return m;
@@ -2881,6 +2964,311 @@ void MainWindow::ShowPagesMenu(POINT screen) {
     HMENU m = CreatePagesMenu();
     TrackPopupMenu(m, TPM_RIGHTBUTTON, screen.x, screen.y, 0, m_hwnd, nullptr);
     DestroyMenu(m);
+}
+
+// ===========================================================================
+// Copying, cutting and pasting pages
+//
+// Copied pages are written (by the worker, from the document as it is then,
+// unsaved changes included) to a private PDF, and the clipboard holds its
+// name in a format of our own, so they can be pasted into any tab or any
+// Feather PDF window. Pasting inserts that file's pages (an ordinary
+// "insert pages" edit: one undo step).
+// ===========================================================================
+namespace {
+UINT PagesClipboardFormat() {
+    static const UINT format = RegisterClipboardFormatW(L"FeatherPDF.Pages");
+    return format;
+}
+
+// "file\ncount\nname of the document they came from"
+bool ReadClipboardPages(HWND owner, std::wstring& file, int& count, std::wstring& from) {
+    const UINT format = PagesClipboardFormat();
+    if (!format || !IsClipboardFormatAvailable(format) || !OpenClipboard(owner)) return false;
+    std::wstring data;
+    if (HGLOBAL h = GetClipboardData(format)) {
+        if (const auto* p = (const wchar_t*)GlobalLock(h)) {
+            data.assign(p, wcsnlen(p, GlobalSize(h) / sizeof(wchar_t)));
+            GlobalUnlock(h);
+        }
+    }
+    CloseClipboard();
+    const size_t a = data.find(L'\n'), b = a == std::wstring::npos ? a : data.find(L'\n', a + 1);
+    if (b == std::wstring::npos) return false;
+    file = data.substr(0, a);
+    count = _wtoi(data.substr(a + 1, b - a - 1).c_str());
+    from = data.substr(b + 1);
+    return count > 0 && FileExists(file);
+}
+
+bool WriteClipboardPages(HWND owner, const std::wstring& file, int count, const std::wstring& from) {
+    const std::wstring data = file + L"\n" + std::to_wstring(count) + L"\n" + from;
+    const UINT format = PagesClipboardFormat();
+    HGLOBAL h = GlobalAlloc(GMEM_MOVEABLE, (data.size() + 1) * sizeof(wchar_t));
+    if (!format || !h) return false;
+    memcpy(GlobalLock(h), data.c_str(), (data.size() + 1) * sizeof(wchar_t));
+    GlobalUnlock(h);
+    if (!OpenClipboard(owner)) {
+        GlobalFree(h);
+        return false;
+    }
+    EmptyClipboard();
+    const bool ok = SetClipboardData(format, h) != nullptr;
+    if (!ok) GlobalFree(h);
+    CloseClipboard();
+    return ok;
+}
+
+std::wstring PagesWord(int n) { return n == 1 ? L"1 page" : std::to_wstring(n) + L" pages"; }
+}  // namespace
+
+void MainWindow::CopyPages(bool cut, Tab* dropTab, int dropIndex) {
+    if (!CanEdit()) return;
+    Tab& tab = Active();
+    // Copying pages copies their text and pictures.
+    if (!Permitted(kPermCopy, L"copying its pages")) return;
+    std::vector<int> pages = SelectedPages();
+    if (pages.empty()) return;
+    if (cut) {
+        if (!EditPermitted(EditOp{})) return;
+        if ((int)pages.size() >= tab.view->PageCount()) {
+            MessageBoxW(m_hwnd,
+                        L"A document must keep at least one page, so all of its pages can not be cut. "
+                        L"They were copied instead.",
+                        APP_NAME, MB_ICONINFORMATION);
+            cut = false;
+        }
+    }
+    const uint32_t id = m_nextClipId++;
+    ClipJob job;
+    job.cut = cut;
+    job.tab = &tab;
+    job.docId = tab.docId;
+    job.pages = pages;
+    job.name = FileNameFromPath(tab.path);
+    job.dropTab = dropTab;
+    job.dropIndex = dropIndex;
+    m_clipJobs[id] = job;
+    m_worker.Extract(tab.docId, std::move(pages), MakeTempPdfPath(), false, id);
+}
+
+void MainWindow::OnPagesCopied(ExtractResult* result) {
+    std::unique_ptr<ExtractResult> res(result);
+    auto it = m_clipJobs.find(res->clipId);
+    if (it == m_clipJobs.end()) return;
+    const ClipJob job = it->second;
+    m_clipJobs.erase(it);
+    if (!res->ok || res->files.empty()) {
+        MessageBoxW(m_hwnd, (L"The pages could not be copied.\n\n" + res->error).c_str(), APP_NAME, MB_ICONWARNING);
+        return;
+    }
+    const std::wstring file = res->files.front();
+    const int count = (int)job.pages.size();
+    // Dragged onto another document: pasted there (the clipboard is left alone).
+    if (job.dropTab) {
+        if (IndexOf(job.dropTab) >= 0) PastePagesInto(*job.dropTab, job.dropIndex, file);
+        return;
+    }
+    if (!WriteClipboardPages(m_hwnd, file, count, job.name)) {
+        MessageBoxW(m_hwnd, L"The pages could not be put on the clipboard.", APP_NAME, MB_ICONWARNING);
+        return;
+    }
+    // Cutting removes them once they are safely copied, unless the
+    // document was changed in between (then they are only copied).
+    const int index = IndexOf(job.tab);
+    if (job.cut && index >= 0 && job.tab->docId == job.docId) {
+        EditOp op;
+        op.kind = EditOp::DeletePages;
+        op.pages = job.pages;
+        SendEdit(std::move(op), index);
+    }
+    if (index >= 0)
+        job.tab->view->ShowNote((job.cut ? L"Cut " : L"Copied ") + PagesWord(count) +
+                                L". Paste them with Ctrl+V in the thumbnails of any tab.");
+}
+
+void MainWindow::PastePagesInto(Tab& tab, int index, const std::wstring& file) {
+    const int tabIndex = IndexOf(&tab);
+    if (tabIndex < 0 || !tab.docId || tab.pendingDocId) return;
+    if ((tab.info.permissions & kPermModify) == 0 && (tab.info.permissions & kPermAssemble) == 0) {
+        MessageBoxW(m_hwnd, (L"The author of \x201C" + FileNameFromPath(tab.path) +
+                             L"\x201D does not allow changes to it, so no pages were added to it.").c_str(),
+                    APP_NAME, MB_ICONINFORMATION);
+        return;
+    }
+    EditOp op;
+    op.kind = EditOp::InsertFiles;
+    op.index = std::max(0, std::min(index, tab.view->PageCount()));
+    op.sources.push_back({file});
+    SendEdit(std::move(op), tabIndex);
+}
+
+void MainWindow::PastePages(int where) {
+    if (!CanEdit()) return;
+    std::wstring file, from;
+    int count = 0;
+    if (!ReadClipboardPages(m_hwnd, file, count, from)) {
+        MessageBoxW(m_hwnd,
+                    L"There are no copied pages to paste.\n\nTo copy pages: show the thumbnails "
+                    L"(Ctrl+Shift+B), click the pages (Ctrl+click or Shift+click for several), then press "
+                    L"Ctrl+C, or Ctrl+X to cut them.",
+                    APP_NAME, MB_ICONINFORMATION);
+        return;
+    }
+    Tab& tab = Active();
+    const std::vector<int> sel = SelectedPages();
+    int index = tab.view->PageCount();
+    if (where == ID_PASTE_PAGES_AFTER) index = sel.back() + 1;
+    if (where == ID_PASTE_PAGES_BEFORE) index = sel.front();
+    if (where == ID_PASTE_PAGES_START) index = 0;
+    PastePagesInto(tab, index, file);
+}
+
+void MainWindow::PastePagesIntoTabs() {
+    if (!CanEdit()) return;
+    std::wstring file, from;
+    int count = 0;
+    if (!ReadClipboardPages(m_hwnd, file, count, from)) {
+        PastePages(ID_PASTE_PAGES_END);  // explains how to copy pages
+        return;
+    }
+    PasteTabsOptions o;
+    o.info = L"Add the " + PagesWord(count) + L" copied from \x201C" + from + L"\x201D to these documents:";
+    std::vector<Tab*> targets;
+    for (const auto& t : m_tabs) {
+        if (!t->docId || t->pendingDocId) continue;
+        targets.push_back(t.get());
+        std::wstring name = FileNameFromPath(t->path);
+        if (t->dirty) name = L"\x2022 " + name;
+        o.names.push_back(name);
+        o.checked.push_back(t.get() != &Active());
+    }
+    o.where = 0;
+    o.afterPage = SelectedPages().back() + 1;
+    if (!ShowPasteTabsDialog(m_inst, m_hwnd, o)) return;
+    for (size_t i = 0; i < targets.size(); ++i) {
+        if (!o.checked[i] || IndexOf(targets[i]) < 0) continue;
+        const int pages = targets[i]->view->PageCount();
+        const int index = o.where == 0 ? pages : o.where == 1 ? 0 : std::min(o.afterPage, pages);
+        PastePagesInto(*targets[i], index, file);
+    }
+}
+
+// Thumbnails dragged out of the panel: dropped on the other document of a
+// split tab, they are copied into it where they were dropped.
+void MainWindow::DropPages(POINT screen) {
+    HWND under = WindowFromPoint(screen);
+    for (const auto& t : m_tabs) {
+        Tab* tab = t.get();
+        if (tab == &Active() || !tab->docId || !IsWindowVisible(tab->view->Hwnd())) continue;
+        if (under != tab->view->Hwnd() && !IsChild(tab->view->Hwnd(), under)) continue;
+        POINT client = screen;
+        ScreenToClient(tab->view->Hwnd(), &client);
+        const int index = tab->view->DropIndexAt(client);
+        if (index >= 0) CopyPages(false, tab, index);
+        return;
+    }
+}
+
+// ===========================================================================
+// Cropping pages
+// ===========================================================================
+void MainWindow::CropPagesDialog() {
+    if (!CanEdit()) return;
+    CropOptions o = m_cropOptions;
+    o.pages = NewPageChoice(o.pages);
+    if (!ShowCropDialog(m_inst, m_hwnd, o)) return;
+    m_cropOptions = o;
+    const float mm = 72.0f / 25.4f;
+    EditOp op;
+    op.kind = EditOp::CropPages;
+    op.pages = o.pages.pages;
+    op.option = o.mode == 1 ? kCropMargins : o.mode == 2 ? kCropPaper : kCropContent;
+    op.width = o.pad * mm;
+    op.rect = {o.left * mm, o.top * mm, o.right * mm, o.bottom * mm};
+    const PaperSize& paper = kPaperSizes[std::clamp(o.paper, 0, 4)];
+    op.size = {paper.w, paper.h};
+    SendEdit(std::move(op));
+}
+
+// The crop tool: a box was drawn on `page`. It is kept on this page, on
+// every page, or on the selected pages.
+void MainWindow::OnCropBox(int page, const RectF& rect) {
+    if (!CanEdit()) return;
+    PdfView& view = View();
+    std::vector<int> selected;
+    if (m_sidebar.Mode() == SidebarMode::Thumbnails) selected = m_sidebar.Thumbs().Selection();
+    HMENU m = CreatePopupMenu();
+    AppendMenuW(m, MF_STRING, 1, (L"Crop page " + std::to_wstring(page + 1)).c_str());
+    AppendMenuW(m, MF_STRING, 2, (L"Crop all " + std::to_wstring(view.PageCount()) + L" pages the same way").c_str());
+    if (selected.size() > 1)
+        AppendMenuW(m, MF_STRING, 3, (L"Crop the " + std::to_wstring(selected.size()) + L" selected pages").c_str());
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_STRING, 4, L"Cancel");
+    POINT pt;
+    GetCursorPos(&pt);
+    const int cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, m_hwnd, nullptr);
+    DestroyMenu(m);
+    if (cmd < 1 || cmd > 3) return;
+    EditOp op;
+    op.kind = EditOp::CropPages;
+    op.option = kCropBox;
+    op.rect = rect;
+    if (cmd == 1) op.pages = {page};
+    if (cmd == 2)
+        for (int i = 0; i < view.PageCount(); ++i) op.pages.push_back(i);
+    if (cmd == 3) op.pages = selected;
+    SendEdit(std::move(op));
+}
+
+// ===========================================================================
+// Pages per sheet and booklets: a new PDF for printing
+// ===========================================================================
+void MainWindow::MakePagesPerSheet() {
+    if (!CanEdit()) return;
+    Tab& tab = Active();
+    if (!Permitted(kPermCopy, L"copying its pages")) return;
+    NupOptions o = m_nupOptions;
+    o.pages = NewPageChoice(o.pages);
+    if (!ShowNupDialog(m_inst, m_hwnd, o)) return;
+    m_nupOptions = o;
+    LayoutJob job;
+    job.pages = o.pages.pages;
+    job.booklet = o.booklet;
+    job.perSheet = kNupCounts[std::clamp(o.count, 0, 3)];
+    if (o.paper > 0) {
+        const PaperSize& p = kPaperSizes[std::clamp(o.paper - 1, 0, 4)];
+        job.sheetW = p.w;
+        job.sheetH = p.h;
+    }
+    job.lines = o.lines;
+
+    std::wstring stem = FileNameFromPath(tab.path);
+    if (stem.size() > 4 && _wcsicmp(stem.c_str() + stem.size() - 4, L".pdf") == 0) stem.resize(stem.size() - 4);
+    std::wstring suggested = stem + (o.booklet ? L" (booklet).pdf" : L" (" + std::to_wstring(job.perSheet) + L" per sheet).pdf");
+    for (wchar_t& c : suggested)
+        if (wcschr(L"\\/:*?\"<>|", c)) c = L'-';
+    std::vector<wchar_t> buf(32768, L'\0');
+    wcsncpy_s(buf.data(), buf.size(), suggested.c_str(), _TRUNCATE);
+    const std::wstring dir = DirectoryFromPath(tab.path);
+    OPENFILENAMEW ofn{sizeof(ofn)};
+    ofn.hwndOwner = m_hwnd;
+    ofn.lpstrTitle = o.booklet ? L"Save the booklet as" : L"Save the pages as";
+    ofn.lpstrFilter = L"PDF documents (*.pdf)\0*.pdf\0";
+    ofn.lpstrFile = buf.data();
+    ofn.nMaxFile = (DWORD)buf.size();
+    ofn.lpstrInitialDir = dir.empty() ? nullptr : dir.c_str();
+    ofn.lpstrDefExt = L"pdf";
+    ofn.Flags = OFN_PATHMUSTEXIST | OFN_EXPLORER | OFN_HIDEREADONLY | OFN_OVERWRITEPROMPT;
+    if (!GetSaveFileNameW(&ofn)) return;
+    const std::wstring target = FullPath(buf.data());
+    for (const auto& t : m_tabs) {
+        if (t->docId && SamePath(t->path, target)) {
+            MessageBoxW(m_hwnd, L"That file is open in a tab. Choose another name.", APP_NAME, MB_ICONWARNING);
+            return;
+        }
+    }
+    m_worker.MakeLayout(tab.docId, std::move(job), target);
 }
 
 // ===========================================================================
@@ -3438,6 +3826,11 @@ void MainWindow::InsertImage() {
 // File Explorer) is placed like "Insert picture": click where it goes.
 void MainWindow::PasteImage() {
     if (!CanEdit()) return;
+    // Copied pages are pasted after the page shown (or the selected thumbnails).
+    if (IsClipboardFormatAvailable(RegisterClipboardFormatW(L"FeatherPDF.Pages"))) {
+        PastePages(ID_PASTE_PAGES_AFTER);
+        return;
+    }
     Picture pic;
     if (!PictureFromClipboard(m_hwnd, pic, 2400)) {
         if (View().Tool() == ViewTool::EditText)
@@ -4288,6 +4681,13 @@ void MainWindow::ShowCommandPalette() {
         {ID_MERGE_FILES, L"Merge PDFs into this document", L"", L"combine join", doc},
         {ID_MERGE_TABS, L"Merge open tabs into this document", L"", L"combine join", doc && m_tabs.size() > 1},
         {ID_EXTRACT_PAGES, L"Extract or split pages", L"", L"split save pages separate", doc},
+        {ID_COPY_PAGES, L"Copy the selected pages", L"Ctrl+C (thumbnails)", L"duplicate clipboard pages", doc},
+        {ID_CUT_PAGES, L"Cut the selected pages", L"Ctrl+X (thumbnails)", L"move clipboard pages", doc},
+        {ID_PASTE_PAGES_AFTER, L"Paste pages after the selected page", L"Ctrl+V", L"insert clipboard pages", doc},
+        {ID_PASTE_PAGES_TABS, L"Paste pages into several tabs", L"", L"insert clipboard pages documents", doc},
+        {ID_CROP_PAGES, L"Crop pages", L"", L"margins trim cut page size a4 letter resize", doc},
+        {ID_TOOL_CROP, L"Crop by drawing a box", L"", L"trim cut area keep", doc},
+        {ID_NUP, L"Pages per sheet and booklets", L"", L"n-up 2 4 6 9 booklet print fold sheet", doc},
         {ID_GOTO_PAGE, L"Go to page", L"Ctrl+G", L"jump", doc},
         {ID_FIRST_PAGE, L"First page", L"Home", L"start beginning", doc},
         {ID_LAST_PAGE, L"Last page", L"End", L"end", doc},
@@ -4318,7 +4718,7 @@ void MainWindow::ShowCommandPalette() {
         {ID_SELECT_ALL, L"Select all text", L"Ctrl+A", L"", doc},
         {ID_COPY_PAGE_IMAGE, L"Copy the page as a picture", L"", L"image clipboard", doc},
         {ID_COPY_AREA_IMAGE, L"Copy an area as a picture", L"", L"image clipboard snapshot", doc},
-        {ID_PROPERTIES, L"Document properties", L"Ctrl+D", L"info author title metadata", doc},
+        {ID_PROPERTIES, L"Document properties (title, author, keywords)", L"Ctrl+D", L"info author title subject keywords metadata edit", doc},
         {ID_REGISTER_DEFAULT, L"Set as the default PDF viewer", L"", L"associate"},
         {ID_ABOUT, L"About Feather PDF", L"", L"version licenses"},
         {ID_EXIT, L"Exit", L"", L"quit close"},

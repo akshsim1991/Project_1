@@ -28,7 +28,8 @@ constexpr int kTileMaxRowW = 2048;     // pages up to this width use full-width 
 constexpr int kTileColW = 1024;        // column width for wider pages
 constexpr UINT_PTR kSettleTimer = 1;   // re-render delay after wheel zoom
 constexpr UINT kSettleMs = 150;
-constexpr UINT_PTR kAutoScrollTimer = 2;  // scrolls while drag-selecting past an edge
+constexpr UINT_PTR kAutoScrollTimer = 2;
+constexpr UINT_PTR kNoteTimer = 3;        // hides the note of ShowNote  // scrolls while drag-selecting past an edge
 constexpr size_t kMaxTextLayers = 32;     // pages whose character boxes are kept
 constexpr float kTextSlackPt = 12.0f;     // how far from a glyph still counts as "on text"
 constexpr COLORREF kSelectionColor = RGB(150, 200, 255);
@@ -518,6 +519,12 @@ LRESULT PdfView::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         case WM_TIMER:
             if (wp == kAutoScrollTimer) {
                 OnAutoScroll();
+                return 0;
+            }
+            if (wp == kNoteTimer) {
+                KillTimer(m_hwnd, kNoteTimer);
+                m_note.clear();
+                InvalidateRect(m_hwnd, nullptr, FALSE);
                 return 0;
             }
             if (wp == kSettleTimer) {
@@ -1471,6 +1478,7 @@ void PdfView::Paint(HDC hdc) {
     if (m_tool == ViewTool::EditText) DrawEditDrag(dc);
     DrawRulers(dc);
     DrawBanner(dc);
+    DrawNote(dc);
     BitBlt(hdc, 0, 0, w, h, dc, 0, 0, SRCCOPY);
     if (m_inlineEdit) PositionInlineEdit();
 }
@@ -2074,6 +2082,14 @@ bool PdfView::PagePoint(POINT pt, int& page, float& x, float& y) {
     return true;
 }
 
+int PdfView::DropIndexAt(POINT pt) const {
+    if (!HasDocument() || m_last < m_first) return -1;
+    const int64_t docX = m_scrollX + pt.x, docY = m_scrollY + pt.y;
+    const int page = PageAt(docX, docY);
+    const PageLayout& L = m_layout[(size_t)page];
+    return docY < L.top + L.h / 2 ? page : page + 1;
+}
+
 const CommentInfo* PdfView::HitComment(POINT pt, int* pageOut) {
     int page;
     float x, y;
@@ -2203,6 +2219,7 @@ void PdfView::DrawBanner(HDC dc) {
         case ViewTool::Redact:
             text = L"Redact: drag over what to remove. Right-click a mark to apply or remove marks.   Esc: done";
             break;
+        case ViewTool::Crop: text = L"Crop: drag a box around the part of the page to keep.   Esc: cancel"; break;
         default: return;
     }
     if (!m_bannerFont) m_bannerFont = CreateMessageFont(m_dpi, 100);
@@ -2227,6 +2244,38 @@ void PdfView::DrawBanner(HDC dc) {
     SetBkMode(dc, TRANSPARENT);
     InflateRect(&r, -padX, 0);
     DrawTextW(dc, text, -1, &r, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+    SelectObject(dc, oldFont);
+}
+
+void PdfView::ShowNote(const std::wstring& text) {
+    m_note = text;
+    SetTimer(m_hwnd, kNoteTimer, 3500, nullptr);
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void PdfView::DrawNote(HDC dc) {
+    if (m_note.empty()) return;
+    if (!m_bannerFont) m_bannerFont = CreateMessageFont(m_dpi, 100);
+    HGDIOBJ oldFont = SelectObject(dc, m_bannerFont);
+    RECT calc = {0, 0, 0, 0};
+    DrawTextW(dc, m_note.c_str(), -1, &calc, DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX);
+    const int padX = Dpi(16, m_dpi), padY = Dpi(8, m_dpi);
+    const int bw = std::min<int>(calc.right + 2 * padX, ClientW() - Dpi(16, m_dpi));
+    const int bh = calc.bottom + 2 * padY;
+    RECT r = {(ClientW() - bw) / 2, ClientH() - bh - Dpi(24, m_dpi), (ClientW() - bw) / 2 + bw, ClientH() - Dpi(24, m_dpi)};
+    HBRUSH fill = CreateSolidBrush(RGB(45, 45, 48));
+    HPEN pen = CreatePen(PS_SOLID, 1, RGB(30, 30, 30));
+    HGDIOBJ oldBrush = SelectObject(dc, fill);
+    HGDIOBJ oldPen = SelectObject(dc, pen);
+    RoundRect(dc, r.left, r.top, r.right, r.bottom, Dpi(12, m_dpi), Dpi(12, m_dpi));
+    SelectObject(dc, oldBrush);
+    SelectObject(dc, oldPen);
+    DeleteObject(fill);
+    DeleteObject(pen);
+    SetTextColor(dc, RGB(255, 255, 255));
+    SetBkMode(dc, TRANSPARENT);
+    InflateRect(&r, -padX, 0);
+    DrawTextW(dc, m_note.c_str(), -1, &r, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
     SelectObject(dc, oldFont);
 }
 
@@ -2511,7 +2560,8 @@ void PdfView::DrawToolPreview(HDC dc) {
         DeleteObject(pen);
         return;
     }
-    const bool place = m_tool == ViewTool::Stamp || m_tool == ViewTool::Signature || m_tool == ViewTool::Image;
+    const bool place = m_tool == ViewTool::Stamp || m_tool == ViewTool::Signature || m_tool == ViewTool::Image ||
+                       m_tool == ViewTool::Crop;
     const COLORREF color = place ? RGB(0, 103, 192) : m_toolOptions.color;
     const int width = place ? 1 : std::max(1, (int)std::lround(m_toolOptions.width * m_scale));
     HPEN pen = CreatePen(place ? PS_DOT : PS_SOLID, place ? 1 : width, color);
@@ -2525,6 +2575,7 @@ void PdfView::DrawToolPreview(HDC dc) {
         case ViewTool::Stamp:
         case ViewTool::Signature:
         case ViewTool::Image:
+        case ViewTool::Crop:
             Rectangle(dc, std::min(a.x, b.x), std::min(a.y, b.y), std::max(a.x, b.x) + 1, std::max(a.y, b.y) + 1);
             break;
         case ViewTool::Ellipse:
@@ -2563,6 +2614,13 @@ void PdfView::FinishDrawing(POINT) {
         if (dragged < 4) return;
         m_drawPoints = {a, b, b};  // vertex, first arm; the second arm follows the mouse
         m_angleArm = true;
+        return;
+    }
+    if (m_tool == ViewTool::Crop) {
+        if (dragged < 6) return;
+        const RectF r{std::min(a.x, b.x), std::min(a.y, b.y), std::max(a.x, b.x), std::max(a.y, b.y)};
+        SetTool(ViewTool::Select);
+        if (onCropBox) onCropBox(m_drawPage, r);
         return;
     }
     if (m_tool == ViewTool::Redact) {

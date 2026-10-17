@@ -239,22 +239,29 @@ void ThumbView::OnDragMove(POINT pt) {
         ScrollTo(m_scroll - Dpi(12, m_dpi));
     else if (pt.y > rc.bottom - edge)
         ScrollTo(m_scroll + Dpi(12, m_dpi));
+    m_outside = pt.x < 0 || pt.x >= rc.right;  // over the pages of a document: copied there
     const int gap = GapAt(std::max(0, (int)pt.y) + m_scroll);
-    const int shown = DropIsNoOp(gap) ? -1 : gap;
+    const int shown = m_outside || DropIsNoOp(gap) ? -1 : gap;
     if (shown != m_gap) {
         m_gap = shown;
         InvalidateRect(m_hwnd, nullptr, FALSE);
     }
-    SetCursor(LoadCursorW(nullptr, shown >= 0 ? IDC_HAND : IDC_NO));
+    SetCursor(LoadCursorW(nullptr, shown >= 0 || m_outside ? IDC_HAND : IDC_NO));
 }
 
 void ThumbView::OnButtonUp() {
     const bool dragged = m_dragging;
     const int gap = m_gap;
+    const bool outside = m_outside;
     if (m_selectOnUp && !dragged) Select(m_pressItem, false, false);
     ReleaseCapture();  // resets the drag state (WM_CAPTURECHANGED)
-    if (dragged && gap >= 0)
+    if (dragged && outside) {
+        POINT pt;
+        GetCursorPos(&pt);
+        PostMessageW(m_target, WM_APP_SIDEBAR, kSidebarPagesDropOut, MAKELPARAM(pt.x, pt.y));
+    } else if (dragged && gap >= 0) {
         PostMessageW(m_target, WM_APP_SIDEBAR, kSidebarPagesMoved, gap);
+    }
 }
 
 void ThumbView::ScrollTo(int y) {
@@ -475,7 +482,7 @@ LRESULT ThumbView::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         case WM_CAPTURECHANGED:
             if (m_pressed) {
-                m_pressed = m_dragging = false;
+                m_pressed = m_dragging = m_outside = false;
                 m_gap = -1;
                 KillTimer(m_hwnd, kDragScrollTimer);
                 InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -496,6 +503,16 @@ LRESULT ThumbView::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             const bool ctrl = GetKeyState(VK_CONTROL) < 0;
             if (wp == VK_DELETE) {
                 PostMessageW(m_target, WM_APP_SIDEBAR, kSidebarDeletePages, 0);
+                return 0;
+            }
+            // Copy, cut and paste pages (done by the main window).
+            if (ctrl && (wp == 'C' || wp == 'X' || wp == 'V' || wp == VK_INSERT)) {
+                const int cmd = wp == 'X' ? ID_CUT_PAGES : wp == 'V' ? ID_PASTE_PAGES_AFTER : ID_COPY_PAGES;
+                PostMessageW(m_target, WM_APP_SIDEBAR, kSidebarPagesCommand, cmd);
+                return 0;
+            }
+            if (!ctrl && GetKeyState(VK_SHIFT) < 0 && wp == VK_INSERT) {
+                PostMessageW(m_target, WM_APP_SIDEBAR, kSidebarPagesCommand, ID_PASTE_PAGES_AFTER);
                 return 0;
             }
             if (ctrl && wp == 'A') {

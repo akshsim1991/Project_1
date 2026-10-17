@@ -8,7 +8,8 @@
 // Pages can be selected (click, Ctrl+click, Shift+click, Ctrl+A) and
 // dragged to a new position; the main window is told through
 // WM_APP_SIDEBAR (kSidebarPagesMoved / kSidebarPagesMenu /
-// kSidebarDeletePages) and performs the edit.
+// kSidebarDeletePages / kSidebarPagesDropOut / kSidebarPagesCommand) and
+// performs the edit. Ctrl+C / Ctrl+X / Ctrl+V copy, cut and paste pages.
 #pragma once
 #include <unordered_map>
 
@@ -81,6 +82,7 @@ private:
     int m_pressItem = -1;
     bool m_selectOnUp = false;     // plain click on a selected page (maybe a drag)
     int m_gap = -1;                // current drop position while dragging
+    bool m_outside = false;        // dragged out of the panel (onto a document: copy there)
 
     std::unordered_map<int, Entry> m_cache;
     size_t m_bytes = 0;

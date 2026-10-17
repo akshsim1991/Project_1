@@ -235,13 +235,31 @@ void RenderWorker::Save(uint32_t docId, const std::wstring& path, uint32_t flags
 }
 
 void RenderWorker::Extract(uint32_t docId, std::vector<int>&& pages, const std::wstring& path,
-                           bool separate) {
+                           bool separate, uint32_t clipId) {
     Command c;
     c.type = Command::Extract;
+    c.requestId = clipId;
     c.docId = docId;
     c.pages = std::move(pages);
     c.text = path;
     c.flags = separate ? 1 : 0;
+    Push(std::move(c));
+}
+
+void RenderWorker::MakeLayout(uint32_t docId, LayoutJob&& job, const std::wstring& path) {
+    Command c;
+    c.type = Command::Layout;
+    c.docId = docId;
+    c.layout = std::move(job);
+    c.text = path;
+    Push(std::move(c));
+}
+
+void RenderWorker::Autosave(uint32_t docId, const std::wstring& path) {
+    Command c;
+    c.type = Command::Autosave;
+    c.docId = docId;
+    c.text = path;
     Push(std::move(c));
 }
 
@@ -511,8 +529,21 @@ void RenderWorker::Execute(Command& cmd) {
             ExecuteEdit(cmd);
             break;
         case Command::Extract:
+        case Command::Layout:
             ExecuteExtract(cmd);
             break;
+        case Command::Autosave: {
+            auto* res = new AutosaveResult;
+            res->docId = cmd.docId;
+            res->path = cmd.text;
+            PdfEngine* engine = Engine(cmd.docId);
+            const std::wstring temp = cmd.text + L".tmp";
+            res->ok = engine && engine->WriteTo(temp) &&
+                      MoveFileExW(temp.c_str(), cmd.text.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+            if (!res->ok) DeleteFileW(temp.c_str());
+            Post(WM_APP_AUTOSAVED, res);
+            break;
+        }
         case Command::OcrPage: {
             auto* res = new OcrImage;
             res->docId = cmd.docId;
@@ -715,8 +746,14 @@ void RenderWorker::ExecuteEdit(Command& cmd) {
 
 void RenderWorker::ExecuteExtract(Command& cmd) {
     PdfEngine* engine = Engine(cmd.docId);
-    if (!engine) return;
     auto* res = new ExtractResult;
+    res->clipId = cmd.requestId;
+    if (!engine) {
+        res->ok = false;
+        res->error = L"The document is not open any more.";
+        Post(WM_APP_EXTRACTED, res);
+        return;
+    }
     // Each file is written under a temporary name and renamed when
     // complete, so a failure never leaves a half-written PDF behind.
     auto write = [&](const std::vector<int>& pages, const std::wstring& target) {
@@ -730,7 +767,13 @@ void RenderWorker::ExecuteExtract(Command& cmd) {
         res->files.push_back(target);
         return true;
     };
-    if (!cmd.flags) {
+    if (cmd.type == Command::Layout) {
+        const std::wstring temp = cmd.text + L".tmp";
+        res->ok = engine->WriteLayout(cmd.layout, temp) &&
+                  MoveFileExW(temp.c_str(), cmd.text.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+        if (res->ok) res->files.push_back(cmd.text);
+        else DeleteFileW(temp.c_str());
+    } else if (!cmd.flags) {
         res->ok = write(cmd.pages, cmd.text);
     } else {
         std::wstring stem = cmd.text;

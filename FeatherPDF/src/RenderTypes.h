@@ -350,6 +350,8 @@ struct EditOp {
         ReplaceImage, // picture `index` of `page` shows `pixels` instead, fitted in its place
         FormatText,   // text runs `runs` of `page` get `format` (all of each run, or its
                       // characters [from, to) when to >= 0)
+        CropPages,    // `pages` keep part of themselves, by `option` (CropMode)
+        SetInfo,      // the document information: `info` (title, author, subject, keywords)
     } kind = DeletePages;
     std::vector<int> pages;  // Delete/Move/Rotate: ascending page indices
     int index = 0;           // Move: new index of the first moved page;
@@ -412,6 +414,15 @@ struct EditOp {
         int from = 0, to = -1;     // the characters formatted (to < 0: all)
     };
     std::vector<RunRef> runs;    // FormatText
+    std::vector<std::wstring> info;  // SetInfo: title, author, subject, keywords
+};
+
+// How CropPages crops (EditOp::option).
+enum CropMode {
+    kCropContent = 0,  // to what is drawn on each page, plus a border of `width` points
+    kCropMargins = 1,  // cut `rect` (left, top, right, bottom: points as seen) off the edges
+    kCropPaper = 2,    // every page becomes `size` (portrait points, turned to match the page), content fitted
+    kCropBox = 3,      // keep `rect` (display points, as drawn on the page)
 };
 
 enum class EditAction { Edit, Undo, Redo, Save };
@@ -439,7 +450,25 @@ struct EditResult {
 
 enum : uint32_t { kAfterSaveCloseTab = 1, kAfterSaveQuit = 2 };
 
+// A recovery copy of a document with unsaved changes (WM_APP_AUTOSAVED).
+struct AutosaveResult {
+    uint32_t docId = 0;   // the state that was written
+    bool ok = false;
+    std::wstring path;
+};
+
+// Pages laid out on sheets for printing (pages per sheet, booklets),
+// written as a new PDF.
+struct LayoutJob {
+    std::vector<int> pages;
+    bool booklet = false;   // 2 pages per sheet side, in folding order (both sides printed)
+    int perSheet = 2;       // 2, 4, 6 or 9 (not booklets)
+    float sheetW = 0, sheetH = 0;  // portrait points; 0: the size of the first page
+    bool lines = false;     // thin lines between the pages
+};
+
 struct ExtractResult {
+    uint32_t clipId = 0;      // pages copied for pasting (see MainWindow::CopyPages), 0: saved by the user
     bool ok = true;
     std::wstring error;
     std::vector<std::wstring> files;  // written files

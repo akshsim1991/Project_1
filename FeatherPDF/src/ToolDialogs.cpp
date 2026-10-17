@@ -23,6 +23,13 @@ const CompressLevel kCompressLevels[3] = {
     {220, 85, L"High quality (220 dpi)", L"For printing photos well. Saves less space."},
 };
 
+const PaperSize kPaperSizes[5] = {{L"A4", 595.28f, 841.89f},
+                                  {L"A3", 841.89f, 1190.55f},
+                                  {L"A5", 419.53f, 595.28f},
+                                  {L"Letter", 612, 792},
+                                  {L"Legal", 612, 1008}};
+const int kNupCounts[4] = {2, 4, 6, 9};
+
 namespace {
 std::wstring Text(HWND dlg, int id) {
     HWND h = GetDlgItem(dlg, id);
@@ -424,6 +431,242 @@ INT_PTR CALLBACK RedactFindProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
     }
     return FALSE;
 }
+INT_PTR CALLBACK PasteTabsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
+    switch (msg) {
+        case WM_INITDIALOG: {
+            SetWindowLongPtrW(dlg, DWLP_USER, lp);
+            auto* o = reinterpret_cast<PasteTabsOptions*>(lp);
+            SetDlgItemTextW(dlg, IDC_PT_INFO, o->info.c_str());
+            HWND list = GetDlgItem(dlg, IDC_PT_LIST);
+            ListView_SetExtendedListViewStyle(list, LVS_EX_CHECKBOXES | LVS_EX_FULLROWSELECT);
+            RECT rc;
+            GetClientRect(list, &rc);
+            LVCOLUMNW col{};
+            col.mask = LVCF_WIDTH;
+            col.cx = rc.right - GetSystemMetrics(SM_CXVSCROLL);
+            ListView_InsertColumn(list, 0, &col);
+            for (size_t i = 0; i < o->names.size(); ++i) {
+                LVITEMW item{};
+                item.mask = LVIF_TEXT;
+                item.iItem = (int)i;
+                item.pszText = const_cast<wchar_t*>(o->names[i].c_str());
+                ListView_InsertItem(list, &item);
+                ListView_SetCheckState(list, (int)i, i < o->checked.size() && o->checked[i]);
+            }
+            CheckRadioButton(dlg, IDC_PT_END, IDC_PT_AFTER,
+                             o->where == 1 ? IDC_PT_START : o->where == 2 ? IDC_PT_AFTER : IDC_PT_END);
+            SetDlgItemInt(dlg, IDC_PT_PAGE, (UINT)std::max(1, o->afterPage), FALSE);
+            ApplyWindowTheme(dlg);
+            return TRUE;
+        }
+        case WM_COMMAND: {
+            auto* o = Data<PasteTabsOptions>(dlg);
+            if (LOWORD(wp) == IDC_PT_PAGE && HIWORD(wp) == EN_CHANGE && GetFocus() == (HWND)lp)
+                CheckRadioButton(dlg, IDC_PT_END, IDC_PT_AFTER, IDC_PT_AFTER);
+            if (LOWORD(wp) == IDOK) {
+                HWND list = GetDlgItem(dlg, IDC_PT_LIST);
+                o->checked.assign(o->names.size(), 0);
+                bool any = false;
+                for (size_t i = 0; i < o->names.size(); ++i) {
+                    o->checked[i] = ListView_GetCheckState(list, (int)i) ? 1 : 0;
+                    any = any || o->checked[i];
+                }
+                if (!any) {
+                    MessageBoxW(dlg, L"Tick the documents the pages should be added to.", APP_NAME, MB_ICONINFORMATION);
+                    return TRUE;
+                }
+                o->where = IsDlgButtonChecked(dlg, IDC_PT_START) == BST_CHECKED   ? 1
+                           : IsDlgButtonChecked(dlg, IDC_PT_AFTER) == BST_CHECKED ? 2
+                                                                                  : 0;
+                BOOL ok = FALSE;
+                o->afterPage = (int)GetDlgItemInt(dlg, IDC_PT_PAGE, &ok, FALSE);
+                if (o->where == 2 && (!ok || o->afterPage < 1)) {
+                    MessageBoxW(dlg, L"Type the page number the pages should follow.", APP_NAME, MB_ICONWARNING);
+                    SetFocus(GetDlgItem(dlg, IDC_PT_PAGE));
+                    return TRUE;
+                }
+                EndDialog(dlg, IDOK);
+                return TRUE;
+            }
+            if (LOWORD(wp) == IDCANCEL) {
+                EndDialog(dlg, IDCANCEL);
+                return TRUE;
+            }
+            break;
+        }
+    }
+    return FALSE;
+}
+
+void FillPapers(HWND dlg, int id, bool same, int selected) {
+    HWND combo = GetDlgItem(dlg, id);
+    if (same) SendMessageW(combo, CB_ADDSTRING, 0, (LPARAM)L"Size of the pages");
+    for (const PaperSize& p : kPaperSizes) SendMessageW(combo, CB_ADDSTRING, 0, (LPARAM)p.name);
+    SendMessageW(combo, CB_SETCURSEL, (WPARAM)selected, 0);
+}
+
+int Number(HWND dlg, int id, int fallback) {
+    BOOL ok = FALSE;
+    const UINT v = GetDlgItemInt(dlg, id, &ok, FALSE);
+    return ok ? (int)v : fallback;
+}
+
+void UpdateCrop(HWND dlg) {
+    const bool margins = IsDlgButtonChecked(dlg, IDC_CROP_MARGINS) == BST_CHECKED;
+    for (int id : {IDC_CROP_TOP, IDC_CROP_BOTTOM, IDC_CROP_LEFT, IDC_CROP_RIGHT}) EnableWindow(GetDlgItem(dlg, id), margins);
+    EnableWindow(GetDlgItem(dlg, IDC_CROP_PAD), IsDlgButtonChecked(dlg, IDC_CROP_AUTO) == BST_CHECKED);
+    EnableWindow(GetDlgItem(dlg, IDC_CROP_PAPER), IsDlgButtonChecked(dlg, IDC_CROP_SIZE) == BST_CHECKED);
+}
+
+INT_PTR CALLBACK CropProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
+    switch (msg) {
+        case WM_INITDIALOG: {
+            SetWindowLongPtrW(dlg, DWLP_USER, lp);
+            auto* o = reinterpret_cast<CropOptions*>(lp);
+            InitPages(dlg, o->pages);
+            // Each choice is a group of its own (the boxes between them), so
+            // the other buttons are cleared by hand.
+            CheckDlgButton(dlg, IDC_CROP_AUTO, o->mode == 0 ? BST_CHECKED : BST_UNCHECKED);
+            CheckDlgButton(dlg, IDC_CROP_MARGINS, o->mode == 1 ? BST_CHECKED : BST_UNCHECKED);
+            CheckDlgButton(dlg, IDC_CROP_SIZE, o->mode == 2 ? BST_CHECKED : BST_UNCHECKED);
+            SetDlgItemInt(dlg, IDC_CROP_PAD, (UINT)o->pad, FALSE);
+            SetDlgItemInt(dlg, IDC_CROP_TOP, (UINT)o->top, FALSE);
+            SetDlgItemInt(dlg, IDC_CROP_BOTTOM, (UINT)o->bottom, FALSE);
+            SetDlgItemInt(dlg, IDC_CROP_LEFT, (UINT)o->left, FALSE);
+            SetDlgItemInt(dlg, IDC_CROP_RIGHT, (UINT)o->right, FALSE);
+            FillPapers(dlg, IDC_CROP_PAPER, false, o->paper);
+            UpdateCrop(dlg);
+            ApplyWindowTheme(dlg);
+            return TRUE;
+        }
+        case WM_COMMAND: {
+            auto* o = Data<CropOptions>(dlg);
+            if (PagesCommand(dlg, wp)) return TRUE;
+            const int id = LOWORD(wp);
+            if (id == IDC_CROP_AUTO || id == IDC_CROP_MARGINS || id == IDC_CROP_SIZE) {
+                for (int other : {IDC_CROP_AUTO, IDC_CROP_MARGINS, IDC_CROP_SIZE})
+                    CheckDlgButton(dlg, other, other == id ? BST_CHECKED : BST_UNCHECKED);
+                UpdateCrop(dlg);
+                return TRUE;
+            }
+            if (id == IDOK) {
+                if (!ReadPages(dlg, o->pages)) return TRUE;
+                o->mode = IsDlgButtonChecked(dlg, IDC_CROP_MARGINS) == BST_CHECKED ? 1
+                          : IsDlgButtonChecked(dlg, IDC_CROP_SIZE) == BST_CHECKED  ? 2
+                                                                                   : 0;
+                o->pad = std::min(100, Number(dlg, IDC_CROP_PAD, 3));
+                o->top = std::min(500, Number(dlg, IDC_CROP_TOP, 0));
+                o->bottom = std::min(500, Number(dlg, IDC_CROP_BOTTOM, 0));
+                o->left = std::min(500, Number(dlg, IDC_CROP_LEFT, 0));
+                o->right = std::min(500, Number(dlg, IDC_CROP_RIGHT, 0));
+                o->paper = Selected(dlg, IDC_CROP_PAPER);
+                if (o->mode == 1 && o->top + o->bottom + o->left + o->right == 0) {
+                    MessageBoxW(dlg, L"Type how many millimetres to cut off at least one edge.", APP_NAME, MB_ICONWARNING);
+                    SetFocus(GetDlgItem(dlg, IDC_CROP_TOP));
+                    return TRUE;
+                }
+                EndDialog(dlg, IDOK);
+                return TRUE;
+            }
+            if (id == IDCANCEL) {
+                EndDialog(dlg, IDCANCEL);
+                return TRUE;
+            }
+            break;
+        }
+    }
+    return FALSE;
+}
+
+void UpdateNup(HWND dlg) {
+    const bool booklet = IsDlgButtonChecked(dlg, IDC_NUP_BOOKLET) == BST_CHECKED;
+    EnableWindow(GetDlgItem(dlg, IDC_NUP_COUNT), !booklet);
+}
+
+INT_PTR CALLBACK NupProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
+    switch (msg) {
+        case WM_INITDIALOG: {
+            SetWindowLongPtrW(dlg, DWLP_USER, lp);
+            auto* o = reinterpret_cast<NupOptions*>(lp);
+            InitPages(dlg, o->pages);
+            CheckDlgButton(dlg, IDC_NUP_GRID, o->booklet ? BST_UNCHECKED : BST_CHECKED);
+            CheckDlgButton(dlg, IDC_NUP_BOOKLET, o->booklet ? BST_CHECKED : BST_UNCHECKED);
+            Fill(dlg, IDC_NUP_COUNT, {L"2", L"4", L"6", L"9"}, o->count);
+            FillPapers(dlg, IDC_NUP_PAPER, true, o->paper);
+            CheckDlgButton(dlg, IDC_NUP_LINES, o->lines ? BST_CHECKED : BST_UNCHECKED);
+            UpdateNup(dlg);
+            ApplyWindowTheme(dlg);
+            return TRUE;
+        }
+        case WM_COMMAND: {
+            auto* o = Data<NupOptions>(dlg);
+            if (PagesCommand(dlg, wp)) return TRUE;
+            const int id = LOWORD(wp);
+            if (id == IDC_NUP_GRID || id == IDC_NUP_BOOKLET) {
+                CheckDlgButton(dlg, IDC_NUP_GRID, id == IDC_NUP_GRID ? BST_CHECKED : BST_UNCHECKED);
+                CheckDlgButton(dlg, IDC_NUP_BOOKLET, id == IDC_NUP_BOOKLET ? BST_CHECKED : BST_UNCHECKED);
+                UpdateNup(dlg);
+                return TRUE;
+            }
+            if (id == IDOK) {
+                if (!ReadPages(dlg, o->pages)) return TRUE;
+                o->booklet = IsDlgButtonChecked(dlg, IDC_NUP_BOOKLET) == BST_CHECKED;
+                o->count = Selected(dlg, IDC_NUP_COUNT);
+                o->paper = Selected(dlg, IDC_NUP_PAPER);
+                o->lines = IsDlgButtonChecked(dlg, IDC_NUP_LINES) == BST_CHECKED;
+                EndDialog(dlg, IDOK);
+                return TRUE;
+            }
+            if (id == IDCANCEL) {
+                EndDialog(dlg, IDCANCEL);
+                return TRUE;
+            }
+            break;
+        }
+    }
+    return FALSE;
+}
+
+INT_PTR CALLBACK PropertiesProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
+    switch (msg) {
+        case WM_INITDIALOG: {
+            SetWindowLongPtrW(dlg, DWLP_USER, lp);
+            auto* o = reinterpret_cast<PropertiesOptions*>(lp);
+            SetDlgItemTextW(dlg, IDC_PROP_INFO, o->info.c_str());
+            SetDlgItemTextW(dlg, IDC_PROP_NOTE, o->note.c_str());
+            const std::pair<int, const std::wstring*> fields[] = {
+                {IDC_PROP_TITLE, &o->title}, {IDC_PROP_AUTHOR, &o->author},
+                {IDC_PROP_SUBJECT, &o->subject}, {IDC_PROP_KEYWORDS, &o->keywords}};
+            for (const auto& f : fields) {
+                SetDlgItemTextW(dlg, f.first, f.second->c_str());
+                SendDlgItemMessageW(dlg, f.first, EM_SETREADONLY, !o->canEdit, 0);
+            }
+            if (!o->canEdit) {
+                SetDlgItemTextW(dlg, IDOK, L"Close");
+                ShowWindow(GetDlgItem(dlg, IDCANCEL), SW_HIDE);
+            }
+            ApplyWindowTheme(dlg);
+            return TRUE;
+        }
+        case WM_COMMAND: {
+            auto* o = Data<PropertiesOptions>(dlg);
+            if (LOWORD(wp) == IDOK) {
+                o->title = Text(dlg, IDC_PROP_TITLE);
+                o->author = Text(dlg, IDC_PROP_AUTHOR);
+                o->subject = Text(dlg, IDC_PROP_SUBJECT);
+                o->keywords = Text(dlg, IDC_PROP_KEYWORDS);
+                EndDialog(dlg, IDOK);
+                return TRUE;
+            }
+            if (LOWORD(wp) == IDCANCEL) {
+                EndDialog(dlg, IDCANCEL);
+                return TRUE;
+            }
+            break;
+        }
+    }
+    return FALSE;
+}
 }  // namespace
 
 bool ShowCompressDialog(HINSTANCE inst, HWND owner, CompressOptions& o) {
@@ -452,4 +695,20 @@ bool ShowPageNumberDialog(HINSTANCE inst, HWND owner, PageNumberOptions& o) {
 
 bool ShowExportDialog(HINSTANCE inst, HWND owner, ExportOptions& o) {
     return Run(inst, owner, IDD_EXPORT, ExportProc, o);
+}
+
+bool ShowPasteTabsDialog(HINSTANCE inst, HWND owner, PasteTabsOptions& o) {
+    return Run(inst, owner, IDD_PASTE_TABS, PasteTabsProc, o);
+}
+
+bool ShowCropDialog(HINSTANCE inst, HWND owner, CropOptions& o) {
+    return Run(inst, owner, IDD_CROP, CropProc, o);
+}
+
+bool ShowNupDialog(HINSTANCE inst, HWND owner, NupOptions& o) {
+    return Run(inst, owner, IDD_NUP, NupProc, o);
+}
+
+bool ShowPropertiesDialog(HINSTANCE inst, HWND owner, PropertiesOptions& o) {
+    return Run(inst, owner, IDD_PROPERTIES, PropertiesProc, o);
 }

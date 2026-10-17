@@ -40,6 +40,7 @@ enum class ViewTool {
     Stamp, Signature, Image,                        // click or drag to place
     Ruler, Protractor,                              // Geometry: measure distances and angles
     Redact,                                         // drag to mark an area for redaction
+    Crop,                                           // drag the area of the page to keep
 };
 
 // How measurements are shown (Geometry menu): units and drawing scale.
@@ -157,6 +158,8 @@ public:
     std::function<void(int page, const CommentInfo&)> onOpenComment;
     // A signature field was clicked: sign inside `rect` (page points).
     std::function<void(int page, const RectF& rect)> onSignField;
+    // Crop tool: the area to keep was drawn on `page` (page points).
+    std::function<void(int page, const RectF& rect)> onCropBox;
     // Back / forward through the places jumped to (links, bookmarks, page numbers).
     void PushHistory();
     bool Back();
@@ -180,6 +183,8 @@ public:
     // 1 centre, 2 right. False if nothing is selected.
     bool AlignSelection(int how);
     bool SelectedImage(int& page, int& index) const;  // the selected picture
+    // A short message at the bottom of the view for a few seconds ("3 pages copied").
+    void ShowNote(const std::wstring& text);
     void HoldInline(bool hold) { m_inlineHold = hold; }  // a dialog is open: keep the text box
 
     // --- Geometry: rulers, distance and angle measurements -------------
@@ -279,6 +284,11 @@ private:
 
     // editing text and comments
     bool PagePoint(POINT pt, int& page, float& x, float& y);  // unrotated page points
+public:
+    // Where pages dropped at `pt` (client pixels) go: before the page under
+    // it when on its upper half, otherwise after it. -1: no document.
+    int DropIndexAt(POINT pt) const;
+private:
     const CommentInfo* HitComment(POINT pt, int* page = nullptr);
     void UpdateHoverTip(POINT pt);
     const std::vector<TextRun>* GetRuns(int page, bool request);
@@ -421,7 +431,9 @@ private:
     int m_pressPage = -1, m_pressRun = -1, m_corner = -1;
     PointF m_pressAt{}, m_dragAt{};   // page points
     bool m_inlineHold = false;
-    bool m_returnToEdit = false;      // a picture placed from the Edit tool goes back to it
+    bool m_returnToEdit = false;
+    std::wstring m_note;              // ShowNote
+    void DrawNote(HDC dc);      // a picture placed from the Edit tool goes back to it
     int m_reselectPage = -1;          // after formatting: select the lines in this area again
     RectF m_reselectRect;
     int m_hoverPage = -1, m_hoverRun = -1;

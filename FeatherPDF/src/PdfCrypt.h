@@ -43,4 +43,6 @@ bool EncryptPdf(const std::string& in, const std::string& userPassword, const st
 // including ones an edit later replaced: old page contents and pictures.
 // Dropping them makes redaction final and compression effective. False if
 // the file is not in the expected shape (then `in` is used as it is).
-bool DropUnusedObjects(const std::string& in, std::string& out);
+// `info`, if given, is the body of a new document information dictionary
+// ("<</Title <FEFF...>...>>") that replaces the file's own.
+bool DropUnusedObjects(const std::string& in, std::string& out, const std::string* info = nullptr);

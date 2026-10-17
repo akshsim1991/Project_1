@@ -1,4 +1,4 @@
-# Feather PDF 2.5
+# Feather PDF 2.6
 
 A small, fast, native PDF **viewer and editor** for Windows 10 and 11.
 It opens PDFs in tabs and lets you scroll, jump to pages, zoom, search,
@@ -9,7 +9,9 @@ bold, italic or underlined, change its font, size and colour, move blocks
 of text and pictures, replace or paste pictures, find and
 replace text, fill in forms, sign, add comments, highlights, drawings,
 stamps, pictures and new text, and delete, reorder, rotate, insert, merge,
-split and extract pages, with undo/redo and crash-safe saving. It makes
+split, extract, copy and paste pages between documents, crop pages, make
+booklets and several pages per sheet, edit the title and author, all with
+undo/redo, crash-safe saving and recovery of unsaved changes after a crash. It makes
 scanned pages searchable with the text recognition built into Windows, adds
 watermarks and page numbers, truly redacts text and pictures, compresses
 pictures, compares two versions of a document (also side by side in one
@@ -119,10 +121,12 @@ MainWindow ─► Tab × N ─► PdfView ── layout, visible pages, zoom, na
 | `src/CommandPalette.*` | The Ctrl+K command palette |
 | `src/Ocr.*` | Text recognition with Windows.Media.Ocr on its own thread (raw WinRT interfaces, no extra libraries) |
 | `src/Export.*` | Exporting pages: PNG/JPEG through GDI+, text files, and the Markdown builder |
-| `src/ToolDialogs.*` | The Recognise text, Watermark, Page numbers, Export, Compress, Password protection and Find-and-mark dialogs |
+| `src/ToolDialogs.*` | The Recognise text, Watermark, Page numbers, Export, Compress, Password protection, Find-and-mark, Paste into tabs, Crop, Pages per sheet and Document properties dialogs |
 | `src/PdfCrypt.*` | AES-256 PDF encryption (Windows CNG) and the clean-up of unused objects when saving |
 | `src/Compare.*` | Comparing two documents word by word (Myers diff) and marking the differences |
 | `src/ViewGeometry.cpp` | Ruler, protractor, rulers along the edges and redaction marks in the page view |
+| `src/ViewEditing.cpp` | Edit mode: selecting, moving and deleting blocks of text and pictures, resizing pictures, formatting and alignment |
+| `src/Recovery.cpp` | Recovery copies of unsaved changes, and restoring them after a crash |
 | `src/FileAssoc.*` | `.pdf` "Open with" / Default-apps registration (HKCU) |
 
 ### Threading
@@ -169,7 +173,19 @@ previous rendering stays on screen as a placeholder, so there is no flash.
    the original's attributes and permissions.
 
 A crash, power cut or full disk at any step leaves the original file
-untouched. If the original is also what undo replays from, a private copy
+untouched.
+
+**Unsaved changes survive a crash (new in 2.6):** every 10 seconds, each
+document with changes that have not been saved yet is copied (as it would
+be saved, password protection included) to
+`%LOCALAPPDATA%\FeatherPDF\Recovery`, with a small list saying which file
+each copy belongs to. Saving, undoing back to the saved state, closing the
+tab or quitting normally removes the copies. If Feather PDF, Windows or the
+power stops first, the next start says which documents had unsaved changes
+and offers to open them with those changes ("• name.pdf"); Save then writes
+them to their own files, and No throws the changes away. Each window holds
+a lock file while it runs, so a list is offered only when its window is
+really gone. If the original is also what undo replays from, a private copy
 of it is kept first, so changes made before saving can still be undone.
 Encrypted PDFs stay encrypted with the same password.
 
@@ -327,8 +343,12 @@ while you keep reading, with progress in the title bar and a
 "Cancel printing" menu item.
 
 **Document properties:** ⋯ › Document properties (Ctrl+D) shows file name,
-location and size, plus title, author, subject, keywords, dates, creator,
-producer, PDF version, page count, page size and whether it is encrypted.
+location and size, dates, creator, producer, PDF version, page count, page
+size and whether it is encrypted. **The title, author, subject and keywords
+can be changed there (new in 2.6)**; they are written into the document
+when you save it, and Undo (Ctrl+Z) takes the change back. (For a
+password-protected document, protect it again or remove the protection
+first, so the new information is protected the same way.)
 
 **Copy as image:** ⋯ › Copy page as image copies the current page, and
 ⋯ › Copy area as image lets you drag a rectangle. Both are also on the
@@ -358,6 +378,60 @@ Edit PDF › Edit pages, for these commands:
   `name-2.pdf`, …). You can then open the new file in a tab.
 
 Without the thumbnails panel, page commands apply to the current page.
+
+**Copy, cut and paste pages (new in 2.6):**
+
+* Select pages in the thumbnails and press **Ctrl+C** (copy) or **Ctrl+X**
+  (cut), or right-click › Copy pages / Cut pages. A note at the bottom of
+  the page says how many were copied. The pages are copied as they are at
+  that moment, unsaved changes, comments and highlights included.
+* Click a thumbnail in **any tab** and press **Ctrl+V**: the pages go in
+  after it. Right-click also offers **Paste pages before**, **at the start**
+  and **at the end**. Pasting into the same document duplicates pages.
+  Ctrl+V on a page (outside the thumbnails) pastes them after that page.
+* **Paste pages into several tabs…** lists the open documents with tick
+  boxes: tick the ones that should get the pages, and choose at the end,
+  at the start or after page N.
+* With two documents **side by side**, drag thumbnails out of the panel
+  onto the other document: they are copied there, before or after the page
+  they are dropped on.
+* Copied pages can also be pasted into another Feather PDF window. Each
+  paste is one step that Undo (Ctrl+Z) takes back. Cutting all the pages of
+  a document is not possible (a document keeps at least one page); they
+  are copied instead. Documents whose author does not allow copying can
+  not be copied from.
+
+**Crop pages (new in 2.6):** right-click a thumbnail (or Edit PDF › Edit
+pages) › **Crop pages…**, for all pages, the current page or a range:
+
+* **Remove the white margins:** each page is trimmed to what is drawn on
+  it, keeping a border you choose (3 mm unless changed). Empty pages are
+  left alone.
+* **Cut off the edges by** so many millimetres at the top, bottom, left and
+  right (as the page is seen).
+* **Make every page the same size:** A4, A3, A5, Letter or Legal. Each
+  page keeps its orientation; its content is made smaller or larger to
+  fit, and centred, comments included.
+* **Crop by drawing a box:** drag a box around the part to keep, then
+  choose this page, all pages, or the selected pages.
+
+Cropping sets the page's crop box, as Acrobat does: nothing is deleted, and
+Undo brings the full page back.
+
+**Pages per sheet and booklets (new in 2.6):** right-click a thumbnail ›
+**Pages per sheet and booklets…** makes a **new PDF** for printing (the
+document itself does not change):
+
+* **2, 4, 6 or 9 pages on each sheet**, in reading order, the sheet turned
+  to suit the pages.
+* **Booklet:** 2 pages on each side of a sheet, in folding order (blank
+  pages are added to make a multiple of 4). Print it on both sides,
+  flipping on the short edge, fold the stack in the middle and staple.
+* The sheet size is A4, A3, A5, Letter, Legal or the size of the pages.
+  **Lines between pages** adds thin lines to cut along (or, for a booklet,
+  the fold).
+* Comments, highlights and filled-in form fields are printed as they are
+  seen. The new file can be opened in a tab right away.
 
 **Edit PDF menu:** the **Edit PDF** button on the toolbar (also ⋯ › Edit
 PDF) holds everything that changes a document: Edit text, Find and replace
@@ -655,6 +729,8 @@ and version info, and `.pdf` association.
 | Ctrl+M | Add a comment (then click on the page) |
 | Ctrl+Shift+M | Comment on the selected text |
 | Del (in thumbnails) | Delete the selected pages |
+| Ctrl+C / Ctrl+X (in thumbnails) | Copy / cut the selected pages |
+| Ctrl+V (in thumbnails, or on a page) | Paste copied pages after the selected (or current) page |
 | Ctrl+A (in thumbnails) | Select all pages |
 | Ctrl+P | Print |
 | Ctrl+D | Document properties |

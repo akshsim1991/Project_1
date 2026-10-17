@@ -69,7 +69,12 @@ void DocEditor::Describe(const EditOp& op, int before, int after, int& focus,
         case EditOp::SetImageRect:
         case EditOp::ReplaceImage:
         case EditOp::FormatText:
+        case EditOp::SetInfo:
             break;  // the reader stays where they are
+        case EditOp::CropPages:
+            focus = op.pages.empty() ? -1 : op.pages.front();
+            select = op.pages;
+            break;
     }
 }
 

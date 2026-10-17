@@ -57,7 +57,12 @@ public:
     void Save(uint32_t docId, const std::wstring& path, uint32_t flags);
     // Writes `pages` to `path`, or with `separate` one file per page named
     // after `path` ("name-3.pdf").
-    void Extract(uint32_t docId, std::vector<int>&& pages, const std::wstring& path, bool separate);
+    void Extract(uint32_t docId, std::vector<int>&& pages, const std::wstring& path, bool separate,
+                 uint32_t clipId = 0);
+    // Writes the pages laid out on sheets to `path` (WM_APP_EXTRACTED).
+    void MakeLayout(uint32_t docId, LayoutJob&& job, const std::wstring& path);
+    // Writes the document as it is now to `path` (WM_APP_AUTOSAVED), as it would be saved.
+    void Autosave(uint32_t docId, const std::wstring& path);
 
     // Text recognition: renders `page` at `scale` pixels per point for the
     // recognition thread (-> WM_APP_OCR_IMAGE). With `skipText`, a page that
@@ -77,7 +82,8 @@ private:
     struct Command {
         enum Type {
             Open, Close, TextLayer, Copy, Search, CancelSearch, Trim, Image, Print, CancelPrint,
-            Edit, Undo, Redo, Save, Extract, TextRuns, Comments, OcrPage, Export, CancelExport, Compare, FindRedact
+            Edit, Undo, Redo, Save, Extract, TextRuns, Comments, OcrPage, Export, CancelExport, Compare, FindRedact,
+            Layout, Autosave
         } type = Open;
         uint32_t docId = 0;
         uint32_t newDocId = 0;   // Edit / Undo / Redo
@@ -95,6 +101,7 @@ private:
         float scale = 1;         // OcrPage
         std::wstring path;       // Compare: the output file
         ExportJob exportJob;
+        LayoutJob layout;        // Layout
     };
 
     static DWORD WINAPI ThreadProc(LPVOID self);

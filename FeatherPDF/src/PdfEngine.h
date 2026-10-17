@@ -133,6 +133,8 @@ public:
                         const std::wstring& author);
     // Writes the given pages, in order, as a new document.
     bool WritePagesTo(const std::vector<int>& pages, const std::wstring& path);
+    // Writes the pages laid out on sheets (pages per sheet, booklet) as a new document.
+    bool WriteLayout(const LayoutJob& job, const std::wstring& path);
 
 private:
     struct FileSource;
@@ -159,6 +161,7 @@ private:
     bool MoveObjects(const EditOp& op, std::wstring& error);
     bool ChangeImage(const EditOp& op, std::wstring& error);
     bool FormatText(const EditOp& op, std::wstring& error);
+    bool CropPages(const EditOp& op, std::wstring& error);
     // Pages loaded for an edit, with the form-filling layer attached.
     FPDF_PAGE LoadEditPage(int index);
     void CloseEditPage(FPDF_PAGE page);
@@ -166,6 +169,7 @@ private:
     bool SetRunText(FPDF_PAGE page, int firstIndex, const std::vector<FPDF_PAGEOBJECT>& objs,
                     const std::wstring& text, FontCache& fonts, std::wstring& error);
     FPDF_PAGE GetPage(int index);  // uses the small parsed-page LRU
+    std::string InfoDictionary();  // for SetInfo; empty: unchanged
     void ReadDest(FPDF_DEST dest, LinkTarget& target);
     void ReadAction(FPDF_ACTION action, LinkTarget& target);
 
@@ -191,4 +195,7 @@ private:
     int m_editCount = 0;
     bool m_editFontChanged = false;
     std::wstring m_editFontNote;
+    // Document information set by SetInfo (title, author, subject,
+    // keywords), written when saving; empty: the file's own.
+    std::vector<std::wstring> m_info;
 };

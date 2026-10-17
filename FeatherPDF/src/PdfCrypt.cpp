@@ -606,7 +606,7 @@ bool ScanObject(const std::string& s, const Xref& x, size_t offset, size_t& end,
 }
 }  // namespace
 
-bool DropUnusedObjects(const std::string& in, std::string& out) {
+bool DropUnusedObjects(const std::string& in, std::string& out, const std::string* info) {
     Xref x;
     if (!ReadXref(in, x)) return false;
     std::map<uint32_t, std::pair<size_t, size_t>> extent;  // object -> [start, end)
@@ -621,7 +621,7 @@ bool DropUnusedObjects(const std::string& in, std::string& out) {
     // Everything reachable from the trailer.
     std::vector<uint32_t> todo;
     for (const std::string* ref : {&x.root, &x.info, &x.encrypt})
-        if (!ref->empty()) todo.push_back((uint32_t)strtoul(ref->c_str(), nullptr, 10));
+        if (!ref->empty() && !(info && ref == &x.info)) todo.push_back((uint32_t)strtoul(ref->c_str(), nullptr, 10));
     std::map<uint32_t, bool> keep;
     while (!todo.empty()) {
         const uint32_t n = todo.back();
@@ -644,6 +644,14 @@ bool DropUnusedObjects(const std::string& in, std::string& out) {
         out.append(in, e.second.first, e.second.second - e.second.first);
         out += "\r\n";
     }
+    // The new document information, as the last object.
+    std::string infoRef = x.info;
+    if (info) {
+        const uint32_t n = ++maxNum;
+        written[n] = out.size();
+        out += std::to_string(n) + " 0 obj\r\n" + *info + "\r\nendobj\r\n";
+        infoRef = std::to_string(n) + " 0 R";
+    }
     const size_t xrefAt = out.size();
     out += "xref\r\n0 1\r\n0000000000 65535 f\r\n";
     for (auto it = written.begin(); it != written.end();) {
@@ -663,7 +671,7 @@ bool DropUnusedObjects(const std::string& in, std::string& out) {
         }
     }
     out += "trailer\r\n<</Size " + std::to_string(maxNum + 1) + "/Root " + x.root +
-           (x.info.empty() ? "" : "/Info " + x.info) + (x.encrypt.empty() ? "" : "/Encrypt " + x.encrypt) +
+           (infoRef.empty() ? "" : "/Info " + infoRef) + (x.encrypt.empty() ? "" : "/Encrypt " + x.encrypt) +
            (x.id.empty() ? "" : "/ID" + x.id) + ">>\r\nstartxref\r\n" + std::to_string(xrefAt) + "\r\n%%EOF\r\n";
     return true;
 }
