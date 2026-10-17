@@ -1,0 +1,23 @@
+// resource.h - resource ids.
+#define IDI_APP 1
+#define IDD_SETTINGS 101
+#define IDC_LOW_ON 1001
+#define IDC_LOW_PCT 1002
+#define IDC_CRIT_ON 1003
+#define IDC_CRIT_PCT 1004
+#define IDC_FULL_ON 1005
+#define IDC_FULL_PCT 1006
+#define IDC_PLUG_ON 1007
+#define IDC_REPEAT 1008
+#define IDC_MSGBOX 1009
+#define IDC_SOUND 1010
+#define IDC_SOUND_BROWSE 1011
+#define IDC_SOUND_TEST 1012
+#define IDC_SOUND_FILE 1013
+#define IDC_THEME 1020
+#define IDC_REFRESH 1021
+#define IDC_TRAYSTYLE 1022
+#define IDC_AUTOSTART 1023
+#define IDC_STARTTRAY 1024
+#define IDC_CLOSETRAY 1025
+#define IDC_KEEPDAYS 1026

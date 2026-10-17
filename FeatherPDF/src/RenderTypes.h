@@ -1,0 +1,506 @@
+// RenderTypes.h - data exchanged between the UI thread and the render worker.
+//
+// Ownership rule: every result object is allocated by the worker, posted to
+// the main window with PostMessage, and deleted by the UI thread. Pixel
+// buffers inside a result are moved into the page cache; whatever is left
+// in a result when it is destroyed is freed by its destructor.
+#pragma once
+#include "Common.h"
+
+// A 32-bit BGRx pixel buffer, top-down, stride = width * 4.
+//
+// Buffers are allocated with VirtualAlloc rather than the C heap so that
+// freeing a tile returns its memory to the OS immediately instead of
+// leaving it in a fragmented heap. This keeps the working set honest: when
+// the cache evicts, RAM usage really goes down.
+struct PixelBuffer {
+    uint8_t* bits = nullptr;
+    int width = 0;
+    int height = 0;
+
+    size_t Bytes() const { return (size_t)width * (size_t)height * 4; }
+    bool Allocate(int w, int h);
+    void Free();
+};
+
+enum class OpenError {
+    None,
+    NotFound,
+    AccessDenied,
+    ReadError,
+    TooLarge,
+    NotPdf,      // corrupted or not a PDF at all
+    Password,    // password required or wrong password
+    Security,    // unsupported encryption scheme
+    NoPages,
+    Unknown,
+};
+
+// Describes one tile the UI would like rendered. Tiles are rectangles of
+// a page rendered at a specific scale; the UI computes all geometry so that
+// UI and worker always agree on pixel sizes.
+struct TileRequest {
+    int page = 0;
+    int scaleKey = 0;          // scale * 1000, see PdfView
+    int tx = 0, ty = 0;        // tile column / row
+    int x = 0, y = 0, w = 0, h = 0;  // tile rect inside the page bitmap
+    int pageW = 0, pageH = 0;  // full page size in pixels at this scale
+    int rotate = 0;            // extra view rotation, quarter turns clockwise
+    int colorMode = 0;         // PageColors: 0 normal, 1 dark (inverted), 2 dimmed
+
+    bool SameTile(const TileRequest& o) const {
+        return page == o.page && scaleKey == o.scaleKey && tx == o.tx && ty == o.ty &&
+               rotate == o.rotate && colorMode == o.colorMode;
+    }
+};
+
+// Page colour modes applied to rendered pixels (not to printing or copies).
+enum PageColors { kColorsNormal = 0, kColorsDark = 1, kColorsDim = 2 };
+
+struct TileResult {
+    uint32_t docId = 0;
+    TileRequest req;
+    PixelBuffer pixels;  // empty if allocation failed
+    ~TileResult() { pixels.Free(); }
+};
+
+// Where a link or bookmark goes. `destY` is in PDF user space (points
+// from the bottom of the page) or negative when the target has no position.
+struct LinkTarget {
+    int page = -1;          // internal destination, or -1
+    float destY = -1;
+    std::wstring uri;       // external destination (http/https/mailto only)
+};
+
+struct LinkInfo {
+    RectF rect;             // page points, top-left origin, unrotated
+    LinkTarget target;
+};
+
+// One entry of the document outline (bookmarks), flattened depth-first.
+struct OutlineItem {
+    std::wstring title;
+    int level = 0;
+    LinkTarget target;
+};
+
+struct DocInfo {
+    std::wstring title, author, subject, keywords, creator, producer, created, modified;
+    int version = 0;        // e.g. 17 for PDF 1.7
+    bool encrypted = false;
+    uint32_t permissions = 0xFFFFFFFF;  // what this reader may do (PDF /P bits)
+    int pendingSecurity = -1;  // a password change waiting for Save: 1 set, 0 removed, -1 none
+};
+
+struct DocLoadResult {
+    uint32_t docId = 0;
+    std::wstring path;
+    OpenError error = OpenError::None;
+    std::vector<SizeF> pageSizes;
+    std::vector<OutlineItem> outline;
+    DocInfo info;
+};
+
+struct SearchHit {
+    int page = 0;
+    std::vector<RectF> rects;  // one match may span several lines
+};
+
+struct SearchPageResult {
+    uint32_t docId = 0;
+    uint32_t searchId = 0;
+    int page = 0;
+    int pagesDone = 0;
+    bool finished = false;
+    std::vector<SearchHit> hits;
+};
+
+// One character of a page's text layer (used for text selection).
+struct TextChar {
+    RectF box;           // page points, top-left origin; valid if hasBox
+    uint32_t cp = 0;     // Unicode code point
+    bool hasBox = false; // false for characters PDFium generated (\r\n, spaces)
+};
+
+// A comment: a sticky note, or a text markup (highlight, underline,
+// strike-out) that may carry a comment.
+struct CommentInfo {
+    RectF rect;               // page points, top-left origin, unrotated
+    int annot = 0;            // index among the page's annotations
+    int subtype = 0;          // kAnnotNote or a MarkupType
+    std::wstring text;        // the comment (may be empty for markup)
+    std::wstring author;
+    std::wstring date;        // PDF date string ("D:2026...")
+};
+
+// Form field types (the values of PDFium's FPDF_FORMFIELD_*).
+enum FieldType {
+    kFieldUnknown = 0, kFieldPushButton = 1, kFieldCheckBox = 2, kFieldRadio = 3,
+    kFieldComboBox = 4, kFieldListBox = 5, kFieldText = 6, kFieldSignature = 7,
+};
+
+// A fillable form field on a page (one widget annotation).
+struct FormField {
+    RectF rect;               // page points, top-left origin, unrotated
+    int annot = 0;            // index among the page's annotations
+    int type = kFieldUnknown;
+    std::wstring name, value;
+    bool checked = false;
+    bool readOnly = false, multiline = false, password = false;
+    std::vector<std::wstring> options;  // combo and list boxes
+    int selected = -1;
+};
+
+struct TextLayerResult {
+    uint32_t docId = 0;
+    int page = 0;
+    std::vector<TextChar> chars;
+    std::vector<LinkInfo> links;  // link annotations and URLs found in the text
+    std::vector<CommentInfo> comments;
+    std::vector<FormField> fields;
+};
+
+// A line of editable text: consecutive text objects of the page's content
+// on one baseline, in the same font and size. Editing replaces them all.
+struct TextRun {
+    RectF rect;               // page points, top-left origin, unrotated
+    std::wstring text;
+    int first = 0, count = 0; // page object indices
+    float size = 0;           // font size as shown, in points
+    bool bold = false, italic = false, serif = false, mono = false;
+    bool underline = false, strike = false;  // drawn lines under / through it
+    COLORREF color = 0;
+};
+
+// A picture placed directly on a page (not inside a group of objects).
+struct PageImage {
+    RectF rect;               // page points, top-left origin, unrotated
+    int index = 0;            // page object index
+};
+
+struct TextRunsResult {
+    uint32_t docId = 0;
+    int page = 0;
+    std::vector<TextRun> runs;
+    std::vector<PageImage> images;
+};
+
+struct CommentListResult {
+    uint32_t docId = 0;
+    std::vector<std::pair<int, CommentInfo>> comments;  // {page, comment}
+};
+
+// A caret position in the document: before character `index` of `page`.
+struct TextPos {
+    int page = 0;
+    int index = 0;
+    bool operator<(const TextPos& o) const {
+        return page != o.page ? page < o.page : index < o.index;
+    }
+    bool operator==(const TextPos& o) const { return page == o.page && index == o.index; }
+};
+
+struct TextCopyResult {
+    uint32_t docId = 0;
+    uint32_t requestId = 0;
+    std::wstring text;
+};
+
+// A print job handed to the worker. The printer DC belongs to the worker
+// from then on (it calls EndDoc and DeleteDC).
+// A page placed on a printed sheet: its rectangle in points from the top
+// left corner of the paper (as it comes out of the printer), turned
+// `rotate` quarter turns clockwise. See PrintLayout.h.
+struct PrintCell {
+    int page = 0;
+    RectF rect;
+    int rotate = 0;
+};
+
+struct PrintSheet {
+    std::vector<PrintCell> cells;  // empty: a blank sheet (the back of a booklet)
+};
+
+struct PrintJob {
+    uint32_t docId = 0;
+    HDC dc = nullptr;
+    std::wstring docName;
+    std::vector<PrintSheet> sheets;  // in printing order (copies already expanded)
+};
+
+// ---------------------------------------------------------------------------
+// Editing
+// ---------------------------------------------------------------------------
+
+// Text markup annotation types (values are PDFium's FPDF_ANNOT_* subtypes).
+enum MarkupType { kMarkupHighlight = 9, kMarkupUnderline = 10, kMarkupStrikeOut = 12 };
+// Other annotation types (PDFium's FPDF_ANNOT_* values).
+enum {
+    kAnnotNote = 1, kAnnotFreeText = 3, kAnnotLine = 4, kAnnotSquare = 5, kAnnotCircle = 6,
+    kAnnotPolygon = 7, kAnnotPolyline = 8, kMarkupSquiggly = 11, kAnnotStamp = 13, kAnnotInk = 15,
+};
+
+// Drawing tools (EditOp::AddShape).
+enum ShapeKind { kShapeRect = 0, kShapeEllipse = 1, kShapeLine = 2, kShapeArrow = 3, kShapePen = 4 };
+
+struct PointF {
+    float x = 0, y = 0;
+};
+
+// A rectangle on a page (redaction marks), page points, top-left origin.
+struct PageRect {
+    int page = 0;
+    RectF rect;
+};
+
+// Where page numbers go (EditOp::PageNumbers).
+enum NumberPosition {
+    kNumBottomCenter = 0, kNumBottomRight, kNumBottomLeft, kNumTopCenter, kNumTopRight, kNumTopLeft,
+};
+
+// A word found by text recognition. `rect` is in page points (top-left
+// origin, as displayed); `lineEnd` marks the last word of a line.
+struct OcrWord {
+    RectF rect;
+    std::wstring text;
+    bool lineEnd = false;
+};
+
+struct OcrPage {
+    int page = 0;
+    std::vector<OcrWord> words;
+};
+
+// A page rendered for text recognition (WM_APP_OCR_IMAGE). `skipped`:
+// the page already has text and was not rendered.
+struct OcrImage {
+    uint32_t docId = 0;
+    uint32_t jobId = 0;
+    int page = 0;
+    bool skipped = false;
+    float scale = 1;     // pixels per point
+    PixelBuffer pixels;
+    ~OcrImage() { pixels.Free(); }
+};
+
+// The words recognised on one page (WM_APP_OCR_DONE).
+struct OcrResult {
+    uint32_t jobId = 0;
+    int page = 0;
+    bool ok = true;
+    bool fatal = false;  // recognition is not possible at all (error says why)
+    std::wstring error;
+    std::vector<OcrWord> words;
+};
+
+// A line of a page's text with its typography (Markdown export). Positions
+// are page points, top-left origin.
+struct TextLine {
+    std::wstring text;
+    float size = 0;      // most common font size, in points
+    bool bold = false;   // most letters are bold
+    float top = 0, bottom = 0, left = 0;
+};
+
+// Exporting pages as pictures, plain text or Markdown.
+enum class ExportFormat { Png, Jpeg, Text, Markdown };
+
+struct ExportJob {
+    uint32_t docId = 0;
+    ExportFormat format = ExportFormat::Png;
+    std::vector<int> pages;
+    std::wstring path;   // pictures: one file per page named after it ("name-3.png")
+    int dpi = 150;       // pictures
+};
+
+// Progress of an export (WM_APP_EXPORT_PROGRESS).
+struct ExportProgress {
+    int done = 0, total = 0;
+    bool finished = false;
+    bool ok = true;
+    std::wstring error;
+    std::vector<std::wstring> files;  // finished: the files written
+    bool noText = false;              // text export found no text at all
+};
+
+// A PDF whose pages are inserted. The worker replaces `path` with a private
+// copy before applying the edit, so undo/redo can replay it later even if
+// the original file changes or the source tab is closed.
+struct ImportSource {
+    std::wstring path;
+    uint32_t docId = 0;    // an open tab (its current, possibly unsaved, state)
+    std::string password;  // filled in by the worker for tab sources
+};
+
+// One undoable change to a document. Edits are recorded in order; undo
+// re-opens the last saved file and replays all but the last one.
+struct EditOp {
+    enum Kind {
+        DeletePages, MovePages, RotatePages, InsertBlank, InsertFiles, Markup,
+        EditText,     // replace the text of a TextRun: page, index = first, count, text
+        FindReplace,  // every occurrence of `find` in the document by `text`
+        AddNote,      // a sticky note at (x, y) on `page` with `text`
+        EditComment,  // the comment of annotation `index` on `page` becomes `text`
+        DeleteAnnot,  // annotation `index` on `page` (and its pop-up)
+        SetField,     // form field (annotation `index` on `page`): text / checked / option
+        AddShape,     // rectangle, ellipse, line, arrow or pen stroke: shape, points, color, width
+        AddStamp,     // a stamp ("APPROVED") in `rect`: text, color
+        AddImage,     // a picture in `rect` (signature: as a removable stamp annotation)
+        AddText,      // new text at (x, y): text, fontSize, color, bold/italic/serif/mono
+        StyleText,    // text run (page, index, count): fontSize (0: keep), color (CLR_INVALID: keep)
+        Watermark,    // `text` across `pages`: fontSize (0: fit the page), color, opacity,
+                      // diagonal, behind
+        PageNumbers,  // on `pages`: text = pattern ({n}, {total}), position, fontSize, color, firstNumber
+        AddOcrText,   // recognised words of scanned pages as invisible, searchable text: ocr
+        Compress,     // pictures above `dpi` are made smaller, as JPEG of `quality`
+        Redact,       // removes everything under `marks` and paints them black
+        SetSecurity,  // the password used when saving: encrypt, passwords, permissions
+        AddMeasure,   // a measurement drawn on `page`: points (2: distance, 3: angle), text
+        MoveObjects,  // page objects `objects` of `page` move by (x, y) display points, or each by
+                      // its own `points` entry; thin lines (underlines) inside `rect` move along
+        DeleteObjects,// page objects `objects` of `page` (and thin lines inside `rect`)
+        SetImageRect, // picture `index` of `page` fills `rect` (display points)
+        ReplaceImage, // picture `index` of `page` shows `pixels` instead, fitted in its place
+        FormatText,   // text runs `runs` of `page` get `format` (all of each run, or its
+                      // characters [from, to) when to >= 0)
+        CropPages,    // `pages` keep part of themselves, by `option` (CropMode)
+        SetInfo,      // the document information: `info` (title, author, subject, keywords)
+    } kind = DeletePages;
+    std::vector<int> pages;  // Delete/Move/Rotate: ascending page indices
+    int index = 0;           // Move: new index of the first moved page;
+                             // InsertBlank/InsertFiles: insert before this page
+    int turns = 0;           // Rotate: quarter turns clockwise
+    SizeF size;              // InsertBlank: page size in points
+    std::vector<ImportSource> sources;  // InsertFiles, in order
+    int markup = kMarkupHighlight;      // Markup: MarkupType
+    COLORREF color = 0;
+    TextPos from, to;        // Markup: text range (may span pages)
+    int page = 0;            // EditText / AddNote / EditComment / DeleteAnnot
+    int count = 0;           // EditText: number of page objects replaced
+    float x = 0, y = 0;      // AddNote: page points, top-left origin, unrotated
+    std::wstring text;       // new text / comment (Markup: optional comment)
+    std::wstring find;       // FindReplace: what to find; EditText: the old text
+    bool matchCase = false;  // FindReplace
+    std::wstring author;     // comments
+    // forms
+    bool checked = false;    // SetField: check boxes and radio buttons
+    int option = -1;         // SetField: combo / list box choice
+    // drawing, stamps, pictures and new text
+    int shape = kShapeRect;
+    std::vector<PointF> points;  // AddShape: page points, top-left origin, unrotated
+    float width = 2;             // AddShape: line width in points
+    RectF rect;                  // AddStamp / AddImage
+    std::vector<uint8_t> pixels; // AddImage: BGRA, top-down
+    int imageW = 0, imageH = 0;
+    bool asAnnot = false;        // AddImage: a stamp annotation (signatures)
+    float fontSize = 0;          // AddText / StyleText: font size in points
+    bool bold = false, italic = false, serif = false, mono = false;  // AddText
+    // watermarks and page numbers
+    int opacity = 100;           // percent
+    bool diagonal = true;        // Watermark
+    bool behind = false;         // Watermark: under the page content
+    int position = 0;            // PageNumbers: NumberPosition
+    int firstNumber = 1;         // PageNumbers: the number shown on the first page of `pages`
+    std::vector<OcrPage> ocr;    // AddOcrText
+    // compression
+    int dpi = 150;
+    int quality = 75;            // JPEG quality, 1-100
+    // redaction
+    std::vector<PageRect> marks;
+    // password protection (SetSecurity); passwords are UTF-8
+    bool encrypt = false;        // false: save without any password
+    std::string userPassword, ownerPassword;
+    uint32_t permissions = 0xFFFFFFFF;  // PDF /P bits allowed to others
+    // moving, deleting and formatting
+    std::vector<int> objects;    // MoveObjects / DeleteObjects: page object indices
+    struct Format {
+        int bold = -1, italic = -1;        // 1 on, 0 off, -1 as it is
+        int underline = -1, strike = -1;   // 1 on, 0 off, -1 as it is
+        std::wstring face;                 // a font family ("Arial"), empty: as it is
+        float size = 0;                    // points, 0: as it is
+        COLORREF color = CLR_INVALID;      // CLR_INVALID: as it is
+    } format;
+    struct RunRef {
+        int index = 0, count = 0;  // the run's page objects
+        std::wstring text;         // its text now (checked before changing it)
+        std::wstring newText;      // typed in the same go (empty: unchanged)
+        int from = 0, to = -1;     // the characters formatted (to < 0: all)
+    };
+    std::vector<RunRef> runs;    // FormatText
+    std::vector<std::wstring> info;  // SetInfo: title, author, subject, keywords
+};
+
+// How CropPages crops (EditOp::option).
+enum CropMode {
+    kCropContent = 0,  // to what is drawn on each page, plus a border of `width` points
+    kCropMargins = 1,  // cut `rect` (left, top, right, bottom: points as seen) off the edges
+    kCropPaper = 2,    // every page becomes `size` (portrait points, turned to match the page), content fitted
+    kCropBox = 3,      // keep `rect` (display points, as drawn on the page)
+};
+
+enum class EditAction { Edit, Undo, Redo, Save };
+
+// Posted after an edit, undo, redo or save. Edits give the document a new
+// id (so results still queued for the old state are ignored); `docId` is
+// that new id.
+struct EditResult {
+    uint32_t docId = 0;
+    EditAction action = EditAction::Edit;
+    bool ok = true;
+    std::wstring error;       // shown to the user when !ok
+    std::vector<SizeF> pageSizes;
+    std::vector<OutlineItem> outline;
+    DocInfo info;
+    bool canUndo = false, canRedo = false, dirty = false;
+    std::wstring path;        // file the document is saved in
+    int focusPage = -1;       // page to show after the edit (-1: stay)
+    std::vector<int> select;  // pages to select in the thumbnails
+    uint32_t flags = 0;       // Save: echoed from the request (kAfterSave*)
+    std::wstring note;        // shown after a successful edit (e.g. how many replaced)
+    bool fontChanged = false; // edited text needed a font other than the original
+    std::wstring fontNote;    // a chosen font could not be used (told once)
+};
+
+enum : uint32_t { kAfterSaveCloseTab = 1, kAfterSaveQuit = 2 };
+
+// A recovery copy of a document with unsaved changes (WM_APP_AUTOSAVED).
+struct AutosaveResult {
+    uint32_t docId = 0;   // the state that was written
+    bool ok = false;
+    std::wstring path;
+};
+
+// Pages laid out on sheets for printing (pages per sheet, booklets),
+// written as a new PDF.
+struct LayoutJob {
+    std::vector<int> pages;
+    bool booklet = false;   // 2 pages per sheet side, in folding order (both sides printed)
+    int perSheet = 2;       // 2, 4, 6 or 9 (not booklets)
+    float sheetW = 0, sheetH = 0;  // portrait points; 0: the size of the first page
+    bool lines = false;     // thin lines between the pages
+};
+
+struct ExtractResult {
+    uint32_t clipId = 0;      // pages copied for pasting (see MainWindow::CopyPages), 0: saved by the user
+    bool ok = true;
+    std::wstring error;
+    std::vector<std::wstring> files;  // written files
+};
+
+// Redaction marks found by text or pattern (WM_APP_REDACT_FOUND).
+struct RedactFindResult {
+    uint32_t docId = 0;
+    std::vector<PageRect> marks;
+};
+
+// Patterns for finding text to redact.
+enum : int { kFindEmails = 1, kFindPhones = 2, kFindNumbers = 4 };
+
+// The result of comparing two documents (WM_APP_COMPARED).
+struct CompareResult {
+    bool ok = true;
+    std::wstring error;
+    std::wstring path;       // the marked copy
+    std::wstring otherName;  // the document it was compared with
+    int added = 0, removed = 0, changed = 0;
+};

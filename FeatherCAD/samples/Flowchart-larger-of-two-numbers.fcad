@@ -1,0 +1,103 @@
+FeatherCAD 1
+units mm
+precision 2
+dimstyle 3.5 3 1 2 1 2 1
+layer 0 0 7 0 -3 name=0
+layer 1 0 7 0 50 name=Visible
+layer 2 0 6 10 25 name=Hidden
+layer 3 0 1 11 25 name=Centre
+layer 4 0 3 0 25 name=Dimension
+layer 5 0 4 0 18 name=Section
+layer 6 0 8 0 18 name=Construction
+layer 7 0 1 11 25 name=Cutting%20plane
+current 1 -1 -1 -1 1
+prop key=drawnby value=Feather%20CAD%20example
+prop key=title value=FLOWCHART:%20the%20larger%20of%20two%20numbers
+prop key=titleblock value=BIS
+block 0 0 5 name=TERMINATOR ports=4
+line -10 10 10 10 W=25
+line -10 -10 10 -10 W=25
+arc 10 0 10 270 90 W=25
+arc -10 0 10 90 270 W=25
+text 0 0 th=3 tj=4 tag=TEXT prompt=Text%20inside content= W=18
+bport 0 10 0 1
+bport 0 -10 0 -1
+bport -20 0 -1 0
+bport 20 0 1 0
+block 0 0 2 name=INPUT_OUTPUT ports=4
+pline 1 4 -15 10 0 -20 -10 0 15 -10 0 20 10 0 W=25
+text 0 0 th=3 tj=4 tag=TEXT prompt=Text%20inside content= W=18
+bport 0 10 0 1
+bport 0 -10 0 -1
+bport -20 0 -1 0
+bport 20 0 1 0
+block 0 0 2 name=DECISION ports=4
+pline 1 4 0 12 0 -22 0 0 0 -12 0 22 0 0 W=25
+text 0 0 th=3 tj=4 tag=TEXT prompt=Text%20inside content= W=18
+bport 0 12 0 1
+bport 0 -12 0 -1
+bport -22 0 -1 0
+bport 22 0 1 0
+insert 0 0 1 0 0 name=TERMINATOR v=Start L=1
+insert 0 -35 1 0 0 name=INPUT_OUTPUT v=Read%20A,%20B L=1
+insert 0 -75 1 0 0 name=DECISION v=A%20>%20B%20? L=1
+insert -45 -115 1 0 0 name=INPUT_OUTPUT v=Print%20A L=1
+insert 45 -115 1 0 0 name=INPUT_OUTPUT v=Print%20B L=1
+insert 0 -155 1 0 0 name=TERMINATOR v=Stop L=1
+leader 3 2 0 -25 0 -10 th=3.5 content= conn=1 from=1:1 to=2:0 L=1
+leader 3 2 0 -63 0 -45 th=3.5 content= conn=1 from=2:1 to=3:0 L=1
+leader 3 3 -45 -105 -45 -75 -22 -75 th=3.5 content= conn=1 from=3:2 to=4:0 L=1
+leader 3 3 45 -105 45 -75 22 -75 th=3.5 content= conn=1 from=3:3 to=5:0 L=1
+leader 3 3 -20 -155 -45 -155 -45 -125 th=3.5 content= conn=1 from=4:1 to=6:2 L=1
+leader 3 3 20 -155 45 -155 45 -125 th=3.5 content= conn=1 from=5:1 to=6:3 L=1
+text -30 -70 th=3 content=Yes L=1
+text 24 -70 th=3 content=No L=1
+text -65 22 th=5 content=FLOWCHART:%20the%20larger%20of%20two%20numbers L=1
+text -65 -175 th=3 content=STEPS%0A1.%20SYMBOL,%20Flowchart%20group:%20Start%20/%20stop,%20Input%20/%20output,%20Decision;%20type%20the%20text%20inside;%20click%20to%20place.%0A2.%20WIRE%20from%20one%20shape's%20side%20to%20the%20next:%20flow%20lines%20get%20arrows%20by%20themselves%20on%20flowchart%20shapes.%0A3.%20TEXT%20for%20Yes%20/%20No%20beside%20the%20decision's%20exits. L=1
+end
+sheet 420 297 1 10 0 1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 paper=A3 name=Sheet1
+FeatherCAD 1
+units mm
+precision 2
+dimstyle 3.5 3 1 2 1 2 1
+layer 0 0 7 0 -3 name=0
+current 0 -1 -1 -1 1
+block 0 0 34 name=BIS%20title%20block
+pline 1 4 -170 0 0 0 0 0 0 48 0 -170 48 0 W=50
+line -170 8 -40 8 W=25
+line -170 16 -40 16 W=25
+line -170 24 -40 24 W=25
+line -170 32 0 32 W=25
+line -170 40 0 40 W=25
+line -90 0 -90 32 W=25
+line -40 0 -40 32 W=25
+text -168.8 47.2 th=1.6 content=INSTITUTION W=18
+text -168.8 41.4 th=2.8 tj=6 content={company} W=25
+text -168.8 39.2 th=1.6 content=TITLE W=18
+text -168.8 33.4 th=3.5 tj=6 content={title} W=25
+text -168.8 31.2 th=1.6 content=NAME W=18
+text -168.8 25.4 th=2.8 tj=6 content={drawnby} W=25
+text -88.8 31.2 th=1.6 content=USN W=18
+text -88.8 25.4 th=2.8 tj=6 content={usn} W=25
+text -168.8 23.2 th=1.6 content=BRANCH%20/%20BATCH W=18
+text -168.8 17.4 th=2.8 tj=6 content={branch} W=25
+text -88.8 23.2 th=1.6 content=SHEET%20NO. W=18
+text -88.8 17.4 th=2.8 tj=6 content={sheet} W=25
+text -168.8 15.2 th=1.6 content=SCALE W=18
+text -168.8 9.4 th=2.8 tj=6 content={scale} W=25
+text -88.8 15.2 th=1.6 content=DATE W=18
+text -88.8 9.4 th=2.8 tj=6 content={date} W=25
+text -168.8 7.2 th=1.6 content=CHECKED%20BY W=18
+text -168.8 1.4 th=2.8 tj=6 content={checkedby} W=25
+text -88.8 7.2 th=1.6 content=MARKS W=18
+text -88.8 1.4 th=2.8 tj=6 content={marks} W=25
+pline 1 4 -32.05 13.2 0 -20.349999999999994 9.95 0 -20.349999999999994 22.95 0 -32.05 19.7 0 W=35
+circle -7.999999999999993 16.45 6.5 W=35
+circle -7.999999999999993 16.45 3.25 W=35
+line -34 16.45 0.45000000000000706 16.45 T=3 W=18 S=0.32499998807907104
+line -7.999999999999993 7.999999999999999 -7.999999999999993 24.9 T=3 W=18 S=0.32499998807907104
+text -20 1.5 th=1.8 tj=7 content=PROJECTION W=18
+pline 1 4 10 10 0 410 10 0 410 287 0 10 287 0 W=70
+insert 410 10 1 0 0 name=BIS%20title%20block
+viewport 15 55 405 282 35.92737430167594 -85.40015000000001 1 0
+end

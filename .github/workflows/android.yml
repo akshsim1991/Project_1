@@ -1,0 +1,106 @@
+name: Feather PDF Android
+
+on:
+  push:
+    paths: ["FeatherPDF-Android/**", ".github/workflows/android.yml"]
+  pull_request:
+    paths: ["FeatherPDF-Android/**", ".github/workflows/android.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: FeatherPDF-Android
+
+jobs:
+  build:
+    name: Build APKs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Build release APKs
+        env:
+          # Optional: add these repository secrets to sign with your own key.
+          FEATHER_KEYSTORE_B64: ${{ secrets.FEATHER_KEYSTORE_B64 }}
+          FEATHER_KEYSTORE_PASSWORD: ${{ secrets.FEATHER_KEYSTORE_PASSWORD }}
+          FEATHER_KEY_ALIAS: ${{ secrets.FEATHER_KEY_ALIAS }}
+          FEATHER_KEY_PASSWORD: ${{ secrets.FEATHER_KEY_PASSWORD }}
+        run: |
+          if [ -n "$FEATHER_KEYSTORE_B64" ]; then
+            echo "$FEATHER_KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/feather.jks"
+            export FEATHER_KEYSTORE="$RUNNER_TEMP/feather.jks"
+          fi
+          ./gradlew --no-daemon assembleRelease lintRelease
+          rm -f "$RUNNER_TEMP/feather.jks"
+
+      - name: APK sizes
+        run: ls -l app/build/outputs/apk/release/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FeatherPDF-android-apks
+          path: FeatherPDF-Android/app/build/outputs/apk/release/*.apk
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lint-report
+          path: FeatherPDF-Android/app/build/reports/lint-results-release.html
+          if-no-files-found: ignore
+
+  emulator-test:
+    name: Emulator smoke test (API ${{ matrix.api }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        api: [24, 34]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Enable KVM
+        working-directory: .
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Build test APKs
+        run: ./gradlew --no-daemon assembleDebug assembleDebugAndroidTest
+
+      - name: Run instrumentation tests
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ matrix.api }}
+          arch: x86_64
+          target: ${{ matrix.api >= 30 && 'google_apis' || 'default' }}
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          working-directory: FeatherPDF-Android
+          script: ./gradlew --no-daemon connectedDebugAndroidTest
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: emulator-results-api${{ matrix.api }}
+          path: |
+            FeatherPDF-Android/app/build/outputs/connected_android_test_additional_output/
+            FeatherPDF-Android/app/build/reports/androidTests/
+          if-no-files-found: ignore

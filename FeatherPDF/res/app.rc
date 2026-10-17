@@ -1,0 +1,415 @@
+// app.rc - icon, manifest, version information and dialogs.
+#include <windows.h>
+#include <commctrl.h>
+#include "resource.h"
+
+IDI_APP ICON "app.ico"
+
+1 RT_MANIFEST "app.manifest"
+
+IDD_PASSWORD DIALOGEX 0, 0, 260, 90
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Password required"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "", IDC_PASSWORD_TEXT, 10, 10, 240, 24
+    EDITTEXT        IDC_PASSWORD_EDIT, 10, 40, 240, 14, ES_PASSWORD | ES_AUTOHSCROLL | WS_TABSTOP
+    DEFPUSHBUTTON   "Open", IDOK, 146, 66, 50, 15
+    PUSHBUTTON      "Cancel", IDCANCEL, 200, 66, 50, 15
+END
+
+IDD_EXTRACT DIALOGEX 0, 0, 260, 104
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Extract pages"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "", IDC_EXTRACT_TEXT, 10, 10, 240, 18
+    EDITTEXT        IDC_EXTRACT_RANGE, 10, 32, 240, 14, ES_AUTOHSCROLL | WS_TABSTOP
+    AUTOCHECKBOX    "Save each page as a separate file", IDC_EXTRACT_SEPARATE, 10, 54, 240, 12, WS_TABSTOP
+    DEFPUSHBUTTON   "Save...", IDOK, 146, 80, 50, 15
+    PUSHBUTTON      "Cancel", IDCANCEL, 200, 80, 50, 15
+END
+
+IDD_OCR DIALOGEX 0, 0, 280, 172
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Recognise text (OCR)"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "Finds the words on scanned pages and adds them as invisible text, so you can search, select and copy them. The pages look exactly the same.", -1, 10, 8, 260, 26
+    GROUPBOX        "Pages", -1, 10, 38, 260, 48
+    AUTORADIOBUTTON "&All pages", IDC_PAGES_ALL, 18, 50, 70, 12, WS_GROUP | WS_TABSTOP
+    AUTORADIOBUTTON "C&urrent page", IDC_PAGES_CURRENT, 94, 50, 80, 12
+    AUTORADIOBUTTON "Pa&ges:", IDC_PAGES_RANGE, 18, 66, 44, 12
+    EDITTEXT        IDC_PAGES_EDIT, 64, 65, 198, 14, ES_AUTOHSCROLL | WS_TABSTOP | WS_GROUP
+    AUTOCHECKBOX    "&Skip pages that already have text", IDC_OCR_SKIP, 10, 94, 260, 12, WS_TABSTOP
+    LTEXT           "Uses the text recognition built into Windows, in the languages of your Windows profile. Nothing leaves this PC. Undo (Ctrl+Z) takes it back.", -1, 10, 112, 260, 26
+    DEFPUSHBUTTON   "Recognise", IDOK, 162, 150, 52, 15
+    PUSHBUTTON      "Cancel", IDCANCEL, 218, 150, 52, 15
+END
+
+IDD_WATERMARK DIALOGEX 0, 0, 280, 190
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Watermark"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "&Text:", -1, 10, 12, 50, 10
+    EDITTEXT        IDC_WM_TEXT, 64, 10, 206, 14, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "&Colour:", -1, 10, 32, 50, 10
+    COMBOBOX        IDC_WM_COLOR, 64, 30, 70, 100, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "&Opacity:", -1, 146, 32, 50, 10
+    COMBOBOX        IDC_WM_OPACITY, 200, 30, 70, 100, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "Si&ze:", -1, 10, 52, 50, 10
+    COMBOBOX        IDC_WM_SIZE, 64, 50, 70, 100, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "&Direction:", -1, 146, 52, 50, 10
+    COMBOBOX        IDC_WM_LAYOUT, 200, 50, 70, 100, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    AUTOCHECKBOX    "Put it &behind the page content (hidden by pictures and scans)", IDC_WM_BEHIND, 10, 70, 260, 12, WS_TABSTOP
+    GROUPBOX        "Pages", -1, 10, 88, 260, 48
+    AUTORADIOBUTTON "&All pages", IDC_PAGES_ALL, 18, 100, 70, 12, WS_GROUP | WS_TABSTOP
+    AUTORADIOBUTTON "C&urrent page", IDC_PAGES_CURRENT, 94, 100, 80, 12
+    AUTORADIOBUTTON "Pa&ges:", IDC_PAGES_RANGE, 18, 116, 44, 12
+    EDITTEXT        IDC_PAGES_EDIT, 64, 115, 198, 14, ES_AUTOHSCROLL | WS_TABSTOP | WS_GROUP
+    LTEXT           "Undo (Ctrl+Z) removes the watermark again.", -1, 10, 144, 260, 12
+    DEFPUSHBUTTON   "Add", IDOK, 162, 168, 52, 15
+    PUSHBUTTON      "Cancel", IDCANCEL, 218, 168, 52, 15
+END
+
+IDD_PAGENUMBERS DIALOGEX 0, 0, 280, 156
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Page numbers"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "&Format:", -1, 10, 12, 50, 10
+    COMBOBOX        IDC_PN_FORMAT, 64, 10, 90, 100, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "&Position:", -1, 164, 12, 40, 10
+    COMBOBOX        IDC_PN_POSITION, 206, 10, 64, 100, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "&Start at:", -1, 10, 32, 50, 10
+    EDITTEXT        IDC_PN_START, 64, 30, 40, 14, ES_NUMBER | WS_TABSTOP
+    LTEXT           "Si&ze:", -1, 164, 32, 40, 10
+    COMBOBOX        IDC_PN_SIZE, 206, 30, 64, 100, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    GROUPBOX        "Pages", -1, 10, 52, 260, 48
+    AUTORADIOBUTTON "&All pages", IDC_PAGES_ALL, 18, 64, 70, 12, WS_GROUP | WS_TABSTOP
+    AUTORADIOBUTTON "C&urrent page", IDC_PAGES_CURRENT, 94, 64, 80, 12
+    AUTORADIOBUTTON "Pa&ges:", IDC_PAGES_RANGE, 18, 80, 44, 12
+    EDITTEXT        IDC_PAGES_EDIT, 64, 79, 198, 14, ES_AUTOHSCROLL | WS_TABSTOP | WS_GROUP
+    LTEXT           "The first page chosen gets the start number. Undo (Ctrl+Z) removes the numbers again.", -1, 10, 106, 260, 20
+    DEFPUSHBUTTON   "Add", IDOK, 162, 134, 52, 15
+    PUSHBUTTON      "Cancel", IDCANCEL, 218, 134, 52, 15
+END
+
+IDD_EXPORT DIALOGEX 0, 0, 280, 150
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Export"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "&Format:", -1, 10, 12, 50, 10
+    COMBOBOX        IDC_EXPORT_FORMAT, 64, 10, 206, 100, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "&Resolution:", IDC_EXPORT_DPI_LABEL, 10, 32, 50, 10
+    COMBOBOX        IDC_EXPORT_DPI, 64, 30, 206, 100, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    GROUPBOX        "Pages", -1, 10, 50, 260, 48
+    AUTORADIOBUTTON "&All pages", IDC_PAGES_ALL, 18, 62, 70, 12, WS_GROUP | WS_TABSTOP
+    AUTORADIOBUTTON "C&urrent page", IDC_PAGES_CURRENT, 94, 62, 80, 12
+    AUTORADIOBUTTON "Pa&ges:", IDC_PAGES_RANGE, 18, 78, 44, 12
+    EDITTEXT        IDC_PAGES_EDIT, 64, 77, 198, 14, ES_AUTOHSCROLL | WS_TABSTOP | WS_GROUP
+    LTEXT           "", IDC_EXPORT_NOTE, 10, 104, 260, 20
+    DEFPUSHBUTTON   "Export...", IDOK, 162, 128, 52, 15
+    PUSHBUTTON      "Cancel", IDCANCEL, 218, 128, 52, 15
+END
+
+IDD_COMPRESS DIALOGEX 0, 0, 280, 120
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Compress"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "Makes the file smaller by storing large pictures at a lower resolution, as JPEG. Text and drawings stay sharp.", -1, 10, 8, 260, 20
+    LTEXT           "&Quality:", -1, 10, 36, 50, 10
+    COMBOBOX        IDC_COMPRESS_LEVEL, 64, 34, 206, 100, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "", IDC_COMPRESS_NOTE, 10, 56, 260, 30
+    DEFPUSHBUTTON   "Compress", IDOK, 162, 98, 52, 15
+    PUSHBUTTON      "Cancel", IDCANCEL, 218, 98, 52, 15
+END
+
+IDD_PROTECT DIALOGEX 0, 0, 290, 236
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Password protection"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "", IDC_PW_STATE, 10, 8, 270, 20
+    AUTOCHECKBOX    "Require a &password to open the document", IDC_PW_OPEN, 10, 32, 270, 12, WS_TABSTOP
+    LTEXT           "Password:", -1, 22, 50, 60, 10
+    EDITTEXT        IDC_PW_USER, 90, 48, 190, 14, ES_PASSWORD | ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "Type it again:", -1, 22, 68, 60, 10
+    EDITTEXT        IDC_PW_USER2, 90, 66, 190, 14, ES_PASSWORD | ES_AUTOHSCROLL | WS_TABSTOP
+    AUTOCHECKBOX    "&Limit what others can do with it", IDC_PW_LIMIT, 10, 90, 270, 12, WS_TABSTOP
+    AUTOCHECKBOX    "Allow p&rinting", IDC_PW_PRINT, 22, 106, 120, 12, WS_TABSTOP
+    AUTOCHECKBOX    "Allow &copying text and pictures", IDC_PW_COPY, 140, 106, 140, 12, WS_TABSTOP
+    AUTOCHECKBOX    "Allow c&hanges (editing, comments, filling in forms)", IDC_PW_CHANGE, 22, 120, 258, 12, WS_TABSTOP
+    LTEXT           "Owner password:", -1, 22, 138, 64, 10
+    EDITTEXT        IDC_PW_OWNER, 90, 136, 190, 14, ES_PASSWORD | ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "Type it again:", -1, 22, 156, 64, 10
+    EDITTEXT        IDC_PW_OWNER2, 90, 154, 190, 14, ES_PASSWORD | ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "The owner password lifts the limits. Encryption: AES-256, opened by Acrobat, Edge, Chrome and other current readers. Keep the passwords safe: they can not be recovered. The protection is applied when you save.", -1, 10, 176, 270, 30
+    PUSHBUTTON      "Remove protection", IDC_PW_REMOVE, 10, 214, 80, 15
+    DEFPUSHBUTTON   "Protect", IDOK, 172, 214, 52, 15
+    PUSHBUTTON      "Cancel", IDCANCEL, 228, 214, 52, 15
+END
+
+IDD_REDACT_FIND DIALOGEX 0, 0, 280, 144
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Find and mark for redaction"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "&Text to find (every occurrence in the document is marked):", -1, 10, 8, 260, 10
+    EDITTEXT        IDC_RF_TEXT, 10, 20, 260, 14, ES_AUTOHSCROLL | WS_TABSTOP
+    AUTOCHECKBOX    "Match &case", IDC_RF_CASE, 10, 38, 120, 12, WS_TABSTOP
+    GROUPBOX        "Also mark", -1, 10, 54, 260, 52
+    AUTOCHECKBOX    "&E-mail addresses", IDC_RF_EMAIL, 18, 66, 120, 12, WS_TABSTOP
+    AUTOCHECKBOX    "&Phone numbers", IDC_RF_PHONE, 140, 66, 120, 12, WS_TABSTOP
+    AUTOCHECKBOX    "Long &numbers (accounts, cards, IDs)", IDC_RF_NUMBERS, 18, 82, 240, 12, WS_TABSTOP
+    LTEXT           "Check the marks, then use Apply redactions.", -1, 10, 112, 260, 10
+    DEFPUSHBUTTON   "Mark", IDOK, 162, 124, 52, 15
+    PUSHBUTTON      "Cancel", IDCANCEL, 218, 124, 52, 15
+END
+
+IDD_PASTE_TABS DIALOGEX 0, 0, 270, 192
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Paste pages into several documents"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "", IDC_PT_INFO, 10, 8, 250, 18
+    CONTROL         "", IDC_PT_LIST, "SysListView32", LVS_REPORT | LVS_NOCOLUMNHEADER | LVS_SINGLESEL | LVS_SHOWSELALWAYS | WS_BORDER | WS_TABSTOP, 10, 30, 250, 80
+    GROUPBOX        "Where the pages go", -1, 10, 116, 250, 46
+    AUTORADIOBUTTON "At the &end", IDC_PT_END, 18, 128, 70, 12, WS_GROUP | WS_TABSTOP
+    AUTORADIOBUTTON "At the &start", IDC_PT_START, 94, 128, 70, 12
+    AUTORADIOBUTTON "&After page:", IDC_PT_AFTER, 18, 144, 56, 12
+    EDITTEXT        IDC_PT_PAGE, 76, 143, 40, 14, ES_NUMBER | ES_AUTOHSCROLL | WS_TABSTOP | WS_GROUP
+    DEFPUSHBUTTON   "Paste", IDOK, 152, 170, 52, 15
+    PUSHBUTTON      "Cancel", IDCANCEL, 208, 170, 52, 15
+END
+
+IDD_CROP DIALOGEX 0, 0, 280, 232
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Crop pages"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    GROUPBOX        "Pages", -1, 10, 8, 260, 48
+    AUTORADIOBUTTON "&All pages", IDC_PAGES_ALL, 18, 20, 70, 12, WS_GROUP | WS_TABSTOP
+    AUTORADIOBUTTON "C&urrent page", IDC_PAGES_CURRENT, 94, 20, 80, 12
+    AUTORADIOBUTTON "Pa&ges:", IDC_PAGES_RANGE, 18, 36, 44, 12
+    EDITTEXT        IDC_PAGES_EDIT, 64, 35, 198, 14, ES_AUTOHSCROLL | WS_TABSTOP | WS_GROUP
+    GROUPBOX        "Crop", -1, 10, 62, 260, 116
+    AUTORADIOBUTTON "Remove the white &margins (each page is trimmed to its content)", IDC_CROP_AUTO, 18, 74, 248, 12, WS_GROUP | WS_TABSTOP
+    LTEXT           "Keep a border of", -1, 30, 90, 58, 10
+    EDITTEXT        IDC_CROP_PAD, 90, 88, 28, 14, ES_NUMBER | ES_AUTOHSCROLL | WS_TABSTOP | WS_GROUP
+    LTEXT           "mm", -1, 122, 90, 20, 10
+    AUTORADIOBUTTON "Cut &off the edges by (mm):", IDC_CROP_MARGINS, 18, 108, 200, 12, WS_GROUP | WS_TABSTOP
+    LTEXT           "Top", -1, 30, 126, 18, 10
+    EDITTEXT        IDC_CROP_TOP, 50, 124, 28, 14, ES_NUMBER | ES_AUTOHSCROLL | WS_TABSTOP | WS_GROUP
+    LTEXT           "Bottom", -1, 84, 126, 26, 10
+    EDITTEXT        IDC_CROP_BOTTOM, 112, 124, 28, 14, ES_NUMBER | ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "Left", -1, 146, 126, 18, 10
+    EDITTEXT        IDC_CROP_LEFT, 166, 124, 28, 14, ES_NUMBER | ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "Right", -1, 200, 126, 22, 10
+    EDITTEXT        IDC_CROP_RIGHT, 224, 124, 28, 14, ES_NUMBER | ES_AUTOHSCROLL | WS_TABSTOP
+    AUTORADIOBUTTON "Make every page the same &size:", IDC_CROP_SIZE, 18, 146, 128, 12, WS_GROUP | WS_TABSTOP
+    COMBOBOX        IDC_CROP_PAPER, 150, 144, 112, 120, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP | WS_GROUP
+    LTEXT           "The content is made smaller or larger to fit, and centred.", -1, 30, 162, 232, 10
+    LTEXT           "Tip: Crop by drawing a box lets you drag the area to keep on the page. Undo (Ctrl+Z) takes a crop back.", -1, 10, 186, 260, 20
+    DEFPUSHBUTTON   "Crop", IDOK, 162, 212, 52, 15
+    PUSHBUTTON      "Cancel", IDCANCEL, 218, 212, 52, 15
+END
+
+IDD_NUP DIALOGEX 0, 0, 280, 200
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Pages per sheet and booklets"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "Makes a new PDF for printing: several pages on each sheet of paper, or a booklet to fold. The document itself does not change.", -1, 10, 8, 260, 18
+    GROUPBOX        "Pages", -1, 10, 30, 260, 48
+    AUTORADIOBUTTON "&All pages", IDC_PAGES_ALL, 18, 42, 70, 12, WS_GROUP | WS_TABSTOP
+    AUTORADIOBUTTON "C&urrent page", IDC_PAGES_CURRENT, 94, 42, 80, 12
+    AUTORADIOBUTTON "Pa&ges:", IDC_PAGES_RANGE, 18, 58, 44, 12
+    EDITTEXT        IDC_PAGES_EDIT, 64, 57, 198, 14, ES_AUTOHSCROLL | WS_TABSTOP | WS_GROUP
+    GROUPBOX        "Layout", -1, 10, 84, 260, 84
+    AUTORADIOBUTTON "Pages &per sheet:", IDC_NUP_GRID, 18, 96, 72, 12, WS_GROUP | WS_TABSTOP
+    COMBOBOX        IDC_NUP_COUNT, 94, 94, 70, 100, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP | WS_GROUP
+    AUTORADIOBUTTON "&Booklet: print on both sides (flip on the short edge), then fold in the middle", IDC_NUP_BOOKLET, 18, 114, 248, 12, WS_GROUP | WS_TABSTOP
+    LTEXT           "Sheet size:", -1, 18, 134, 44, 10
+    COMBOBOX        IDC_NUP_PAPER, 64, 132, 100, 120, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP | WS_GROUP
+    AUTOCHECKBOX    "&Lines between pages (to cut along)", IDC_NUP_LINES, 18, 150, 240, 12, WS_TABSTOP
+    DEFPUSHBUTTON   "Make PDF...", IDOK, 146, 178, 68, 15
+    PUSHBUTTON      "Cancel", IDCANCEL, 218, 178, 52, 15
+END
+
+IDD_PROPERTIES DIALOGEX 0, 0, 300, 252
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Document properties"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "", IDC_PROP_INFO, 10, 8, 280, 120
+    LTEXT           "&Title:", -1, 10, 136, 50, 10
+    EDITTEXT        IDC_PROP_TITLE, 62, 134, 228, 14, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "&Author:", -1, 10, 154, 50, 10
+    EDITTEXT        IDC_PROP_AUTHOR, 62, 152, 228, 14, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "&Subject:", -1, 10, 172, 50, 10
+    EDITTEXT        IDC_PROP_SUBJECT, 62, 170, 228, 14, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "&Keywords:", -1, 10, 190, 50, 10
+    EDITTEXT        IDC_PROP_KEYWORDS, 62, 188, 228, 14, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "", IDC_PROP_NOTE, 10, 208, 280, 18
+    DEFPUSHBUTTON   "OK", IDOK, 182, 230, 52, 15
+    PUSHBUTTON      "Cancel", IDCANCEL, 238, 230, 52, 15
+END
+
+IDD_PRINT DIALOGEX 0, 0, 540, 318
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Print"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "&Printer:", -1, 10, 10, 210, 10
+    COMBOBOX        IDC_PR_PRINTER, 10, 22, 152, 200, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    PUSHBUTTON      "P&roperties...", IDC_PR_PROPS, 166, 21, 56, 15
+    LTEXT           "", IDC_PR_PAPER, 10, 40, 212, 10
+    GROUPBOX        "Pages", -1, 10, 54, 212, 48
+    AUTORADIOBUTTON "&All pages", IDC_PAGES_ALL, 18, 66, 76, 12, WS_GROUP | WS_TABSTOP
+    AUTORADIOBUTTON "C&urrent page", IDC_PAGES_CURRENT, 98, 66, 90, 12
+    AUTORADIOBUTTON "Pa&ges:", IDC_PAGES_RANGE, 18, 82, 44, 12
+    EDITTEXT        IDC_PAGES_EDIT, 64, 81, 150, 14, ES_AUTOHSCROLL | WS_TABSTOP | WS_GROUP
+    LTEXT           "&Copies:", -1, 10, 112, 48, 10
+    EDITTEXT        IDC_PR_COPIES, 62, 110, 36, 14, ES_NUMBER | ES_AUTOHSCROLL | WS_TABSTOP
+    CONTROL         "", IDC_PR_COPIES_SPIN, "msctls_updown32", UDS_SETBUDDYINT | UDS_ALIGNRIGHT | UDS_AUTOBUDDY | UDS_ARROWKEYS | UDS_NOTHOUSANDS, 98, 110, 10, 14
+    AUTOCHECKBOX    "C&ollate (whole sets)", IDC_PR_COLLATE, 112, 111, 110, 12, WS_TABSTOP
+    LTEXT           "&Layout:", -1, 10, 134, 48, 10
+    COMBOBOX        IDC_PR_LAYOUT, 62, 132, 160, 140, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "&Size:", -1, 10, 154, 48, 10
+    COMBOBOX        IDC_PR_SCALE, 62, 152, 160, 100, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "&Orientation:", -1, 10, 174, 50, 10
+    COMBOBOX        IDC_PR_ORIENT, 62, 172, 160, 100, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "", IDC_PR_NOTE, 10, 194, 212, 92
+    CONTROL         "", IDC_PR_PREVIEW, "Static", SS_OWNERDRAW | SS_NOTIFY, 232, 10, 298, 270
+    PUSHBUTTON      "<", IDC_PR_PREV, 316, 284, 22, 14
+    CTEXT           "", IDC_PR_SHEET, 342, 286, 106, 10
+    PUSHBUTTON      ">", IDC_PR_NEXT, 452, 284, 22, 14
+    DEFPUSHBUTTON   "Print", IDOK, 422, 300, 52, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 478, 300, 52, 14
+END
+
+IDD_COMMENT DIALOGEX 0, 0, 280, 156
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Comment"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "", IDC_COMMENT_INFO, 10, 8, 260, 10, SS_ENDELLIPSIS | SS_NOPREFIX
+    EDITTEXT        IDC_COMMENT_EDIT, 10, 22, 260, 104, ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL | WS_TABSTOP
+    PUSHBUTTON      "Delete", IDC_COMMENT_DELETE, 10, 134, 56, 15, WS_TABSTOP
+    DEFPUSHBUTTON   "OK", IDOK, 160, 134, 52, 15
+    PUSHBUTTON      "Cancel", IDCANCEL, 218, 134, 52, 15
+END
+
+IDD_REPLACE DIALOGEX 0, 0, 280, 124
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Find and replace text"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "&Find:", -1, 10, 12, 56, 10
+    EDITTEXT        IDC_REPLACE_FIND, 70, 10, 200, 14, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "Replace &with:", -1, 10, 32, 56, 10
+    EDITTEXT        IDC_REPLACE_WITH, 70, 30, 200, 14, ES_AUTOHSCROLL | WS_TABSTOP
+    AUTOCHECKBOX    "Match &case", IDC_REPLACE_CASE, 70, 50, 120, 12, WS_TABSTOP
+    LTEXT           "Every place in the document is changed. Changed text keeps its font when that font has all the letters; otherwise a similar font is used. Undo (Ctrl+Z) takes it back.", -1, 10, 68, 260, 28
+    DEFPUSHBUTTON   "Replace all", IDOK, 160, 102, 52, 15
+    PUSHBUTTON      "Cancel", IDCANCEL, 218, 102, 52, 15
+END
+
+IDD_COMMENTS DIALOGEX 0, 0, 380, 220
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Comments"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "", IDC_COMMENTS_INFO, 10, 8, 360, 10
+    CONTROL         "", IDC_COMMENTS_LIST, "SysListView32", LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | WS_BORDER | WS_TABSTOP, 10, 22, 360, 168
+    PUSHBUTTON      "&Go to", IDC_COMMENTS_GOTO, 10, 198, 52, 15, WS_TABSTOP
+    PUSHBUTTON      "&Edit...", IDC_COMMENTS_EDIT, 66, 198, 52, 15, WS_TABSTOP
+    PUSHBUTTON      "&Delete", IDC_COMMENTS_DELETE, 122, 198, 52, 15, WS_TABSTOP
+    DEFPUSHBUTTON   "Close", IDCANCEL, 318, 198, 52, 15
+END
+
+IDD_SIGNATURE DIALOGEX 0, 0, 320, 196
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Signature"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "Draw your signature in the box, type your name, or use a picture of it.", -1, 10, 8, 300, 10
+    CONTROL         "", IDC_SIG_PAD, "FeatherSignPad", WS_BORDER | WS_TABSTOP, 10, 22, 300, 100
+    EDITTEXT        IDC_SIG_TYPE, 10, 128, 190, 14, ES_AUTOHSCROLL | WS_TABSTOP
+    PUSHBUTTON      "&Picture...", IDC_SIG_PICTURE, 206, 127, 50, 15, WS_TABSTOP
+    PUSHBUTTON      "&Clear", IDC_SIG_CLEAR, 260, 127, 50, 15, WS_TABSTOP
+    LTEXT           "Ink:", -1, 10, 152, 18, 10
+    AUTORADIOBUTTON "&Black", IDC_SIG_BLACK, 30, 151, 40, 10, WS_GROUP | WS_TABSTOP
+    AUTORADIOBUTTON "Bl&ue", IDC_SIG_BLUE, 72, 151, 40, 10
+    AUTOCHECKBOX    "&Remember this signature on this PC", IDC_SIG_REMEMBER, 130, 151, 180, 10, WS_GROUP | WS_TABSTOP
+    DEFPUSHBUTTON   "OK", IDOK, 204, 174, 50, 15
+    PUSHBUTTON      "Cancel", IDCANCEL, 260, 174, 50, 15
+END
+
+IDD_INPUT DIALOGEX 0, 0, 260, 74
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Feather PDF"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "", IDC_INPUT_LABEL, 10, 8, 240, 18
+    EDITTEXT        IDC_INPUT_EDIT, 10, 28, 240, 14, ES_AUTOHSCROLL | WS_TABSTOP
+    DEFPUSHBUTTON   "OK", IDOK, 146, 52, 50, 15
+    PUSHBUTTON      "Cancel", IDCANCEL, 200, 52, 50, 15
+END
+
+IDD_ABOUT DIALOGEX 0, 0, 300, 208
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "About Feather PDF"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    ICON            IDI_APP, IDC_ABOUT_ICON, 12, 10, 21, 20
+    LTEXT           "", IDC_ABOUT_NAME, 44, 10, 246, 14, SS_NOPREFIX
+    LTEXT           "", IDC_ABOUT_VERSION, 44, 26, 246, 10, SS_NOPREFIX
+    LTEXT           "", IDC_ABOUT_TEXT, 12, 44, 278, 136, SS_NOPREFIX
+    PUSHBUTTON      "Third-Party &Licenses and Attributions", IDC_ABOUT_LICENSES, 12, 186, 150, 15, WS_TABSTOP
+    DEFPUSHBUTTON   "OK", IDOK, 240, 186, 50, 15
+END
+
+IDD_LICENSES DIALOGEX 0, 0, 360, 240
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Third-Party Licenses and Attributions"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    EDITTEXT        IDC_LICENSES_TEXT, 10, 10, 340, 200, ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL | WS_TABSTOP
+    DEFPUSHBUTTON   "Close", IDCANCEL, 300, 218, 50, 15
+END
+
+IDR_NOTICES RCDATA "../THIRD_PARTY_NOTICES.md"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION 2,6,1,0
+ PRODUCTVERSION 2,6,1,0
+ FILEFLAGSMASK 0x3fL
+ FILEFLAGS 0x0L
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_APP
+ FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "CompanyName", "Akshaya Simha"
+            VALUE "FileDescription", "Feather PDF - lightweight PDF viewer and editor"
+            VALUE "LegalCopyright", "\251 2026 Akshaya Simha"
+            VALUE "FileVersion", "2.6.1.0"
+            VALUE "InternalName", "FeatherPDF"
+            VALUE "OriginalFilename", "FeatherPDF.exe"
+            VALUE "ProductName", "Feather PDF"
+            VALUE "ProductVersion", "2.6.1.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

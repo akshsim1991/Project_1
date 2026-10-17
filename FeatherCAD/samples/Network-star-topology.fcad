@@ -1,0 +1,191 @@
+FeatherCAD 1
+units mm
+precision 2
+dimstyle 3.5 3 1 2 1 2 1
+layer 0 0 7 0 -3 name=0
+layer 1 0 7 0 50 name=Visible
+layer 2 0 6 10 25 name=Hidden
+layer 3 0 1 11 25 name=Centre
+layer 4 0 3 0 25 name=Dimension
+layer 5 0 4 0 18 name=Section
+layer 6 0 8 0 18 name=Construction
+layer 7 0 1 11 25 name=Cutting%20plane
+current 1 -1 -1 -1 1
+prop key=drawnby value=Feather%20CAD%20example
+prop key=title value=STAR%20TOPOLOGY%20NETWORK
+prop key=titleblock value=BIS
+block 0 0 3 name=CLOUD ports=4
+pline 1 8 14 0 0.45 9.899494936611665 4.949747468305832 0.45 8.572527594031472e-16 7 0.45 -9.899494936611664 4.949747468305833 0.45 -14 8.572527594031472e-16 0.45 -9.899494936611667 -4.949747468305832 0.45 -2.5717582782094417e-15 -7 0.45 9.899494936611664 -4.949747468305834 0.45 W=25
+text 0 0 th=2.5 tj=4 content=Internet W=18
+text 0 -10.5 th=2.5 tj=1 tag=LABEL prompt=Label%20(such%20as%20PC1,%20Router) content= W=18
+bport 0 9 0 1
+bport 0 -9 0 -1
+bport -16 0 -1 0
+bport 16 0 1 0
+block 0 0 13 name=ROUTER ports=4
+ellipse 0 3 12 0 0.35 0 0 1 W=25
+line -12 3 -12 -3 W=25
+line 12 3 12 -3 W=25
+ellipse 0 -3 12 0 0.35 180 0 0 W=25
+line -8 3 -2.5 3 W=25
+hatch 1 0 0 0 0 0 0 1 0 pattern=SOLID
+loop 3 -2 3 -3.4 3.4899999999999998 -3.4 2.5100000000000002
+line 8 3 2.5 3 W=25
+hatch 1 0 0 0 0 0 0 1 0 pattern=SOLID
+loop 3 2 3 3.4 2.5100000000000002 3.4 3.4899999999999998
+line 0 4.3 0 6.6 W=25
+hatch 1 0 0 0 0 0 0 1 0 pattern=SOLID
+loop 3 0 7.2 -0.42 6 0.42 6
+line 0 1.7 0 -0.6 W=25
+hatch 1 0 0 0 0 0 0 1 0 pattern=SOLID
+loop 3 0 -1.2 0.42 0 -0.42 0
+text 0 -8.7 th=2.5 tj=1 tag=LABEL prompt=Label%20(such%20as%20PC1,%20Router) content= W=18
+bport 0 7.2 0 1
+bport 0 -7.2 0 -1
+bport -12 0 -1 0
+bport 12 0 1 0
+block 0 0 6 name=NETWORK_SWITCH ports=4
+pline 1 4 -14 -4 0 14 -4 0 14 4 0 -14 4 0 W=25
+line -8 1.6 8 1.6 W=25
+hatch 1 0 0 0 0 0 0 1 0 pattern=SOLID
+loop 3 8.6 1.6 7.199999999999999 2.09 7.199999999999999 1.11
+line -8 -1.6 8 -1.6 W=25
+hatch 1 0 0 0 0 0 0 1 0 pattern=SOLID
+loop 3 -8.6 -1.6 -7.199999999999999 -2.09 -7.199999999999999 -1.11
+text 0 -5.5 th=2.5 tj=1 tag=LABEL prompt=Label%20(such%20as%20PC1,%20Router) content= W=18
+bport 0 4 0 1
+bport 0 -4 0 -1
+bport -14 0 -1 0
+bport 14 0 1 0
+block 0 0 5 name=PC ports=4
+pline 1 4 -10 0 0 10 0 0 10 14 0 -10 14 0 W=25
+pline 1 4 -8 2 0 8 2 0 8 12 0 -8 12 0 W=25
+pline 0 4 -2 0 0 -3 -3 0 3 -3 0 2 0 0 W=25
+line -7 -3 7 -3 W=25
+text 0 -4.5 th=2.5 tj=1 tag=LABEL prompt=Label%20(such%20as%20PC1,%20Router) content= W=18
+bport 0 14 0 1
+bport 0 -3 0 -1
+bport -10 5.5 -1 0
+bport 10 5.5 1 0
+block 0 0 4 name=LAPTOP ports=4
+pline 1 4 -8 0 0 8 0 0 8 10 0 -8 10 0 W=25
+pline 1 4 -6.5 1.5 0 6.5 1.5 0 6.5 8.5 0 -6.5 8.5 0 W=25
+pline 0 4 -8 0 0 -11 -4 0 11 -4 0 8 0 0 W=25
+text 0 -5.5 th=2.5 tj=1 tag=LABEL prompt=Label%20(such%20as%20PC1,%20Router) content= W=18
+bport 0 10 0 1
+bport 0 -4 0 -1
+bport -11 3 -1 0
+bport 11 3 1 0
+block 0 0 4 name=PRINTER ports=4
+pline 1 4 -10 -4 0 10 -4 0 10 4 0 -10 4 0 W=25
+pline 0 4 -6 4 0 -6 10 0 6 10 0 6 4 0 W=25
+pline 0 4 -6 -4 0 -6 -8 0 6 -8 0 6 -4 0 W=25
+text 0 -9.5 th=2.5 tj=1 tag=LABEL prompt=Label%20(such%20as%20PC1,%20Router) content= W=18
+bport 0 10 0 1
+bport 0 -8 0 -1
+bport -10 1 -1 0
+bport 10 1 1 0
+block 0 0 11 name=SERVER ports=4
+pline 1 4 -6 -12 0 6 -12 0 6 12 0 -6 12 0 W=25
+line -6 6 6 6 W=25
+line -6 0 6 0 W=25
+line -6 -6 6 -6 W=25
+line -4 9 1 9 W=25
+circle 3.5 9 0.7 W=25
+line -4 3 1 3 W=25
+circle 3.5 3 0.7 W=25
+line -4 -3 1 -3 W=25
+circle 3.5 -3 0.7 W=25
+text 0 -13.5 th=2.5 tj=1 tag=LABEL prompt=Label%20(such%20as%20PC1,%20Router) content= W=18
+bport 0 12 0 1
+bport 0 -12 0 -1
+bport -6 0 -1 0
+bport 6 0 1 0
+block 0 0 7 name=ACCESS_POINT ports=4
+pline 1 4 -10 -3 0 10 -3 0 10 3 0 -10 3 0 W=25
+line 7 3 7 9 W=25
+arc 7 9 2 20 70 W=25
+arc 7 9 2 110 160 W=25
+arc 7 9 3.5 20 70 W=25
+arc 7 9 3.5 110 160 W=25
+text 0 -4.5 th=2.5 tj=1 tag=LABEL prompt=Label%20(such%20as%20PC1,%20Router) content= W=18
+bport 0 9 0 1
+bport 0 -3 0 -1
+bport -10 3 -1 0
+bport 10 3 1 0
+block 0 0 4 name=MOBILE ports=4
+pline 1 4 -4 -8 0 4 -8 0 4 8 0 -4 8 0 W=25
+pline 1 4 -3 -5.5 0 3 -5.5 0 3 6 0 -3 6 0 W=25
+circle 0 -6.8 0.6 W=25
+text 0 -9.5 th=2.5 tj=1 tag=LABEL prompt=Label%20(such%20as%20PC1,%20Router) content= W=18
+bport 0 8 0 1
+bport 0 -8 0 -1
+bport -4 0 -1 0
+bport 4 0 1 0
+insert 0 70 1 0 0 name=CLOUD v= L=1
+insert 0 40 1 0 0 name=ROUTER v=Router L=1
+insert 0 0 1 0 0 name=NETWORK_SWITCH v=Switch L=1
+leader 0 2 0 47.2 0 61 th=3.5 content= conn=1 straight=1 from=1:1 to=2:0 L=1
+leader 0 2 0 4 0 32.8 th=3.5 content= conn=1 straight=1 from=2:1 to=3:0 L=1
+insert -60 -45 1 0 0 name=PC v=PC1 L=1
+leader 0 2 -60 -31 0 -4 th=3.5 content= conn=1 straight=1 from=3:1 to=6:0 L=1
+insert -30 -45 1 0 0 name=PC v=PC2 L=1
+leader 0 2 -30 -31 0 -4 th=3.5 content= conn=1 straight=1 from=3:1 to=8:0 L=1
+insert 0 -45 1 0 0 name=LAPTOP v=Laptop L=1
+leader 0 2 0 -35 0 -4 th=3.5 content= conn=1 straight=1 from=3:1 to=10:0 L=1
+insert 30 -45 1 0 0 name=PRINTER v=Printer L=1
+leader 0 2 30 -35 0 -4 th=3.5 content= conn=1 straight=1 from=3:1 to=12:0 L=1
+insert 60 -45 1 0 0 name=SERVER v=Server L=1
+leader 0 2 60 -33 0 -4 th=3.5 content= conn=1 straight=1 from=3:1 to=14:0 L=1
+insert 60 0 1 0 0 name=ACCESS_POINT v=Wi-Fi L=1
+leader 0 2 50 3 14 0 th=3.5 content= conn=1 straight=1 from=3:3 to=16:2 L=1
+insert 90 -30 1 0 0 name=MOBILE v=Phone L=1
+text -70 90.34260619870223 th=5 content=STAR%20TOPOLOGY%20NETWORK%0Aa%20router%20to%20the%20Internet,%20a%20switch,%20PCs,%20a%20laptop,%20a%20printer,%20a%20server%20and%20Wi-Fi L=1
+text -70 -71.875 th=3 content=STEPS%0A1.%20SYMBOL,%20Network%20group:%20Cloud,%20Router,%20Switch,%20PC,%20Laptop,%20Printer,%20Server,%20Access%20point.%0A2.%20WIRE%20between%20them:%20network%20links%20are%20drawn%20straight;%20they%20stay%20joined%20when%20a%20device%20moves.%0A3.%20Wireless%20devices%20(the%20phone)%20are%20shown%20without%20a%20link. L=1
+end
+sheet 420 297 1 10 0 1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 paper=A3 name=Sheet1
+FeatherCAD 1
+units mm
+precision 2
+dimstyle 3.5 3 1 2 1 2 1
+layer 0 0 7 0 -3 name=0
+current 0 -1 -1 -1 1
+block 0 0 34 name=BIS%20title%20block
+pline 1 4 -170 0 0 0 0 0 0 48 0 -170 48 0 W=50
+line -170 8 -40 8 W=25
+line -170 16 -40 16 W=25
+line -170 24 -40 24 W=25
+line -170 32 0 32 W=25
+line -170 40 0 40 W=25
+line -90 0 -90 32 W=25
+line -40 0 -40 32 W=25
+text -168.8 47.2 th=1.6 content=INSTITUTION W=18
+text -168.8 41.4 th=2.8 tj=6 content={company} W=25
+text -168.8 39.2 th=1.6 content=TITLE W=18
+text -168.8 33.4 th=3.5 tj=6 content={title} W=25
+text -168.8 31.2 th=1.6 content=NAME W=18
+text -168.8 25.4 th=2.8 tj=6 content={drawnby} W=25
+text -88.8 31.2 th=1.6 content=USN W=18
+text -88.8 25.4 th=2.8 tj=6 content={usn} W=25
+text -168.8 23.2 th=1.6 content=BRANCH%20/%20BATCH W=18
+text -168.8 17.4 th=2.8 tj=6 content={branch} W=25
+text -88.8 23.2 th=1.6 content=SHEET%20NO. W=18
+text -88.8 17.4 th=2.8 tj=6 content={sheet} W=25
+text -168.8 15.2 th=1.6 content=SCALE W=18
+text -168.8 9.4 th=2.8 tj=6 content={scale} W=25
+text -88.8 15.2 th=1.6 content=DATE W=18
+text -88.8 9.4 th=2.8 tj=6 content={date} W=25
+text -168.8 7.2 th=1.6 content=CHECKED%20BY W=18
+text -168.8 1.4 th=2.8 tj=6 content={checkedby} W=25
+text -88.8 7.2 th=1.6 content=MARKS W=18
+text -88.8 1.4 th=2.8 tj=6 content={marks} W=25
+pline 1 4 -32.05 13.2 0 -20.349999999999994 9.95 0 -20.349999999999994 22.95 0 -32.05 19.7 0 W=35
+circle -7.999999999999993 16.45 6.5 W=35
+circle -7.999999999999993 16.45 3.25 W=35
+line -34 16.45 0.45000000000000706 16.45 T=3 W=18 S=0.32499998807907104
+line -7.999999999999993 7.999999999999999 -7.999999999999993 24.9 T=3 W=18 S=0.32499998807907104
+text -20 1.5 th=1.8 tj=7 content=PROJECTION W=18
+pline 1 4 10 10 0 410 10 0 410 287 0 10 287 0 W=70
+insert 410 10 1 0 0 name=BIS%20title%20block
+viewport 15 55 405 282 53.00279329608934 0.33365309935111753 1 0
+end

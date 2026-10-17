@@ -1,0 +1,205 @@
+# Windows Services Manager - "can this service be disabled?" advice
+# Format: service name<TAB>verdict<TAB>advice. Verdicts:
+#   keep    = do not disable
+#   caution = disable only if you don't use the feature described
+#   safe    = usually safe to disable for home PCs
+# The app downloads this file from GitHub; edit it here to update the advice.
+#updated	2026-10-02
+RpcSs	keep	Remote Procedure Call is the core of Windows: almost everything depends on it. Windows will not work without it.
+RpcEptMapper	keep	Resolves RPC connections for other services. Windows will not work properly without it.
+DcomLaunch	keep	Starts COM and DCOM components. Windows will not work without it.
+LSM	keep	Local Session Manager handles sign-in sessions. Windows will not work without it.
+SamSs	keep	Security Accounts Manager: needed for signing in and for security.
+PlugPlay	keep	Detects and configures hardware. Without it, devices stop working.
+Power	keep	Manages power settings and sleep. Needed by Windows.
+BrokerInfrastructure	keep	Coordinates background tasks for Windows and apps. Needed by Windows.
+SystemEventsBroker	keep	Delivers system events to background tasks. Needed by Windows.
+CoreMessagingRegistrar	keep	Communication between Windows components. Disabling it can break the desktop.
+EventLog	keep	Windows Event Log. Needed for logging and by many services; disabling it causes errors elsewhere.
+EventSystem	keep	COM+ Event System. Many services depend on it.
+SENS	keep	System Event Notification: tells apps about sign-in, network and power changes.
+ProfSvc	keep	User Profile Service: without it you cannot sign in.
+gpsvc	keep	Group Policy Client: applies system settings and policies.
+Winmgmt	keep	Windows Management Instrumentation: used by Windows, drivers and many programs.
+CryptSvc	keep	Cryptographic Services: needed for Windows Update, signatures and secure connections.
+Dhcp	keep	Gets your IP address from the router. Without it, most networks stop working.
+Dnscache	keep	DNS Client: turns web addresses into IP addresses. Needed for the internet.
+nsi	keep	Network Store Interface: needed for networking.
+NlaSvc	keep	Network Location Awareness: identifies networks. Many network features depend on it.
+netprofm	keep	Network List Service: needed by the network settings and many apps.
+Wcmsvc	keep	Windows Connection Manager: picks network connections automatically.
+BFE	keep	Base Filtering Engine: needed by Windows Firewall and IPsec. Disabling it lowers security.
+mpssvc	keep	Windows Defender Firewall. Keep it on for security.
+WinDefend	keep	Microsoft Defender Antivirus. Keep it unless another antivirus has replaced it (Windows handles that automatically).
+WdNisSvc	keep	Microsoft Defender network inspection: part of your antivirus protection.
+SecurityHealthService	keep	Windows Security service: reports the health of your protection.
+wscsvc	keep	Security Center: monitors antivirus, firewall and update status.
+Schedule	keep	Task Scheduler: Windows and many programs rely on scheduled tasks.
+UserManager	keep	User Manager: needed for multi-user features and signing in.
+StateRepository	keep	State Repository: needed by the Start menu and Store apps.
+TimeBrokerSvc	keep	Time Broker: runs background tasks for apps on schedule.
+AppInfo	keep	Application Information: needed for "Run as administrator" (UAC). Disabling it breaks elevation.
+KeyIso	keep	CNG Key Isolation: protects private keys used by Windows and Wi-Fi.
+VaultSvc	keep	Credential Manager: stores saved passwords for Windows and apps.
+AudioEndpointBuilder	keep	Windows Audio Endpoint Builder: without it there is no sound.
+Audiosrv	keep	Windows Audio: without it there is no sound.
+Themes	keep	Themes: provides the Windows look. Disabling it makes Windows look and behave oddly.
+DispBrokerDesktopSvc	keep	Display Policy: manages displays and scaling.
+DeviceInstall	keep	Device Install Service: needed to install new hardware.
+TrustedInstaller	keep	Windows Modules Installer: needed to install updates and Windows features.
+wuauserv	keep	Windows Update: keeps Windows secure. Pause updates in Settings instead of disabling this.
+UsoSvc	keep	Update Orchestrator: schedules Windows Update. Disabling it stops security updates.
+WaaSMedicSvc	keep	Windows Update Medic: repairs Windows Update. Windows protects it from being disabled.
+BITS	keep	Background Intelligent Transfer: downloads Windows updates and app updates in the background.
+sppsvc	keep	Software Protection: Windows activation. Disabling it can mark Windows as not activated.
+LanmanWorkstation	keep	Workstation: needed to open shared folders and network drives.
+WinHttpAutoProxySvc	keep	WinHTTP Web Proxy Auto-Discovery: needed for proxies and some network features.
+TokenBroker	keep	Web Account Manager: needed to sign in to Microsoft and work accounts in apps.
+NgcSvc	keep	Microsoft Passport: needed for Windows Hello PIN sign-in.
+NgcCtnrSvc	keep	Microsoft Passport Container: needed for Windows Hello PIN sign-in.
+camsvc	keep	Capability Access Manager: controls which apps can use the camera, microphone and location.
+AppReadiness	keep	App Readiness: prepares apps when you first sign in or after updates.
+BDESVC	keep	BitLocker Drive Encryption: needed if any drive is encrypted with BitLocker.
+defragsvc	keep	Optimize Drives: trims SSDs and defragments hard disks on schedule. Keep it for disk health and speed.
+msiserver	keep	Windows Installer: needed to install, repair and remove programs. It only runs when needed.
+ShellHWDetection	caution	Shell Hardware Detection: AutoPlay when you insert USB drives, discs or cameras. Disable only if you don't want AutoPlay.
+cbdhsvc	keep	Clipboard User Service: clipboard history and cloud clipboard (Win+V).
+DiagTrack	safe	Connected User Experiences and Telemetry sends diagnostic and usage data to Microsoft. Disabling it does not affect normal use.
+dmwappushservice	safe	Device Management WAP Push routes management messages for company-managed (MDM) PCs. Home PCs don't need it.
+MapsBroker	safe	Downloaded Maps Manager: only used by the Maps app for offline maps.
+RetailDemo	safe	Retail Demo Service: only for display PCs in shops.
+Fax	safe	Fax: only needed if you send or receive faxes with this PC.
+RemoteRegistry	safe	Remote Registry lets other computers change this PC's registry. Disabling it is recommended for security.
+WMPNetworkSvc	safe	Windows Media Player network sharing: only needed to share your media library on the network.
+WerSvc	safe	Windows Error Reporting sends crash reports to Microsoft. Programs still work without it.
+wercplsupport	safe	Problem Reports control panel support. Not needed for normal use.
+PcaSvc	safe	Program Compatibility Assistant suggests fixes for old programs. Safe to disable on most PCs.
+wisvc	safe	Windows Insider Service: only needed if you are in the Windows Insider program.
+SEMgrSvc	safe	Payments and NFC/SE Manager: only for NFC payments on devices that support them.
+AJRouter	safe	AllJoyn Router: for some smart-home devices; almost nobody needs it.
+ALG	safe	Application Layer Gateway: only used with Internet Connection Sharing.
+irmon	safe	Infrared monitor: only for infrared (IrDA) devices.
+NetTcpPortSharing	safe	Net.Tcp Port Sharing: only used by some developer and server software. Disabled by default.
+RemoteAccess	safe	Routing and Remote Access: for using the PC as a router. Disabled by default.
+SNMPTRAP	safe	SNMP Trap: for network management systems in companies.
+p2psvc	safe	Peer Networking Grouping: rarely used peer-to-peer feature.
+p2pimsvc	safe	Peer Networking Identity Manager: rarely used peer-to-peer feature.
+PNRPsvc	safe	Peer Name Resolution Protocol: rarely used peer-to-peer feature.
+PNRPAutoReg	safe	PNRP Machine Name Publication: rarely used peer-to-peer feature.
+lltdsvc	safe	Link-Layer Topology Discovery Mapper: draws the network map; rarely used.
+Wcncsvc	safe	Windows Connect Now: old Wi-Fi setup method (WPS). Rarely used.
+SmsRouter	safe	Microsoft Windows SMS Router: text messaging for phone-linked or cellular PCs.
+MSiSCSI	safe	iSCSI Initiator: only for connecting to iSCSI storage, mostly in companies.
+PeerDistSvc	safe	BranchCache: a company network feature.
+diagnosticshub.standardcollector.service	safe	Diagnostics Hub collector: used by developer tools such as Visual Studio.
+WalletService	safe	Wallet Service: rarely used by apps.
+Wecsvc	safe	Windows Event Collector: collects events from other PCs; used in companies.
+tzautoupdate	safe	Auto Time Zone Updater: sets the time zone from your location. Disabled by default.
+spectrum	safe	Windows Perception Service: only for mixed-reality headsets.
+MixedRealityOpenXRSvc	safe	Windows Mixed Reality OpenXR: only for mixed-reality headsets.
+SharedRealitySvc	safe	Spatial Data Service: only for mixed-reality features.
+ssh-agent	safe	OpenSSH Authentication Agent: only needed if you use SSH keys. Disabled by default.
+MessagingService	safe	Messaging Service: text messaging support; rarely needed.
+TroubleshootingSvc	safe	Recommended Troubleshooting Service: offers automatic troubleshooters.
+WpnService	caution	Windows Push Notifications: needed for app notifications and live tiles. Disable only if you don't want notifications.
+WpnUserService	caution	Windows Push Notifications (user): needed for app notifications. Disable only if you don't want notifications.
+CscService	safe	Offline Files: only needed if you use offline copies of network folders.
+TrkWks	safe	Distributed Link Tracking Client: keeps shortcuts working across network drives; rarely needed at home.
+lmhosts	caution	TCP/IP NetBIOS Helper: needed by older network file sharing and some NAS drives.
+SysMain	caution	SysMain (Superfetch) preloads frequently used programs. It helps on hard disks; on fast SSDs disabling it has little effect.
+WSearch	caution	Windows Search indexes files so searching in Start, Explorer and Outlook is fast. Disabling it makes search slow.
+Spooler	caution	Print Spooler is needed for any printing, including "Print to PDF". Disable only if you never print.
+PrintNotify	caution	Printer Extensions and Notifications: shows printer status and settings. Needed if you print.
+lfsvc	caution	Geolocation: lets Windows and apps find your location (weather, maps, Find my device).
+TabletInputService	caution	Touch Keyboard and Handwriting: also needed for the emoji panel and typing in some apps. Keep it on touch devices.
+bthserv	caution	Bluetooth Support: needed for any Bluetooth device (mouse, headphones, phone).
+BTAGService	caution	Bluetooth Audio Gateway: needed for Bluetooth headsets with a microphone.
+BthAvctpSvc	caution	AVCTP: needed for Bluetooth headphone controls.
+WbioSrvc	caution	Windows Biometric Service: needed for Windows Hello fingerprint and face sign-in.
+SCardSvr	caution	Smart Card: only needed if you use a smart card or a smart-card reader.
+ScDeviceEnum	caution	Smart Card Device Enumeration: only needed with smart cards.
+SCPolicySvc	caution	Smart Card Removal Policy: only needed with smart cards.
+PhoneSvc	caution	Phone Service: telephony and Phone Link calls.
+TapiSrv	caution	Telephony: used by some VPN, dial-up and fax software.
+WpcMonSvc	caution	Parental Controls: needed for Microsoft Family Safety on child accounts.
+icssvc	caution	Windows Mobile Hotspot: needed to share this PC's connection as a hotspot.
+SharedAccess	caution	Internet Connection Sharing: needed for Mobile Hotspot and sharing a connection.
+WFDSConMgrSvc	caution	Wi-Fi Direct: needed for wireless displays (Miracast) and some printers.
+stisvc	caution	Windows Image Acquisition: needed for scanners and some cameras.
+WiaRpc	caution	Still Image Acquisition Events: starts apps when you press a scanner or camera button.
+TermService	caution	Remote Desktop Services: needed to connect to this PC with Remote Desktop.
+UmRdpService	caution	Remote Desktop Device Redirector: needed for Remote Desktop printers and drives.
+SessionEnv	caution	Remote Desktop Configuration: needed for Remote Desktop.
+WinRM	caution	Windows Remote Management: used by PowerShell remoting and management tools.
+seclogon	caution	Secondary Logon: needed for "Run as a different user".
+LanmanServer	caution	Server: shares this PC's files and printers on the network. Disable only if you never share.
+SSDPSRV	caution	SSDP Discovery: finds network devices such as media servers, smart TVs and printers.
+upnphost	caution	UPnP Device Host: lets this PC act as a network media device.
+FDResPub	caution	Function Discovery Resource Publication: makes this PC visible on the network.
+fdPHost	caution	Function Discovery Provider Host: needed to see other PCs and devices on the network.
+WebClient	caution	WebClient: needed to open WebDAV folders such as some SharePoint sites.
+iphlpsvc	caution	IP Helper: IPv6 transition technologies; some VPNs and games need it.
+QWAVE	caution	Quality Windows Audio Video Experience: improves streaming quality on home networks.
+DPS	caution	Diagnostic Policy Service: Windows troubleshooters and problem detection need it.
+WdiServiceHost	caution	Diagnostic Service Host: used by Windows troubleshooters.
+WdiSystemHost	caution	Diagnostic System Host: used by Windows troubleshooters.
+DusmSvc	caution	Data Usage: tracks data use and metered connections. Needed for data limits.
+WPDBusEnum	caution	Portable Device Enumerator: needed for phones, cameras and media players over USB.
+RmSvc	caution	Radio Management: Airplane mode and radio switches.
+W32Time	caution	Windows Time keeps the clock correct. A wrong clock breaks secure websites and sign-in.
+autotimesvc	caution	Cellular Time: sets the clock from the mobile network on cellular PCs.
+VSS	caution	Volume Shadow Copy: needed for System Restore points and many backup programs.
+swprv	caution	Microsoft Software Shadow Copy Provider: needed for System Restore and backups.
+SDRSVC	caution	Windows Backup: needed for Windows' own backup.
+wbengine	caution	Block Level Backup Engine: needed for Windows system image backups.
+vds	caution	Virtual Disk: needed by Disk Management and partition tools.
+EFS	caution	Encrypting File System: needed if you use encrypted files or folders.
+FontCache	caution	Font Cache: speeds up programs by caching fonts. Disabling it can slow apps down.
+SensorService	caution	Sensor Service: screen rotation, auto-brightness and other sensors.
+SensrSvc	caution	Sensor Monitoring: auto-brightness and screen rotation on laptops and tablets.
+SensorDataService	caution	Sensor Data Service: delivers sensor data to apps.
+DsmSvc	caution	Device Setup Manager: installs drivers and apps for new devices.
+CDPSvc	caution	Connected Devices Platform: needed for Phone Link, Nearby sharing and Bluetooth features.
+CDPUserSvc	caution	Connected Devices Platform (user): needed for Phone Link and Nearby sharing.
+DoSvc	caution	Delivery Optimization: downloads updates efficiently, also from other PCs. Limit it in Settings instead of disabling it.
+InstallService	caution	Microsoft Store Install Service: needed to install and update Store apps.
+ClipSVC	caution	Client License Service: needed by Microsoft Store apps. Disabling it can stop Store apps from opening.
+AppXSvc	caution	AppX Deployment: installs and updates Store apps.
+LicenseManager	caution	Windows License Manager: needed by Microsoft Store apps.
+wlidsvc	caution	Microsoft Account Sign-in Assistant: needed to sign in with a Microsoft account.
+Netlogon	caution	Netlogon: needed on PCs joined to a company domain.
+KtmRm	caution	KtmRm for Distributed Transaction Coordinator: used by some database and business software.
+MSDTC	caution	Distributed Transaction Coordinator: used by some database and business software.
+PimIndexMaintenanceSvc	caution	Contact Data: contacts search for Mail, People and Phone Link.
+UnistoreSvc	caution	User Data Storage: stores contacts, calendar and mail for the built-in apps.
+UserDataSvc	caution	User Data Access: gives apps access to contacts, calendar and mail.
+OneSyncSvc	caution	Sync Host: syncs mail, contacts and calendar.
+XblAuthManager	caution	Xbox Live Auth Manager: needed for Xbox and Game Pass games. Disable only if you don't play them.
+XblGameSave	caution	Xbox Live Game Save: syncs game saves. Disable only if you don't play Xbox or Game Pass games.
+XboxNetApiSvc	caution	Xbox Live Networking: needed for online Xbox games.
+XboxGipSvc	caution	Xbox Accessory Management: needed for Xbox controllers.
+GameInputSvc	caution	GameInput Service: needed by some games for controllers.
+HvHost	caution	Hyper-V Host: only needed if you run Hyper-V virtual machines.
+vmickvpexchange	caution	Hyper-V Data Exchange: only needed inside Hyper-V virtual machines.
+vmicguestinterface	caution	Hyper-V Guest Service Interface: only needed inside Hyper-V virtual machines.
+vmicshutdown	caution	Hyper-V Guest Shutdown: only needed inside Hyper-V virtual machines.
+vmicheartbeat	caution	Hyper-V Heartbeat: only needed inside Hyper-V virtual machines.
+vmicvmsession	caution	Hyper-V PowerShell Direct: only needed inside Hyper-V virtual machines.
+vmicrdv	caution	Hyper-V Remote Desktop Virtualization: only needed inside Hyper-V virtual machines.
+vmictimesync	caution	Hyper-V Time Synchronization: only needed inside Hyper-V virtual machines.
+vmicvss	caution	Hyper-V Volume Shadow Copy Requestor: only needed inside Hyper-V virtual machines.
+edgeupdate	caution	Microsoft Edge Update: keeps Edge secure. Disabling it stops Edge security updates.
+edgeupdatem	caution	Microsoft Edge Update: keeps Edge secure. Disabling it stops Edge security updates.
+gupdate	caution	Google Update: keeps Chrome secure. Disabling it stops Chrome security updates.
+gupdatem	caution	Google Update: keeps Chrome secure. Disabling it stops Chrome security updates.
+MozillaMaintenance	caution	Mozilla Maintenance: lets Firefox update silently. Firefox can still update itself while open.
+AdobeARMservice	caution	Adobe Acrobat Update: keeps Adobe Reader secure.
+sshd	caution	OpenSSH Server: only needed to connect to this PC over SSH.
+W3SVC	caution	World Wide Web Publishing (IIS): only needed if this PC hosts websites.
+WAS	caution	Windows Process Activation: needed by IIS web hosting.
+WarpJITSvc	caution	Warp JIT: used by some graphics features in apps.
+InventorySvc	safe	Inventory and Compatibility Appraisal: checks app compatibility for Windows upgrades and sends data to Microsoft.
+whesvc	safe	Windows Health and Optimized Experiences: sends health data to improve suggestions.
+NPSMSvc	caution	Now Playing Session Manager: media controls on the volume flyout and lock screen.
+SgrmBroker	keep	System Guard Runtime Monitor: part of Windows security.
+mpsdrv	keep	Windows Firewall driver.

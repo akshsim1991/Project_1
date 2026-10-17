@@ -1,0 +1,149 @@
+FeatherCAD 1
+units mm
+precision 2
+dimstyle 3.5 3 1 2 1 2 1
+layer 0 0 7 0 -3 name=0
+layer 1 0 7 0 50 name=Visible
+layer 2 0 6 10 25 name=Hidden
+layer 3 0 1 11 25 name=Centre
+layer 4 0 3 0 25 name=Dimension
+layer 5 0 4 0 18 name=Section
+layer 6 0 8 0 18 name=Construction
+layer 7 0 1 11 25 name=Cutting%20plane
+current 1 -1 -1 -1 1
+prop key=drawnby value=Feather%20CAD%20example
+prop key=title value=SIMPLE%20ELECTRONIC%20CIRCUITS
+prop key=titleblock value=BIS
+block 0 0 9 name=BATTERY ports=2
+line 0 0 7 0 W=25
+line 13 0 20 0 W=25
+line 7 -5 7 5 W=25
+line 9 -2.5 9 2.5 W=50
+line 11 -5 11 5 W=25
+line 13 -2.5 13 2.5 W=50
+line 9 0 11 0 W=25
+text 5.5 4 th=2.5 tj=4 content=+ W=18
+text 10 5 th=2.5 tj=7 tag=LABEL prompt=Label%20(such%20as%20R1%2010%20k) content= W=18
+bport 0 0 -1 0
+bport 20 0 1 0
+block 0 0 6 name=SWITCH ports=2
+line 0 0 6 0 W=25
+line 14 0 20 0 W=25
+circle 6.8 0 0.8 W=25
+circle 13.2 0 0.8 W=25
+line 7.4 0.5 13.5 4.5 W=25
+text 10 5 th=2.5 tj=7 tag=LABEL prompt=Label%20(such%20as%20R1%2010%20k) content= W=18
+bport 0 0 -1 0
+bport 20 0 1 0
+block 0 0 4 name=RESISTOR ports=2
+line 0 0 5 0 W=25
+line 15 0 20 0 W=25
+pline 1 4 5 -2 0 15 -2 0 15 2 0 5 2 0 W=25
+text 10 5 th=2.5 tj=7 tag=LABEL prompt=Label%20(such%20as%20R1%2010%20k) content= W=18
+bport 0 0 -1 0
+bport 20 0 1 0
+block 0 0 9 name=LED ports=2
+line 0 0 7 0 W=25
+line 13 0 20 0 W=25
+pline 1 3 7 -3 0 7 3 0 13 0 0 W=25
+line 13 -3 13 3 W=35
+line 9 3.5 11.5 6 W=25
+hatch 1 0 0 0 0 0 0 1 0 pattern=SOLID
+loop 3 11.5 6 10.354487014477794 5.448456710674493 10.948456710674492 4.854487014477793
+line 12 3.5 14.5 6 W=25
+hatch 1 0 0 0 0 0 0 1 0 pattern=SOLID
+loop 3 14.5 6 13.354487014477794 5.448456710674493 13.948456710674492 4.854487014477793
+text 10 5 th=2.5 tj=7 tag=LABEL prompt=Label%20(such%20as%20R1%2010%20k) content= W=18
+bport 0 0 -1 0
+bport 20 0 1 0
+block 0 0 8 name=XOR ports=3
+arc -3 0 10 323.13010235415595 36.86989764584402 W=25
+arc 5 -13.333333333333334 19.333333333333336 43.60281897270362 90 W=25
+arc 5 13.333333333333334 19.333333333333336 270 316.39718102729637 W=25
+arc -5 0 10 323.13010235415595 36.86989764584402 W=25
+line 0 3 4.539392014169456 3 W=25
+line 0 -3 4.539392014169456 -3 W=25
+line 19 0 25 0 W=25
+text 11 7 th=2.5 tj=7 tag=LABEL prompt=Label%20(such%20as%20G1) content= W=18
+bport 0 3 -1 0
+bport 0 -3 -1 0
+bport 25 0 1 0
+block 0 0 6 name=AND ports=3
+pline 0 4 11 -6 0 5 -6 0 5 6 0 11 6 0 W=25
+arc 11 0 6 270 90 W=25
+line 0 3 5 3 W=25
+line 0 -3 5 -3 W=25
+line 17 0 25 0 W=25
+text 11 7 th=2.5 tj=7 tag=LABEL prompt=Label%20(such%20as%20G1) content= W=18
+bport 0 3 -1 0
+bport 0 -3 -1 0
+bport 25 0 1 0
+block 0 0 2 name=TERMINAL ports=1
+circle 0 0 1 W=25
+text 0 2 th=2.5 tj=7 tag=LABEL prompt=Label%20(such%20as%20+12%20V) content= W=18
+bport 0 0 0 0
+insert 0 0 1 90 0 name=BATTERY v=B1%209%20V L=1
+insert 20 40 1 0 0 name=SWITCH v=S1 L=1
+insert 60 40 1 0 0 name=RESISTOR v=R1%20470 L=1
+insert 100 20 1 -90 0 name=LED v=D1 L=1
+leader 0 3 20 40 1.408343819019456e-15 40 1.2246467991473533e-15 20 th=3.5 content= conn=1 from=1:1 to=2:0 L=1 W=35
+leader 0 2 60 40 40 40 th=3.5 content= conn=1 from=2:1 to=3:0 L=1 W=35
+leader 0 3 100 20 100 40 80 40 th=3.5 content= conn=1 from=3:1 to=4:0 L=1 W=35
+leader 0 4 0 0 -1.8369701987210297e-16 -3 100 -3 100 0 th=3.5 content= conn=1 from=4:1 to=1:0 L=1 W=35
+insert 40 -60 1 0 0 name=XOR v=SUM L=1
+insert 40 -90 1 0 0 name=AND v=CARRY L=1
+insert 0 -57 1 0 0 name=TERMINAL v=A L=1
+insert 0 -63 1 0 0 name=TERMINAL v=B L=1
+leader 0 2 40 -57 0 -57 th=3.5 content= conn=1 from=11:0 to=9:0 L=1 W=35
+leader 0 2 40 -63 0 -63 th=3.5 content= conn=1 from=12:0 to=9:1 L=1 W=35
+leader 0 4 40 -87 18.5 -87 18.5 -57 0 -57 th=3.5 content= conn=1 from=11:0 to=10:0 L=1 W=35
+leader 0 4 40 -93 18.5 -93 18.5 -63 0 -63 th=3.5 content= conn=1 from=12:0 to=10:1 L=1 W=35
+text -8.125 60.125 th=5 content=SIMPLE%20ELECTRONIC%20CIRCUITS%0Aan%20LED%20with%20its%20resistor%20and%20switch%20on%20a%209%20V%20battery;%20a%20half%20adder L=1
+text -8.125 -106 th=3 content=STEPS%0A1.%20SYMBOL:%20pick%20Battery,%20Switch,%20Resistor,%20LED%20from%20the%20Electrical%20group;%20type%20a%20label;%20click%20to%20place%20(R%20rotates%2090%20deg).%0A2.%20WIRE:%20click%20the%20end%20of%20one%20lead,%20then%20the%20end%20of%20the%20next:%20the%20wire%20bends%20square%20and%20stays%20joined%20when%20a%20symbol%20moves.%0A3.%20Logic%20gates:%20XOR%20and%20AND%20from%20the%20Logic%20gates%20group;%20terminals%20for%20the%20inputs%20A%20and%20B. L=1
+end
+sheet 420 297 1 10 0 1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 paper=A3 name=Sheet1
+FeatherCAD 1
+units mm
+precision 2
+dimstyle 3.5 3 1 2 1 2 1
+layer 0 0 7 0 -3 name=0
+current 0 -1 -1 -1 1
+block 0 0 34 name=BIS%20title%20block
+pline 1 4 -170 0 0 0 0 0 0 48 0 -170 48 0 W=50
+line -170 8 -40 8 W=25
+line -170 16 -40 16 W=25
+line -170 24 -40 24 W=25
+line -170 32 0 32 W=25
+line -170 40 0 40 W=25
+line -90 0 -90 32 W=25
+line -40 0 -40 32 W=25
+text -168.8 47.2 th=1.6 content=INSTITUTION W=18
+text -168.8 41.4 th=2.8 tj=6 content={company} W=25
+text -168.8 39.2 th=1.6 content=TITLE W=18
+text -168.8 33.4 th=3.5 tj=6 content={title} W=25
+text -168.8 31.2 th=1.6 content=NAME W=18
+text -168.8 25.4 th=2.8 tj=6 content={drawnby} W=25
+text -88.8 31.2 th=1.6 content=USN W=18
+text -88.8 25.4 th=2.8 tj=6 content={usn} W=25
+text -168.8 23.2 th=1.6 content=BRANCH%20/%20BATCH W=18
+text -168.8 17.4 th=2.8 tj=6 content={branch} W=25
+text -88.8 23.2 th=1.6 content=SHEET%20NO. W=18
+text -88.8 17.4 th=2.8 tj=6 content={sheet} W=25
+text -168.8 15.2 th=1.6 content=SCALE W=18
+text -168.8 9.4 th=2.8 tj=6 content={scale} W=25
+text -88.8 15.2 th=1.6 content=DATE W=18
+text -88.8 9.4 th=2.8 tj=6 content={date} W=25
+text -168.8 7.2 th=1.6 content=CHECKED%20BY W=18
+text -168.8 1.4 th=2.8 tj=6 content={checkedby} W=25
+text -88.8 7.2 th=1.6 content=MARKS W=18
+text -88.8 1.4 th=2.8 tj=6 content={marks} W=25
+pline 1 4 -32.05 13.2 0 -20.349999999999994 9.95 0 -20.349999999999994 22.95 0 -32.05 19.7 0 W=35
+circle -7.999999999999993 16.45 6.5 W=35
+circle -7.999999999999993 16.45 3.25 W=35
+line -34 16.45 0.45000000000000706 16.45 T=3 W=18 S=0.32499998807907104
+line -7.999999999999993 7.999999999999999 -7.999999999999993 24.9 T=3 W=18 S=0.32499998807907104
+text -20 1.5 th=1.8 tj=7 content=PROJECTION W=18
+pline 1 4 10 10 0 410 10 0 410 287 0 10 287 0 W=70
+insert 410 10 1 0 0 name=BIS%20title%20block
+viewport 15 55 405 282 109.84706703910608 -31.837649999999996 1 0
+end

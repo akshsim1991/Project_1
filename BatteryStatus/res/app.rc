@@ -1,0 +1,79 @@
+// app.rc - icon, manifest, version information and the Settings dialog.
+#include <windows.h>
+#include <commctrl.h>
+#include "resource.h"
+
+IDI_APP ICON "app.ico"
+
+1 RT_MANIFEST "app.manifest"
+
+IDD_SETTINGS DIALOGEX 0, 0, 320, 300
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Settings"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    GROUPBOX        "Alerts", -1, 7, 7, 306, 150
+    AUTOCHECKBOX    "Low battery alert at", IDC_LOW_ON, 16, 22, 110, 10, WS_TABSTOP
+    EDITTEXT        IDC_LOW_PCT, 130, 20, 30, 13, ES_NUMBER | WS_TABSTOP
+    LTEXT           "%", -1, 164, 22, 10, 10
+    AUTOCHECKBOX    "Critical battery alert at", IDC_CRIT_ON, 16, 39, 110, 10, WS_TABSTOP
+    EDITTEXT        IDC_CRIT_PCT, 130, 37, 30, 13, ES_NUMBER | WS_TABSTOP
+    LTEXT           "%", -1, 164, 39, 10, 10
+    AUTOCHECKBOX    "Charged alert (unplug) at", IDC_FULL_ON, 16, 56, 110, 10, WS_TABSTOP
+    EDITTEXT        IDC_FULL_PCT, 130, 54, 30, 13, ES_NUMBER | WS_TABSTOP
+    LTEXT           "%   (80% helps the battery last longer)", -1, 164, 56, 145, 10
+    AUTOCHECKBOX    "Tell me when the charger is connected or disconnected", IDC_PLUG_ON, 16, 73, 290, 10, WS_TABSTOP
+    LTEXT           "Repeat alerts every", -1, 16, 91, 70, 10
+    EDITTEXT        IDC_REPEAT, 88, 89, 30, 13, ES_NUMBER | WS_TABSTOP
+    LTEXT           "minutes until dealt with (0: only once)", -1, 122, 91, 185, 10
+    AUTOCHECKBOX    "Also show a message box for low and critical battery", IDC_MSGBOX, 16, 108, 290, 10, WS_TABSTOP
+    LTEXT           "Sound:", -1, 16, 126, 30, 10
+    COMBOBOX        IDC_SOUND, 48, 124, 140, 80, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    PUSHBUTTON      "Choose...", IDC_SOUND_BROWSE, 194, 123, 52, 14, WS_TABSTOP
+    PUSHBUTTON      "Test", IDC_SOUND_TEST, 250, 123, 52, 14, WS_TABSTOP
+    LTEXT           "", IDC_SOUND_FILE, 48, 141, 258, 10, SS_PATHELLIPSIS
+    GROUPBOX        "General", -1, 7, 162, 306, 110
+    LTEXT           "Theme:", -1, 16, 178, 80, 10
+    COMBOBOX        IDC_THEME, 100, 176, 120, 80, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "Update every:", -1, 16, 195, 80, 10
+    COMBOBOX        IDC_REFRESH, 100, 193, 120, 80, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "Tray icon shows:", -1, 16, 212, 80, 10
+    COMBOBOX        IDC_TRAYSTYLE, 100, 210, 120, 80, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    AUTOCHECKBOX    "Start with Windows", IDC_AUTOSTART, 16, 228, 120, 10, WS_TABSTOP
+    AUTOCHECKBOX    "...in the tray, without the window", IDC_STARTTRAY, 140, 228, 165, 10, WS_TABSTOP
+    AUTOCHECKBOX    "Closing the window keeps it running in the tray", IDC_CLOSETRAY, 16, 242, 290, 10, WS_TABSTOP
+    LTEXT           "Keep the history for", -1, 16, 257, 70, 10
+    EDITTEXT        IDC_KEEPDAYS, 88, 255, 30, 13, ES_NUMBER | WS_TABSTOP
+    LTEXT           "days", -1, 122, 257, 40, 10
+    DEFPUSHBUTTON   "OK", IDOK, 208, 279, 50, 15
+    PUSHBUTTON      "Cancel", IDCANCEL, 263, 279, 50, 15
+END
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION 2,0,0,0
+ PRODUCTVERSION 2,0,0,0
+ FILEFLAGSMASK 0x3fL
+ FILEFLAGS 0x0L
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_APP
+ FILESUBTYPE VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "CompanyName", "Akshaya Simha"
+            VALUE "FileDescription", "Battery Status"
+            VALUE "FileVersion", "2.0.0.0"
+            VALUE "InternalName", "BatteryStatus"
+            VALUE "LegalCopyright", "\251 2026 Akshaya Simha"
+            VALUE "OriginalFilename", "BatteryStatus.exe"
+            VALUE "ProductName", "Battery Status"
+            VALUE "ProductVersion", "2.0.0.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

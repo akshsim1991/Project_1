@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Feather.Light" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:colorPrimary">#F9F9F9</item>
+        <item name="android:colorPrimaryDark">#F9F9F9</item>
+        <item name="android:colorAccent">#005FB8</item>
+        <item name="android:windowBackground">@color/canvas_light</item>
+        <item name="android:textColorHighlight">#66005FB8</item>
+    </style>
+
+    <style name="Feather.Dark" parent="android:Theme.Material.NoActionBar">
+        <item name="android:colorPrimary">#202020</item>
+        <item name="android:colorPrimaryDark">#202020</item>
+        <item name="android:colorAccent">#60CDFF</item>
+        <item name="android:windowBackground">@color/canvas_dark</item>
+        <item name="android:textColorHighlight">#6660CDFF</item>
+    </style>
+</resources>

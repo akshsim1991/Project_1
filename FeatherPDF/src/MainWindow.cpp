@@ -1,0 +1,4928 @@
+// MainWindow.cpp - top-level window, tabs and command handling.
+#include "MainWindow.h"
+
+#include "PdfCrypt.h"
+
+#include <algorithm>
+#include <cmath>
+#include <cwctype>
+#include <set>
+
+#include <commctrl.h>
+#include <objbase.h>  // must precede commdlg.h for PrintDlgEx
+#include <commdlg.h>
+#include <shellapi.h>
+#include <windowsx.h>
+
+#include "FileAssoc.h"
+#include "Picture.h"
+#include "Theme.h"
+#include "Util.h"
+#include "resource.h"
+
+namespace {
+constexpr UINT_PTR kSearchTimer = 1;  // incremental search debounce
+constexpr UINT kSearchDelayMs = 300;
+
+// Segoe MDL2 Assets / Segoe Fluent Icons code points.
+const wchar_t kGlyphOpen[] = L"\xE8E5";
+const wchar_t kGlyphPrev[] = L"\xE76B";
+const wchar_t kGlyphNext[] = L"\xE76C";
+const wchar_t kGlyphZoomOut[] = L"\xE71F";
+const wchar_t kGlyphZoomIn[] = L"\xE8A3";
+const wchar_t kGlyphSearch[] = L"\xE721";
+const wchar_t kGlyphMore[] = L"\xE712";
+const wchar_t kGlyphUp[] = L"\xE70E";
+const wchar_t kGlyphDown[] = L"\xE70D";
+const wchar_t kGlyphClose[] = L"\xE711";
+const wchar_t kGlyphSave[] = L"\xE74E";
+const wchar_t kGlyphUndo[] = L"\xE7A7";
+const wchar_t kGlyphRedo[] = L"\xE7A6";
+
+// Highlight colours offered in the menu (ID_HL_COLOR_FIRST + index).
+const COLORREF kHighlightColors[] = {RGB(255, 230, 0), RGB(120, 220, 110), RGB(110, 190, 255),
+                                     RGB(255, 140, 200)};
+const wchar_t* const kHighlightColorNames[] = {L"&Yellow", L"&Green", L"&Blue", L"&Pink"};
+
+struct StampDef {
+    const wchar_t* text;
+    COLORREF color;
+};
+const StampDef kStamps[] = {
+    {L"APPROVED", RGB(0, 130, 60)},   {L"REJECTED", RGB(200, 20, 20)},     {L"DRAFT", RGB(0, 70, 200)},
+    {L"CONFIDENTIAL", RGB(200, 20, 20)}, {L"REVIEWED", RGB(0, 130, 60)},   {L"FINAL", RGB(0, 130, 60)},
+    {L"PAID", RGB(0, 130, 60)},       {L"RECEIVED", RGB(0, 70, 200)},      {L"NOT APPROVED", RGB(200, 20, 20)},
+    {L"FOR INFORMATION", RGB(0, 70, 200)},
+};
+constexpr int kStampCount = (int)(sizeof(kStamps) / sizeof(kStamps[0]));
+const COLORREF kDrawColors[] = {RGB(220, 30, 30), RGB(0, 90, 210), RGB(0, 140, 60), RGB(0, 0, 0),
+                                RGB(240, 130, 0), RGB(130, 40, 170), RGB(250, 210, 0), RGB(120, 120, 120)};
+const wchar_t* const kDrawColorNames[] = {L"&Red", L"&Blue", L"&Green", L"Blac&k", L"&Orange", L"&Purple", L"&Yellow", L"Gr&ey"};
+constexpr int kDrawColorCount = 8;
+const int kLineWidths[] = {10, 20, 40};  // tenths of a point
+const wchar_t* const kLineWidthNames[] = {L"&Thin (1 pt)", L"&Medium (2 pt)", L"T&hick (4 pt)"};
+constexpr int kLineWidthCount = 3;
+const int kTextSizes[] = {10, 12, 14, 18, 24, 36};
+constexpr int kTextSizeCount = 6;
+constexpr COLORREF kUnderlineColor = RGB(0, 90, 220);
+constexpr COLORREF kStrikeOutColor = RGB(220, 30, 30);
+
+const wchar_t* OpenErrorText(OpenError e) {
+    switch (e) {
+        case OpenError::NotFound: return L"The file could not be found.";
+        case OpenError::AccessDenied:
+            return L"Access to the file was denied. You may not have permission to read it.";
+        case OpenError::ReadError: return L"The file could not be read.";
+        case OpenError::TooLarge: return L"The file is too large to open (over 4 GB).";
+        case OpenError::NotPdf: return L"The file is damaged or is not a PDF document.";
+        case OpenError::Password: return L"The password is incorrect.";
+        case OpenError::Security: return L"This PDF uses an unsupported encryption method.";
+        case OpenError::NoPages: return L"The document does not contain any pages.";
+        default: return L"The document could not be opened.";
+    }
+}
+
+std::wstring FullPath(const std::wstring& path) {
+    DWORD n = GetFullPathNameW(path.c_str(), 0, nullptr, nullptr);
+    if (n == 0) return path;
+    std::wstring full(n, L'\0');
+    n = GetFullPathNameW(path.c_str(), n, full.data(), nullptr);
+    full.resize(n);
+    return n ? full : path;
+}
+
+std::wstring GetText(HWND hwnd) {
+    int n = GetWindowTextLengthW(hwnd);
+    std::wstring s((size_t)n + 1, L'\0');
+    GetWindowTextW(hwnd, s.data(), n + 1);
+    s.resize((size_t)n);
+    return s;
+}
+
+// --- password prompt -------------------------------------------------------
+struct PasswordPrompt {
+    std::wstring fileName;
+    bool retry = false;
+    bool unlock = false;  // asking for the owner password to lift restrictions
+    std::wstring password;
+};
+
+INT_PTR CALLBACK PasswordDlgProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
+    switch (msg) {
+        case WM_INITDIALOG: {
+            SetWindowLongPtrW(dlg, DWLP_USER, lp);
+            auto* p = (PasswordPrompt*)lp;
+            std::wstring text = p->unlock
+                                    ? L"\x201C" + p->fileName +
+                                          L"\x201D limits printing, copying or changes. Enter the owner password to unlock it:"
+                                    : (p->retry ? L"Incorrect password. " : L"") + std::wstring(L"\x201C") +
+                                          p->fileName + L"\x201D is protected. Enter the password to open it:";
+            SetDlgItemTextW(dlg, IDC_PASSWORD_TEXT, text.c_str());
+            ApplyWindowTheme(dlg);
+            return TRUE;  // focus goes to the first tab stop (the edit)
+        }
+        case WM_COMMAND:
+            if (LOWORD(wp) == IDOK || LOWORD(wp) == IDCANCEL) {
+                if (LOWORD(wp) == IDOK) {
+                    auto* p = (PasswordPrompt*)GetWindowLongPtrW(dlg, DWLP_USER);
+                    p->password = GetText(GetDlgItem(dlg, IDC_PASSWORD_EDIT));
+                }
+                EndDialog(dlg, LOWORD(wp));
+                return TRUE;
+            }
+            break;
+    }
+    return FALSE;
+}
+}  // namespace
+
+// Geometry: measurement units and drawing scales.
+namespace {
+struct Unit {
+    const wchar_t* name;
+    const wchar_t* label;
+    double perPoint;
+};
+const Unit kUnits[] = {
+    {L"mm", L"&Millimetres (mm)", 25.4 / 72}, {L"cm", L"&Centimetres (cm)", 2.54 / 72},
+    {L"m", L"M&etres (m)", 0.0254 / 72},      {L"in", L"&Inches (in)", 1.0 / 72},
+    {L"ft", L"&Feet (ft)", 1.0 / 864},        {L"pt", L"&Points (pt)", 1.0},
+};
+const int kScales[] = {1, 2, 5, 10, 20, 50, 100, 200, 500, 1000};
+}  // namespace
+
+// ===========================================================================
+// Creation
+// ===========================================================================
+bool MainWindow::Create(HINSTANCE inst, int showCmd, const std::wstring& file, int page) {
+    m_inst = inst;
+    m_settings.Load();
+    CleanOldTempFiles();
+    ReloadTheme((ThemeMode)m_settings.themeMode);
+
+    WNDCLASSEXW wc{sizeof(wc)};
+    wc.style = CS_HREDRAW | CS_VREDRAW;
+    wc.lpfnWndProc = &MainWindow::WndProc;
+    wc.hInstance = inst;
+    wc.hIcon = LoadIconW(inst, MAKEINTRESOURCEW(IDI_APP));
+    wc.hIconSm = (HICON)LoadImageW(inst, MAKEINTRESOURCEW(IDI_APP), IMAGE_ICON,
+                                   GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), 0);
+    wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    wc.lpszClassName = APP_WINDOW_CLASS;
+    if (!RegisterClassExW(&wc)) return false;
+
+    // Default size: a portrait-friendly window that fits the work area.
+    RECT work;
+    SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
+    const int sysDpi = GetWindowDpi(nullptr);
+    int w = std::min(Dpi(1000, sysDpi), (int)(work.right - work.left) * 9 / 10);
+    int h = std::min(Dpi(1100, sysDpi), (int)(work.bottom - work.top) * 9 / 10);
+
+    m_hwnd = CreateWindowExW(WS_EX_ACCEPTFILES, APP_WINDOW_CLASS, APP_NAME,
+                             WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, CW_USEDEFAULT, CW_USEDEFAULT,
+                             w, h, nullptr, nullptr, inst, this);
+    if (!m_hwnd) return false;
+    ApplyWindowTheme(m_hwnd);
+    if (!m_worker.Start(m_hwnd)) return false;
+    CreateChildren();
+    CreateAccelerators();
+
+    // Restore the previous window position/size (Windows moves it back on
+    // screen if that monitor is gone).
+    if (m_settings.hasPlacement) {
+        WINDOWPLACEMENT wp = m_settings.placement;
+        wp.flags = 0;
+        wp.showCmd = (showCmd == SW_SHOWMINNOACTIVE || showCmd == SW_SHOWMINIMIZED ||
+                      showCmd == SW_MINIMIZE)
+                         ? (UINT)showCmd
+                     : wp.showCmd == SW_SHOWMAXIMIZED ? SW_SHOWMAXIMIZED
+                                                      : SW_SHOWNORMAL;
+        SetWindowPlacement(m_hwnd, &wp);
+    } else {
+        ShowWindow(m_hwnd, showCmd);
+    }
+    UpdateWindow(m_hwnd);  // show the window before any PDF work
+    SetFocus(View().Hwnd());
+
+    // Documents with unsaved changes that a crash left behind.
+    InitRecovery();
+    const std::vector<std::wstring> recovered = RecoveredOriginals();
+    auto wasRecovered = [&](const std::wstring& path) {
+        for (const auto& r : recovered)
+            if (SamePath(r, FullPath(path))) return true;
+        return false;
+    };
+
+    // Open the requested file, or restore the tabs of the last session.
+    if (!file.empty() && wasRecovered(file)) {
+        // reopened above, with its changes
+    } else if (!file.empty()) {
+        int start = page >= 0 ? page : 0;
+        if (page < 0) {
+            for (const auto& f : m_settings.session)
+                if (SamePath(FullPath(file), f.path)) start = f.page;
+        }
+        OpenFile(file, start);
+    } else {
+        Tab* activeTab = nullptr;
+        Tab* last = nullptr;  // the tab just restored (a "beside" entry goes into it)
+        for (size_t i = 0; i < m_settings.session.size(); ++i) {
+            const auto& f = m_settings.session[i];
+            if (!FileExists(f.path) || wasRecovered(f.path)) {
+                if (!f.beside) last = nullptr;
+                continue;
+            }
+            if (f.beside) {
+                if (last && !last->partner) {
+                    ActivateTab(IndexOf(last));
+                    OpenBeside(f.path, f.page);
+                }
+                continue;
+            }
+            OpenFile(f.path, f.page, {}, -1, false);
+            last = nullptr;
+            for (auto& t : m_tabs)
+                if (!t->side && t->pendingDocId && SamePath(t->path, FullPath(f.path))) last = t.get();
+            if ((int)i == m_settings.activeTab) activeTab = last;
+        }
+        if (!m_tabs.empty()) ActivateTab(activeTab ? IndexOf(activeTab) : 0);
+    }
+    // A document brought back after a crash is shown first.
+    for (size_t i = 0; i < m_tabs.size(); ++i)
+        if (!m_tabs[i]->recoveredFrom.empty() && !m_tabs[i]->side) {
+            ActivateTab((int)i);
+            break;
+        }
+    UpdateTabs();
+    UpdateUi();
+    return true;
+}
+
+void MainWindow::CreateChildren() {
+    const DWORD editStyle = WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL;
+
+    m_tabBar.Create(m_hwnd, m_hwnd, 36);
+    m_sidebar.Create(m_hwnd, m_hwnd, &m_worker);
+
+    // Main toolbar:  Open | < > [page] / N | - 100% + | ...  Search  More
+    m_toolbar.Create(m_hwnd, m_hwnd, 44);
+    m_toolbar.AddButton(ID_OPEN, kGlyphOpen, L"Open (Ctrl+O)");
+    m_toolbar.AddButton(ID_SAVE, kGlyphSave, L"Save (Ctrl+S)");
+    m_toolbar.AddButton(ID_UNDO, kGlyphUndo, L"Undo (Ctrl+Z)");
+    m_toolbar.AddButton(ID_REDO, kGlyphRedo, L"Redo (Ctrl+Y)");
+    m_toolbar.AddSeparator();
+    m_toolbar.AddTextButton(ID_EDIT_PDF_MENU, L"Edit PDF",
+                            L"Edit text and pages, comments, OCR, watermarks, page numbers, redaction, compression and passwords", 72);
+    m_toolbar.AddTextButton(ID_ANNOTATE_MENU, L"Annotate",
+                            L"Highlight, draw, add text, stamps, signatures and pictures", 78);
+    m_toolbar.AddTextButton(ID_ADD_COMMENT, L"Comment", L"Add a comment: click where it should go (Ctrl+M)", 78);
+    m_toolbar.AddTextButton(ID_GEOMETRY_MENU, L"Geometry", L"Ruler and protractor: measure distances and angles", 78);
+    m_toolbar.AddTextButton(ID_OPEN_BESIDE, L"Side by side",
+                            L"Show another PDF beside this one in the same tab, to compare them (Ctrl+Shift+O)", 96);
+    m_toolbar.AddSeparator();
+    m_toolbar.AddButton(ID_PREV_PAGE, kGlyphPrev, L"Previous page (Page Up)");
+    m_toolbar.AddButton(ID_NEXT_PAGE, kGlyphNext, L"Next page (Page Down)");
+    m_pageEdit = CreateWindowExW(0, L"EDIT", L"", editStyle | ES_NUMBER | ES_CENTER, 0, 0, 0, 0,
+                                 m_toolbar.Hwnd(), (HMENU)(INT_PTR)ID_PAGE_EDIT, m_inst, nullptr);
+    SendMessageW(m_pageEdit, EM_SETLIMITTEXT, 7, 0);
+    m_toolbar.AddChild(m_pageEdit, 56);
+    m_toolbar.AddLabel(ID_PAGE_TOTAL, 64, false, nullptr);
+    m_toolbar.AddSeparator();
+    m_toolbar.AddButton(ID_ZOOM_OUT, kGlyphZoomOut, L"Zoom out (Ctrl+-)");
+    m_toolbar.AddLabel(ID_ZOOM_LABEL, 56, true, L"Zoom options");
+    m_toolbar.AddButton(ID_ZOOM_IN, kGlyphZoomIn, L"Zoom in (Ctrl++)");
+    m_toolbar.AddSpacer();
+    m_toolbar.AddButton(ID_SEARCH, kGlyphSearch, L"Search (Ctrl+F)");
+    m_toolbar.AddButton(ID_MENU, kGlyphMore, L"More options");
+
+    // Search bar (hidden until Ctrl+F).
+    m_searchBar.Create(m_hwnd, m_hwnd, 40);
+    m_searchEdit = CreateWindowExW(0, L"EDIT", L"", editStyle, 0, 0, 0, 0, m_searchBar.Hwnd(),
+                                   (HMENU)(INT_PTR)ID_SEARCH_EDIT, m_inst, nullptr);
+    SendMessageW(m_searchEdit, EM_SETCUEBANNER, TRUE, (LPARAM)L"Find in document");
+    m_searchBar.AddChild(m_searchEdit, 260);
+    m_searchBar.AddButton(ID_FIND_PREV, kGlyphUp, L"Previous match (Shift+Enter)");
+    m_searchBar.AddButton(ID_FIND_NEXT, kGlyphDown, L"Next match (Enter)");
+    m_searchBar.AddTextButton(ID_MATCH_CASE, L"Aa", L"Match case");
+    m_searchBar.AddLabel(ID_SEARCH_STATUS, 160, false, nullptr);
+    m_searchBar.AddSpacer();
+    m_searchBar.AddButton(ID_SEARCH_CLOSE, kGlyphClose, L"Close (Esc)");
+    m_searchBar.SetChecked(ID_MATCH_CASE, m_settings.matchCase);
+    ShowWindow(m_searchBar.Hwnd(), SW_HIDE);
+
+    // Formatting bar (shown while editing text).
+    m_formatBar.Create(m_hwnd, m_hwnd, 36);
+    m_formatBar.AddTextButton(ID_FMT_BOLD, L"B", L"Bold (Ctrl+B)", 30);
+    m_formatBar.AddTextButton(ID_FMT_ITALIC, L"I", L"Italic (Ctrl+I)", 30);
+    m_formatBar.AddTextButton(ID_FMT_UNDERLINE, L"U", L"Underline (Ctrl+U)", 30);
+    m_formatBar.AddTextButton(ID_FMT_STRIKE, L"S", L"Strike through", 30);
+    m_formatBar.AddSeparator();
+    m_formatBar.AddTextButton(ID_FMT_FONT, L"Font", L"Font: Arial, Times New Roman, Courier New or another installed font", 54);
+    m_formatBar.AddTextButton(ID_FMT_SIZE, L"Size", L"Text size", 48);
+    m_formatBar.AddTextButton(ID_FMT_COLOR, L"Colour", L"Text colour", 60);
+    m_formatBar.AddSeparator();
+    m_formatBar.AddTextButton(ID_FMT_LEFT, L"Left", L"Line up the selected lines on the left", 44);
+    m_formatBar.AddTextButton(ID_FMT_CENTER, L"Centre", L"Centre the selected lines", 58);
+    m_formatBar.AddTextButton(ID_FMT_RIGHT, L"Right", L"Line up the selected lines on the right", 48);
+    m_formatBar.AddSeparator();
+    m_formatBar.AddTextButton(ID_INSERT_IMAGE, L"Insert picture", L"Insert a picture from a file", 100);
+    m_formatBar.AddTextButton(ID_PASTE_IMAGE, L"Paste picture", L"Paste a picture you copied (Ctrl+V)", 96);
+    m_formatBar.AddSpacer();
+    m_formatBar.AddTextButton(ID_EDIT_TEXT, L"Done", L"Stop editing (Esc)", 52);
+    ShowWindow(m_formatBar.Hwnd(), SW_HIDE);
+
+    // A bar above each side of a split tab: the document's name (a click
+    // works in it), the options, and a close button.
+    for (int i = 0; i < 2; ++i) {
+        Toolbar& bar = m_paneBar[i];
+        bar.Create(m_hwnd, m_hwnd, 32);
+        // The name first, then its close button, so they show even in a narrow
+        // window; the options follow (all of them are also in the toolbar's
+        // "Side by side" menu).
+        bar.AddLabel(i == 0 ? ID_PANE_NAME_L : ID_PANE_NAME_R, 170, true,
+                     L"Click to work in this document (F6 switches); the highlighted one is active");
+        bar.AddButton(i == 0 ? ID_PANE_CLOSE_L : ID_PANE_CLOSE_R, kGlyphClose,
+                      L"Close this document (the other one fills the tab)");
+        bar.AddSpacer();
+        if (i == 0) {
+            bar.AddTextButton(ID_SPLIT_SWAP, L"Swap", L"Change the two documents over", 52);
+            bar.AddTextButton(ID_SPLIT_ORIENT, L"Stack",
+                              L"Show the documents one above the other instead of side by side", 56);
+        } else {
+            bar.AddTextButton(ID_SPLIT_SYNC_SCROLL, L"Link scroll",
+                              L"Both documents scroll together, page against page (click to scroll them separately)", 80);
+            bar.AddTextButton(ID_SPLIT_SYNC_ZOOM, L"Link zoom", L"Both documents zoom together", 74);
+            bar.AddTextButton(ID_SPLIT_MARK, L"Differences",
+                              L"Compare the text: this side shows the differences from the left document marked", 84);
+        }
+        ShowWindow(bar.Hwnd(), SW_HIDE);
+    }
+
+    SetWindowSubclass(m_pageEdit, &MainWindow::EditProc, 1, (DWORD_PTR)this);
+    SetWindowSubclass(m_searchEdit, &MainWindow::EditProc, 1, (DWORD_PTR)this);
+
+    ActivateTab(NewTab());  // there is always at least one (possibly empty) tab
+    SetSidebarMode((SidebarMode)m_settings.sidebarMode);
+}
+
+void MainWindow::CreateAccelerators() {
+    ACCEL acc[] = {
+        {FCONTROL | FVIRTKEY, 'O', ID_OPEN},
+        {FCONTROL | FSHIFT | FVIRTKEY, 'O', ID_BESIDE_FILE},
+        {FVIRTKEY, VK_F6, ID_SPLIT_OTHER},
+        {FCONTROL | FVIRTKEY, 'T', ID_OPEN},
+        {FCONTROL | FVIRTKEY, 'W', ID_CLOSE_TAB},
+        {FCONTROL | FVIRTKEY, VK_F4, ID_CLOSE_TAB},
+        {FCONTROL | FVIRTKEY, VK_TAB, ID_NEXT_TAB},
+        {FCONTROL | FSHIFT | FVIRTKEY, VK_TAB, ID_PREV_TAB},
+        {FCONTROL | FVIRTKEY, VK_NEXT, ID_NEXT_TAB},
+        {FCONTROL | FVIRTKEY, VK_PRIOR, ID_PREV_TAB},
+        {FCONTROL | FVIRTKEY, 'F', ID_SEARCH},
+        {FVIRTKEY, VK_F3, ID_FIND_NEXT},
+        {FSHIFT | FVIRTKEY, VK_F3, ID_FIND_PREV},
+        {FCONTROL | FVIRTKEY, VK_OEM_PLUS, ID_ZOOM_IN},  // Ctrl+= / Ctrl++
+        {FCONTROL | FSHIFT | FVIRTKEY, VK_OEM_PLUS, ID_ZOOM_IN},
+        {FCONTROL | FVIRTKEY, VK_ADD, ID_ZOOM_IN},
+        {FCONTROL | FVIRTKEY, VK_OEM_MINUS, ID_ZOOM_OUT},
+        {FCONTROL | FVIRTKEY, VK_SUBTRACT, ID_ZOOM_OUT},
+        {FCONTROL | FVIRTKEY, '0', ID_FIT_PAGE},
+        {FCONTROL | FVIRTKEY, VK_NUMPAD0, ID_FIT_PAGE},
+        {FCONTROL | FVIRTKEY, '1', ID_ACTUAL_SIZE},
+        {FCONTROL | FVIRTKEY, '2', ID_FIT_WIDTH},
+        {FCONTROL | FVIRTKEY, 'G', ID_GOTO_PAGE},
+        {FVIRTKEY, VK_F11, ID_FULLSCREEN},
+        {FCONTROL | FVIRTKEY, 'P', ID_PRINT},
+        {FCONTROL | FVIRTKEY, 'D', ID_PROPERTIES},
+        {FCONTROL | FVIRTKEY, 'L', ID_ROTATE_LEFT},
+        {FCONTROL | FVIRTKEY, 'R', ID_ROTATE_RIGHT},
+        {FCONTROL | FVIRTKEY, 'B', ID_SIDEBAR_BOOKMARKS},
+        {FCONTROL | FSHIFT | FVIRTKEY, 'B', ID_SIDEBAR_THUMBNAILS},
+        {FCONTROL | FVIRTKEY, 'S', ID_SAVE},
+        {FCONTROL | FSHIFT | FVIRTKEY, 'S', ID_SAVE_AS},
+        {FCONTROL | FVIRTKEY, 'Z', ID_UNDO},
+        {FCONTROL | FSHIFT | FVIRTKEY, 'Z', ID_REDO},
+        {FCONTROL | FVIRTKEY, 'Y', ID_REDO},
+        {FCONTROL | FVIRTKEY, 'E', ID_EDIT_TEXT},
+        {FCONTROL | FSHIFT | FVIRTKEY, 'H', ID_REPLACE_TEXT},
+        {FCONTROL | FVIRTKEY, 'M', ID_ADD_COMMENT},
+        {FCONTROL | FSHIFT | FVIRTKEY, 'M', ID_COMMENT_SELECTION},
+        {FCONTROL | FVIRTKEY, 'K', ID_COMMAND_PALETTE},
+        {FALT | FVIRTKEY, VK_LEFT, ID_BACK},
+        {FALT | FVIRTKEY, VK_RIGHT, ID_FORWARD},
+        {FVIRTKEY, VK_F5, ID_PRESENT},
+    };
+    m_accel = CreateAcceleratorTableW(acc, (int)(sizeof(acc) / sizeof(acc[0])));
+}
+
+void MainWindow::Layout() {
+    if (m_tabs.empty()) return;
+    RECT rc;
+    GetClientRect(m_hwnd, &rc);
+    int y = 0;
+    if (!m_fullscreen) {
+        const int tabH = m_tabBar.Height();
+        MoveWindow(m_tabBar.Hwnd(), 0, 0, rc.right, tabH, TRUE);
+        ShowWindow(m_tabBar.Hwnd(), SW_SHOWNA);
+        y = tabH;
+        const int th = m_toolbar.Height();
+        MoveWindow(m_toolbar.Hwnd(), 0, y, rc.right, th, TRUE);
+        ShowWindow(m_toolbar.Hwnd(), SW_SHOWNA);
+        y += th;
+    } else {
+        ShowWindow(m_tabBar.Hwnd(), SW_HIDE);
+        ShowWindow(m_toolbar.Hwnd(), SW_HIDE);
+    }
+    if (m_searchVisible) {
+        const int sh = m_searchBar.Height();
+        MoveWindow(m_searchBar.Hwnd(), 0, y, rc.right, sh, TRUE);
+        ShowWindow(m_searchBar.Hwnd(), SW_SHOWNA);
+        y += sh;
+    } else {
+        ShowWindow(m_searchBar.Hwnd(), SW_HIDE);
+    }
+    if (m_formatVisible && !m_fullscreen) {
+        const int fh = m_formatBar.Height();
+        MoveWindow(m_formatBar.Hwnd(), 0, y, rc.right, fh, TRUE);
+        ShowWindow(m_formatBar.Hwnd(), SW_SHOWNA);
+        y += fh;
+    } else {
+        ShowWindow(m_formatBar.Hwnd(), SW_HIDE);
+    }
+    // Optional sidebar on the left, then a thin splitter.
+    int x = 0;
+    const int h = std::max(0, (int)rc.bottom - y);
+    if (m_sidebar.Mode() != SidebarMode::None && !m_fullscreen) {
+        const int dpi = GetWindowDpi(m_hwnd);
+        const int w = std::min(Dpi(m_settings.sidebarWidth, dpi), (int)rc.right / 2);
+        MoveWindow(m_sidebar.Hwnd(), 0, y, w, h, TRUE);
+        ShowWindow(m_sidebar.Hwnd(), SW_SHOWNA);
+        x = w + Dpi(4, dpi);
+    } else {
+        ShowWindow(m_sidebar.Hwnd(), SW_HIDE);
+    }
+    InvalidateRect(m_hwnd, nullptr, TRUE);  // repaint the splitter strips
+    // Only the active tab's view (both views of a split tab) is visible, and
+    // therefore renders.
+    Tab& act = Active();
+    Tab* left = act.partner ? LeftOf(act) : &act;
+    Tab* right = act.partner ? RightOf(act) : nullptr;
+    for (size_t i = 0; i < m_tabs.size(); ++i) {
+        Tab* t = m_tabs[i].get();
+        if (t != left && t != right) ShowWindow(t->view->Hwnd(), SW_HIDE);
+    }
+    const int w = std::max(0, (int)rc.right - x);
+    if (!right) {
+        for (Toolbar& bar : m_paneBar) ShowWindow(bar.Hwnd(), SW_HIDE);
+        MoveWindow(left->view->Hwnd(), x, y, w, h, TRUE);
+        ShowWindow(left->view->Hwnd(), SW_SHOWNA);
+        return;
+    }
+    // Split: the two sides with a bar above each and a divider between them.
+    const int dpi = GetWindowDpi(m_hwnd);
+    const int gap = Dpi(6, dpi), barH = m_paneBar[0].Height();
+    const int permille = m_settings.splitPermille;
+    RECT a, b;
+    if (m_settings.splitStacked) {
+        const int first = std::max(0, h - gap) * permille / 1000;
+        a = {x, y, x + w, y + first};
+        b = {x, y + first + gap, x + w, y + h};
+    } else {
+        const int first = std::max(0, w - gap) * permille / 1000;
+        a = {x, y, x + first, y + h};
+        b = {x + first + gap, y, x + w, y + h};
+    }
+    const RECT areas[2] = {a, b};
+    Tab* sides[2] = {left, right};
+    for (int i = 0; i < 2; ++i) {
+        const RECT& r = areas[i];
+        const int bh = std::min(barH, (int)(r.bottom - r.top));
+        MoveWindow(m_paneBar[i].Hwnd(), r.left, r.top, r.right - r.left, bh, TRUE);
+        ShowWindow(m_paneBar[i].Hwnd(), SW_SHOWNA);
+        // SWP_NOCOPYBITS: when the two sides change places, their old pixels must not move with them.
+        SetWindowPos(sides[i]->view->Hwnd(), nullptr, r.left, r.top + bh, r.right - r.left,
+                     std::max(0, (int)(r.bottom - r.top) - bh), SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOCOPYBITS | SWP_SHOWWINDOW);
+        InvalidateRect(sides[i]->view->Hwnd(), nullptr, FALSE);
+    }
+    UpdatePaneBars();
+}
+
+// ===========================================================================
+// Tabs
+// ===========================================================================
+int MainWindow::NewTab() {
+    auto tab = std::make_unique<Tab>();
+    tab->view = std::make_unique<PdfView>();
+    tab->view->Create(m_hwnd, &m_worker);
+    ShowWindow(tab->view->Hwnd(), SW_HIDE);
+    Tab* raw = tab.get();
+    tab->view->SetSearch(&raw->search);
+    tab->view->onViewChanged = [this, raw] {
+        if (m_active >= 0 && raw == &Active()) UpdateUi();
+        if (raw->partner && !m_syncing) SyncPartner(*raw);  // the other side follows
+    };
+    tab->view->onEdit = [this, raw](EditOp&& op) {
+        if (m_active >= 0 && raw == &Active()) SendEdit(std::move(op));
+    };
+    tab->view->onNewComment = [this, raw](int page, float x, float y) {
+        if (m_active >= 0 && raw == &Active()) NewComment(page, x, y);
+    };
+    tab->view->onOpenComment = [this, raw](int page, const CommentInfo& c) {
+        if (m_active >= 0 && raw == &Active()) OpenComment(page, c);
+    };
+    tab->view->onSignField = [this, raw](int page, const RectF& rect) {
+        if (m_active >= 0 && raw == &Active()) SignField(page, rect);
+    };
+    tab->view->onCropBox = [this, raw](int page, const RectF& rect) {
+        if (m_active >= 0 && raw == &Active()) OnCropBox(page, rect);
+    };
+    tab->view->onMarksChanged = [this, raw] {
+        if (m_active >= 0 && raw == &Active()) UpdateUi();
+    };
+    // New tabs inherit the view mode and zoom of the current tab.
+    if (m_active >= 0) {
+        PdfView& cur = View();
+        tab->view->SetViewMode(cur.GetViewMode());
+        tab->view->SetCoverPage(cur.CoverPage());
+        tab->view->SetPageColors(cur.GetPageColors());
+        if (cur.GetZoomMode() == ZoomMode::Custom)
+            tab->view->SetZoom(cur.Zoom());
+        else
+            tab->view->SetZoomMode(cur.GetZoomMode());
+    } else {
+        tab->view->SetViewMode((ViewMode)m_settings.viewMode);
+        tab->view->SetCoverPage(m_settings.coverPage);
+        tab->view->SetPageColors(m_settings.pageColors);
+        if (m_settings.zoomMode == 0)
+            tab->view->SetZoom(m_settings.zoom);
+        else
+            tab->view->SetZoomMode((ZoomMode)m_settings.zoomMode);
+    }
+    m_tabs.push_back(std::move(tab));
+    ApplyMeasureOptions();
+    return (int)m_tabs.size() - 1;
+}
+
+void MainWindow::ActivateTab(int index) {
+    if (index < 0 || index >= (int)m_tabs.size()) return;
+    if (index != m_active && m_active >= 0 && m_active < (int)m_tabs.size()) {
+        Tab& old = Active();
+        if (old.partner == m_tabs[(size_t)index].get()) return FocusSide(index);  // the other side of this tab
+        // Leaving a tab: stop its search and give its rendered tiles back
+        // (they are re-rendered in a few ms when the tab is shown again).
+        if (old.search.running) CancelSearch();
+        old.view->TrimMemory();
+        if (old.partner) {
+            old.partner->view->TrimMemory();
+            LeftOf(old)->lastRight = old.side;
+        }
+    }
+    m_active = index;
+    Layout();
+    InvalidateRect(View().Hwnd(), nullptr, FALSE);
+    if (GetFocus() != m_searchEdit) SetFocus(View().Hwnd());
+    if (m_searchVisible && !GetText(m_searchEdit).empty() &&
+        GetText(m_searchEdit) != Active().search.query && View().HasDocument())
+        StartSearch();
+    UpdateTabs();
+    UpdateTitle();
+    SyncSidebar();
+    UpdateUi();
+    UpdateSearchStatus();
+}
+
+void MainWindow::CloseTab(int index, bool force) {
+    if (index < 0 || index >= (int)m_tabs.size()) return;
+    if (!force && !ConfirmCloseTab(index)) return;
+    Tab& tab = *m_tabs[(size_t)index];
+    ForgetRecovery(tab, true);
+    if (index == m_active && tab.search.running) CancelSearch();
+    if (tab.docId) m_worker.CloseDocument(tab.docId);
+
+    if (Tab* other = tab.partner) {
+        // One side of a split tab: the other document fills the tab (and
+        // takes its place in the tab strip if this was the left one).
+        Tab* activeBefore = &Active();
+        const bool closingActive = activeBefore == &tab;
+        other->partner = nullptr;
+        other->side = false;
+        other->lastRight = false;
+        if (!tab.side) {
+            std::unique_ptr<Tab> keep = std::move(m_tabs[(size_t)IndexOf(other)]);
+            m_tabs.erase(m_tabs.begin() + IndexOf(nullptr));
+            m_tabs[(size_t)IndexOf(&tab)] = std::move(keep);  // destroys this side's view
+        } else {
+            m_tabs.erase(m_tabs.begin() + index);
+        }
+        m_active = -1;
+        ActivateTab(IndexOf(closingActive ? other : activeBefore));
+        return;
+    }
+
+    if (m_tabs.size() == 1) {  // keep one empty tab rather than no view at all
+        tab.docId = tab.pendingDocId = 0;
+        tab.dirty = tab.canUndo = tab.canRedo = false;
+        tab.path.clear();
+        tab.search.Reset();
+        tab.search.query.clear();
+        tab.view->CloseDocument();
+        tab.view->SetMessage({});
+        tab.outline.clear();
+        tab.info = DocInfo{};
+        SyncSidebar();
+        UpdateTabs();
+        UpdateTitle();
+        UpdateUi();
+        UpdateSearchStatus();
+        return;
+    }
+    const bool wasActive = index == m_active;
+    m_tabs.erase(m_tabs.begin() + index);  // destroys the view window
+    if (wasActive) {
+        m_active = -1;
+        ActivateTab(std::min(index, (int)m_tabs.size() - 1));
+    } else {
+        if (index < m_active) --m_active;
+        UpdateTabs();
+    }
+}
+
+void MainWindow::UpdateTabs() {
+    auto name = [](const Tab& t) -> std::wstring {
+        if (t.docId) return (t.dirty ? L"\x2022 " : L"") + FileNameFromPath(t.path);
+        if (t.pendingDocId) return L"Opening\x2026";
+        return L"New tab";
+    };
+    std::vector<TabBar::TabInfo> infos;
+    for (const auto& t : m_tabs) {
+        if (t->side) continue;  // shown beside its tab, not in the strip
+        TabBar::TabInfo info;
+        info.title = name(*t);
+        info.tip = t->path;
+        if (t->partner) {  // two documents side by side
+            info.title += L"  |  " + name(*t->partner);
+            info.tip += L"\n" + t->partner->path;
+        }
+        infos.push_back(std::move(info));
+    }
+    m_tabBar.SetTabs(std::move(infos), BarIndexOf(m_active));
+    UpdatePaneBars();
+}
+
+int MainWindow::TabByDocId(uint32_t docId) const {
+    for (size_t i = 0; i < m_tabs.size(); ++i)
+        if (docId && m_tabs[i]->docId == docId) return (int)i;
+    return -1;
+}
+
+void MainWindow::OnTabBar(TabAction action, int index) {
+    switch (action) {
+        case TabAction::Select: {
+            int i = TabOfBar(index);
+            if (i < 0) break;
+            Tab& t = *m_tabs[(size_t)i];
+            if (t.partner && t.lastRight) i = IndexOf(t.partner);  // the side last worked in
+            ActivateTab(i);
+            break;
+        }
+        case TabAction::Close: {
+            const int i = TabOfBar(index);
+            if (i < 0) break;
+            Tab* left = m_tabs[(size_t)i].get();
+            if (Tab* right = left->partner) {  // both documents of a split tab
+                const int ri = IndexOf(right);
+                if (!ConfirmCloseTab(ri)) break;
+                CloseTab(ri, true);
+            }
+            CloseTab(IndexOf(left));
+            break;
+        }
+        case TabAction::New: ShowOpenDialog(); break;
+    }
+}
+
+// ===========================================================================
+// Two documents side by side in one tab
+// ===========================================================================
+int MainWindow::IndexOf(const Tab* tab) const {
+    for (size_t i = 0; i < m_tabs.size(); ++i)
+        if (m_tabs[i].get() == tab) return (int)i;
+    return -1;
+}
+
+int MainWindow::BarIndexOf(int index) const {
+    if (index < 0 || index >= (int)m_tabs.size()) return -1;
+    const Tab* t = m_tabs[(size_t)index].get();
+    if (t->side && t->partner) t = t->partner;
+    int bar = 0;
+    for (const auto& p : m_tabs) {
+        if (p->side) continue;
+        if (p.get() == t) return bar;
+        ++bar;
+    }
+    return -1;
+}
+
+int MainWindow::TabOfBar(int bar) const {
+    int n = 0;
+    for (size_t i = 0; i < m_tabs.size(); ++i) {
+        if (m_tabs[i]->side) continue;
+        if (n++ == bar) return (int)i;
+    }
+    return -1;
+}
+
+HMENU MainWindow::CreateBesideMenu() {
+    HMENU m = CreatePopupMenu();
+    const Tab& act = Active();
+    const bool split = act.partner != nullptr;
+    AppendMenuW(m, MF_STRING, ID_BESIDE_FILE,
+                split ? L"Show a different &file on the other side\x2026\tCtrl+Shift+O" : L"A &file\x2026\tCtrl+Shift+O");
+    int others = 0;
+    for (size_t i = 0; i < m_tabs.size() && i < 40; ++i) {
+        const Tab& t = *m_tabs[i];
+        if (&t == &act || &t == act.partner || t.side || t.partner || !t.docId || t.pendingDocId) continue;
+        if (!others++) AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+        std::wstring name = FileNameFromPath(t.path);
+        for (size_t at = 0; (at = name.find(L'&', at)) != std::wstring::npos; at += 2) name.insert(at, 1, L'&');
+        AppendMenuW(m, MF_STRING, ID_BESIDE_TAB_FIRST + (UINT)i, (L"Open tab: " + name).c_str());
+    }
+    if (split) {
+        auto check = [](bool on) -> UINT { return on ? MF_CHECKED : 0; };
+        AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(m, MF_STRING | check(m_settings.splitSyncScroll), ID_SPLIT_SYNC_SCROLL, L"&Scroll together");
+        AppendMenuW(m, MF_STRING | check(m_settings.splitSyncZoom), ID_SPLIT_SYNC_ZOOM, L"&Zoom together");
+        AppendMenuW(m, MF_STRING | check(m_settings.splitStacked), ID_SPLIT_ORIENT, L"One &above the other");
+        AppendMenuW(m, MF_STRING, ID_SPLIT_SWAP, L"S&wap the documents");
+        AppendMenuW(m, MF_STRING | (m_comparing ? MF_GRAYED : 0), ID_SPLIT_MARK, L"&Mark the differences");
+        AppendMenuW(m, MF_STRING, ID_SPLIT_OTHER, L"Work in the &other document\tF6");
+        AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(m, MF_STRING, act.side ? ID_PANE_CLOSE_L : ID_PANE_CLOSE_R, L"&Close the other document");
+    }
+    return m;
+}
+
+void MainWindow::ShowBesideMenu() {
+    HMENU m = CreateBesideMenu();
+    RECT rc = m_toolbar.ItemScreenRect(ID_OPEN_BESIDE);
+    TrackPopupMenu(m, TPM_LEFTALIGN | TPM_TOPALIGN, rc.left, rc.bottom, 0, m_hwnd, nullptr);
+    DestroyMenu(m);
+}
+
+void MainWindow::OpenBeside(const std::wstring& path, int page) {
+    Tab& act = Active();
+    if (!act.docId && !act.pendingDocId) {  // nothing open here yet: just open it
+        OpenFile(path, page);
+        return;
+    }
+    if (!FileExists(FullPath(path))) {
+        OpenFile(path, page);  // says it is not found
+        return;
+    }
+    if (Tab* other = act.partner) {  // already two: the other side shows this file instead
+        const int oi = IndexOf(other);
+        if (!ConfirmCloseTab(oi)) return;
+        OpenFile(path, page, {}, IndexOf(other), false);
+        if (&Active() != other) FocusSide(IndexOf(other));
+        return;
+    }
+    Tab* left = &act;
+    // Half the width each: fit the pages to it (both sides, as the new one copies this one).
+    if (left->view->GetZoomMode() == ZoomMode::Custom) left->view->SetZoomMode(ZoomMode::FitWidth);
+    const int ri = NewTab();  // the same view settings as this side
+    Tab* right = m_tabs[(size_t)ri].get();
+    right->side = true;
+    right->partner = left;
+    left->partner = right;
+    OpenFile(path, page, {}, ri, false);
+    Layout();
+    FocusSide(IndexOf(right));
+}
+
+void MainWindow::ShowTabBeside(int index) {
+    if (index < 0 || index >= (int)m_tabs.size()) return;
+    Tab* moving = m_tabs[(size_t)index].get();
+    Tab* act = &Active();
+    if (moving == act || moving == act->partner || moving->side || moving->partner || !moving->docId) return;
+    if (!act->docId && !act->pendingDocId) return ActivateTab(index);
+    if (Tab* other = act->partner) {  // already two: that one goes, this one comes
+        const int oi = IndexOf(other);
+        if (!ConfirmCloseTab(oi)) return;
+        CloseTab(IndexOf(other), true);
+        act = LeftOf(Active());
+    }
+    if (moving->search.running) CancelSearch();
+    moving->side = true;
+    moving->partner = act;
+    act->partner = moving;
+    Layout();
+    FocusSide(IndexOf(moving));
+    SyncPartner(*act);
+}
+
+void MainWindow::FocusSide(int index) {
+    if (index < 0 || index >= (int)m_tabs.size() || index == m_active) return;
+    Tab& old = Active();
+    if (old.partner != m_tabs[(size_t)index].get()) return ActivateTab(index);
+    if (old.search.running) CancelSearch();
+    m_active = index;
+    LeftOf(Active())->lastRight = Active().side;
+    if (GetFocus() != m_searchEdit) SetFocus(View().Hwnd());
+    if (m_searchVisible && !GetText(m_searchEdit).empty() && GetText(m_searchEdit) != Active().search.query &&
+        View().HasDocument())
+        StartSearch();
+    UpdateTabs();
+    UpdateTitle();
+    SyncSidebar();
+    UpdateUi();
+    UpdateSearchStatus();
+}
+
+void MainWindow::CloseSide(bool right) {
+    Tab& act = Active();
+    if (!act.partner) return;
+    CloseTab(IndexOf(right ? RightOf(act) : LeftOf(act)));
+}
+
+void MainWindow::SwapSides() {
+    Tab& act = Active();
+    if (!act.partner) return;
+    Tab* left = LeftOf(act);
+    Tab* right = RightOf(act);
+    const int li = IndexOf(left), ri = IndexOf(right);
+    std::swap(m_tabs[(size_t)li], m_tabs[(size_t)ri]);  // the new left one takes the tab strip's place
+    left->side = true;
+    right->side = false;
+    m_active = IndexOf(&act);
+    right->lastRight = act.side;
+    Layout();
+    UpdateTabs();
+}
+
+void MainWindow::SyncPartner(Tab& from) {
+    Tab* other = from.partner;
+    if (!other || m_syncing || !from.view->HasDocument() || !other->view->HasDocument()) return;
+    if (!m_settings.splitSyncZoom && !m_settings.splitSyncScroll) return;
+    m_syncing = true;
+    PdfView& a = *from.view;
+    PdfView& b = *other->view;
+    if (m_settings.splitSyncZoom) {
+        if (a.GetZoomMode() != ZoomMode::Custom) {
+            if (b.GetZoomMode() != a.GetZoomMode()) b.SetZoomMode(a.GetZoomMode());
+        } else if (b.GetZoomMode() != ZoomMode::Custom || std::fabs(b.Zoom() - a.Zoom()) > 1e-6) {
+            b.SetZoom(a.Zoom());
+        }
+    }
+    if (m_settings.splitSyncScroll) b.SetPlace(a.GetPlace());
+    m_syncing = false;
+    if (other == &Active()) UpdateUi();
+}
+
+void MainWindow::UpdatePaneBars() {
+    if (m_tabs.empty() || m_active < 0) return;
+    Tab& act = Active();
+    if (!act.partner) return;
+    Tab* sides[2] = {LeftOf(act), RightOf(act)};
+    for (int i = 0; i < 2; ++i) {
+        const Tab& t = *sides[i];
+        std::wstring name = t.docId ? FileNameFromPath(t.path) : t.pendingDocId ? L"Opening\x2026" : L"";
+        if (t.dirty) name = L"\x2022 " + name;
+        // The highlighted name is the document the toolbar, search and saving work on.
+        const int id = i == 0 ? ID_PANE_NAME_L : ID_PANE_NAME_R;
+        m_paneBar[i].SetText(id, name);
+        m_paneBar[i].SetChecked(id, &t == &act);
+    }
+    m_paneBar[0].SetChecked(ID_SPLIT_ORIENT, m_settings.splitStacked);
+    m_paneBar[1].SetChecked(ID_SPLIT_SYNC_SCROLL, m_settings.splitSyncScroll);
+    m_paneBar[1].SetChecked(ID_SPLIT_SYNC_ZOOM, m_settings.splitSyncZoom);
+    m_paneBar[1].SetEnabled(ID_SPLIT_MARK, !m_comparing && sides[0]->docId && sides[1]->docId);
+}
+
+RECT MainWindow::PaneSplitterRect() const {
+    RECT r{};
+    if (m_tabs.empty() || m_active < 0 || !m_tabs[(size_t)m_active]->partner || !IsWindowVisible(m_paneBar[1].Hwnd()))
+        return r;
+    const Tab& act = *m_tabs[(size_t)m_active];
+    const Tab* left = act.side ? act.partner : &act;
+    RECT a, b;
+    GetWindowRect(left->view->Hwnd(), &a);
+    GetWindowRect(m_paneBar[1].Hwnd(), &b);
+    MapWindowPoints(nullptr, m_hwnd, (POINT*)&a, 2);
+    MapWindowPoints(nullptr, m_hwnd, (POINT*)&b, 2);
+    if (m_settings.splitStacked) return {a.left, a.bottom, a.right, b.top};
+    RECT top;
+    GetWindowRect(m_paneBar[0].Hwnd(), &top);
+    MapWindowPoints(nullptr, m_hwnd, (POINT*)&top, 2);
+    return {a.right, top.top, b.left, a.bottom};
+}
+
+// ===========================================================================
+// Window procedure
+// ===========================================================================
+LRESULT CALLBACK MainWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    MainWindow* self;
+    if (msg == WM_NCCREATE) {
+        self = (MainWindow*)((CREATESTRUCTW*)lp)->lpCreateParams;
+        self->m_hwnd = hwnd;
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)self);
+    } else {
+        self = (MainWindow*)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+    }
+    return self ? self->Handle(msg, wp, lp) : DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
+    switch (msg) {
+        case WM_APP_DOC_LOADED:
+            OnDocLoaded((DocLoadResult*)lp);
+            return 0;
+        case WM_APP_TILE_READY: {
+            auto* res = (TileResult*)lp;
+            int i = TabByDocId(res->docId);
+            if (i >= 0)
+                m_tabs[(size_t)i]->view->OnTileReady(res);
+            else
+                delete res;
+            return 0;
+        }
+        case WM_APP_TEXT_LAYER: {
+            auto* res = (TextLayerResult*)lp;
+            int i = TabByDocId(res->docId);
+            if (i >= 0)
+                m_tabs[(size_t)i]->view->OnTextLayer(res);
+            else
+                delete res;
+            return 0;
+        }
+        case WM_APP_TEXT_RUNS: {
+            auto* res = (TextRunsResult*)lp;
+            int i = TabByDocId(res->docId);
+            if (i >= 0)
+                m_tabs[(size_t)i]->view->OnTextRuns(res);
+            else
+                delete res;
+            return 0;
+        }
+        case WM_APP_COMMENTS:
+            OnCommentList((CommentListResult*)lp);
+            return 0;
+        case WM_APP_TEXT_COPIED: {
+            std::unique_ptr<TextCopyResult> res((TextCopyResult*)lp);
+            CopyToClipboard(res->text);
+            return 0;
+        }
+        case WM_APP_SEARCH_RESULT:
+            OnSearchResult((SearchPageResult*)lp);
+            return 0;
+        case WM_APP_TABBAR:
+            OnTabBar((TabAction)wp, (int)lp);
+            return 0;
+        case WM_APP_THUMB_READY:
+            m_sidebar.Thumbs().OnThumbReady((TileResult*)lp);
+            return 0;
+        case WM_APP_IMAGE_READY:
+            CopyImageToClipboard((TileResult*)lp);
+            return 0;
+        case WM_APP_PRINT_PROGRESS:
+            OnPrintProgress((int)wp, (int)lp);
+            return 0;
+        case WM_APP_SIDEBAR:
+            OnSidebar(wp, lp);
+            return 0;
+        case WM_APP_DOC_EDITED:
+            OnDocEdited((EditResult*)lp);
+            return 0;
+        case WM_APP_EXTRACTED:
+            OnExtracted((ExtractResult*)lp);
+            return 0;
+        case WM_APP_AUTOSAVED:
+            OnAutosaved((AutosaveResult*)lp);
+            return 0;
+        case WM_APP_PREVIEW_READY:
+            OnPrintPreviewPage((TileResult*)lp);
+            return 0;
+        case WM_APP_OCR_IMAGE:
+            OnOcrImage((OcrImage*)lp);
+            return 0;
+        case WM_APP_OCR_DONE:
+            OnOcrDone((OcrResult*)lp);
+            return 0;
+        case WM_APP_EXPORT_PROGRESS:
+            OnExportProgress((ExportProgress*)lp);
+            return 0;
+        case WM_APP_COMPARED:
+            OnCompared((CompareResult*)lp);
+            return 0;
+        case WM_APP_REDACT_FOUND:
+            OnRedactFound((RedactFindResult*)lp);
+            return 0;
+
+        // Splitter between sidebar and page: drag to resize the sidebar.
+        case WM_SETCURSOR:
+            if ((HWND)wp == m_hwnd && LOWORD(lp) == HTCLIENT) {
+                POINT pt;
+                GetCursorPos(&pt);
+                ScreenToClient(m_hwnd, &pt);
+                RECT sr = SplitterRect();
+                if (m_splitDrag || PtInRect(&sr, pt)) {
+                    SetCursor(LoadCursorW(nullptr, IDC_SIZEWE));
+                    return TRUE;
+                }
+                RECT pr = PaneSplitterRect();
+                if (m_paneDrag || PtInRect(&pr, pt)) {
+                    SetCursor(LoadCursorW(nullptr, m_settings.splitStacked ? IDC_SIZENS : IDC_SIZEWE));
+                    return TRUE;
+                }
+            }
+            break;
+        case WM_LBUTTONDOWN: {
+            RECT sr = SplitterRect();
+            POINT pt = {GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+            if (PtInRect(&sr, pt)) {
+                m_splitDrag = true;
+                SetCapture(m_hwnd);
+            }
+            RECT pr = PaneSplitterRect();
+            if (PtInRect(&pr, pt)) {
+                m_paneDrag = true;
+                SetCapture(m_hwnd);
+            }
+            return 0;
+        }
+        case WM_MOUSEMOVE:
+            if (m_splitDrag) {
+                const int dpi = GetWindowDpi(m_hwnd);
+                const int x = std::max(Dpi(120, dpi), (int)GET_X_LPARAM(lp));
+                m_settings.sidebarWidth = std::max(120, std::min(800, MulDiv(x, 96, dpi)));
+                Layout();
+            }
+            if (m_paneDrag && Active().partner) {
+                // The divider between the two documents: where it is, as a share of both.
+                RECT a, b;
+                GetWindowRect(m_paneBar[0].Hwnd(), &a);
+                GetWindowRect(RightOf(Active())->view->Hwnd(), &b);
+                MapWindowPoints(nullptr, m_hwnd, (POINT*)&a, 2);
+                MapWindowPoints(nullptr, m_hwnd, (POINT*)&b, 2);
+                const int from = m_settings.splitStacked ? a.top : a.left;
+                const int to = m_settings.splitStacked ? b.bottom : b.right;
+                const int at = m_settings.splitStacked ? GET_Y_LPARAM(lp) : GET_X_LPARAM(lp);
+                if (to > from) {
+                    m_settings.splitPermille = std::max(150, std::min(850, MulDiv(at - from, 1000, to - from)));
+                    Layout();
+                }
+            }
+            return 0;
+        case WM_LBUTTONUP:
+            if (m_splitDrag || m_paneDrag) ReleaseCapture();
+            return 0;
+        case WM_CAPTURECHANGED:
+            m_splitDrag = false;
+            m_paneDrag = false;
+            return 0;
+        case WM_PARENTNOTIFY:
+            // A click in the other side of a split tab makes it the active one first.
+            if ((LOWORD(wp) == WM_LBUTTONDOWN || LOWORD(wp) == WM_RBUTTONDOWN || LOWORD(wp) == WM_MBUTTONDOWN) &&
+                !m_tabs.empty() && Active().partner) {
+                POINT pt = {GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+                RECT r;
+                GetWindowRect(Active().partner->view->Hwnd(), &r);
+                MapWindowPoints(nullptr, m_hwnd, (POINT*)&r, 2);
+                if (PtInRect(&r, pt)) FocusSide(IndexOf(Active().partner));
+            }
+            break;
+        case WM_ERASEBKGND: {  // only the splitter strip is ever visible
+            RECT rc;
+            GetClientRect(m_hwnd, &rc);
+            SetBkColor((HDC)wp, CurrentTheme().barBorder);
+            ExtTextOutW((HDC)wp, 0, 0, ETO_OPAQUE, &rc, nullptr, 0, nullptr);
+            return 1;
+        }
+
+        case WM_COPYDATA:
+            OnCopyData((const COPYDATASTRUCT*)lp);
+            return TRUE;
+
+        case WM_COMMAND:
+            OnCommand(LOWORD(wp), HIWORD(wp), (HWND)lp);
+            return 0;
+
+        case WM_SIZE:
+            if (wp == SIZE_MINIMIZED) {
+                // Nobody is looking: give the rendered pages back to the OS.
+                if (!m_tabs.empty()) View().TrimMemory();
+                m_sidebar.Thumbs().TrimMemory();
+            } else {
+                Layout();
+            }
+            return 0;
+
+        case WM_ACTIVATE:
+            if (LOWORD(wp) == WA_INACTIVE) m_lastFocus = GetFocus();
+            break;
+        case WM_SETFOCUS: {
+            if (m_tabs.empty()) return 0;
+            HWND target = View().Hwnd();
+            if (m_lastFocus && IsChild(m_hwnd, m_lastFocus) && IsWindowVisible(m_lastFocus))
+                target = m_lastFocus;
+            SetFocus(target);
+            return 0;
+        }
+
+        case WM_MOUSEWHEEL:  // wheel over the toolbar etc. scrolls the page
+            if (!m_tabs.empty()) return SendMessageW(View().Hwnd(), msg, wp, lp);
+            return 0;
+
+        case WM_TIMER:
+            if (wp == kSearchTimer) {
+                KillTimer(m_hwnd, kSearchTimer);
+                if (GetText(m_searchEdit) != Active().search.query) StartSearch();
+            }
+            if (wp == kAutosaveTimer) AutosaveTick();
+            return 0;
+
+        case WM_DROPFILES: {
+            HDROP drop = (HDROP)wp;
+            const UINT count = DragQueryFileW(drop, 0xFFFFFFFF, nullptr, 0);
+            for (UINT i = 0; i < count; ++i) {  // every dropped file gets a tab
+                UINT len = DragQueryFileW(drop, i, nullptr, 0);
+                if (!len) continue;
+                std::wstring path((size_t)len + 1, L'\0');
+                DragQueryFileW(drop, i, path.data(), len + 1);
+                path.resize(len);
+                OpenFile(path, 0);
+            }
+            DragFinish(drop);
+            SetForegroundWindow(m_hwnd);
+            return 0;
+        }
+
+        case WM_GETMINMAXINFO: {
+            auto* mmi = (MINMAXINFO*)lp;
+            const int dpi = GetWindowDpi(m_hwnd);
+            mmi->ptMinTrackSize = {Dpi(480, dpi), Dpi(320, dpi)};
+            return 0;
+        }
+
+        case WM_DPICHANGED: {
+            m_tabBar.OnDpiChanged();
+            m_toolbar.OnDpiChanged();
+            m_searchBar.OnDpiChanged();
+            for (Toolbar& bar : m_paneBar) bar.OnDpiChanged();
+            m_formatBar.OnDpiChanged();
+            m_sidebar.OnDpiChanged();
+            for (auto& t : m_tabs) t->view->OnDpiChanged();
+            const RECT* r = (const RECT*)lp;
+            SetWindowPos(m_hwnd, nullptr, r->left, r->top, r->right - r->left, r->bottom - r->top,
+                         SWP_NOZORDER | SWP_NOACTIVATE);
+            Layout();
+            return 0;
+        }
+
+        case WM_SETTINGCHANGE:
+            if (lp && lstrcmpW((const wchar_t*)lp, L"ImmersiveColorSet") == 0 &&
+                m_settings.themeMode == (int)ThemeMode::System)
+                OnThemeChanged();
+            break;
+
+        case WM_CLOSE:
+            if (m_quitSaves > 0) return 0;  // still saving; closes when done
+            if (!ConfirmQuit()) return 0;
+            SaveSettings();
+            EndRecovery();  // a normal exit: nothing to recover next time
+            DestroyWindow(m_hwnd);
+            return 0;
+
+        case WM_DESTROY:
+            KillTimer(m_hwnd, kSearchTimer);
+            m_ocr.Stop();
+            m_worker.Stop();
+            if (m_accel) DestroyAcceleratorTable(m_accel);
+            m_accel = nullptr;
+            PostQuitMessage(0);
+            return 0;
+    }
+    return DefWindowProcW(m_hwnd, msg, wp, lp);
+}
+
+LRESULT CALLBACK MainWindow::EditProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR,
+                                      DWORD_PTR ref) {
+    auto* self = (MainWindow*)ref;
+    switch (msg) {
+        case WM_KEYDOWN:
+            if (wp == VK_RETURN || wp == VK_ESCAPE) {
+                self->OnEditKey(hwnd, wp);
+                return 0;
+            }
+            break;
+        case WM_CHAR:
+            if (wp == L'\r' || wp == 27) return 0;  // no "ding"
+            break;
+        case WM_KILLFOCUS:
+            if (hwnd == self->m_pageEdit) {
+                LRESULT r = DefSubclassProc(hwnd, msg, wp, lp);
+                self->UpdateUi();  // restore the real page number
+                return r;
+            }
+            break;
+        case WM_NCDESTROY:
+            RemoveWindowSubclass(hwnd, &MainWindow::EditProc, 1);
+            break;
+    }
+    return DefSubclassProc(hwnd, msg, wp, lp);
+}
+
+void MainWindow::OnEditKey(HWND edit, WPARAM key) {
+    if (edit == m_pageEdit) {
+        if (key == VK_RETURN) GoToPageFromEdit();
+        SetFocus(View().Hwnd());  // Esc: abandon edit (text restored on kill focus)
+        return;
+    }
+    if (edit == m_searchEdit) {
+        if (key == VK_ESCAPE)
+            ShowSearch(false);
+        else
+            FindNext(GetKeyState(VK_SHIFT) >= 0);
+    }
+}
+
+void MainWindow::GoToPageFromEdit() {
+    const std::wstring text = GetText(m_pageEdit);
+    if (text.empty() || !View().HasDocument()) return;
+    const long page = wcstol(text.c_str(), nullptr, 10);
+    if (page >= 1) {
+        View().PushHistory();
+        View().GoToPage((int)std::min<long>(page, View().PageCount()) - 1);
+    }
+}
+
+// ===========================================================================
+// Commands
+// ===========================================================================
+void MainWindow::OnCommand(int id, int code, HWND ctl) {
+    PdfView& view = View();
+    if (id >= ID_HL_COLOR_FIRST && id <= ID_HL_COLOR_LAST) {
+        m_settings.highlightColor = id - ID_HL_COLOR_FIRST;
+        if (view.HasSelection()) AddMarkup(kMarkupHighlight);
+        return;
+    }
+    if (id >= ID_STAMP_FIRST && id < ID_STAMP_FIRST + kStampCount) {
+        StartStamp(kStamps[id - ID_STAMP_FIRST].text, kStamps[id - ID_STAMP_FIRST].color);
+        return;
+    }
+    if (id >= ID_DRAWCOLOR_FIRST && id < ID_DRAWCOLOR_FIRST + kDrawColorCount) {
+        m_settings.drawColor = kDrawColors[id - ID_DRAWCOLOR_FIRST];
+        StartTool(view.Tool());  // the active tool takes the new colour
+        return;
+    }
+    if (id >= ID_WIDTH_FIRST && id < ID_WIDTH_FIRST + kLineWidthCount) {
+        m_settings.lineWidthTenths = kLineWidths[id - ID_WIDTH_FIRST];
+        StartTool(view.Tool());
+        return;
+    }
+    if (id >= ID_TEXTSIZE_FIRST && id < ID_TEXTSIZE_FIRST + kTextSizeCount) {
+        m_settings.textSize = kTextSizes[id - ID_TEXTSIZE_FIRST];
+        StartTool(view.Tool());
+        return;
+    }
+    if (id >= ID_UNIT_FIRST && id < ID_UNIT_FIRST + 6) {
+        m_settings.measureUnit = id - ID_UNIT_FIRST;
+        ApplyMeasureOptions();
+        return;
+    }
+    if (id >= ID_SCALE_FIRST && id < ID_SCALE_FIRST + (int)(sizeof(kScales) / sizeof(kScales[0]))) {
+        m_settings.measureScale = kScales[id - ID_SCALE_FIRST];
+        ApplyMeasureOptions();
+        return;
+    }
+    if (id >= ID_BESIDE_TAB_FIRST && id < ID_BESIDE_TAB_FIRST + 40) {
+        ShowTabBeside(id - ID_BESIDE_TAB_FIRST);
+        return;
+    }
+    if (id >= ID_COMPARE_TAB_FIRST && id < ID_COMPARE_TAB_FIRST + 40) {
+        CompareWith(id - ID_COMPARE_TAB_FIRST);
+        return;
+    }
+    if (id >= ID_RECENT_FIRST && id < ID_RECENT_FIRST + 20) {
+        const size_t i = (size_t)(id - ID_RECENT_FIRST);
+        if (i < m_settings.recent.size()) {
+            const std::wstring path = m_settings.recent[i];
+            if (FileExists(path)) {
+                OpenFile(path, 0);
+            } else {
+                m_settings.recent.erase(m_settings.recent.begin() + (ptrdiff_t)i);
+                MessageBoxW(m_hwnd, (L"\x201C" + path + L"\x201D no longer exists, so it was removed from the list.").c_str(),
+                            APP_NAME, MB_ICONINFORMATION);
+            }
+        }
+        return;
+    }
+    if (id >= ID_ZOOM_PRESET_FIRST && id < ID_ZOOM_PRESET_FIRST + kZoomPresetCount) {
+        view.SetZoom(kZoomPresets[id - ID_ZOOM_PRESET_FIRST]);
+        return;
+    }
+    if (ctl && ctl == m_searchEdit) {
+        if (code == EN_CHANGE) SetTimer(m_hwnd, kSearchTimer, kSearchDelayMs, nullptr);
+        return;
+    }
+    if (ctl && ctl == m_pageEdit) return;
+
+    const bool fromAccelerator = code == 1;
+    switch (id) {
+        case ID_OPEN: ShowOpenDialog(); break;
+        case ID_SAVE: SaveDocument(m_active, false, 0); break;
+        case ID_SAVE_AS: SaveDocument(m_active, true, 0); break;
+        case ID_UNDO:
+        case ID_REDO:
+            // In a text box Ctrl+Z undoes typing, not the document.
+            if (HWND focus = GetFocus()) {
+                wchar_t cls[16] = L"";
+                GetClassNameW(focus, cls, 16);
+                if (_wcsicmp(cls, L"Edit") == 0) {
+                    if (id == ID_UNDO) SendMessageW(focus, EM_UNDO, 0, 0);
+                    break;
+                }
+            }
+            UndoRedo(id == ID_REDO);
+            break;
+        case ID_DELETE_PAGES: DeletePages(); break;
+        case ID_ROTATE_PAGES_CW: RotatePages(1); break;
+        case ID_ROTATE_PAGES_CCW: RotatePages(-1); break;
+        case ID_INSERT_BLANK: InsertBlankPage(); break;
+        case ID_INSERT_FILE: InsertPagesFromFile(); break;
+        case ID_MERGE_FILES: MergeFiles(); break;
+        case ID_MERGE_TABS: MergeTabs(); break;
+        case ID_EXTRACT_PAGES: ExtractPages(); break;
+        case ID_OCR: RecogniseText(); break;
+        case ID_CANCEL_OCR: StopOcr({}); break;
+        case ID_WATERMARK: AddWatermark(); break;
+        case ID_PAGE_NUMBERS: AddPageNumbers(); break;
+        case ID_EXPORT: ExportPages(); break;
+        case ID_CANCEL_EXPORT:
+            if (m_exporting) m_worker.CancelExport();
+            break;
+        case ID_COMPRESS: CompressDocument(); break;
+        case ID_COMPARE_FILE: CompareWith(-1); break;
+        case ID_COMPARE: {
+            HMENU m = CreateCompareMenu();
+            if (GetMenuItemCount(m) <= 1) {
+                DestroyMenu(m);
+                CompareWith(-1);
+                break;
+            }
+            POINT pt;
+            GetCursorPos(&pt);
+            TrackPopupMenu(m, TPM_LEFTALIGN | TPM_TOPALIGN, pt.x, pt.y, 0, m_hwnd, nullptr);
+            DestroyMenu(m);
+            break;
+        }
+        case ID_PASSWORD: ProtectDocument(); break;
+        case ID_TOOL_REDACT: StartRedactTool(); break;
+        case ID_REDACT_SELECTION: RedactSelection(); break;
+        case ID_REDACT_FIND: FindForRedaction(); break;
+        case ID_REDACT_APPLY: ApplyRedactions(); break;
+        case ID_REDACT_CLEAR: view.ClearRedactionMarks(); break;
+        case ID_GEOMETRY_MENU: ShowGeometryMenu(); break;
+        case ID_TOOL_RULER: SetMeasureTool(ViewTool::Ruler); break;
+        case ID_TOOL_PROTRACTOR: SetMeasureTool(ViewTool::Protractor); break;
+        case ID_SHOW_RULERS:
+            m_settings.showRulers = !m_settings.showRulers;
+            ApplyMeasureOptions();
+            break;
+        case ID_SCALE_CUSTOM: SetCustomScale(); break;
+        case ID_MEASURE_KEEP_ALL:
+            if (CanEdit()) view.KeepMeasurements();
+            break;
+        case ID_MEASURE_CLEAR: view.ClearMeasurements(); break;
+        case ID_EDIT_PDF_MENU: ShowEditPdfMenu(); break;
+        case ID_ANNOTATE_MENU: ShowAnnotateMenu(); break;
+        case ID_TOOL_ADD_TEXT: StartTool(view.Tool() == ViewTool::AddText ? ViewTool::Select : ViewTool::AddText); break;
+        case ID_TOOL_RECT: StartTool(view.Tool() == ViewTool::Rectangle ? ViewTool::Select : ViewTool::Rectangle); break;
+        case ID_TOOL_ELLIPSE: StartTool(view.Tool() == ViewTool::Ellipse ? ViewTool::Select : ViewTool::Ellipse); break;
+        case ID_TOOL_LINE: StartTool(view.Tool() == ViewTool::Line ? ViewTool::Select : ViewTool::Line); break;
+        case ID_TOOL_ARROW: StartTool(view.Tool() == ViewTool::Arrow ? ViewTool::Select : ViewTool::Arrow); break;
+        case ID_TOOL_PEN: StartTool(view.Tool() == ViewTool::Pen ? ViewTool::Select : ViewTool::Pen); break;
+        case ID_SQUIGGLY: AddMarkup(kMarkupSquiggly); break;
+        case ID_STAMP_CUSTOM: {
+            std::wstring text;
+            if (InputBox(L"Custom stamp", L"The word or words on the stamp (for example \x201C" L"CHECKED BY RAHUL\x201D):", text) &&
+                !text.empty()) {
+                CharUpperBuffW(text.data(), (DWORD)text.size());
+                StartStamp(text, RGB(0, 70, 200));
+            }
+            break;
+        }
+        case ID_SIGNATURE_USE: StartSignature(false); break;
+        case ID_SIGNATURE_NEW: StartSignature(true); break;
+        case ID_SIGNATURE_FORGET:
+            DeleteSavedSignature();
+            MessageBoxW(m_hwnd, L"The saved signature was removed from this PC.", APP_NAME, MB_ICONINFORMATION);
+            break;
+        case ID_INSERT_IMAGE: InsertImage(); break;
+        case ID_PASTE_IMAGE: PasteImage(); break;
+        case ID_COPY_PAGES: CopyPages(false); break;
+        case ID_CUT_PAGES: CopyPages(true); break;
+        case ID_PASTE_PAGES_AFTER:
+        case ID_PASTE_PAGES_BEFORE:
+        case ID_PASTE_PAGES_START:
+        case ID_PASTE_PAGES_END: PastePages(id); break;
+        case ID_PASTE_PAGES_TABS: PastePagesIntoTabs(); break;
+        case ID_CROP_PAGES: CropPagesDialog(); break;
+        case ID_TOOL_CROP:
+            if (CanEdit()) {
+                SetTool(view.Tool() == ViewTool::Crop ? ViewTool::Select : ViewTool::Crop);
+                view.ShowNote(L"Drag a box around the part of the page to keep.");
+            }
+            break;
+        case ID_NUP: MakePagesPerSheet(); break;
+        case ID_REPLACE_IMAGE: ReplaceImage(); break;
+        case ID_FMT_BOLD:
+        case ID_FMT_ITALIC:
+        case ID_FMT_UNDERLINE:
+        case ID_FMT_STRIKE:
+        case ID_FMT_FONT:
+        case ID_FMT_SIZE:
+        case ID_FMT_COLOR:
+        case ID_FMT_LEFT:
+        case ID_FMT_CENTER:
+        case ID_FMT_RIGHT:
+            FormatCommand(id);
+            break;
+        case ID_DRAWCOLOR_MORE: {
+            static COLORREF custom[16] = {};
+            CHOOSECOLORW cc{sizeof(cc)};
+            cc.hwndOwner = m_hwnd;
+            cc.lpCustColors = custom;
+            cc.rgbResult = m_settings.drawColor;
+            cc.Flags = CC_FULLOPEN | CC_RGBINIT;
+            if (ChooseColorW(&cc)) {
+                m_settings.drawColor = cc.rgbResult;
+                StartTool(view.Tool());
+            }
+            break;
+        }
+        case ID_COMMAND_PALETTE: ShowCommandPalette(); break;
+        case ID_BACK: view.Back(); break;
+        case ID_FORWARD: view.Forward(); break;
+        case ID_RECENT_CLEAR: m_settings.recent.clear(); break;
+        case ID_PRESENT: TogglePresentation(); break;
+        case ID_EDIT_TEXT:
+            SetTool(view.Tool() == ViewTool::EditText ? ViewTool::Select : ViewTool::EditText);
+            break;
+        case ID_ADD_COMMENT:
+            SetTool(view.Tool() == ViewTool::AddComment ? ViewTool::Select : ViewTool::AddComment);
+            break;
+        case ID_COMMENT_SELECTION: CommentOnSelection(); break;
+        case ID_REPLACE_TEXT: ReplaceTextInDocument(); break;
+        case ID_SHOW_COMMENTS:
+            if (CanEdit()) m_worker.ListComments(Active().docId);
+            break;
+        case ID_HIGHLIGHT: AddMarkup(kMarkupHighlight); break;
+        case ID_UNDERLINE: AddMarkup(kMarkupUnderline); break;
+        case ID_STRIKEOUT: AddMarkup(kMarkupStrikeOut); break;
+        case ID_CLOSE_TAB: CloseTab(m_active); break;
+        case ID_NEXT_TAB:
+        case ID_PREV_TAB: {  // through the tab strip (a split tab is one tab)
+            int bars = 0;
+            for (const auto& t : m_tabs) bars += t->side ? 0 : 1;
+            if (bars > 1)
+                OnTabBar(TabAction::Select, (BarIndexOf(m_active) + (id == ID_NEXT_TAB ? 1 : bars - 1)) % bars);
+            break;
+        }
+        case ID_OPEN_BESIDE: ShowBesideMenu(); break;
+        case ID_BESIDE_FILE: {
+            const auto files = PickPdfFiles(false, L"Choose the PDF to show beside this one");
+            if (!files.empty()) OpenBeside(files[0]);
+            break;
+        }
+        case ID_SPLIT_SYNC_SCROLL:
+            m_settings.splitSyncScroll = !m_settings.splitSyncScroll;
+            if (m_settings.splitSyncScroll) SyncPartner(Active());
+            UpdatePaneBars();
+            break;
+        case ID_SPLIT_SYNC_ZOOM:
+            m_settings.splitSyncZoom = !m_settings.splitSyncZoom;
+            if (m_settings.splitSyncZoom) SyncPartner(Active());
+            UpdatePaneBars();
+            break;
+        case ID_SPLIT_SWAP: SwapSides(); break;
+        case ID_SPLIT_ORIENT:
+            m_settings.splitStacked = !m_settings.splitStacked;
+            Layout();
+            break;
+        case ID_SPLIT_MARK:
+            if (Tab* right = RightOf(Active())) {
+                // The left document is the older one: the right side shows the newer with the differences marked.
+                Tab* left = LeftOf(Active());
+                if (&Active() != left) FocusSide(IndexOf(left));
+                m_markInto = right;
+                CompareWith(IndexOf(right));
+                if (!m_comparing) m_markInto = nullptr;
+            }
+            break;
+        case ID_SPLIT_OTHER:
+            if (Active().partner) FocusSide(IndexOf(Active().partner));
+            break;
+        case ID_PANE_NAME_L:
+        case ID_PANE_NAME_R:
+            if (Active().partner) FocusSide(IndexOf(id == ID_PANE_NAME_L ? LeftOf(Active()) : RightOf(Active())));
+            break;
+        case ID_PANE_CLOSE_L: CloseSide(false); break;
+        case ID_PANE_CLOSE_R: CloseSide(true); break;
+        case ID_PREV_PAGE: view.PrevPage(); break;
+        case ID_NEXT_PAGE: view.NextPage(); break;
+        case ID_FIRST_PAGE:
+            view.PushHistory();
+            view.GoToPage(0);
+            break;
+        case ID_LAST_PAGE:
+            view.PushHistory();
+            view.GoToPage(view.PageCount() - 1);
+            break;
+        case ID_GOTO_PAGE:
+            if (m_fullscreen) ToggleFullscreen();
+            SetFocus(m_pageEdit);
+            SendMessageW(m_pageEdit, EM_SETSEL, 0, -1);
+            break;
+        case ID_ZOOM_IN: view.ZoomIn(); break;
+        case ID_ZOOM_OUT: view.ZoomOut(); break;
+        case ID_ZOOM_LABEL: ShowZoomMenu(); break;
+        case ID_FIT_WIDTH: view.SetZoomMode(ZoomMode::FitWidth); break;
+        case ID_FIT_PAGE: view.SetZoomMode(ZoomMode::FitPage); break;
+        case ID_ACTUAL_SIZE: view.SetZoom(1.0); break;
+        case ID_CONTINUOUS: view.SetViewMode(ViewMode::Continuous); break;
+        case ID_SINGLE_PAGE: view.SetViewMode(ViewMode::Single); break;
+        case ID_VIEW_TWO_PAGE: view.SetViewMode(ViewMode::TwoPage); break;
+        case ID_COVER_PAGE:
+            m_settings.coverPage = !view.CoverPage();
+            for (auto& t : m_tabs) t->view->SetCoverPage(m_settings.coverPage);
+            break;
+        case ID_ROTATE_LEFT:
+            view.Rotate(-1);
+            SyncSidebar();
+            break;
+        case ID_ROTATE_RIGHT:
+            view.Rotate(1);
+            SyncSidebar();
+            break;
+        case ID_COLORS_NORMAL: SetPageColors(kColorsNormal); break;
+        case ID_COLORS_DARK: SetPageColors(kColorsDark); break;
+        case ID_COLORS_DIM: SetPageColors(kColorsDim); break;
+        case ID_SIDEBAR_BOOKMARKS:
+            if (view.Tool() == ViewTool::EditText) {  // Ctrl+B while editing: bold
+                FormatCommand(ID_FMT_BOLD);
+                break;
+            }
+            SetSidebarMode(m_sidebar.Mode() == SidebarMode::Bookmarks ? SidebarMode::None
+                                                                      : SidebarMode::Bookmarks);
+            break;
+        case ID_SIDEBAR_THUMBNAILS:
+            SetSidebarMode(m_sidebar.Mode() == SidebarMode::Thumbnails ? SidebarMode::None
+                                                                       : SidebarMode::Thumbnails);
+            break;
+        case ID_PRINT: Print(); break;
+        case ID_CANCEL_PRINT:
+            if (m_printing) {
+                m_printCancelled = true;
+                m_worker.CancelPrint();
+            }
+            break;
+        case ID_PROPERTIES: ShowProperties(); break;
+        case ID_COPY_PAGE_IMAGE: view.CopyPageImage(); break;
+        case ID_COPY_AREA_IMAGE: view.StartAreaCopy(); break;
+        case ID_FULLSCREEN: ToggleFullscreen(); break;
+        case ID_COPY: view.CopySelection(); break;
+        case ID_SELECT_ALL: view.SelectAll(); break;
+        case ID_THEME_SYSTEM: SetThemeMode((int)ThemeMode::System); break;
+        case ID_THEME_LIGHT: SetThemeMode((int)ThemeMode::Light); break;
+        case ID_THEME_DARK: SetThemeMode((int)ThemeMode::Dark); break;
+        case ID_SEARCH:
+            // Ctrl+F always opens/focuses; the toolbar button toggles.
+            if (!fromAccelerator && m_searchVisible)
+                ShowSearch(false);
+            else
+                ShowSearch(true);
+            break;
+        case ID_FIND_NEXT: FindNext(true); break;
+        case ID_FIND_PREV: FindNext(false); break;
+        case ID_MATCH_CASE:
+            m_settings.matchCase = !m_settings.matchCase;
+            m_searchBar.SetChecked(ID_MATCH_CASE, m_settings.matchCase);
+            if (!GetText(m_searchEdit).empty()) StartSearch();
+            break;
+        case ID_SEARCH_CLOSE: ShowSearch(false); break;
+        case ID_ESCAPE:
+            if (m_presenting)
+                TogglePresentation();
+            else if (m_searchVisible)
+                ShowSearch(false);
+            else if (m_fullscreen)
+                ToggleFullscreen();
+            break;
+        case ID_MENU: ShowMoreMenu(); break;
+        case ID_REGISTER_DEFAULT:
+            if (RegisterFileAssociation()) {
+                MessageBoxW(m_hwnd,
+                            L"Feather PDF is now registered as a PDF viewer.\n\n"
+                            L"In the Settings page that opens next, choose Feather PDF as the "
+                            L"default app for .pdf files.",
+                            APP_NAME, MB_ICONINFORMATION);
+                OpenDefaultAppsSettings();
+            } else {
+                MessageBoxW(m_hwnd, L"The file association could not be registered.", APP_NAME,
+                            MB_ICONWARNING);
+            }
+            break;
+        case ID_ABOUT: ShowAbout(); break;
+        case ID_EXIT: PostMessageW(m_hwnd, WM_CLOSE, 0, 0); break;
+    }
+}
+
+void MainWindow::ShowMoreMenu() {
+    PdfView& view = View();
+    const bool doc = view.HasDocument();
+    const UINT docFlag = doc ? MF_ENABLED : MF_GRAYED;
+    auto check = [](bool on) -> UINT { return on ? MF_CHECKED : 0; };
+
+    HMENU layout = CreatePopupMenu();
+    AppendMenuW(layout, MF_STRING, ID_SINGLE_PAGE, L"&Single page");
+    AppendMenuW(layout, MF_STRING, ID_CONTINUOUS, L"&Continuous");
+    AppendMenuW(layout, MF_STRING, ID_VIEW_TWO_PAGE, L"&Two pages");
+    CheckMenuRadioItem(layout, ID_CONTINUOUS, ID_VIEW_TWO_PAGE,
+                       view.GetViewMode() == ViewMode::Single     ? ID_SINGLE_PAGE
+                       : view.GetViewMode() == ViewMode::TwoPage ? ID_VIEW_TWO_PAGE
+                                                                 : ID_CONTINUOUS,
+                       MF_BYCOMMAND);
+    AppendMenuW(layout, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(layout,
+                MF_STRING | check(view.CoverPage()) |
+                    (view.GetViewMode() == ViewMode::TwoPage ? 0 : MF_GRAYED),
+                ID_COVER_PAGE, L"Show &cover page separately");
+
+    HMENU colors = CreatePopupMenu();
+    AppendMenuW(colors, MF_STRING, ID_COLORS_NORMAL, L"&Normal");
+    AppendMenuW(colors, MF_STRING, ID_COLORS_DARK, L"&Dark (night mode)");
+    AppendMenuW(colors, MF_STRING, ID_COLORS_DIM, L"D&immed");
+    CheckMenuRadioItem(colors, ID_COLORS_NORMAL, ID_COLORS_DIM,
+                       ID_COLORS_NORMAL + view.GetPageColors(), MF_BYCOMMAND);
+
+    HMENU theme = CreatePopupMenu();
+    AppendMenuW(theme, MF_STRING, ID_THEME_SYSTEM, L"&System default");
+    AppendMenuW(theme, MF_STRING, ID_THEME_LIGHT, L"&Light");
+    AppendMenuW(theme, MF_STRING, ID_THEME_DARK, L"&Dark");
+    CheckMenuRadioItem(theme, ID_THEME_SYSTEM, ID_THEME_DARK, ID_THEME_SYSTEM + m_settings.themeMode,
+                       MF_BYCOMMAND);
+
+    const Tab& tab = Active();
+    HMENU m = CreatePopupMenu();
+    AppendMenuW(m, MF_STRING, ID_OPEN, L"&Open\x2026\tCtrl+O");
+    AppendMenuW(m, MF_POPUP | (m_settings.recent.empty() ? MF_GRAYED : 0), (UINT_PTR)CreateRecentMenu(),
+                L"Open rece&nt");
+    AppendMenuW(m, MF_STRING | (doc && tab.dirty ? 0 : MF_GRAYED), ID_SAVE, L"&Save\tCtrl+S");
+    AppendMenuW(m, MF_STRING | docFlag, ID_SAVE_AS, L"Sa&ve as\x2026\tCtrl+Shift+S");
+    if (m_exporting)
+        AppendMenuW(m, MF_STRING, ID_CANCEL_EXPORT, L"Cancel &export");
+    else
+        AppendMenuW(m, MF_STRING | docFlag, ID_EXPORT, L"&Export as pictures or text\x2026");
+    AppendMenuW(m, MF_POPUP | docFlag, (UINT_PTR)CreateCompareMenu(), L"Co&mpare with");
+    AppendMenuW(m, MF_POPUP | docFlag, (UINT_PTR)CreateBesideMenu(), L"Side &by side (two in one tab)");
+    AppendMenuW(m, MF_STRING, ID_CLOSE_TAB, L"&Close tab\tCtrl+W");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_STRING | (doc && tab.canUndo ? 0 : MF_GRAYED), ID_UNDO, L"&Undo\tCtrl+Z");
+    AppendMenuW(m, MF_STRING | (doc && tab.canRedo ? 0 : MF_GRAYED), ID_REDO, L"&Redo\tCtrl+Y");
+    AppendMenuW(m, MF_POPUP | docFlag, (UINT_PTR)CreateEditPdfMenu(), L"E&dit PDF");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    if (m_printing)
+        AppendMenuW(m, MF_STRING, ID_CANCEL_PRINT, L"Cancel &printing");
+    else
+        AppendMenuW(m, MF_STRING | docFlag, ID_PRINT, L"&Print\x2026\tCtrl+P");
+    AppendMenuW(m, MF_STRING | docFlag, ID_PROPERTIES, L"Document p&roperties\x2026\tCtrl+D");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_STRING | (view.HasSelection() ? 0 : MF_GRAYED), ID_COPY, L"Cop&y\tCtrl+C");
+    AppendMenuW(m, MF_STRING | docFlag, ID_SELECT_ALL, L"Select &all\tCtrl+A");
+    AppendMenuW(m, MF_STRING | docFlag, ID_COPY_PAGE_IMAGE, L"Copy page as &image");
+    AppendMenuW(m, MF_STRING | docFlag, ID_COPY_AREA_IMAGE, L"Copy area as i&mage");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_STRING | docFlag, ID_FIRST_PAGE, L"&First page\tHome");
+    AppendMenuW(m, MF_STRING | docFlag, ID_LAST_PAGE, L"&Last page\tEnd");
+    AppendMenuW(m, MF_STRING | docFlag, ID_GOTO_PAGE, L"&Go to page\x2026\tCtrl+G");
+    AppendMenuW(m, MF_STRING | (view.CanGoBack() ? 0 : MF_GRAYED), ID_BACK, L"&Back\tAlt+Left");
+    AppendMenuW(m, MF_STRING | (view.CanGoForward() ? 0 : MF_GRAYED), ID_FORWARD, L"For&ward\tAlt+Right");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_STRING | check(m_sidebar.Mode() == SidebarMode::Bookmarks),
+                ID_SIDEBAR_BOOKMARKS, L"&Bookmarks panel\tCtrl+B");
+    AppendMenuW(m, MF_STRING | check(m_sidebar.Mode() == SidebarMode::Thumbnails),
+                ID_SIDEBAR_THUMBNAILS, L"T&humbnails panel\tCtrl+Shift+B");
+    AppendMenuW(m, MF_POPUP, (UINT_PTR)layout, L"Page la&yout");
+    AppendMenuW(m, MF_STRING | docFlag, ID_ROTATE_LEFT, L"Rotate l&eft\tCtrl+L");
+    AppendMenuW(m, MF_STRING | docFlag, ID_ROTATE_RIGHT, L"Rotate ri&ght\tCtrl+R");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_STRING | check(view.GetZoomMode() == ZoomMode::FitWidth), ID_FIT_WIDTH,
+                L"Fit &width\tCtrl+2");
+    AppendMenuW(m, MF_STRING | check(view.GetZoomMode() == ZoomMode::FitPage), ID_FIT_PAGE,
+                L"Fit pa&ge\tCtrl+0");
+    AppendMenuW(m, MF_STRING, ID_ACTUAL_SIZE, L"Actual si&ze\tCtrl+1");
+    AppendMenuW(m, MF_STRING | check(m_fullscreen), ID_FULLSCREEN, L"F&ull screen\tF11");
+    AppendMenuW(m, MF_STRING | docFlag | check(m_presenting), ID_PRESENT, L"&Presentation\tF5");
+    AppendMenuW(m, MF_POPUP, (UINT_PTR)colors, L"Page colo&urs");
+    AppendMenuW(m, MF_POPUP, (UINT_PTR)theme, L"&Theme");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_STRING, ID_COMMAND_PALETTE, L"&Command palette\x2026\tCtrl+K");
+    AppendMenuW(m, MF_STRING, ID_REGISTER_DEFAULT, L"Set as &default PDF viewer\x2026");
+    AppendMenuW(m, MF_STRING, ID_ABOUT, L"Abou&t " APP_NAME);
+    AppendMenuW(m, MF_STRING, ID_EXIT, L"E&xit");
+
+    RECT rc = m_toolbar.ItemScreenRect(ID_MENU);
+    TrackPopupMenu(m, TPM_RIGHTALIGN | TPM_TOPALIGN, rc.right, rc.bottom, 0, m_hwnd, nullptr);
+    DestroyMenu(m);  // also destroys the submenus
+}
+
+void MainWindow::ShowZoomMenu() {
+    static const int kMenuPresets[] = {3, 5, 7, 9, 10, 12, 14, 15};  // 33%..300%
+    PdfView& view = View();
+    HMENU m = CreatePopupMenu();
+    const int current = (int)std::lround(view.Zoom() * 100);
+    for (int idx : kMenuPresets) {
+        const int pct = (int)std::lround(kZoomPresets[idx] * 100);
+        std::wstring label = std::to_wstring(pct) + L"%";
+        UINT flags = MF_STRING;
+        if (view.GetZoomMode() == ZoomMode::Custom && pct == current) flags |= MF_CHECKED;
+        AppendMenuW(m, flags, ID_ZOOM_PRESET_FIRST + idx, label.c_str());
+    }
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_STRING | (view.GetZoomMode() == ZoomMode::FitWidth ? MF_CHECKED : 0),
+                ID_FIT_WIDTH, L"Fit width\tCtrl+2");
+    AppendMenuW(m, MF_STRING | (view.GetZoomMode() == ZoomMode::FitPage ? MF_CHECKED : 0),
+                ID_FIT_PAGE, L"Fit page\tCtrl+0");
+    AppendMenuW(m, MF_STRING, ID_ACTUAL_SIZE, L"Actual size\tCtrl+1");
+    RECT rc = m_toolbar.ItemScreenRect(ID_ZOOM_LABEL);
+    TrackPopupMenu(m, TPM_LEFTALIGN | TPM_TOPALIGN, rc.left, rc.bottom, 0, m_hwnd, nullptr);
+    DestroyMenu(m);
+}
+
+void MainWindow::UpdateUi() {
+    if (m_tabs.empty()) return;
+    PdfView& view = View();
+    const bool doc = view.HasDocument();
+    const int count = view.PageCount();
+    const int page = doc ? view.CurrentPage() + 1 : 0;
+
+    if (GetFocus() != m_pageEdit) {
+        const std::wstring text = doc ? std::to_wstring(page) : L"";
+        if (GetText(m_pageEdit) != text) SetWindowTextW(m_pageEdit, text.c_str());
+    }
+    m_toolbar.SetText(ID_PAGE_TOTAL, doc ? L"/ " + std::to_wstring(count) : L"");
+    m_toolbar.SetText(ID_ZOOM_LABEL, std::to_wstring((int)std::lround(view.Zoom() * 100)) + L"%");
+    m_toolbar.SetEnabled(ID_PREV_PAGE, doc && page > 1);
+    m_toolbar.SetEnabled(ID_NEXT_PAGE, doc && page < count);
+    m_toolbar.SetEnabled(ID_PAGE_EDIT, doc);
+    m_toolbar.SetEnabled(ID_ZOOM_IN, doc);
+    m_toolbar.SetEnabled(ID_ZOOM_OUT, doc);
+    m_toolbar.SetEnabled(ID_ZOOM_LABEL, doc);
+    m_toolbar.SetEnabled(ID_SEARCH, doc);
+    const Tab& tab = Active();
+    m_toolbar.SetEnabled(ID_SAVE, doc && tab.dirty);
+    m_toolbar.SetEnabled(ID_EDIT_PDF_MENU, doc);
+    m_toolbar.SetEnabled(ID_ADD_COMMENT, doc);
+    m_toolbar.SetChecked(ID_EDIT_PDF_MENU, doc && view.Tool() == ViewTool::EditText);
+    m_toolbar.SetChecked(ID_ADD_COMMENT, doc && view.Tool() == ViewTool::AddComment);
+    m_toolbar.SetEnabled(ID_ANNOTATE_MENU, doc);
+    m_toolbar.SetChecked(ID_ANNOTATE_MENU, doc && view.Tool() >= ViewTool::AddText && view.Tool() <= ViewTool::Image);
+    m_toolbar.SetEnabled(ID_GEOMETRY_MENU, true);
+    m_toolbar.SetChecked(ID_GEOMETRY_MENU,
+                         doc && (view.Tool() == ViewTool::Ruler || view.Tool() == ViewTool::Protractor));
+    m_toolbar.SetEnabled(ID_UNDO, doc && tab.canUndo);
+    m_toolbar.SetEnabled(ID_REDO, doc && tab.canRedo);
+    m_toolbar.SetChecked(ID_OPEN_BESIDE, tab.partner != nullptr);
+    if (doc && m_sidebar.Mode() == SidebarMode::Thumbnails)
+        m_sidebar.Thumbs().SetCurrentPage(view.CurrentPage());
+    // The formatting bar while editing text, showing the style of the line chosen.
+    const bool format = doc && view.Tool() == ViewTool::EditText;
+    if (format != m_formatVisible) {
+        m_formatVisible = format;
+        Layout();
+    }
+    if (format) {
+        TextRun run;
+        const bool any = view.FormatTarget(run);
+        m_formatBar.SetChecked(ID_FMT_BOLD, any && run.bold);
+        m_formatBar.SetChecked(ID_FMT_ITALIC, any && run.italic);
+        m_formatBar.SetChecked(ID_FMT_UNDERLINE, any && run.underline);
+        m_formatBar.SetChecked(ID_FMT_STRIKE, any && run.strike);
+    }
+    UpdatePaneBars();
+}
+
+void MainWindow::UpdateTitle() {
+    const Tab& tab = Active();
+    std::wstring title = tab.docId ? (tab.dirty ? L"\x2022 " : L"") + FileNameFromPath(tab.path) +
+                                         L" - " APP_NAME
+                                   : std::wstring(APP_NAME);
+    if (m_printing)
+        title += L"  (printing " + std::to_wstring(m_printDone) + L" of " +
+                 std::to_wstring(m_printTotal) + L")";
+    if (m_ocrJob.active)
+        title += L"  (recognising text: " + std::to_wstring(m_ocrJob.done) + L" of " +
+                 std::to_wstring(m_ocrJob.pages.size()) + L" pages)";
+    if (m_comparing) title += L"  (comparing\x2026)";
+    if (m_exporting)
+        title += L"  (exporting " + std::to_wstring(m_exportDone) + L" of " + std::to_wstring(m_exportTotal) + L")";
+    SetWindowTextW(m_hwnd, title.c_str());
+}
+
+// ===========================================================================
+// Documents
+// ===========================================================================
+void MainWindow::ShowOpenDialog() {
+    // Multiple selection: every chosen file opens in its own tab.
+    std::vector<wchar_t> buf(65536, L'\0');
+    const std::wstring dir = DirectoryFromPath(Active().path);
+    OPENFILENAMEW ofn{sizeof(ofn)};
+    ofn.hwndOwner = m_hwnd;
+    ofn.lpstrFilter = L"PDF documents (*.pdf)\0*.pdf\0All files (*.*)\0*.*\0";
+    ofn.lpstrFile = buf.data();
+    ofn.nMaxFile = (DWORD)buf.size();
+    ofn.lpstrInitialDir = dir.empty() ? nullptr : dir.c_str();
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_EXPLORER | OFN_HIDEREADONLY |
+                OFN_ALLOWMULTISELECT;
+    if (!GetOpenFileNameW(&ofn)) return;
+
+    // Single file: "C:\dir\a.pdf\0". Several: "C:\dir\0a.pdf\0b.pdf\0\0".
+    const wchar_t* p = buf.data();
+    std::wstring first = p;
+    p += first.size() + 1;
+    if (!*p) {
+        OpenFile(first, 0);
+        return;
+    }
+    for (; *p; p += wcslen(p) + 1) OpenFile(first + L"\\" + p, 0);
+}
+
+void MainWindow::OpenFile(const std::wstring& path, int page, const std::string& password,
+                          int tabIndex, bool activate) {
+    const std::wstring fullPath = FullPath(path);
+    if (!FileExists(fullPath)) {
+        std::wstring msg = FileNameFromPath(fullPath) + L"\n\n" + OpenErrorText(OpenError::NotFound);
+        MessageBoxW(m_hwnd, msg.c_str(), APP_NAME, MB_ICONWARNING);
+        return;
+    }
+
+    // Already open (or opening)? Just switch to that tab.
+    if (tabIndex < 0 && password.empty()) {
+        for (size_t i = 0; i < m_tabs.size(); ++i) {
+            const Tab& t = *m_tabs[i];
+            if ((t.docId || t.pendingDocId) && SamePath(t.path, fullPath)) {
+                if (activate) ActivateTab((int)i);
+                if (t.docId && page > 0) t.view->GoToPage(page);
+                return;
+            }
+        }
+    }
+
+    // Reuse the current tab if it is empty, otherwise open a new one.
+    if (tabIndex < 0) {
+        const Tab& cur = Active();
+        tabIndex = (!cur.docId && !cur.pendingDocId) ? m_active : NewTab();
+    }
+    Tab& tab = *m_tabs[(size_t)tabIndex];
+    if (password.empty()) tab.passwordAttempts = 0;
+    tab.pendingDocId = m_nextDocId++;
+    tab.pendingPage = std::max(0, page);
+    if (!tab.docId) tab.path = fullPath;
+    if (!tab.view->HasDocument())
+        tab.view->SetMessage(L"Opening " + FileNameFromPath(fullPath) + L"\x2026");
+    m_worker.OpenDocument(tab.pendingDocId, fullPath, password);
+    if (activate)
+        ActivateTab(tabIndex);
+    else
+        UpdateTabs();
+}
+
+void MainWindow::OnDocLoaded(DocLoadResult* result) {
+    std::unique_ptr<DocLoadResult> res(result);
+    int index = -1;
+    for (size_t i = 0; i < m_tabs.size(); ++i)
+        if (m_tabs[i]->pendingDocId == res->docId) index = (int)i;
+    if (index < 0) {  // the tab was closed while loading
+        if (res->error == OpenError::None) m_worker.CloseDocument(res->docId);
+        return;
+    }
+    Tab& tab = *m_tabs[(size_t)index];
+    const std::wstring name = FileNameFromPath(res->path);
+
+    if (res->error == OpenError::Password) {
+        ActivateTab(index);  // show which document is asking
+        PasswordPrompt prompt;
+        prompt.fileName = name;
+        prompt.retry = tab.passwordAttempts > 0;
+        if (DialogBoxParamW(m_inst, MAKEINTRESOURCEW(IDD_PASSWORD), m_hwnd, PasswordDlgProc,
+                            (LPARAM)&prompt) == IDOK) {
+            ++tab.passwordAttempts;
+            std::string pw = WideToUtf8(prompt.password);
+            SecureZeroMemory(prompt.password.data(), prompt.password.size() * sizeof(wchar_t));
+            OpenFile(res->path, tab.pendingPage, pw, index);
+            SecureZeroMemory(pw.data(), pw.size());
+        } else {
+            tab.pendingDocId = 0;
+            if (!tab.docId) CloseTab(index);
+        }
+        return;
+    }
+
+    if (res->error != OpenError::None) {
+        tab.pendingDocId = 0;
+        std::wstring msg = name + L"\n\n" + OpenErrorText(res->error);
+        if (!tab.docId) CloseTab(index);  // nothing to show in that tab
+        MessageBoxW(m_hwnd, msg.c_str(), APP_NAME, MB_ICONWARNING);
+        return;
+    }
+
+    if (tab.docId) m_worker.CloseDocument(tab.docId);
+    tab.docId = res->docId;
+    tab.pendingDocId = 0;
+    tab.passwordAttempts = 0;
+    tab.path = res->path;
+    tab.search.Reset();
+    tab.search.query.clear();
+    tab.outline = std::move(res->outline);
+    tab.info = std::move(res->info);
+    tab.dirty = tab.canUndo = tab.canRedo = false;
+    if (!tab.recoveredFrom.empty()) {
+        // A recovery copy: it shows (and is saved to) the document it belongs to.
+        tab.path = tab.recoveredFrom;
+        tab.dirty = true;
+    }
+    tab.view->SetDocument(tab.docId, std::move(res->pageSizes), tab.pendingPage);
+    tab.view->SetCopyAllowed((tab.info.permissions & kPermCopy) != 0);
+    if (tab.unlocking) {
+        tab.unlocking = false;
+        MessageBoxW(m_hwnd,
+                    FullAccess(tab.info.permissions)
+                        ? L"The document is unlocked: printing, copying and changes are allowed."
+                        : L"That is not the owner password, so the limits stay.",
+                    APP_NAME, FullAccess(tab.info.permissions) ? MB_ICONINFORMATION : MB_ICONWARNING);
+    }
+    AddRecent(tab.path);
+    UpdateTabs();
+    if (index == m_active) {
+        SyncSidebar();
+        UpdateTitle();
+        UpdateUi();
+        if (m_searchVisible && !GetText(m_searchEdit).empty()) StartSearch();
+        UpdateSearchStatus();
+        if (GetFocus() != m_searchEdit) SetFocus(View().Hwnd());
+    }
+}
+
+void MainWindow::OnCopyData(const COPYDATASTRUCT* cds) {
+    // Another instance forwarded "page\npath" (Explorer double-click while
+    // Feather PDF is running): open it as a tab here.
+    if (!cds || cds->dwData != kCopyDataOpenFile || !cds->lpData || cds->cbData < sizeof(wchar_t))
+        return;
+    std::wstring data((const wchar_t*)cds->lpData, cds->cbData / sizeof(wchar_t));
+    data.resize(wcsnlen(data.c_str(), data.size()));
+    const size_t nl = data.find(L'\n');
+    if (nl == std::wstring::npos) return;
+    const int page = _wtoi(data.substr(0, nl).c_str());
+    const std::wstring path = data.substr(nl + 1);
+    if (IsIconic(m_hwnd)) ShowWindow(m_hwnd, SW_RESTORE);
+    SetForegroundWindow(m_hwnd);
+    if (!path.empty()) OpenFile(path, page);
+}
+
+void MainWindow::CopyToClipboard(const std::wstring& text) {
+    if (text.empty() || !OpenClipboard(m_hwnd)) return;
+    EmptyClipboard();
+    const size_t bytes = (text.size() + 1) * sizeof(wchar_t);
+    if (HGLOBAL mem = GlobalAlloc(GMEM_MOVEABLE, bytes)) {
+        if (void* p = GlobalLock(mem)) {
+            memcpy(p, text.c_str(), bytes);
+            GlobalUnlock(mem);
+            if (!SetClipboardData(CF_UNICODETEXT, mem)) GlobalFree(mem);
+        } else {
+            GlobalFree(mem);
+        }
+    }
+    CloseClipboard();
+}
+
+// ===========================================================================
+// Search (always in the active tab; switching tabs stops a running search)
+// ===========================================================================
+void MainWindow::ShowSearch(bool show) {
+    if (show && !View().HasDocument()) return;
+    if (show) {
+        if (!m_searchVisible) {
+            m_searchVisible = true;
+            Layout();
+        }
+        SetFocus(m_searchEdit);
+        SendMessageW(m_searchEdit, EM_SETSEL, 0, -1);
+        return;
+    }
+    if (!m_searchVisible) return;
+    m_searchVisible = false;
+    KillTimer(m_hwnd, kSearchTimer);
+    CancelSearch();
+    Active().search.Reset();
+    Active().search.query.clear();
+    Layout();
+    InvalidateRect(View().Hwnd(), nullptr, FALSE);  // remove highlights
+    SetFocus(View().Hwnd());
+}
+
+void MainWindow::CancelSearch() {
+    m_worker.CancelSearch();
+    Active().search.running = false;
+}
+
+void MainWindow::StartSearch() {
+    KillTimer(m_hwnd, kSearchTimer);
+    Tab& tab = Active();
+    const std::wstring query = GetText(m_searchEdit);
+    m_worker.CancelSearch();
+    tab.search.Reset();
+    tab.search.query = query;
+    tab.search.matchCase = m_settings.matchCase;
+    tab.search.id = m_nextSearchId++;
+    if (!query.empty() && tab.docId) {
+        tab.search.running = true;
+        tab.search.pageCount = tab.view->PageCount();
+        m_worker.StartSearch(tab.docId, tab.search.id, query, tab.search.matchCase,
+                             tab.view->CurrentPage());
+    }
+    UpdateSearchStatus();
+    InvalidateRect(tab.view->Hwnd(), nullptr, FALSE);
+}
+
+void MainWindow::FindNext(bool forward) {
+    if (!m_searchVisible) {
+        ShowSearch(true);
+        return;
+    }
+    SearchState& search = Active().search;
+    // Enter after editing the query starts a new search.
+    if (GetText(m_searchEdit) != search.query || search.matchCase != m_settings.matchCase) {
+        StartSearch();
+        return;
+    }
+    if (search.matches.empty()) return;
+    if (forward)
+        search.Next();
+    else
+        search.Prev();
+    if (const SearchHit* hit = search.Current()) View().ScrollToHit(*hit);
+    UpdateSearchStatus();
+    InvalidateRect(View().Hwnd(), nullptr, FALSE);
+}
+
+void MainWindow::OnSearchResult(SearchPageResult* result) {
+    std::unique_ptr<SearchPageResult> res(result);
+    Tab& tab = Active();
+    if (res->searchId != tab.search.id || res->docId != tab.docId) return;  // stale
+    tab.search.pagesDone = res->pagesDone;
+    if (res->finished) tab.search.running = false;
+    const bool hadHits = !res->hits.empty();
+    if (tab.search.AddHits(std::move(res->hits))) {
+        if (const SearchHit* hit = tab.search.Current()) tab.view->ScrollToHit(*hit);
+    }
+    if (hadHits) InvalidateRect(tab.view->Hwnd(), nullptr, FALSE);
+    UpdateSearchStatus();
+}
+
+void MainWindow::UpdateSearchStatus() {
+    const SearchState& search = Active().search;
+    m_searchBar.SetText(ID_SEARCH_STATUS, search.StatusText());
+    const bool any = !search.matches.empty();
+    m_searchBar.SetEnabled(ID_FIND_NEXT, any);
+    m_searchBar.SetEnabled(ID_FIND_PREV, any);
+}
+
+// ===========================================================================
+// Misc
+// ===========================================================================
+void MainWindow::ToggleFullscreen() {
+    LONG_PTR style = GetWindowLongPtrW(m_hwnd, GWL_STYLE);
+    if (!m_fullscreen) {
+        m_restorePlacement.length = sizeof(m_restorePlacement);
+        GetWindowPlacement(m_hwnd, &m_restorePlacement);
+        MONITORINFO mi{sizeof(mi)};
+        GetMonitorInfoW(MonitorFromWindow(m_hwnd, MONITOR_DEFAULTTONEAREST), &mi);
+        m_fullscreen = true;
+        SetWindowLongPtrW(m_hwnd, GWL_STYLE, style & ~WS_OVERLAPPEDWINDOW);
+        SetWindowPos(m_hwnd, HWND_TOP, mi.rcMonitor.left, mi.rcMonitor.top,
+                     mi.rcMonitor.right - mi.rcMonitor.left, mi.rcMonitor.bottom - mi.rcMonitor.top,
+                     SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+    } else {
+        m_fullscreen = false;
+        SetWindowLongPtrW(m_hwnd, GWL_STYLE, style | WS_OVERLAPPEDWINDOW);
+        SetWindowPlacement(m_hwnd, &m_restorePlacement);
+        SetWindowPos(m_hwnd, nullptr, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+    }
+    Layout();
+    SetFocus(View().Hwnd());
+}
+
+void MainWindow::SetThemeMode(int mode) {
+    if (mode == m_settings.themeMode) return;
+    m_settings.themeMode = mode;
+    OnThemeChanged();
+}
+
+void MainWindow::OnThemeChanged() {
+    ReloadTheme((ThemeMode)m_settings.themeMode);
+    ApplyWindowTheme(m_hwnd);
+    m_tabBar.OnThemeChanged();
+    m_sidebar.OnThemeChanged();
+    m_toolbar.OnThemeChanged();
+    m_searchBar.OnThemeChanged();
+    for (Toolbar& bar : m_paneBar) bar.OnThemeChanged();
+    m_formatBar.OnThemeChanged();
+    for (auto& t : m_tabs) t->view->OnThemeChanged();
+    // Nudge the frame so DWM repaints the title bar colour.
+    SetWindowPos(m_hwnd, nullptr, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    RedrawWindow(m_hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_FRAME);
+}
+
+void MainWindow::SaveSettings() {
+    WINDOWPLACEMENT wp{sizeof(wp)};
+    if (m_fullscreen) {
+        wp = m_restorePlacement;
+    } else {
+        GetWindowPlacement(m_hwnd, &wp);
+    }
+    if (wp.showCmd == SW_SHOWMINIMIZED || wp.showCmd == SW_MINIMIZE) {
+        wp.showCmd = (wp.flags & WPF_RESTORETOMAXIMIZED) ? SW_SHOWMAXIMIZED : SW_SHOWNORMAL;
+    }
+    m_settings.placement = wp;
+    m_settings.hasPlacement = true;
+    PdfView& view = View();
+    m_settings.zoomMode = (int)view.GetZoomMode();
+    m_settings.zoom = view.Zoom();
+    m_settings.viewMode = (int)view.GetViewMode();
+    m_settings.coverPage = view.CoverPage();
+    m_settings.pageColors = view.GetPageColors();
+    m_settings.sidebarMode = (int)m_sidebar.Mode();
+
+    // Remember every open tab and where each was being read.
+    m_settings.session.clear();
+    m_settings.activeTab = 0;
+    for (size_t i = 0; i < m_tabs.size(); ++i) {
+        const Tab& t = *m_tabs[i];
+        if (!t.docId || t.side) continue;  // a right side is saved after its tab
+        if ((int)i == m_active || (t.partner && t.partner == &Active()))
+            m_settings.activeTab = (int)m_settings.session.size();
+        m_settings.session.push_back({t.path, t.view->CurrentPage(), false});
+        if (t.partner && t.partner->docId)
+            m_settings.session.push_back({t.partner->path, t.partner->view->CurrentPage(), true});
+    }
+    m_settings.Save();
+}
+
+// ===========================================================================
+// Sidebar (bookmarks / thumbnails)
+// ===========================================================================
+void MainWindow::SetSidebarMode(SidebarMode mode) {
+    m_sidebar.SetMode(mode);
+    SyncSidebar();
+    Layout();
+}
+
+void MainWindow::SyncSidebar() {
+    if (m_tabs.empty()) return;
+    Tab& tab = Active();
+    switch (m_sidebar.Mode()) {
+        case SidebarMode::Bookmarks:
+            m_sidebar.SetOutline(tab.docId ? &tab.outline : nullptr);
+            break;
+        case SidebarMode::Thumbnails:
+            if (tab.docId) {
+                m_sidebar.Thumbs().SetDocument(tab.docId, tab.view->PageSizes(),
+                                               tab.view->Rotation(), tab.view->GetPageColors());
+                m_sidebar.Thumbs().SetCurrentPage(tab.view->CurrentPage());
+            } else {
+                m_sidebar.Thumbs().Clear();
+            }
+            break;
+        case SidebarMode::None:
+            break;
+    }
+}
+
+void MainWindow::OnSidebar(WPARAM event, LPARAM value) {
+    Tab& tab = Active();
+    if (!tab.docId) return;
+    if (event == kSidebarPageClicked) {
+        tab.view->PushHistory();
+        tab.view->GoToPage((int)value);
+    } else if (event == kSidebarPagesMoved) {
+        MovePages((int)value);
+    } else if (event == kSidebarPagesMenu) {
+        ShowPagesMenu({GET_X_LPARAM(value), GET_Y_LPARAM(value)});
+    } else if (event == kSidebarDeletePages) {
+        DeletePages();
+    } else if (event == kSidebarPagesDropOut) {
+        DropPages({GET_X_LPARAM(value), GET_Y_LPARAM(value)});
+    } else if (event == kSidebarPagesCommand) {
+        OnCommand((int)value, 0, nullptr);
+    } else if (event == kSidebarOutlineClicked && value >= 0 &&
+               (size_t)value < tab.outline.size()) {
+        const LinkTarget& target = tab.outline[(size_t)value].target;
+        if (target.page >= 0)
+            tab.view->GoToTarget(target);
+        else if (!target.uri.empty())
+            OpenExternalLink(m_hwnd, target.uri);
+    }
+}
+
+RECT MainWindow::SplitterRect() const {
+    RECT r{};
+    if (m_sidebar.Mode() == SidebarMode::None || m_fullscreen) return r;
+    RECT sb;
+    GetWindowRect(m_sidebar.Hwnd(), &sb);
+    MapWindowPoints(nullptr, m_hwnd, (POINT*)&sb, 2);
+    const int dpi = GetWindowDpi(m_hwnd);
+    return {sb.right, sb.top, sb.right + Dpi(4, dpi), sb.bottom};
+}
+
+// ===========================================================================
+// Page colours (all tabs)
+// ===========================================================================
+void MainWindow::SetPageColors(int mode) {
+    m_settings.pageColors = mode;
+    for (auto& t : m_tabs) t->view->SetPageColors(mode);
+    SyncSidebar();
+}
+
+// ===========================================================================
+// Printing
+// ===========================================================================
+void MainWindow::Print() {
+    Tab& tab = Active();
+    if (!tab.docId || !Permitted(kPermPrint, L"printing")) return;
+    if (m_printing) {
+        MessageBoxW(m_hwnd, L"A document is already being printed.", APP_NAME, MB_ICONINFORMATION);
+        return;
+    }
+    // Feather PDF's own Print window, with a preview of every sheet.
+    m_printSettings.pages = NewPageChoice(m_printSettings.pages);
+    HDC dc = nullptr;
+    std::vector<PrintSheet> sheets;
+    if (!ShowPrintDialog(m_inst, m_hwnd, &m_worker, tab.docId, tab.view->PageSizes(), m_printSettings, dc, sheets))
+        return;
+    if (sheets.empty() || IndexOf(&tab) < 0 || !tab.docId) {
+        DeleteDC(dc);
+        return;
+    }
+
+    PrintJob job;
+    job.docId = tab.docId;
+    job.dc = dc;  // owned by the worker from here on
+    job.docName = FileNameFromPath(tab.path);
+    job.sheets = std::move(sheets);
+    m_printing = true;
+    m_printCancelled = false;
+    m_printDone = 0;
+    m_printTotal = (int)job.sheets.size();
+    m_worker.StartPrint(std::move(job));
+    UpdateTitle();
+}
+
+void MainWindow::OnPrintProgress(int done, int total) {
+    if (total < 0) {  // failed or cancelled
+        const bool wasCancelled = m_printCancelled;
+        m_printing = false;
+        UpdateTitle();
+        if (!wasCancelled)
+            MessageBoxW(m_hwnd, L"The document could not be printed.", APP_NAME, MB_ICONWARNING);
+        return;
+    }
+    m_printDone = done;
+    m_printTotal = total;
+    if (done >= total) m_printing = false;
+    UpdateTitle();
+}
+
+// ===========================================================================
+// Document properties
+// ===========================================================================
+namespace {
+// "D:20240131154500+01'00'" -> "2024-01-31 15:45" (as written in the file)
+std::wstring FormatInfoDate(const std::wstring& d) {
+    std::wstring s = d.rfind(L"D:", 0) == 0 ? d.substr(2) : d;
+    if (s.size() < 8) return d;
+    for (size_t i = 0; i < 8; ++i)
+        if (!iswdigit(s[i])) return d;
+    std::wstring out = s.substr(0, 4) + L"-" + s.substr(4, 2) + L"-" + s.substr(6, 2);
+    if (s.size() >= 12 && iswdigit(s[8]) && iswdigit(s[11]))
+        out += L" " + s.substr(8, 2) + L":" + s.substr(10, 2);
+    return out;
+}
+
+std::wstring FormatBytes(ULONGLONG bytes) {
+    wchar_t buf[64];
+    if (bytes >= (1ull << 20))
+        swprintf_s(buf, L"%.1f MB (%llu bytes)", bytes / 1048576.0, bytes);
+    else if (bytes >= 1024)
+        swprintf_s(buf, L"%.1f KB (%llu bytes)", bytes / 1024.0, bytes);
+    else
+        swprintf_s(buf, L"%llu bytes", bytes);
+    return buf;
+}
+}  // namespace
+
+void MainWindow::ShowProperties() {
+    const Tab& tab = Active();
+    if (!tab.docId) return;
+    const DocInfo& info = tab.info;
+    std::wstring text;
+    auto line = [&](const wchar_t* label, const std::wstring& value) {
+        if (!value.empty()) text += std::wstring(label) + L"\t" + value + L"\n";
+    };
+    line(L"File:", FileNameFromPath(tab.path));
+    line(L"Location:", DirectoryFromPath(tab.path));
+    WIN32_FILE_ATTRIBUTE_DATA fad{};
+    if (GetFileAttributesExW(tab.path.c_str(), GetFileExInfoStandard, &fad))
+        line(L"File size:",
+             FormatBytes(((ULONGLONG)fad.nFileSizeHigh << 32) | fad.nFileSizeLow));
+    line(L"Created:", FormatInfoDate(info.created));
+    line(L"Modified:", FormatInfoDate(info.modified));
+    line(L"Creator:", info.creator);
+    line(L"Producer:", info.producer);
+    if (info.version)
+        line(L"Version:", L"PDF " + std::to_wstring(info.version / 10) + L"." + std::to_wstring(info.version % 10));
+    line(L"Pages:", std::to_wstring(tab.view->PageCount()));
+    const int page = tab.view->CurrentPage();
+    if (page >= 0 && page < tab.view->PageCount()) {
+        const SizeF& sz = tab.view->PageSizes()[(size_t)page];
+        wchar_t buf[128];
+        swprintf_s(buf, L"%.0f \x00D7 %.0f mm  (%.2f \x00D7 %.2f in)", sz.w / 72 * 25.4,
+                   sz.h / 72 * 25.4, sz.w / 72, sz.h / 72);
+        line(L"Page size:", buf);
+    }
+    line(L"Encrypted:", info.encrypted ? L"Yes" : L"No");
+
+    PropertiesOptions o;
+    o.info = text;
+    o.title = info.title;
+    o.author = info.author;
+    o.subject = info.subject;
+    o.keywords = info.keywords;
+    o.canEdit = !tab.pendingDocId && !m_printing && (info.permissions & kPermModify) != 0;
+    o.note = o.canEdit ? L"Change the title, author, subject or keywords above; they are written into the "
+                         L"document when you save it. Undo (Ctrl+Z) takes the change back."
+                       : L"The author of this document does not allow changes to it.";
+    if (!ShowPropertiesDialog(m_inst, m_hwnd, o) || !o.canEdit) return;
+    if (o.title == info.title && o.author == info.author && o.subject == info.subject && o.keywords == info.keywords)
+        return;
+    EditOp op;
+    op.kind = EditOp::SetInfo;
+    op.info = {o.title, o.author, o.subject, o.keywords};
+    SendEdit(std::move(op));
+}
+
+// ===========================================================================
+// Page image -> clipboard (24-bit DIB, understood by every application)
+// ===========================================================================
+void MainWindow::CopyImageToClipboard(TileResult* image) {
+    std::unique_ptr<TileResult> res(image);
+    const PixelBuffer& px = res->pixels;
+    if (!px.bits) {
+        MessageBoxW(m_hwnd, L"The image is too large to copy.", APP_NAME, MB_ICONWARNING);
+        return;
+    }
+    const size_t stride = ((size_t)px.width * 3 + 3) & ~(size_t)3;
+    const size_t bytes = sizeof(BITMAPINFOHEADER) + stride * (size_t)px.height;
+    HGLOBAL mem = GlobalAlloc(GMEM_MOVEABLE, bytes);
+    if (!mem) return;
+    auto* dst = (uint8_t*)GlobalLock(mem);
+    if (!dst) {
+        GlobalFree(mem);
+        return;
+    }
+    auto* bih = (BITMAPINFOHEADER*)dst;
+    *bih = BITMAPINFOHEADER{};
+    bih->biSize = sizeof(BITMAPINFOHEADER);
+    bih->biWidth = px.width;
+    bih->biHeight = px.height;  // bottom-up
+    bih->biPlanes = 1;
+    bih->biBitCount = 24;
+    bih->biCompression = BI_RGB;
+    bih->biSizeImage = (DWORD)(stride * px.height);
+    uint8_t* bits = dst + sizeof(BITMAPINFOHEADER);
+    for (int y = 0; y < px.height; ++y) {
+        const uint8_t* src = px.bits + (size_t)(px.height - 1 - y) * px.width * 4;
+        uint8_t* row = bits + (size_t)y * stride;
+        for (int x = 0; x < px.width; ++x) {
+            row[x * 3 + 0] = src[x * 4 + 0];
+            row[x * 3 + 1] = src[x * 4 + 1];
+            row[x * 3 + 2] = src[x * 4 + 2];
+        }
+    }
+    GlobalUnlock(mem);
+    if (OpenClipboard(m_hwnd)) {
+        EmptyClipboard();
+        if (!SetClipboardData(CF_DIB, mem)) GlobalFree(mem);
+        CloseClipboard();
+    } else {
+        GlobalFree(mem);
+    }
+}
+
+// ===========================================================================
+// Editing
+//
+// The UI only describes changes (EditOp) and shows results; DocEditor on the
+// render worker applies them, keeps the undo history and saves safely.
+// Every edit, undo and redo gives the document a new id, so tiles, text
+// and search results that are still queued for the old state are dropped
+// (TabByDocId no longer finds them) instead of flashing wrong content.
+// ===========================================================================
+bool MainWindow::CanEdit() {
+    const Tab& tab = Active();
+    return tab.docId && !tab.pendingDocId && tab.view->HasDocument();
+}
+
+void MainWindow::SendEdit(EditOp&& op, int tabIndex) {
+    if (tabIndex < 0) tabIndex = m_active;
+    if (tabIndex < 0 || tabIndex >= (int)m_tabs.size()) return;
+    Tab& tab = *m_tabs[(size_t)tabIndex];
+    if (!tab.docId || tab.pendingDocId || !tab.view->HasDocument()) return;
+    if (tabIndex == m_active && !EditPermitted(op)) return;
+    if (tabIndex == m_active && tab.search.running) CancelSearch();
+    const uint32_t oldId = tab.docId;
+    tab.docId = m_nextDocId++;
+    tab.view->BeginEdit(tab.docId);
+    m_worker.Edit(oldId, tab.docId, std::move(op));
+    // Optimistic state until the worker answers.
+    tab.dirty = tab.canUndo = true;
+    tab.canRedo = false;
+    UpdateTabs();
+    UpdateTitle();
+    UpdateUi();
+}
+
+void MainWindow::UndoRedo(bool redo) {
+    if (!CanEdit()) return;
+    Tab& tab = Active();
+    if (redo ? !tab.canRedo : !tab.canUndo) return;
+    if (tab.search.running) CancelSearch();
+    const uint32_t oldId = tab.docId;
+    tab.docId = m_nextDocId++;
+    tab.view->BeginEdit(tab.docId);
+    if (redo)
+        m_worker.Redo(oldId, tab.docId);
+    else
+        m_worker.Undo(oldId, tab.docId);
+    tab.canUndo = tab.canRedo = false;  // until the worker answers
+    UpdateUi();
+}
+
+void MainWindow::SaveDocument(int index, bool saveAs, uint32_t flags) {
+    if (index < 0 || index >= (int)m_tabs.size()) return;
+    Tab& tab = *m_tabs[(size_t)index];
+    if (!tab.docId || tab.pendingDocId) return;
+    std::wstring target = tab.path;
+    if (saveAs) {
+        std::vector<wchar_t> buf(32768, L'\0');
+        const std::wstring name = FileNameFromPath(tab.path);
+        wcsncpy_s(buf.data(), buf.size(), name.c_str(), _TRUNCATE);
+        const std::wstring dir = DirectoryFromPath(tab.path);
+        OPENFILENAMEW ofn{sizeof(ofn)};
+        ofn.hwndOwner = m_hwnd;
+        ofn.lpstrFilter = L"PDF documents (*.pdf)\0*.pdf\0";
+        ofn.lpstrFile = buf.data();
+        ofn.nMaxFile = (DWORD)buf.size();
+        ofn.lpstrInitialDir = dir.empty() ? nullptr : dir.c_str();
+        ofn.lpstrDefExt = L"pdf";
+        ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_EXPLORER | OFN_HIDEREADONLY;
+        if (!GetSaveFileNameW(&ofn)) return;
+        target = FullPath(buf.data());
+        for (size_t i = 0; i < m_tabs.size(); ++i) {
+            if ((int)i != index && m_tabs[i]->docId && SamePath(m_tabs[i]->path, target)) {
+                MessageBoxW(m_hwnd,
+                            L"That file is open in another tab. Close it first, or choose "
+                            L"another name.",
+                            APP_NAME, MB_ICONWARNING);
+                return;
+            }
+        }
+    }
+    tab.saveDocId = tab.docId;
+    m_worker.Save(tab.docId, target, flags);
+}
+
+bool MainWindow::ConfirmCloseTab(int index) {
+    Tab& tab = *m_tabs[(size_t)index];
+    if (!tab.docId || !tab.dirty) return true;
+    ActivateTab(index);
+    const std::wstring msg =
+        L"Do you want to save the changes to \x201C" + FileNameFromPath(tab.path) + L"\x201D?";
+    switch (MessageBoxW(m_hwnd, msg.c_str(), APP_NAME, MB_YESNOCANCEL | MB_ICONWARNING)) {
+        case IDYES:
+            SaveDocument(index, false, kAfterSaveCloseTab);  // closes when saved
+            return false;
+        case IDNO: return true;
+        default: return false;
+    }
+}
+
+bool MainWindow::ConfirmQuit() {
+    for (size_t i = 0; i < m_tabs.size(); ++i) {
+        Tab& tab = *m_tabs[i];
+        if (!tab.docId || !tab.dirty || tab.discardOnQuit) continue;
+        ActivateTab((int)i);
+        const std::wstring msg = L"Do you want to save the changes to \x201C" +
+                                 FileNameFromPath(tab.path) + L"\x201D before closing?";
+        const int answer = MessageBoxW(m_hwnd, msg.c_str(), APP_NAME, MB_YESNOCANCEL | MB_ICONWARNING);
+        if (answer == IDYES) {
+            ++m_quitSaves;
+            SaveDocument((int)i, false, kAfterSaveQuit);
+        } else if (answer == IDNO) {
+            tab.discardOnQuit = true;
+        } else {
+            for (auto& t : m_tabs) t->discardOnQuit = false;
+            m_quitAfterSaves = false;  // saves already started still finish
+            return false;
+        }
+    }
+    if (m_quitSaves > 0) {
+        m_quitAfterSaves = true;  // WM_CLOSE is posted again when they finish
+        return false;
+    }
+    return true;
+}
+
+void MainWindow::OnDocEdited(EditResult* result) {
+    std::unique_ptr<EditResult> res(result);
+    int index = -1;
+    for (size_t i = 0; i < m_tabs.size(); ++i) {
+        const Tab& t = *m_tabs[i];
+        if (t.docId == res->docId ||
+            (res->action == EditAction::Save && t.saveDocId == res->docId))
+            index = (int)i;
+    }
+    if (res->action == EditAction::Save && (res->flags & kAfterSaveQuit)) {
+        --m_quitSaves;
+        if (!res->ok) m_quitAfterSaves = false;
+    }
+    if (index < 0) return;  // tab closed, or a newer edit is already on its way
+    Tab& tab = *m_tabs[(size_t)index];
+    const bool current = tab.docId == res->docId;  // no newer edit sent since
+
+    if (current) {
+        // A recovered document stays unsaved (and keeps its own name) until it is saved.
+        const bool recovered = !tab.recoveredFrom.empty() && !(res->action == EditAction::Save && res->ok);
+        tab.dirty = res->dirty || recovered;
+        tab.canUndo = res->canUndo;
+        tab.canRedo = res->canRedo;
+        tab.path = recovered ? tab.recoveredFrom : res->path;
+        if (!recovered) tab.recoveredFrom.clear();
+        if (!tab.dirty) ForgetRecovery(tab, false);
+        tab.info = std::move(res->info);
+        tab.view->SetCopyAllowed((tab.info.permissions & kPermCopy) != 0);
+        if (res->action != EditAction::Save) {
+            tab.outline = std::move(res->outline);
+            tab.view->EndEdit(std::move(res->pageSizes), res->focusPage);
+            if (index == m_active) {
+                if (m_sidebar.Mode() == SidebarMode::Thumbnails) {
+                    m_sidebar.Thumbs().Reload(tab.docId, tab.view->PageSizes());
+                    m_sidebar.Thumbs().SetSelection(res->select);
+                    m_sidebar.Thumbs().SetCurrentPage(tab.view->CurrentPage());
+                } else {
+                    SyncSidebar();
+                }
+                // Results found before the edit point at old positions.
+                if (m_searchVisible && !GetText(m_searchEdit).empty()) {
+                    StartSearch();
+                } else {
+                    tab.search.Reset();
+                    UpdateSearchStatus();
+                }
+            } else {
+                tab.search.Reset();
+            }
+        }
+    }
+    UpdateTabs();
+    if (index == m_active) {
+        UpdateTitle();
+        UpdateUi();
+    }
+
+    if (!res->ok) {
+        const std::wstring what = res->action == EditAction::Save
+                                      ? L"\x201C" + FileNameFromPath(tab.path) + L"\x201D could not be saved.\n\n"
+                                      : std::wstring();
+        MessageBoxW(m_hwnd, (what + res->error).c_str(), APP_NAME, MB_ICONWARNING);
+        return;
+    }
+    if (res->action == EditAction::Edit && current && index == m_active) {
+        if (!res->note.empty()) MessageBoxW(m_hwnd, res->note.c_str(), APP_NAME, MB_ICONINFORMATION);
+        if (!res->fontNote.empty() && !m_toldAboutFontPick) {
+            m_toldAboutFontPick = true;
+            MessageBoxW(m_hwnd, res->fontNote.c_str(), APP_NAME, MB_ICONINFORMATION);
+        }
+        if (res->fontChanged && !m_toldAboutFonts) {
+            m_toldAboutFonts = true;
+            MessageBoxW(m_hwnd,
+                        L"The font this text was written in does not contain all the letters "
+                        L"you typed (PDF files often hold only the letters they use), so a "
+                        L"similar font was used for the changed text.\n\nUndo (Ctrl+Z) takes the "
+                        L"change back.",
+                        APP_NAME, MB_ICONINFORMATION);
+        }
+    }
+    if (res->action == EditAction::Save) {
+        if (res->flags & kAfterSaveCloseTab) CloseTab(index, true);
+        if ((res->flags & kAfterSaveQuit) && m_quitAfterSaves && m_quitSaves == 0)
+            PostMessageW(m_hwnd, WM_CLOSE, 0, 0);
+    }
+}
+
+std::vector<int> MainWindow::SelectedPages() {
+    Tab& tab = Active();
+    if (m_sidebar.Mode() == SidebarMode::Thumbnails) {
+        std::vector<int> sel = m_sidebar.Thumbs().Selection();
+        if (!sel.empty() && sel.back() < tab.view->PageCount()) return sel;
+    }
+    return {tab.view->CurrentPage()};
+}
+
+void MainWindow::DeletePages() {
+    if (!CanEdit()) return;
+    EditOp op;
+    op.kind = EditOp::DeletePages;
+    op.pages = SelectedPages();
+    if ((int)op.pages.size() >= View().PageCount()) {
+        MessageBoxW(m_hwnd, L"A document must keep at least one page.", APP_NAME, MB_ICONINFORMATION);
+        return;
+    }
+    SendEdit(std::move(op));
+}
+
+void MainWindow::RotatePages(int turns) {
+    if (!CanEdit()) return;
+    EditOp op;
+    op.kind = EditOp::RotatePages;
+    op.pages = SelectedPages();
+    op.turns = turns;
+    SendEdit(std::move(op));
+}
+
+void MainWindow::MovePages(int gap) {
+    if (!CanEdit()) return;
+    EditOp op;
+    op.kind = EditOp::MovePages;
+    op.pages = m_sidebar.Thumbs().Selection();
+    if (op.pages.empty()) return;
+    // FPDF_MovePages wants the index of the first moved page afterwards.
+    int before = 0;
+    for (int p : op.pages)
+        if (p < gap) ++before;
+    op.index = gap - before;
+    SendEdit(std::move(op));
+}
+
+void MainWindow::InsertBlankPage() {
+    if (!CanEdit()) return;
+    const int after = SelectedPages().back();
+    EditOp op;
+    op.kind = EditOp::InsertBlank;
+    op.index = after + 1;
+    op.size = View().PageSizes()[(size_t)after];  // same size as its neighbour
+    SendEdit(std::move(op));
+}
+
+std::vector<std::wstring> MainWindow::PickPdfFiles(bool multiple, const wchar_t* title) {
+    std::vector<wchar_t> buf(65536, L'\0');
+    const std::wstring dir = DirectoryFromPath(Active().path);
+    OPENFILENAMEW ofn{sizeof(ofn)};
+    ofn.hwndOwner = m_hwnd;
+    ofn.lpstrTitle = title;
+    ofn.lpstrFilter = L"PDF documents (*.pdf)\0*.pdf\0All files (*.*)\0*.*\0";
+    ofn.lpstrFile = buf.data();
+    ofn.nMaxFile = (DWORD)buf.size();
+    ofn.lpstrInitialDir = dir.empty() ? nullptr : dir.c_str();
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_EXPLORER | OFN_HIDEREADONLY |
+                (multiple ? OFN_ALLOWMULTISELECT : 0);
+    if (!GetOpenFileNameW(&ofn)) return {};
+    // Single file: "C:\dir\a.pdf\0". Several: "C:\dir\0a.pdf\0b.pdf\0\0".
+    std::vector<std::wstring> files;
+    const wchar_t* p = buf.data();
+    std::wstring first = p;
+    p += first.size() + 1;
+    if (!*p) return {first};
+    for (; *p; p += wcslen(p) + 1) files.push_back(first + L"\\" + p);
+    return files;
+}
+
+void MainWindow::InsertPagesFromFile() {
+    if (!CanEdit()) return;
+    const int after = SelectedPages().back();
+    const auto files = PickPdfFiles(false, L"Insert pages from");
+    if (files.empty()) return;
+    EditOp op;
+    op.kind = EditOp::InsertFiles;
+    op.index = after + 1;
+    op.sources.push_back({files[0]});
+    SendEdit(std::move(op));
+}
+
+void MainWindow::MergeFiles() {
+    if (!CanEdit()) return;
+    const auto files = PickPdfFiles(true, L"Add PDFs to the end of this document");
+    if (files.empty()) return;
+    EditOp op;
+    op.kind = EditOp::InsertFiles;
+    op.index = View().PageCount();
+    for (const auto& f : files) op.sources.push_back({f});
+    SendEdit(std::move(op));
+}
+
+void MainWindow::MergeTabs() {
+    if (!CanEdit()) return;
+    EditOp op;
+    op.kind = EditOp::InsertFiles;
+    op.index = View().PageCount();
+    for (size_t i = 0; i < m_tabs.size(); ++i) {
+        const Tab& t = *m_tabs[i];
+        if ((int)i != m_active && t.docId && !t.pendingDocId) {
+            ImportSource src;
+            src.docId = t.docId;  // its current state, unsaved changes included
+            op.sources.push_back(src);
+        }
+    }
+    if (op.sources.empty()) {
+        MessageBoxW(m_hwnd, L"Open the other PDFs in tabs first. Their pages are then added to "
+                            L"the end of this document, in tab order.",
+                    APP_NAME, MB_ICONINFORMATION);
+        return;
+    }
+    SendEdit(std::move(op));
+}
+
+namespace {
+struct ExtractPrompt {
+    std::wstring range;
+    int pageCount = 0;
+    bool separate = false;
+    std::vector<int> pages;
+};
+
+INT_PTR CALLBACK ExtractDlgProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
+    switch (msg) {
+        case WM_INITDIALOG: {
+            SetWindowLongPtrW(dlg, DWLP_USER, lp);
+            auto* p = (ExtractPrompt*)lp;
+            const std::wstring text = L"Pages to save as a new PDF (for example 1-3, 5, 8-). "
+                                      L"The document has " + std::to_wstring(p->pageCount) +
+                                      L" pages.";
+            SetDlgItemTextW(dlg, IDC_EXTRACT_TEXT, text.c_str());
+            SetDlgItemTextW(dlg, IDC_EXTRACT_RANGE, p->range.c_str());
+            ApplyWindowTheme(dlg);
+            return TRUE;
+        }
+        case WM_COMMAND:
+            if (LOWORD(wp) == IDOK) {
+                auto* p = (ExtractPrompt*)GetWindowLongPtrW(dlg, DWLP_USER);
+                p->range = GetText(GetDlgItem(dlg, IDC_EXTRACT_RANGE));
+                if (!ParsePageRanges(p->range, p->pageCount, p->pages)) {
+                    MessageBoxW(dlg, L"Enter page numbers or ranges, such as 1-3, 5, 8-.", APP_NAME,
+                                MB_ICONWARNING);
+                    SetFocus(GetDlgItem(dlg, IDC_EXTRACT_RANGE));
+                    return TRUE;
+                }
+                p->separate = IsDlgButtonChecked(dlg, IDC_EXTRACT_SEPARATE) == BST_CHECKED;
+                EndDialog(dlg, IDOK);
+                return TRUE;
+            }
+            if (LOWORD(wp) == IDCANCEL) {
+                EndDialog(dlg, IDCANCEL);
+                return TRUE;
+            }
+            break;
+    }
+    return FALSE;
+}
+}  // namespace
+
+void MainWindow::ExtractPages() {
+    if (!CanEdit()) return;
+    Tab& tab = Active();
+    ExtractPrompt prompt;
+    prompt.pageCount = tab.view->PageCount();
+    prompt.range = FormatPageRanges(SelectedPages());
+    if (DialogBoxParamW(m_inst, MAKEINTRESOURCEW(IDD_EXTRACT), m_hwnd, ExtractDlgProc,
+                        (LPARAM)&prompt) != IDOK)
+        return;
+
+    std::wstring stem = FileNameFromPath(tab.path);
+    if (stem.size() > 4 && _wcsicmp(stem.c_str() + stem.size() - 4, L".pdf") == 0)
+        stem.resize(stem.size() - 4);
+    std::wstring suggested = prompt.separate ? stem + L".pdf"
+                                             : stem + L" (pages " + prompt.range + L").pdf";
+    for (wchar_t& c : suggested)
+        if (wcschr(L"\\/:*?\"<>|", c)) c = L'-';
+    std::vector<wchar_t> buf(32768, L'\0');
+    wcsncpy_s(buf.data(), buf.size(), suggested.c_str(), _TRUNCATE);
+    const std::wstring dir = DirectoryFromPath(tab.path);
+    OPENFILENAMEW ofn{sizeof(ofn)};
+    ofn.hwndOwner = m_hwnd;
+    ofn.lpstrTitle = prompt.separate ? L"Save pages as (each page gets its number added)"
+                                     : L"Save pages as";
+    ofn.lpstrFilter = L"PDF documents (*.pdf)\0*.pdf\0";
+    ofn.lpstrFile = buf.data();
+    ofn.nMaxFile = (DWORD)buf.size();
+    ofn.lpstrInitialDir = dir.empty() ? nullptr : dir.c_str();
+    ofn.lpstrDefExt = L"pdf";
+    ofn.Flags = OFN_PATHMUSTEXIST | OFN_EXPLORER | OFN_HIDEREADONLY |
+                (prompt.separate ? 0 : OFN_OVERWRITEPROMPT);
+    if (!GetSaveFileNameW(&ofn)) return;
+    const std::wstring target = FullPath(buf.data());
+    for (const auto& t : m_tabs) {
+        if (t->docId && SamePath(t->path, target)) {
+            MessageBoxW(m_hwnd, L"That file is open in a tab. Choose another name.", APP_NAME,
+                        MB_ICONWARNING);
+            return;
+        }
+    }
+    m_worker.Extract(tab.docId, std::move(prompt.pages), target, prompt.separate);
+}
+
+void MainWindow::OnExtracted(ExtractResult* result) {
+    if (result->clipId) {
+        OnPagesCopied(result);
+        return;
+    }
+    std::unique_ptr<ExtractResult> res(result);
+    if (!res->ok) {
+        MessageBoxW(m_hwnd, res->error.c_str(), APP_NAME, MB_ICONWARNING);
+        return;
+    }
+    if (res->files.size() == 1) {
+        const std::wstring msg = L"Saved \x201C" + FileNameFromPath(res->files[0]) +
+                                 L"\x201D.\n\nOpen it in a new tab?";
+        if (MessageBoxW(m_hwnd, msg.c_str(), APP_NAME, MB_YESNO | MB_ICONINFORMATION) == IDYES)
+            OpenFile(res->files[0], 0);
+    } else if (!res->files.empty()) {
+        const std::wstring msg = L"Saved " + std::to_wstring(res->files.size()) + L" files in\n" +
+                                 DirectoryFromPath(res->files[0]) + L".";
+        MessageBoxW(m_hwnd, msg.c_str(), APP_NAME, MB_ICONINFORMATION);
+    }
+}
+
+void MainWindow::AddMarkup(int type, const std::wstring& comment) {
+    if (!CanEdit()) return;
+    EditOp op;
+    op.kind = EditOp::Markup;
+    if (!View().GetSelection(op.from, op.to)) return;
+    op.markup = type;
+    op.text = comment;
+    if (!comment.empty()) op.author = CurrentUserName();
+    op.color = type == kMarkupHighlight   ? kHighlightColors[m_settings.highlightColor]
+               : type == kMarkupUnderline ? kUnderlineColor
+                                          : kStrikeOutColor;
+    SendEdit(std::move(op));
+}
+
+HMENU MainWindow::CreatePagesMenu() {
+    const bool several = SelectedPages().size() > 1;
+    HMENU m = CreatePopupMenu();
+    AppendMenuW(m, MF_STRING, ID_DELETE_PAGES, several ? L"&Delete pages\tDel" : L"&Delete page\tDel");
+    AppendMenuW(m, MF_STRING, ID_ROTATE_PAGES_CW, L"Rotate &clockwise");
+    AppendMenuW(m, MF_STRING, ID_ROTATE_PAGES_CCW, L"Rotate c&ounterclockwise");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    const bool canPaste = IsClipboardFormatAvailable(RegisterClipboardFormatW(L"FeatherPDF.Pages")) != 0;
+    const UINT pasteFlag = MF_STRING | (canPaste ? 0 : MF_GRAYED);
+    AppendMenuW(m, MF_STRING, ID_COPY_PAGES, several ? L"Cop&y pages\tCtrl+C" : L"Cop&y page\tCtrl+C");
+    AppendMenuW(m, MF_STRING, ID_CUT_PAGES, several ? L"Cu&t pages\tCtrl+X" : L"Cu&t page\tCtrl+X");
+    AppendMenuW(m, pasteFlag, ID_PASTE_PAGES_AFTER, L"&Paste pages after\tCtrl+V");
+    AppendMenuW(m, pasteFlag, ID_PASTE_PAGES_BEFORE, L"Paste pages &before");
+    AppendMenuW(m, pasteFlag, ID_PASTE_PAGES_START, L"Paste pages at the &start");
+    AppendMenuW(m, pasteFlag, ID_PASTE_PAGES_END, L"Paste pages at the &end");
+    AppendMenuW(m, pasteFlag | (m_tabs.size() > 1 ? 0 : MF_GRAYED), ID_PASTE_PAGES_TABS, L"Paste pages into &several tabs\x2026");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_STRING, ID_INSERT_BLANK, L"Insert &blank page after");
+    AppendMenuW(m, MF_STRING, ID_INSERT_FILE, L"&Insert pages from file\x2026");
+    AppendMenuW(m, MF_STRING, ID_MERGE_FILES, L"&Merge PDFs into this document\x2026");
+    AppendMenuW(m, MF_STRING | (m_tabs.size() > 1 ? 0 : MF_GRAYED), ID_MERGE_TABS,
+                L"Merge open &tabs into this document");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_STRING, ID_CROP_PAGES, L"Cr&op pages\x2026");
+    AppendMenuW(m, MF_STRING, ID_TOOL_CROP, L"Crop by &drawing a box");
+    AppendMenuW(m, MF_STRING, ID_NUP, L"Pages per s&heet and booklets\x2026");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_STRING, ID_EXTRACT_PAGES, L"E&xtract or split pages\x2026");
+    return m;
+}
+
+void MainWindow::ShowPagesMenu(POINT screen) {
+    if (!CanEdit()) return;
+    HMENU m = CreatePagesMenu();
+    TrackPopupMenu(m, TPM_RIGHTBUTTON, screen.x, screen.y, 0, m_hwnd, nullptr);
+    DestroyMenu(m);
+}
+
+// ===========================================================================
+// Copying, cutting and pasting pages
+//
+// Copied pages are written (by the worker, from the document as it is then,
+// unsaved changes included) to a private PDF, and the clipboard holds its
+// name in a format of our own, so they can be pasted into any tab or any
+// Feather PDF window. Pasting inserts that file's pages (an ordinary
+// "insert pages" edit: one undo step).
+// ===========================================================================
+namespace {
+UINT PagesClipboardFormat() {
+    static const UINT format = RegisterClipboardFormatW(L"FeatherPDF.Pages");
+    return format;
+}
+
+// "file\ncount\nname of the document they came from"
+bool ReadClipboardPages(HWND owner, std::wstring& file, int& count, std::wstring& from) {
+    const UINT format = PagesClipboardFormat();
+    if (!format || !IsClipboardFormatAvailable(format) || !OpenClipboard(owner)) return false;
+    std::wstring data;
+    if (HGLOBAL h = GetClipboardData(format)) {
+        if (const auto* p = (const wchar_t*)GlobalLock(h)) {
+            data.assign(p, wcsnlen(p, GlobalSize(h) / sizeof(wchar_t)));
+            GlobalUnlock(h);
+        }
+    }
+    CloseClipboard();
+    const size_t a = data.find(L'\n'), b = a == std::wstring::npos ? a : data.find(L'\n', a + 1);
+    if (b == std::wstring::npos) return false;
+    file = data.substr(0, a);
+    count = _wtoi(data.substr(a + 1, b - a - 1).c_str());
+    from = data.substr(b + 1);
+    return count > 0 && FileExists(file);
+}
+
+bool WriteClipboardPages(HWND owner, const std::wstring& file, int count, const std::wstring& from) {
+    const std::wstring data = file + L"\n" + std::to_wstring(count) + L"\n" + from;
+    const UINT format = PagesClipboardFormat();
+    HGLOBAL h = GlobalAlloc(GMEM_MOVEABLE, (data.size() + 1) * sizeof(wchar_t));
+    if (!format || !h) return false;
+    memcpy(GlobalLock(h), data.c_str(), (data.size() + 1) * sizeof(wchar_t));
+    GlobalUnlock(h);
+    if (!OpenClipboard(owner)) {
+        GlobalFree(h);
+        return false;
+    }
+    EmptyClipboard();
+    const bool ok = SetClipboardData(format, h) != nullptr;
+    if (!ok) GlobalFree(h);
+    CloseClipboard();
+    return ok;
+}
+
+std::wstring PagesWord(int n) { return n == 1 ? L"1 page" : std::to_wstring(n) + L" pages"; }
+}  // namespace
+
+void MainWindow::CopyPages(bool cut, Tab* dropTab, int dropIndex) {
+    if (!CanEdit()) return;
+    Tab& tab = Active();
+    // Copying pages copies their text and pictures.
+    if (!Permitted(kPermCopy, L"copying its pages")) return;
+    std::vector<int> pages = SelectedPages();
+    if (pages.empty()) return;
+    if (cut) {
+        if (!EditPermitted(EditOp{})) return;
+        if ((int)pages.size() >= tab.view->PageCount()) {
+            MessageBoxW(m_hwnd,
+                        L"A document must keep at least one page, so all of its pages can not be cut. "
+                        L"They were copied instead.",
+                        APP_NAME, MB_ICONINFORMATION);
+            cut = false;
+        }
+    }
+    const uint32_t id = m_nextClipId++;
+    ClipJob job;
+    job.cut = cut;
+    job.tab = &tab;
+    job.docId = tab.docId;
+    job.pages = pages;
+    job.name = FileNameFromPath(tab.path);
+    job.dropTab = dropTab;
+    job.dropIndex = dropIndex;
+    m_clipJobs[id] = job;
+    m_worker.Extract(tab.docId, std::move(pages), MakeTempPdfPath(), false, id);
+}
+
+void MainWindow::OnPagesCopied(ExtractResult* result) {
+    std::unique_ptr<ExtractResult> res(result);
+    auto it = m_clipJobs.find(res->clipId);
+    if (it == m_clipJobs.end()) return;
+    const ClipJob job = it->second;
+    m_clipJobs.erase(it);
+    if (!res->ok || res->files.empty()) {
+        MessageBoxW(m_hwnd, (L"The pages could not be copied.\n\n" + res->error).c_str(), APP_NAME, MB_ICONWARNING);
+        return;
+    }
+    const std::wstring file = res->files.front();
+    const int count = (int)job.pages.size();
+    // Dragged onto another document: pasted there (the clipboard is left alone).
+    if (job.dropTab) {
+        if (IndexOf(job.dropTab) >= 0) PastePagesInto(*job.dropTab, job.dropIndex, file);
+        return;
+    }
+    if (!WriteClipboardPages(m_hwnd, file, count, job.name)) {
+        MessageBoxW(m_hwnd, L"The pages could not be put on the clipboard.", APP_NAME, MB_ICONWARNING);
+        return;
+    }
+    // Cutting removes them once they are safely copied, unless the
+    // document was changed in between (then they are only copied).
+    const int index = IndexOf(job.tab);
+    if (job.cut && index >= 0 && job.tab->docId == job.docId) {
+        EditOp op;
+        op.kind = EditOp::DeletePages;
+        op.pages = job.pages;
+        SendEdit(std::move(op), index);
+    }
+    if (index >= 0)
+        job.tab->view->ShowNote((job.cut ? L"Cut " : L"Copied ") + PagesWord(count) +
+                                L". Paste them with Ctrl+V in the thumbnails of any tab.");
+}
+
+void MainWindow::PastePagesInto(Tab& tab, int index, const std::wstring& file) {
+    const int tabIndex = IndexOf(&tab);
+    if (tabIndex < 0 || !tab.docId || tab.pendingDocId) return;
+    if ((tab.info.permissions & kPermModify) == 0 && (tab.info.permissions & kPermAssemble) == 0) {
+        MessageBoxW(m_hwnd, (L"The author of \x201C" + FileNameFromPath(tab.path) +
+                             L"\x201D does not allow changes to it, so no pages were added to it.").c_str(),
+                    APP_NAME, MB_ICONINFORMATION);
+        return;
+    }
+    EditOp op;
+    op.kind = EditOp::InsertFiles;
+    op.index = std::max(0, std::min(index, tab.view->PageCount()));
+    op.sources.push_back({file});
+    SendEdit(std::move(op), tabIndex);
+}
+
+void MainWindow::PastePages(int where) {
+    if (!CanEdit()) return;
+    std::wstring file, from;
+    int count = 0;
+    if (!ReadClipboardPages(m_hwnd, file, count, from)) {
+        MessageBoxW(m_hwnd,
+                    L"There are no copied pages to paste.\n\nTo copy pages: show the thumbnails "
+                    L"(Ctrl+Shift+B), click the pages (Ctrl+click or Shift+click for several), then press "
+                    L"Ctrl+C, or Ctrl+X to cut them.",
+                    APP_NAME, MB_ICONINFORMATION);
+        return;
+    }
+    Tab& tab = Active();
+    const std::vector<int> sel = SelectedPages();
+    int index = tab.view->PageCount();
+    if (where == ID_PASTE_PAGES_AFTER) index = sel.back() + 1;
+    if (where == ID_PASTE_PAGES_BEFORE) index = sel.front();
+    if (where == ID_PASTE_PAGES_START) index = 0;
+    PastePagesInto(tab, index, file);
+}
+
+void MainWindow::PastePagesIntoTabs() {
+    if (!CanEdit()) return;
+    std::wstring file, from;
+    int count = 0;
+    if (!ReadClipboardPages(m_hwnd, file, count, from)) {
+        PastePages(ID_PASTE_PAGES_END);  // explains how to copy pages
+        return;
+    }
+    PasteTabsOptions o;
+    o.info = L"Add the " + PagesWord(count) + L" copied from \x201C" + from + L"\x201D to these documents:";
+    std::vector<Tab*> targets;
+    for (const auto& t : m_tabs) {
+        if (!t->docId || t->pendingDocId) continue;
+        targets.push_back(t.get());
+        std::wstring name = FileNameFromPath(t->path);
+        if (t->dirty) name = L"\x2022 " + name;
+        o.names.push_back(name);
+        o.checked.push_back(t.get() != &Active());
+    }
+    o.where = 0;
+    o.afterPage = SelectedPages().back() + 1;
+    if (!ShowPasteTabsDialog(m_inst, m_hwnd, o)) return;
+    for (size_t i = 0; i < targets.size(); ++i) {
+        if (!o.checked[i] || IndexOf(targets[i]) < 0) continue;
+        const int pages = targets[i]->view->PageCount();
+        const int index = o.where == 0 ? pages : o.where == 1 ? 0 : std::min(o.afterPage, pages);
+        PastePagesInto(*targets[i], index, file);
+    }
+}
+
+// Thumbnails dragged out of the panel: dropped on the other document of a
+// split tab, they are copied into it where they were dropped.
+void MainWindow::DropPages(POINT screen) {
+    HWND under = WindowFromPoint(screen);
+    for (const auto& t : m_tabs) {
+        Tab* tab = t.get();
+        if (tab == &Active() || !tab->docId || !IsWindowVisible(tab->view->Hwnd())) continue;
+        if (under != tab->view->Hwnd() && !IsChild(tab->view->Hwnd(), under)) continue;
+        POINT client = screen;
+        ScreenToClient(tab->view->Hwnd(), &client);
+        const int index = tab->view->DropIndexAt(client);
+        if (index >= 0) CopyPages(false, tab, index);
+        return;
+    }
+}
+
+// ===========================================================================
+// Cropping pages
+// ===========================================================================
+void MainWindow::CropPagesDialog() {
+    if (!CanEdit()) return;
+    CropOptions o = m_cropOptions;
+    o.pages = NewPageChoice(o.pages);
+    if (!ShowCropDialog(m_inst, m_hwnd, o)) return;
+    m_cropOptions = o;
+    const float mm = 72.0f / 25.4f;
+    EditOp op;
+    op.kind = EditOp::CropPages;
+    op.pages = o.pages.pages;
+    op.option = o.mode == 1 ? kCropMargins : o.mode == 2 ? kCropPaper : kCropContent;
+    op.width = o.pad * mm;
+    op.rect = {o.left * mm, o.top * mm, o.right * mm, o.bottom * mm};
+    const PaperSize& paper = kPaperSizes[std::clamp(o.paper, 0, 4)];
+    op.size = {paper.w, paper.h};
+    SendEdit(std::move(op));
+}
+
+// The crop tool: a box was drawn on `page`. It is kept on this page, on
+// every page, or on the selected pages.
+void MainWindow::OnCropBox(int page, const RectF& rect) {
+    if (!CanEdit()) return;
+    PdfView& view = View();
+    std::vector<int> selected;
+    if (m_sidebar.Mode() == SidebarMode::Thumbnails) selected = m_sidebar.Thumbs().Selection();
+    HMENU m = CreatePopupMenu();
+    AppendMenuW(m, MF_STRING, 1, (L"Crop page " + std::to_wstring(page + 1)).c_str());
+    AppendMenuW(m, MF_STRING, 2, (L"Crop all " + std::to_wstring(view.PageCount()) + L" pages the same way").c_str());
+    if (selected.size() > 1)
+        AppendMenuW(m, MF_STRING, 3, (L"Crop the " + std::to_wstring(selected.size()) + L" selected pages").c_str());
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_STRING, 4, L"Cancel");
+    POINT pt;
+    GetCursorPos(&pt);
+    const int cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, m_hwnd, nullptr);
+    DestroyMenu(m);
+    if (cmd < 1 || cmd > 3) return;
+    EditOp op;
+    op.kind = EditOp::CropPages;
+    op.option = kCropBox;
+    op.rect = rect;
+    if (cmd == 1) op.pages = {page};
+    if (cmd == 2)
+        for (int i = 0; i < view.PageCount(); ++i) op.pages.push_back(i);
+    if (cmd == 3) op.pages = selected;
+    SendEdit(std::move(op));
+}
+
+// ===========================================================================
+// Pages per sheet and booklets: a new PDF for printing
+// ===========================================================================
+void MainWindow::MakePagesPerSheet() {
+    if (!CanEdit()) return;
+    Tab& tab = Active();
+    if (!Permitted(kPermCopy, L"copying its pages")) return;
+    NupOptions o = m_nupOptions;
+    o.pages = NewPageChoice(o.pages);
+    if (!ShowNupDialog(m_inst, m_hwnd, o)) return;
+    m_nupOptions = o;
+    LayoutJob job;
+    job.pages = o.pages.pages;
+    job.booklet = o.booklet;
+    job.perSheet = kNupCounts[std::clamp(o.count, 0, 3)];
+    if (o.paper > 0) {
+        const PaperSize& p = kPaperSizes[std::clamp(o.paper - 1, 0, 4)];
+        job.sheetW = p.w;
+        job.sheetH = p.h;
+    }
+    job.lines = o.lines;
+
+    std::wstring stem = FileNameFromPath(tab.path);
+    if (stem.size() > 4 && _wcsicmp(stem.c_str() + stem.size() - 4, L".pdf") == 0) stem.resize(stem.size() - 4);
+    std::wstring suggested = stem + (o.booklet ? L" (booklet).pdf" : L" (" + std::to_wstring(job.perSheet) + L" per sheet).pdf");
+    for (wchar_t& c : suggested)
+        if (wcschr(L"\\/:*?\"<>|", c)) c = L'-';
+    std::vector<wchar_t> buf(32768, L'\0');
+    wcsncpy_s(buf.data(), buf.size(), suggested.c_str(), _TRUNCATE);
+    const std::wstring dir = DirectoryFromPath(tab.path);
+    OPENFILENAMEW ofn{sizeof(ofn)};
+    ofn.hwndOwner = m_hwnd;
+    ofn.lpstrTitle = o.booklet ? L"Save the booklet as" : L"Save the pages as";
+    ofn.lpstrFilter = L"PDF documents (*.pdf)\0*.pdf\0";
+    ofn.lpstrFile = buf.data();
+    ofn.nMaxFile = (DWORD)buf.size();
+    ofn.lpstrInitialDir = dir.empty() ? nullptr : dir.c_str();
+    ofn.lpstrDefExt = L"pdf";
+    ofn.Flags = OFN_PATHMUSTEXIST | OFN_EXPLORER | OFN_HIDEREADONLY | OFN_OVERWRITEPROMPT;
+    if (!GetSaveFileNameW(&ofn)) return;
+    const std::wstring target = FullPath(buf.data());
+    for (const auto& t : m_tabs) {
+        if (t->docId && SamePath(t->path, target)) {
+            MessageBoxW(m_hwnd, L"That file is open in a tab. Choose another name.", APP_NAME, MB_ICONWARNING);
+            return;
+        }
+    }
+    m_worker.MakeLayout(tab.docId, std::move(job), target);
+}
+
+// ===========================================================================
+// Edit PDF: text and comments
+// ===========================================================================
+namespace {
+struct CommentDialog {
+    std::wstring info, text;
+    bool canDelete = false;
+};
+
+// "\n" <-> "\r\n" for the multi-line text box.
+std::wstring ToEditLines(const std::wstring& s) {
+    std::wstring out;
+    for (size_t i = 0; i < s.size(); ++i) {
+        if (s[i] == L'\r') {
+            out += L"\r\n";
+            if (i + 1 < s.size() && s[i + 1] == L'\n') ++i;
+        } else if (s[i] == L'\n') {
+            out += L"\r\n";
+        } else {
+            out += s[i];
+        }
+    }
+    return out;
+}
+
+std::wstring FromEditLines(const std::wstring& s) {
+    std::wstring out;
+    for (wchar_t c : s)
+        if (c != L'\r') out += c;
+    return out;
+}
+
+std::wstring DialogText(HWND dlg, int id) {
+    HWND h = GetDlgItem(dlg, id);
+    std::wstring t((size_t)GetWindowTextLengthW(h) + 1, L'\0');
+    t.resize((size_t)GetWindowTextW(h, t.data(), (int)t.size()));
+    return t;
+}
+
+INT_PTR CALLBACK CommentDlgProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
+    auto* d = (CommentDialog*)GetWindowLongPtrW(dlg, DWLP_USER);
+    switch (msg) {
+        case WM_INITDIALOG: {
+            d = (CommentDialog*)lp;
+            SetWindowLongPtrW(dlg, DWLP_USER, (LONG_PTR)d);
+            SetDlgItemTextW(dlg, IDC_COMMENT_INFO, d->info.c_str());
+            SetDlgItemTextW(dlg, IDC_COMMENT_EDIT, ToEditLines(d->text).c_str());
+            if (!d->canDelete) ShowWindow(GetDlgItem(dlg, IDC_COMMENT_DELETE), SW_HIDE);
+            HWND edit = GetDlgItem(dlg, IDC_COMMENT_EDIT);
+            SetFocus(edit);
+            SendMessageW(edit, EM_SETSEL, (WPARAM)-1, -1);
+            return FALSE;  // the focus was set
+        }
+        case WM_COMMAND:
+            switch (LOWORD(wp)) {
+                case IDOK:
+                    d->text = FromEditLines(DialogText(dlg, IDC_COMMENT_EDIT));
+                    EndDialog(dlg, IDOK);
+                    return TRUE;
+                case IDC_COMMENT_DELETE: EndDialog(dlg, IDC_COMMENT_DELETE); return TRUE;
+                case IDCANCEL: EndDialog(dlg, IDCANCEL); return TRUE;
+            }
+            break;
+    }
+    return FALSE;
+}
+
+struct ReplaceDialog {
+    std::wstring find, with;
+    bool matchCase = false;
+};
+
+INT_PTR CALLBACK ReplaceDlgProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
+    auto* d = (ReplaceDialog*)GetWindowLongPtrW(dlg, DWLP_USER);
+    switch (msg) {
+        case WM_INITDIALOG:
+            d = (ReplaceDialog*)lp;
+            SetWindowLongPtrW(dlg, DWLP_USER, (LONG_PTR)d);
+            SetDlgItemTextW(dlg, IDC_REPLACE_FIND, d->find.c_str());
+            SetDlgItemTextW(dlg, IDC_REPLACE_WITH, d->with.c_str());
+            CheckDlgButton(dlg, IDC_REPLACE_CASE, d->matchCase ? BST_CHECKED : BST_UNCHECKED);
+            SetFocus(GetDlgItem(dlg, IDC_REPLACE_FIND));
+            SendDlgItemMessageW(dlg, IDC_REPLACE_FIND, EM_SETSEL, 0, -1);
+            return FALSE;
+        case WM_COMMAND:
+            if (LOWORD(wp) == IDOK) {
+                d->find = DialogText(dlg, IDC_REPLACE_FIND);
+                d->with = DialogText(dlg, IDC_REPLACE_WITH);
+                d->matchCase = IsDlgButtonChecked(dlg, IDC_REPLACE_CASE) == BST_CHECKED;
+                if (d->find.empty()) {
+                    SetFocus(GetDlgItem(dlg, IDC_REPLACE_FIND));
+                    return TRUE;
+                }
+                EndDialog(dlg, IDOK);
+                return TRUE;
+            }
+            if (LOWORD(wp) == IDCANCEL) {
+                EndDialog(dlg, IDCANCEL);
+                return TRUE;
+            }
+            break;
+    }
+    return FALSE;
+}
+
+std::wstring CommentKind(int subtype) {
+    switch (subtype) {
+        case kAnnotNote: return L"Note";
+        case kMarkupSquiggly: return L"Squiggly underline";
+        case kAnnotSquare: return L"Rectangle";
+        case kAnnotCircle: return L"Ellipse";
+        case kAnnotInk: return L"Drawing";
+        case kAnnotLine: return L"Line";
+        case kAnnotStamp: return L"Stamp";
+        case kAnnotFreeText: return L"Text box";
+        case kAnnotPolygon:
+        case kAnnotPolyline: return L"Shape";
+        case kMarkupHighlight: return L"Highlight";
+        case kMarkupUnderline: return L"Underline";
+        case kMarkupStrikeOut: return L"Strikethrough";
+        default: return L"Marking";
+    }
+}
+
+struct CommentsDialog {
+    const std::vector<std::pair<int, CommentInfo>>* items = nullptr;
+    int chosen = -1;  // index into items
+};
+
+INT_PTR CALLBACK CommentsDlgProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
+    auto* d = (CommentsDialog*)GetWindowLongPtrW(dlg, DWLP_USER);
+    HWND list = GetDlgItem(dlg, IDC_COMMENTS_LIST);
+    auto selected = [&] { return (int)SendMessageW(list, LVM_GETNEXTITEM, (WPARAM)-1, LVNI_SELECTED); };
+    switch (msg) {
+        case WM_INITDIALOG: {
+            d = (CommentsDialog*)lp;
+            SetWindowLongPtrW(dlg, DWLP_USER, (LONG_PTR)d);
+            const size_t n = d->items->size();
+            SetDlgItemTextW(dlg, IDC_COMMENTS_INFO,
+                            (std::to_wstring(n) + (n == 1 ? L" comment" : L" comments") +
+                             L" in this document. Double-click one to go to it.")
+                                .c_str());
+            SendMessageW(list, LVM_SETEXTENDEDLISTVIEWSTYLE, 0, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
+            RECT rc;
+            GetClientRect(list, &rc);
+            const int w = rc.right - GetSystemMetrics(SM_CXVSCROLL);
+            const wchar_t* names[] = {L"Page", L"Type", L"Author", L"Comment"};
+            const int widths[] = {w * 10 / 100, w * 15 / 100, w * 20 / 100, w * 55 / 100};
+            for (int c = 0; c < 4; ++c) {
+                LVCOLUMNW col{};
+                col.mask = LVCF_TEXT | LVCF_WIDTH;
+                col.pszText = const_cast<wchar_t*>(names[c]);
+                col.cx = widths[c];
+                SendMessageW(list, LVM_INSERTCOLUMNW, c, (LPARAM)&col);
+            }
+            for (size_t i = 0; i < n; ++i) {
+                const auto& [page, c] = (*d->items)[i];
+                std::wstring cells[] = {std::to_wstring(page + 1), CommentKind(c.subtype), c.author, c.text};
+                for (wchar_t& ch : cells[3])
+                    if (ch == L'\r' || ch == L'\n') ch = L' ';
+                LVITEMW item{};
+                item.mask = LVIF_TEXT;
+                item.iItem = (int)i;
+                item.pszText = cells[0].data();
+                SendMessageW(list, LVM_INSERTITEMW, 0, (LPARAM)&item);
+                for (int c2 = 1; c2 < 4; ++c2) {
+                    item.iSubItem = c2;
+                    item.pszText = cells[c2].data();
+                    SendMessageW(list, LVM_SETITEMTEXTW, i, (LPARAM)&item);
+                }
+            }
+            LVITEMW sel{};
+            sel.stateMask = sel.state = LVIS_SELECTED | LVIS_FOCUSED;
+            SendMessageW(list, LVM_SETITEMSTATE, 0, (LPARAM)&sel);
+            SetFocus(list);
+            return FALSE;
+        }
+        case WM_NOTIFY: {
+            const auto* nm = (const NMHDR*)lp;
+            if (nm->idFrom == IDC_COMMENTS_LIST && nm->code == NM_DBLCLK && selected() >= 0) {
+                d->chosen = selected();
+                EndDialog(dlg, IDC_COMMENTS_GOTO);
+                return TRUE;
+            }
+            break;
+        }
+        case WM_COMMAND:
+            switch (LOWORD(wp)) {
+                case IDC_COMMENTS_GOTO:
+                case IDC_COMMENTS_EDIT:
+                case IDC_COMMENTS_DELETE:
+                    if (selected() < 0) return TRUE;
+                    d->chosen = selected();
+                    EndDialog(dlg, LOWORD(wp));
+                    return TRUE;
+                case IDOK:  // Enter in the list
+                    if (selected() >= 0) {
+                        d->chosen = selected();
+                        EndDialog(dlg, IDC_COMMENTS_GOTO);
+                    }
+                    return TRUE;
+                case IDCANCEL: EndDialog(dlg, IDCANCEL); return TRUE;
+            }
+            break;
+    }
+    return FALSE;
+}
+}  // namespace
+
+HMENU MainWindow::CreateMarkupMenu() {
+    const UINT selFlag = View().HasSelection() ? 0 : MF_GRAYED;
+    HMENU markup = CreatePopupMenu();
+    AppendMenuW(markup, MF_STRING | selFlag, ID_HIGHLIGHT, L"&Highlight\tCtrl+H");
+    AppendMenuW(markup, MF_STRING | selFlag, ID_UNDERLINE, L"&Underline\tCtrl+U");
+    AppendMenuW(markup, MF_STRING | selFlag, ID_STRIKEOUT, L"&Strikethrough\tCtrl+Shift+K");
+    AppendMenuW(markup, MF_SEPARATOR, 0, nullptr);
+    for (int i = 0; i <= ID_HL_COLOR_LAST - ID_HL_COLOR_FIRST; ++i)
+        AppendMenuW(markup, MF_STRING, ID_HL_COLOR_FIRST + i, kHighlightColorNames[i]);
+    CheckMenuRadioItem(markup, ID_HL_COLOR_FIRST, ID_HL_COLOR_LAST,
+                       ID_HL_COLOR_FIRST + m_settings.highlightColor, MF_BYCOMMAND);
+    return markup;
+}
+
+HMENU MainWindow::CreateEditPdfMenu() {
+    PdfView& view = View();
+    const bool doc = view.HasDocument();
+    const UINT docFlag = doc ? 0 : MF_GRAYED;
+    const UINT selFlag = view.HasSelection() ? 0 : MF_GRAYED;
+    HMENU m = CreatePopupMenu();
+    AppendMenuW(m, MF_STRING | docFlag | (view.Tool() == ViewTool::EditText ? MF_CHECKED : 0), ID_EDIT_TEXT,
+                L"Edit &text\tCtrl+E");
+    AppendMenuW(m, MF_STRING | docFlag, ID_REPLACE_TEXT, L"Find and &replace text\x2026\tCtrl+Shift+H");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_STRING | docFlag | (view.Tool() == ViewTool::AddComment ? MF_CHECKED : 0),
+                ID_ADD_COMMENT, L"Add &comment\tCtrl+M");
+    AppendMenuW(m, MF_STRING | selFlag, ID_COMMENT_SELECTION, L"Comment on &selected text\x2026\tCtrl+Shift+M");
+    AppendMenuW(m, MF_STRING | docFlag, ID_SHOW_COMMENTS, L"&All comments\x2026");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    if (m_ocrJob.active)
+        AppendMenuW(m, MF_STRING, ID_CANCEL_OCR, L"Stop recognising te&xt");
+    else
+        AppendMenuW(m, MF_STRING | docFlag, ID_OCR, L"Recognise te&xt (OCR)\x2026");
+    AppendMenuW(m, MF_STRING | docFlag, ID_WATERMARK, L"&Watermark\x2026");
+    AppendMenuW(m, MF_STRING | docFlag, ID_PAGE_NUMBERS, L"Page n&umbers\x2026");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_POPUP | docFlag, (UINT_PTR)CreateRedactMenu(), L"Re&dact");
+    AppendMenuW(m, MF_STRING | docFlag, ID_COMPRESS, L"C&ompress (make the file smaller)\x2026");
+    AppendMenuW(m, MF_STRING | docFlag, ID_PASSWORD, L"Pass&word protection\x2026");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_POPUP | docFlag, (UINT_PTR)CreateAnnotateMenu(), L"A&nnotate");
+    AppendMenuW(m, MF_POPUP | docFlag, (UINT_PTR)CreatePagesMenu(), L"Edit &pages");
+    return m;
+}
+
+void MainWindow::ShowEditPdfMenu() {
+    HMENU m = CreateEditPdfMenu();
+    const RECT rc = m_toolbar.ItemScreenRect(ID_EDIT_PDF_MENU);
+    TrackPopupMenu(m, TPM_LEFTALIGN | TPM_TOPALIGN, rc.left, rc.bottom, 0, m_hwnd, nullptr);
+    DestroyMenu(m);
+}
+
+void MainWindow::SetTool(ViewTool tool) {
+    if (!CanEdit()) return;
+    if (m_fullscreen && tool != ViewTool::Select) ToggleFullscreen();
+    View().SetTool(tool);
+    UpdateUi();
+}
+
+void MainWindow::ReplaceTextInDocument() {
+    if (!CanEdit()) return;
+    ReplaceDialog d{m_replaceFind, m_replaceWith, m_replaceCase};
+    if (DialogBoxParamW(m_inst, MAKEINTRESOURCEW(IDD_REPLACE), m_hwnd, ReplaceDlgProc, (LPARAM)&d) != IDOK)
+        return;
+    m_replaceFind = d.find;
+    m_replaceWith = d.with;
+    m_replaceCase = d.matchCase;
+    EditOp op;
+    op.kind = EditOp::FindReplace;
+    op.find = d.find;
+    op.text = d.with;
+    op.matchCase = d.matchCase;
+    SendEdit(std::move(op));
+}
+
+void MainWindow::NewComment(int page, float x, float y) {
+    if (!CanEdit()) return;
+    CommentDialog d;
+    const std::wstring author = CurrentUserName();
+    d.info = L"New comment on page " + std::to_wstring(page + 1) + (author.empty() ? L"" : L" by " + author);
+    if (DialogBoxParamW(m_inst, MAKEINTRESOURCEW(IDD_COMMENT), m_hwnd, CommentDlgProc, (LPARAM)&d) != IDOK)
+        return;
+    bool blank = true;
+    for (wchar_t c : d.text)
+        if (!iswspace(c)) blank = false;
+    if (blank) return;
+    EditOp op;
+    op.kind = EditOp::AddNote;
+    op.page = page;
+    op.x = x;
+    op.y = y;
+    op.text = d.text;
+    op.author = author;
+    SendEdit(std::move(op));
+}
+
+void MainWindow::OpenComment(int page, const CommentInfo& c) {
+    if (!CanEdit()) return;
+    CommentDialog d;
+    d.text = c.text;
+    d.canDelete = true;
+    d.info = CommentKind(c.subtype) + L" on page " + std::to_wstring(page + 1);
+    if (!c.author.empty()) d.info += L" by " + c.author;
+    const std::wstring when = FormatPdfDate(c.date);
+    if (!when.empty()) d.info += L", " + when;
+    const INT_PTR r = DialogBoxParamW(m_inst, MAKEINTRESOURCEW(IDD_COMMENT), m_hwnd, CommentDlgProc, (LPARAM)&d);
+    EditOp op;
+    op.page = page;
+    op.index = c.annot;
+    if (r == IDC_COMMENT_DELETE) {
+        op.kind = EditOp::DeleteAnnot;
+    } else if (r == IDOK && d.text != c.text) {
+        op.kind = EditOp::EditComment;
+        op.text = d.text;
+        op.author = CurrentUserName();
+    } else {
+        return;
+    }
+    SendEdit(std::move(op));
+}
+
+void MainWindow::CommentOnSelection() {
+    if (!CanEdit()) return;
+    if (!View().HasSelection()) {
+        MessageBoxW(m_hwnd,
+                    L"Select the text to comment on first (drag over it), or use \x201C"
+                    L"Add comment\x201D to put a note anywhere on the page.",
+                    APP_NAME, MB_ICONINFORMATION);
+        return;
+    }
+    TextPos from, to;
+    View().GetSelection(from, to);
+    CommentDialog d;
+    d.info = L"Comment on the selected text (it is highlighted)";
+    if (DialogBoxParamW(m_inst, MAKEINTRESOURCEW(IDD_COMMENT), m_hwnd, CommentDlgProc, (LPARAM)&d) != IDOK)
+        return;
+    AddMarkup(kMarkupHighlight, d.text);
+}
+
+void MainWindow::OnCommentList(CommentListResult* result) {
+    std::unique_ptr<CommentListResult> res(result);
+    const int index = TabByDocId(res->docId);
+    if (index < 0 || index != m_active) return;
+    if (res->comments.empty()) {
+        MessageBoxW(m_hwnd,
+                    L"This document has no comments yet.\n\nTo add one, click \x201C" L"Comment\x201D "
+                    L"on the toolbar (Ctrl+M) and click on the page.",
+                    APP_NAME, MB_ICONINFORMATION);
+        return;
+    }
+    CommentsDialog d;
+    d.items = &res->comments;
+    const INT_PTR r = DialogBoxParamW(m_inst, MAKEINTRESOURCEW(IDD_COMMENTS), m_hwnd, CommentsDlgProc, (LPARAM)&d);
+    if (d.chosen < 0 || d.chosen >= (int)res->comments.size() || TabByDocId(res->docId) != m_active) return;
+    const auto& [page, comment] = res->comments[(size_t)d.chosen];
+    SearchHit spot;  // shows the comment itself, not just its page
+    spot.page = page;
+    spot.rects.push_back(comment.rect);
+    if (r == IDC_COMMENTS_GOTO) {
+        View().PushHistory();
+        View().ScrollToHit(spot);
+    } else if (r == IDC_COMMENTS_EDIT) {
+        View().PushHistory();
+        View().ScrollToHit(spot);
+        OpenComment(page, comment);
+    } else if (r == IDC_COMMENTS_DELETE) {
+        EditOp op;
+        op.kind = EditOp::DeleteAnnot;
+        op.page = page;
+        op.index = comment.annot;
+        SendEdit(std::move(op));
+    }
+}
+
+// ===========================================================================
+// Annotate: markup, drawing, new text, stamps, signatures and pictures
+// ===========================================================================
+HMENU MainWindow::CreateAnnotateMenu() {
+    PdfView& view = View();
+    const bool doc = view.HasDocument();
+    const UINT docFlag = doc ? 0 : MF_GRAYED;
+    const UINT selFlag = view.HasSelection() ? 0 : MF_GRAYED;
+    const ViewTool tool = view.Tool();
+    auto toolItem = [&](HMENU m, int id, ViewTool t, const wchar_t* text) {
+        AppendMenuW(m, MF_STRING | docFlag | (tool == t ? MF_CHECKED : 0), id, text);
+    };
+    HMENU stamps = CreatePopupMenu();
+    for (int i = 0; i < kStampCount; ++i) AppendMenuW(stamps, MF_STRING, ID_STAMP_FIRST + i, kStamps[i].text);
+    AppendMenuW(stamps, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(stamps, MF_STRING, ID_STAMP_CUSTOM, L"&Custom stamp\x2026");
+
+    Picture saved;
+    const bool hasSaved = LoadSavedSignature(saved);
+    HMENU sign = CreatePopupMenu();
+    if (hasSaved) AppendMenuW(sign, MF_STRING, ID_SIGNATURE_USE, L"Use &my signature");
+    AppendMenuW(sign, MF_STRING, ID_SIGNATURE_NEW, hasSaved ? L"&New signature\x2026" : L"&Create signature\x2026");
+    if (hasSaved) AppendMenuW(sign, MF_STRING, ID_SIGNATURE_FORGET, L"&Forget my signature");
+
+    HMENU colors = CreatePopupMenu();
+    for (int i = 0; i < kDrawColorCount; ++i)
+        AppendMenuW(colors, MF_STRING | (kDrawColors[i] == m_settings.drawColor ? MF_CHECKED : 0),
+                    ID_DRAWCOLOR_FIRST + i, kDrawColorNames[i]);
+    AppendMenuW(colors, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(colors, MF_STRING, ID_DRAWCOLOR_MORE, L"&More colours\x2026");
+    HMENU widths = CreatePopupMenu();
+    for (int i = 0; i < kLineWidthCount; ++i)
+        AppendMenuW(widths, MF_STRING | (kLineWidths[i] == m_settings.lineWidthTenths ? MF_CHECKED : 0),
+                    ID_WIDTH_FIRST + i, kLineWidthNames[i]);
+    HMENU sizes = CreatePopupMenu();
+    for (int i = 0; i < kTextSizeCount; ++i)
+        AppendMenuW(sizes, MF_STRING | (kTextSizes[i] == m_settings.textSize ? MF_CHECKED : 0), ID_TEXTSIZE_FIRST + i,
+                    (std::to_wstring(kTextSizes[i]) + L" pt").c_str());
+
+    HMENU m = CreatePopupMenu();
+    AppendMenuW(m, MF_STRING | selFlag, ID_HIGHLIGHT, L"&Highlight\tCtrl+H");
+    AppendMenuW(m, MF_STRING | selFlag, ID_UNDERLINE, L"&Underline\tCtrl+U");
+    AppendMenuW(m, MF_STRING | selFlag, ID_STRIKEOUT, L"&Strikethrough\tCtrl+Shift+K");
+    AppendMenuW(m, MF_STRING | selFlag, ID_SQUIGGLY, L"S&quiggly underline");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    toolItem(m, ID_TOOL_ADD_TEXT, ViewTool::AddText, L"Add &text");
+    toolItem(m, ID_TOOL_RECT, ViewTool::Rectangle, L"&Rectangle");
+    toolItem(m, ID_TOOL_ELLIPSE, ViewTool::Ellipse, L"&Ellipse");
+    toolItem(m, ID_TOOL_LINE, ViewTool::Line, L"&Line");
+    toolItem(m, ID_TOOL_ARROW, ViewTool::Arrow, L"&Arrow");
+    toolItem(m, ID_TOOL_PEN, ViewTool::Pen, L"&Pen (freehand)");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_POPUP | docFlag, (UINT_PTR)stamps, L"Sta&mp");
+    AppendMenuW(m, MF_POPUP | docFlag, (UINT_PTR)sign, L"Si&gnature");
+    AppendMenuW(m, MF_STRING | docFlag, ID_INSERT_IMAGE, L"Insert p&icture\x2026");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_POPUP, (UINT_PTR)colors, L"&Colour");
+    AppendMenuW(m, MF_POPUP, (UINT_PTR)widths, L"Line &width");
+    AppendMenuW(m, MF_POPUP, (UINT_PTR)sizes, L"Te&xt size");
+    AppendMenuW(m, MF_POPUP, (UINT_PTR)CreateMarkupMenuColors(), L"Highlight c&olour");
+    return m;
+}
+
+HMENU MainWindow::CreateMarkupMenuColors() {
+    HMENU m = CreatePopupMenu();
+    for (int i = 0; i <= ID_HL_COLOR_LAST - ID_HL_COLOR_FIRST; ++i)
+        AppendMenuW(m, MF_STRING, ID_HL_COLOR_FIRST + i, kHighlightColorNames[i]);
+    CheckMenuRadioItem(m, ID_HL_COLOR_FIRST, ID_HL_COLOR_LAST, ID_HL_COLOR_FIRST + m_settings.highlightColor,
+                       MF_BYCOMMAND);
+    return m;
+}
+
+void MainWindow::ShowAnnotateMenu() {
+    HMENU m = CreateAnnotateMenu();
+    const RECT rc = m_toolbar.ItemScreenRect(ID_ANNOTATE_MENU);
+    TrackPopupMenu(m, TPM_LEFTALIGN | TPM_TOPALIGN, rc.left, rc.bottom, 0, m_hwnd, nullptr);
+    DestroyMenu(m);
+}
+
+// Starts a tool with the current colour, line width and text size.
+void MainWindow::StartTool(ViewTool tool) {
+    if (!CanEdit()) return;
+    PdfView& view = View();
+    ToolOptions o;
+    if (tool == ViewTool::Stamp || tool == ViewTool::Signature || tool == ViewTool::Image) return;  // own setup
+    o.color = m_settings.drawColor;
+    o.width = m_settings.lineWidthTenths / 10.0f;
+    o.textSize = (float)m_settings.textSize;
+    o.author = CurrentUserName();
+    view.SetToolOptions(o);
+    SetTool(tool);
+}
+
+void MainWindow::StartStamp(const std::wstring& text, COLORREF color) {
+    if (!CanEdit()) return;
+    ToolOptions o;
+    o.stamp = text;
+    o.stampColor = color;
+    o.author = CurrentUserName();
+    View().SetToolOptions(o);
+    SetTool(ViewTool::Stamp);
+}
+
+void MainWindow::StartSignature(bool newOne) {
+    if (!CanEdit()) return;
+    Picture sig;
+    if (newOne || !LoadSavedSignature(sig)) {
+        if (!ShowSignatureDialog(m_inst, m_hwnd, sig)) return;
+    }
+    ToolOptions o;
+    o.pixels = std::move(sig.pixels);
+    o.imageW = sig.width;
+    o.imageH = sig.height;
+    o.author = CurrentUserName();
+    View().SetToolOptions(o);
+    SetTool(ViewTool::Signature);
+}
+
+// A signature field was clicked: the signature goes inside it.
+void MainWindow::SignField(int page, const RectF& field) {
+    if (!CanEdit()) return;
+    Picture sig;
+    if (!LoadSavedSignature(sig) && !ShowSignatureDialog(m_inst, m_hwnd, sig)) return;
+    const float fw = field.right - field.left, fh = field.bottom - field.top;
+    const float aspect = (float)sig.width / std::max(1, sig.height);
+    float w = fw, h = fw / aspect;
+    if (h > fh) {
+        h = fh;
+        w = fh * aspect;
+    }
+    EditOp op;
+    op.kind = EditOp::AddImage;
+    op.page = page;
+    op.rect = {field.left + (fw - w) / 2, field.top + (fh - h) / 2, field.left + (fw + w) / 2, field.top + (fh + h) / 2};
+    op.asAnnot = true;
+    op.text = L"Signature";
+    op.author = CurrentUserName();
+    op.pixels = std::move(sig.pixels);
+    op.imageW = sig.width;
+    op.imageH = sig.height;
+    SendEdit(std::move(op));
+}
+
+void MainWindow::InsertImage() {
+    if (!CanEdit()) return;
+    std::vector<wchar_t> file(32768, L'\0');
+    OPENFILENAMEW ofn{sizeof(ofn)};
+    ofn.hwndOwner = m_hwnd;
+    ofn.lpstrFilter = L"Pictures (*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.tif)\0*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.tif;*.tiff\0";
+    ofn.lpstrFile = file.data();
+    ofn.nMaxFile = (DWORD)file.size();
+    ofn.lpstrTitle = L"Insert picture";
+    ofn.Flags = OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_HIDEREADONLY;
+    if (!GetOpenFileNameW(&ofn)) return;
+    Picture pic;
+    // Large photos are scaled down: 2400 pixels is sharp at full-page size.
+    if (!LoadPictureFile(file.data(), 2400, pic)) {
+        MessageBoxW(m_hwnd, L"That picture could not be read.", APP_NAME, MB_ICONWARNING);
+        return;
+    }
+    ToolOptions o;
+    o.pixels = std::move(pic.pixels);
+    o.imageW = pic.width;
+    o.imageH = pic.height;
+    View().SetToolOptions(o);
+    SetTool(ViewTool::Image);
+}
+
+// Ctrl+V: a picture copied in another program (or a picture file copied in
+// File Explorer) is placed like "Insert picture": click where it goes.
+void MainWindow::PasteImage() {
+    if (!CanEdit()) return;
+    // Copied pages are pasted after the page shown (or the selected thumbnails).
+    if (IsClipboardFormatAvailable(RegisterClipboardFormatW(L"FeatherPDF.Pages"))) {
+        PastePages(ID_PASTE_PAGES_AFTER);
+        return;
+    }
+    Picture pic;
+    if (!PictureFromClipboard(m_hwnd, pic, 2400)) {
+        if (View().Tool() == ViewTool::EditText)
+            MessageBoxW(m_hwnd,
+                        L"There is no picture to paste. Copy a picture first (for example right-click a "
+                        L"picture in your browser and choose \x201C" L"Copy image\x201D), then press Ctrl+V.",
+                        APP_NAME, MB_ICONINFORMATION);
+        return;
+    }
+    ToolOptions o;
+    o.pixels = std::move(pic.pixels);
+    o.imageW = pic.width;
+    o.imageH = pic.height;
+    View().SetToolOptions(o);
+    SetTool(ViewTool::Image);
+}
+
+// The selected picture shows another one, in the same place and size.
+void MainWindow::ReplaceImage() {
+    if (!CanEdit()) return;
+    int page, index;
+    if (!View().SelectedImage(page, index)) {
+        MessageBoxW(m_hwnd, L"Click a picture first (while editing), then choose \x201CReplace picture\x201D.",
+                    APP_NAME, MB_ICONINFORMATION);
+        return;
+    }
+    std::vector<wchar_t> file(32768, L'\0');
+    OPENFILENAMEW ofn{sizeof(ofn)};
+    ofn.hwndOwner = m_hwnd;
+    ofn.lpstrFilter = L"Pictures (*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.tif)\0*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.tif;*.tiff\0";
+    ofn.lpstrFile = file.data();
+    ofn.nMaxFile = (DWORD)file.size();
+    ofn.lpstrTitle = L"Replace picture";
+    ofn.Flags = OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_HIDEREADONLY;
+    if (!GetOpenFileNameW(&ofn)) return;
+    Picture pic;
+    if (!LoadPictureFile(file.data(), 2400, pic)) {
+        MessageBoxW(m_hwnd, L"That picture could not be read.", APP_NAME, MB_ICONWARNING);
+        return;
+    }
+    EditOp op;
+    op.kind = EditOp::ReplaceImage;
+    op.page = page;
+    op.index = index;
+    op.pixels = std::move(pic.pixels);
+    op.imageW = pic.width;
+    op.imageH = pic.height;
+    SendEdit(std::move(op));
+}
+
+// Installed fonts that can be put into a PDF (TrueType), by family name.
+const std::vector<std::wstring>& MainWindow::FontFaces() {
+    if (!m_fontFaces.empty()) return m_fontFaces;
+    HDC dc = GetDC(m_hwnd);
+    LOGFONTW lf{};
+    lf.lfCharSet = DEFAULT_CHARSET;
+    EnumFontFamiliesExW(
+        dc, &lf,
+        [](const LOGFONTW* f, const TEXTMETRICW*, DWORD type, LPARAM param) -> int {
+            auto* out = reinterpret_cast<std::vector<std::wstring>*>(param);
+            if ((type & TRUETYPE_FONTTYPE) && f->lfFaceName[0] != L'@') out->push_back(f->lfFaceName);
+            return out->size() < 2000;
+        },
+        (LPARAM)&m_fontFaces, 0);
+    ReleaseDC(m_hwnd, dc);
+    std::sort(m_fontFaces.begin(), m_fontFaces.end(),
+              [](const std::wstring& a, const std::wstring& b) { return _wcsicmp(a.c_str(), b.c_str()) < 0; });
+    m_fontFaces.erase(std::unique(m_fontFaces.begin(), m_fontFaces.end(),
+                                  [](const std::wstring& a, const std::wstring& b) { return _wcsicmp(a.c_str(), b.c_str()) == 0; }),
+                      m_fontFaces.end());
+    return m_fontFaces;
+}
+
+// The formatting bar (and Ctrl+B / I / U while editing text).
+void MainWindow::FormatCommand(int id) {
+    if (!CanEdit()) return;
+    PdfView& view = View();
+    if (view.Tool() != ViewTool::EditText) SetTool(ViewTool::EditText);
+    TextRun run;
+    if (!view.FormatTarget(run)) {
+        MessageBoxW(m_hwnd,
+                    L"First choose the text to change:\n\n"
+                    L"\x2022 click a line and select the words (or leave nothing selected for the whole line), or\n"
+                    L"\x2022 click a block, Ctrl+click more blocks, or draw a box around the lines you want.",
+                    APP_NAME, MB_ICONINFORMATION);
+        return;
+    }
+    EditOp::Format f;
+    if (id == ID_FMT_LEFT || id == ID_FMT_CENTER || id == ID_FMT_RIGHT) {
+        view.AlignSelection(id == ID_FMT_LEFT ? 0 : id == ID_FMT_CENTER ? 1 : 2);
+        return;
+    }
+    switch (id) {
+        case ID_FMT_BOLD: f.bold = run.bold ? 0 : 1; break;
+        case ID_FMT_ITALIC: f.italic = run.italic ? 0 : 1; break;
+        case ID_FMT_UNDERLINE: f.underline = run.underline ? 0 : 1; break;
+        case ID_FMT_STRIKE: f.strike = run.strike ? 0 : 1; break;
+        case ID_FMT_FONT: {
+            // The standard three first (they need nothing put into the PDF),
+            // then every installed font.
+            const wchar_t* standard[] = {L"Arial", L"Times New Roman", L"Courier New"};
+            HMENU m = CreatePopupMenu();
+            for (int i = 0; i < 3; ++i) AppendMenuW(m, MF_STRING, 1 + i, standard[i]);
+            AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+            HMENU more = CreatePopupMenu();
+            const std::vector<std::wstring>& faces = FontFaces();
+            for (size_t i = 0; i < faces.size() && i < 1500; ++i)
+                AppendMenuW(more, MF_STRING | (i > 0 && i % 30 == 0 ? MF_MENUBARBREAK : 0), 100 + i, faces[i].c_str());
+            AppendMenuW(m, MF_POPUP | (faces.empty() ? MF_GRAYED : 0), (UINT_PTR)more, L"&Other fonts");
+            const RECT r = m_formatBar.ItemScreenRect(ID_FMT_FONT);
+            const int cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, r.left, r.bottom, 0, m_hwnd, nullptr);
+            DestroyMenu(m);
+            if (cmd >= 1 && cmd <= 3) f.face = standard[cmd - 1];
+            else if (cmd >= 100 && cmd - 100 < (int)faces.size()) f.face = faces[(size_t)cmd - 100];
+            else return;
+            break;
+        }
+        case ID_FMT_SIZE: {
+            static const int kSizes[] = {6, 7, 8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 32, 36, 48, 72};
+            HMENU m = CreatePopupMenu();
+            const int now = (int)std::lround(run.size);
+            for (int i = 0; i < (int)(sizeof(kSizes) / sizeof(kSizes[0])); ++i)
+                AppendMenuW(m, MF_STRING | (kSizes[i] == now ? MF_CHECKED : 0), 1 + i, (std::to_wstring(kSizes[i]) + L" pt").c_str());
+            const RECT r = m_formatBar.ItemScreenRect(ID_FMT_SIZE);
+            const int cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, r.left, r.bottom, 0, m_hwnd, nullptr);
+            DestroyMenu(m);
+            if (cmd <= 0) return;
+            f.size = (float)kSizes[cmd - 1];
+            break;
+        }
+        case ID_FMT_COLOR: {
+            static const COLORREF kColors[] = {RGB(0, 0, 0), RGB(90, 90, 90), RGB(200, 0, 0), RGB(0, 70, 200),
+                                               RGB(0, 130, 50), RGB(230, 120, 0), RGB(120, 40, 160)};
+            static const wchar_t* kNames[] = {L"&Black", L"&Grey", L"&Red", L"B&lue", L"Gr&een", L"&Orange", L"&Purple"};
+            HMENU m = CreatePopupMenu();
+            for (int i = 0; i < 7; ++i) AppendMenuW(m, MF_STRING | (run.color == kColors[i] ? MF_CHECKED : 0), 1 + i, kNames[i]);
+            AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+            AppendMenuW(m, MF_STRING, 99, L"&More colours\x2026");
+            const RECT r = m_formatBar.ItemScreenRect(ID_FMT_COLOR);
+            const int cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, r.left, r.bottom, 0, m_hwnd, nullptr);
+            DestroyMenu(m);
+            if (cmd >= 1 && cmd <= 7) {
+                f.color = kColors[cmd - 1];
+            } else if (cmd == 99) {
+                static COLORREF custom[16] = {};
+                CHOOSECOLORW cc{sizeof(cc)};
+                cc.hwndOwner = m_hwnd;
+                cc.lpCustColors = custom;
+                cc.rgbResult = run.color;
+                cc.Flags = CC_FULLOPEN | CC_RGBINIT;
+                view.HoldInline(true);  // the text box stays open while the dialog has the focus
+                const BOOL chosen = ChooseColorW(&cc);
+                view.HoldInline(false);
+                if (!chosen) return;
+                f.color = cc.rgbResult;
+            } else {
+                return;
+            }
+            break;
+        }
+        default: return;
+    }
+    view.ApplyFormat(f);
+}
+
+// ===========================================================================
+// Recognise text (OCR), watermarks, page numbers, export
+// ===========================================================================
+// The page choice of a dialog, starting from what was chosen last time.
+PageChoice MainWindow::NewPageChoice(const PageChoice& last) {
+    PageChoice p = last;
+    const PdfView& view = View();
+    p.pageCount = view.PageCount();
+    p.current = view.CurrentPage();
+    std::vector<int> check;
+    if (p.mode == PageChoice::Range && !ParsePageRanges(p.range, p.pageCount, check)) {
+        p.mode = PageChoice::All;  // typed for another document
+        p.range.clear();
+    }
+    // Pages selected in the thumbnails are what the user means.
+    const std::vector<int> sel = SelectedPages();
+    if (sel.size() > 1) {
+        p.mode = PageChoice::Range;
+        p.range = FormatPageRanges(sel);
+    }
+    return p;
+}
+
+void MainWindow::RecogniseText() {
+    if (!CanEdit() || m_ocrJob.active) return;
+    OcrOptions o = m_ocrOptions;
+    o.pages = NewPageChoice(o.pages);
+    if (!ShowOcrDialog(m_inst, m_hwnd, o)) return;
+    m_ocrOptions = o;
+    m_ocrJob = OcrJob();
+    m_ocrJob.active = true;
+    m_ocrJob.id = m_nextOcrId++;
+    m_ocrJob.docId = Active().docId;
+    m_ocrJob.pages = o.pages.pages;
+    m_ocrJob.skipText = o.skipText;
+    RequestOcrPages();
+    UpdateTitle();
+}
+
+// Keeps the next page or two rendered while one is being recognised.
+void MainWindow::RequestOcrPages() {
+    const int index = TabByDocId(m_ocrJob.docId);
+    if (index < 0) return;
+    const std::vector<SizeF>& sizes = m_tabs[(size_t)index]->view->PageSizes();
+    while (m_ocrJob.inFlight < 2 && m_ocrJob.next < m_ocrJob.pages.size()) {
+        const int page = m_ocrJob.pages[m_ocrJob.next++];
+        // 300 dpi suits the engine; posters and drawings are rendered smaller.
+        float scale = 300 / 72.0f;
+        if (page < (int)sizes.size()) {
+            const float big = std::max(sizes[(size_t)page].w, sizes[(size_t)page].h);
+            if (big > 0) scale = std::min(scale, 7000 / big);
+        }
+        m_worker.RenderForOcr(m_ocrJob.docId, m_ocrJob.id, page, scale, m_ocrJob.skipText);
+        ++m_ocrJob.inFlight;
+    }
+}
+
+namespace {
+const wchar_t kOcrDocChanged[] =
+    L"Text recognition stopped because the document was changed or closed while it was running. "
+    L"Start it again when you are done.";
+}
+
+void MainWindow::OnOcrImage(OcrImage* image) {
+    std::unique_ptr<OcrImage> img(image);
+    if (!m_ocrJob.active || img->jobId != m_ocrJob.id) return;
+    if (TabByDocId(m_ocrJob.docId) < 0) {
+        StopOcr(kOcrDocChanged);
+        return;
+    }
+    if (img->skipped || !img->pixels.bits) {
+        ++(img->skipped ? m_ocrJob.skipped : m_ocrJob.failed);
+        OcrPageDone();
+        return;
+    }
+    m_ocr.Recognise(m_hwnd, img.release());
+}
+
+void MainWindow::OnOcrDone(OcrResult* result) {
+    std::unique_ptr<OcrResult> res(result);
+    if (!m_ocrJob.active || res->jobId != m_ocrJob.id) return;
+    if (res->fatal) {
+        StopOcr(res->error);
+        return;
+    }
+    if (TabByDocId(m_ocrJob.docId) < 0) {
+        StopOcr(kOcrDocChanged);
+        return;
+    }
+    if (!res->ok)
+        ++m_ocrJob.failed;
+    else if (!res->words.empty())
+        m_ocrJob.found.push_back({res->page, std::move(res->words)});
+    OcrPageDone();
+}
+
+// One page finished: ask for more, or add everything found as one edit.
+void MainWindow::OcrPageDone() {
+    --m_ocrJob.inFlight;
+    ++m_ocrJob.done;
+    if (m_ocrJob.done < (int)m_ocrJob.pages.size()) {
+        RequestOcrPages();
+        UpdateTitle();
+        return;
+    }
+    OcrJob job = std::move(m_ocrJob);
+    m_ocrJob = OcrJob();
+    UpdateTitle();
+    const int index = TabByDocId(job.docId);
+    if (index < 0) return;
+
+    auto plural = [](int n, const wchar_t* one, const wchar_t* many) {
+        return std::to_wstring(n) + L" " + (n == 1 ? one : many);
+    };
+    std::wstring notes;
+    if (job.skipped) notes += L" " + plural(job.skipped, L"page already had text and was", L"pages already had text and were") + L" skipped.";
+    if (job.failed) notes += L" " + plural(job.failed, L"page", L"pages") + L" could not be read.";
+    if (job.found.empty()) {
+        const std::wstring msg =
+            job.skipped == (int)job.pages.size()
+                ? L"The pages already have text, so there was nothing to recognise."
+                : L"No text was found." + notes +
+                      L"\n\nText recognition reads printed text in the languages of your Windows profile. "
+                      L"Handwriting, and very small or blurry text, may not be found.";
+        MessageBoxW(m_hwnd, msg.c_str(), APP_NAME, MB_ICONINFORMATION);
+        return;
+    }
+    std::sort(job.found.begin(), job.found.end(),
+              [](const OcrPage& a, const OcrPage& b) { return a.page < b.page; });
+    int words = 0;
+    for (const OcrPage& p : job.found) words += (int)p.words.size();
+    const int pages = (int)job.found.size();
+    EditOp op;
+    op.kind = EditOp::AddOcrText;
+    op.ocr = std::move(job.found);
+    SendEdit(std::move(op), index);
+    const std::wstring msg = L"Text was recognised on " + plural(pages, L"page", L"pages") + L" (" +
+                             plural(words, L"word", L"words") + L"). You can now search, select and copy it." +
+                             notes + L"\n\nSave the document to keep the text.";
+    MessageBoxW(m_hwnd, msg.c_str(), APP_NAME, MB_ICONINFORMATION);
+}
+
+void MainWindow::StopOcr(const std::wstring& why) {
+    if (!m_ocrJob.active) return;
+    m_ocr.Cancel(m_ocrJob.id);
+    m_ocrJob = OcrJob();
+    UpdateTitle();
+    if (!why.empty()) MessageBoxW(m_hwnd, why.c_str(), APP_NAME, MB_ICONWARNING);
+}
+
+void MainWindow::AddWatermark() {
+    if (!CanEdit()) return;
+    WatermarkOptions o = m_watermarkOptions;
+    o.pages = NewPageChoice(o.pages);
+    if (!ShowWatermarkDialog(m_inst, m_hwnd, o)) return;
+    m_watermarkOptions = o;
+    EditOp op;
+    op.kind = EditOp::Watermark;
+    op.pages = o.pages.pages;
+    op.text = o.text;
+    op.color = kWatermarkColors[std::clamp(o.color, 0, 4)];
+    op.opacity = kWatermarkOpacity[std::clamp(o.opacity, 0, 5)];
+    op.fontSize = kWatermarkSizes[std::clamp(o.size, 0, 5)];
+    op.diagonal = o.diagonal;
+    op.behind = o.behind;
+    SendEdit(std::move(op));
+}
+
+void MainWindow::AddPageNumbers() {
+    if (!CanEdit()) return;
+    PageNumberOptions o = m_numberOptions;
+    o.pages = NewPageChoice(o.pages);
+    if (!ShowPageNumberDialog(m_inst, m_hwnd, o)) return;
+    m_numberOptions = o;
+    EditOp op;
+    op.kind = EditOp::PageNumbers;
+    op.pages = o.pages.pages;
+    op.text = kNumberFormats[std::clamp(o.format, 0, 4)];
+    op.position = std::clamp(o.position, 0, 5);
+    op.firstNumber = o.start;
+    op.fontSize = kNumberSizes[std::clamp(o.size, 0, 5)];
+    op.color = RGB(0, 0, 0);
+    SendEdit(std::move(op));
+}
+
+void MainWindow::ExportPages() {
+    if (!CanEdit() || m_exporting || !Permitted(kPermCopy, L"copying its content")) return;
+    ExportOptions o = m_exportOptions;
+    o.pages = NewPageChoice(o.pages);
+    if (!ShowExportDialog(m_inst, m_hwnd, o)) return;
+    m_exportOptions = o;
+    const Tab& tab = Active();
+    const bool pictures = o.format == ExportFormat::Png || o.format == ExportFormat::Jpeg;
+    const wchar_t* filter = o.format == ExportFormat::Png    ? L"PNG pictures (*.png)\0*.png\0"
+                            : o.format == ExportFormat::Jpeg ? L"JPEG pictures (*.jpg)\0*.jpg;*.jpeg\0"
+                            : o.format == ExportFormat::Text ? L"Text files (*.txt)\0*.txt\0"
+                                                             : L"Markdown files (*.md)\0*.md\0";
+    const wchar_t* ext = o.format == ExportFormat::Png    ? L"png"
+                         : o.format == ExportFormat::Jpeg ? L"jpg"
+                         : o.format == ExportFormat::Text ? L"txt"
+                                                          : L"md";
+    std::wstring stem = FileNameFromPath(tab.path);
+    if (stem.size() > 4 && _wcsicmp(stem.c_str() + stem.size() - 4, L".pdf") == 0) stem.resize(stem.size() - 4);
+    if (pictures && o.pages.pages.size() == 1) stem += L"-" + std::to_wstring(o.pages.pages[0] + 1);
+    std::wstring suggested = stem + L"." + ext;
+    for (wchar_t& c : suggested)
+        if (wcschr(L"\\/:*?\"<>|", c)) c = L'-';
+    std::vector<wchar_t> buf(32768, L'\0');
+    wcsncpy_s(buf.data(), buf.size(), suggested.c_str(), _TRUNCATE);
+    const std::wstring dir = DirectoryFromPath(tab.path);
+    const bool oneFile = !pictures || o.pages.pages.size() == 1;
+    OPENFILENAMEW ofn{sizeof(ofn)};
+    ofn.hwndOwner = m_hwnd;
+    ofn.lpstrTitle = oneFile ? L"Export as" : L"Export as (each page gets its number added)";
+    ofn.lpstrFilter = filter;
+    ofn.lpstrFile = buf.data();
+    ofn.nMaxFile = (DWORD)buf.size();
+    ofn.lpstrInitialDir = dir.empty() ? nullptr : dir.c_str();
+    ofn.lpstrDefExt = ext;
+    ofn.Flags = OFN_PATHMUSTEXIST | OFN_EXPLORER | OFN_HIDEREADONLY | (oneFile ? OFN_OVERWRITEPROMPT : 0);
+    if (!GetSaveFileNameW(&ofn)) return;
+
+    ExportJob job;
+    job.docId = tab.docId;
+    job.format = o.format;
+    job.pages = o.pages.pages;
+    job.path = FullPath(buf.data());
+    job.dpi = kExportDpi[std::clamp(o.dpi, 0, 2)];
+    m_exporting = true;
+    m_exportDone = 0;
+    m_exportTotal = (int)job.pages.size();
+    m_exportFormat = o.format;
+    m_worker.StartExport(std::move(job));
+    UpdateTitle();
+}
+
+void MainWindow::OnExportProgress(ExportProgress* progress) {
+    std::unique_ptr<ExportProgress> res(progress);
+    if (!m_exporting) return;
+    if (!res->finished) {
+        m_exportDone = res->done;
+        m_exportTotal = res->total;
+        UpdateTitle();
+        return;
+    }
+    m_exporting = false;
+    UpdateTitle();
+    if (!res->ok) {
+        if (!res->error.empty()) MessageBoxW(m_hwnd, res->error.c_str(), APP_NAME, MB_ICONWARNING);
+        return;
+    }
+    if (res->files.empty()) return;
+    const std::wstring& first = res->files[0];
+    if (m_exportFormat == ExportFormat::Png || m_exportFormat == ExportFormat::Jpeg) {
+        const std::wstring msg = (res->files.size() == 1
+                                      ? L"Saved \x201C" + FileNameFromPath(first) + L"\x201D."
+                                      : L"Saved " + std::to_wstring(res->files.size()) + L" pictures in\n" +
+                                            DirectoryFromPath(first) + L".") +
+                                 L"\n\nShow in the folder?";
+        if (MessageBoxW(m_hwnd, msg.c_str(), APP_NAME, MB_YESNO | MB_ICONINFORMATION) == IDYES) {
+            const std::wstring args = L"/select,\"" + first + L"\"";
+            ShellExecuteW(m_hwnd, nullptr, L"explorer.exe", args.c_str(), nullptr, SW_SHOWNORMAL);
+        }
+        return;
+    }
+    std::wstring msg = L"Saved \x201C" + FileNameFromPath(first) + L"\x201D.";
+    if (res->noText)
+        msg += L"\n\nNo text was found on these pages. If they are scanned, use Edit PDF > Recognise "
+               L"text (OCR) first, then export again.";
+    msg += L"\n\nOpen it?";
+    if (MessageBoxW(m_hwnd, msg.c_str(), APP_NAME, MB_YESNO | MB_ICONINFORMATION) == IDYES)
+        ShellExecuteW(m_hwnd, nullptr, first.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+}
+
+// ===========================================================================
+// Compress, compare, password protection and redaction
+// ===========================================================================
+void MainWindow::CompressDocument() {
+    if (!CanEdit()) return;
+    CompressOptions o = m_compressOptions;
+    if (!ShowCompressDialog(m_inst, m_hwnd, o)) return;
+    m_compressOptions = o;
+    EditOp op;
+    op.kind = EditOp::Compress;
+    op.dpi = kCompressLevels[o.level].dpi;
+    op.quality = kCompressLevels[o.level].quality;
+    SendEdit(std::move(op));  // the worker's note says how much smaller it got
+}
+
+HMENU MainWindow::CreateCompareMenu() {
+    HMENU m = CreatePopupMenu();
+    int others = 0;
+    for (size_t i = 0; i < m_tabs.size() && i < 40; ++i) {
+        const Tab& t = *m_tabs[i];
+        if ((int)i == m_active || !t.docId || t.pendingDocId) continue;
+        std::wstring name = FileNameFromPath(t.path);
+        for (size_t at = 0; (at = name.find(L'&', at)) != std::wstring::npos; at += 2) name.insert(at, 1, L'&');
+        AppendMenuW(m, MF_STRING, ID_COMPARE_TAB_FIRST + (UINT)i, name.c_str());
+        ++others;
+    }
+    if (others) AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_STRING, ID_COMPARE_FILE, L"A &file\x2026");
+    return m;
+}
+
+void MainWindow::CompareWith(int tabIndex) {
+    const Tab& tab = Active();
+    if (!tab.docId || tab.pendingDocId) return;
+    if (m_comparing) {
+        MessageBoxW(m_hwnd, L"A comparison is already running.", APP_NAME, MB_ICONINFORMATION);
+        return;
+    }
+    std::wstring otherPath;
+    uint32_t otherDoc = 0;
+    if (tabIndex >= 0) {
+        if (tabIndex >= (int)m_tabs.size() || !m_tabs[(size_t)tabIndex]->docId) return;
+        otherDoc = m_tabs[(size_t)tabIndex]->docId;
+        otherPath = m_tabs[(size_t)tabIndex]->path;
+    } else {
+        const auto files = PickPdfFiles(false, L"Choose the other version to compare with");
+        if (files.empty()) return;
+        otherPath = files[0];
+    }
+    // The marked copy goes to the temporary folder; Save as keeps it.
+    wchar_t tempDir[MAX_PATH + 1] = L"";
+    GetTempPathW(MAX_PATH, tempDir);
+    std::wstring dir = std::wstring(tempDir) + L"Feather PDF comparisons";
+    CreateDirectoryW(dir.c_str(), nullptr);
+    std::wstring stem = FileNameFromPath(otherPath);
+    if (stem.size() > 4 && _wcsicmp(stem.c_str() + stem.size() - 4, L".pdf") == 0) stem.resize(stem.size() - 4);
+    std::wstring out = dir + L"\\" + stem + L" (compared).pdf";
+    for (int n = 2; FileExists(out) && n < 1000; ++n)
+        out = dir + L"\\" + stem + L" (compared " + std::to_wstring(n) + L").pdf";
+    m_compareNames = L"\x201C" + FileNameFromPath(tab.path) + L"\x201D with \x201C" + FileNameFromPath(otherPath) + L"\x201D";
+    m_comparing = true;
+    m_worker.Compare(tab.docId, otherPath, otherDoc, out);
+    UpdateTitle();
+}
+
+void MainWindow::OnCompared(CompareResult* result) {
+    std::unique_ptr<CompareResult> res(result);
+    m_comparing = false;
+    UpdateTitle();
+    if (!res->ok) {
+        MessageBoxW(m_hwnd, res->error.c_str(), APP_NAME, MB_ICONWARNING);
+        return;
+    }
+    const int total = res->added + res->removed + res->changed;
+    if (total == 0) {
+        DeleteFileW(res->path.c_str());
+        MessageBoxW(m_hwnd, (L"Compared " + m_compareNames + L":\n\nthe text is the same.").c_str(), APP_NAME,
+                    MB_ICONINFORMATION);
+        return;
+    }
+    Tab* into = m_markInto;
+    m_markInto = nullptr;
+    const int intoIndex = into ? IndexOf(into) : -1;
+    const bool beside = intoIndex >= 0 && into->partner && ConfirmCloseTab(intoIndex);
+    if (beside)
+        OpenFile(res->path, 0, {}, intoIndex, false);  // Mark differences: in the right side
+    else
+        OpenFile(res->path, 0);
+    const std::wstring msg = L"Compared " + m_compareNames + L": " + std::to_wstring(total) +
+                             (total == 1 ? L" difference" : L" differences") + L".\n\n" +
+                             std::to_wstring(res->added) + L" added (green), " + std::to_wstring(res->changed) +
+                             L" changed (orange, the old text in its comment), " + std::to_wstring(res->removed) +
+                             L" removed (a note where the text was).\n\n" +
+                             (beside ? std::wstring(L"The right side now shows the second document with the differences marked, "
+                                                    L"beside the first.")
+                                     : std::wstring(L"The new tab shows the second document with the differences marked.")) +
+                             L" Edit PDF \x203A All comments lists them all.";
+    MessageBoxW(m_hwnd, msg.c_str(), APP_NAME, MB_ICONINFORMATION);
+}
+
+bool MainWindow::Permitted(uint32_t permission, const wchar_t* what) {
+    const Tab& tab = Active();
+    if (!tab.docId || (tab.info.permissions & permission)) return true;
+    const std::wstring msg = std::wstring(L"The author of this document does not allow ") + what +
+                             L".\n\nIf you have the owner password, use Edit PDF \x203A Password protection to "
+                             L"unlock it.";
+    MessageBoxW(m_hwnd, msg.c_str(), APP_NAME, MB_ICONINFORMATION);
+    return false;
+}
+
+bool MainWindow::EditPermitted(const EditOp& op) {
+    switch (op.kind) {
+        case EditOp::Markup:
+        case EditOp::AddNote:
+        case EditOp::EditComment:
+        case EditOp::DeleteAnnot:
+        case EditOp::AddShape:
+        case EditOp::AddStamp:
+            if (Active().info.permissions & (kPermAnnotate | kPermModify)) return true;
+            return Permitted(kPermAnnotate, L"comments and markings");
+        case EditOp::SetField:
+            if (Active().info.permissions & (kPermFillForms | kPermAnnotate | kPermModify)) return true;
+            return Permitted(kPermFillForms, L"filling in its form");
+        default:
+            return Permitted(kPermModify, L"changes to it");
+    }
+}
+
+void MainWindow::UnlockDocument() {
+    Tab& tab = Active();
+    if (tab.dirty) {
+        MessageBoxW(m_hwnd, L"Save the document (or undo the changes) first; it is opened again to unlock it.",
+                    APP_NAME, MB_ICONINFORMATION);
+        return;
+    }
+    PasswordPrompt prompt;
+    prompt.fileName = FileNameFromPath(tab.path);
+    prompt.unlock = true;
+    if (DialogBoxParamW(m_inst, MAKEINTRESOURCEW(IDD_PASSWORD), m_hwnd, PasswordDlgProc, (LPARAM)&prompt) != IDOK ||
+        prompt.password.empty())
+        return;
+    std::string pw = WideToUtf8(prompt.password);
+    SecureZeroMemory(prompt.password.data(), prompt.password.size() * sizeof(wchar_t));
+    tab.unlocking = true;
+    OpenFile(tab.path, tab.view->CurrentPage(), pw, m_active);
+    SecureZeroMemory(pw.data(), pw.size());
+}
+
+void MainWindow::ProtectDocument() {
+    Tab& tab = Active();
+    if (!CanEdit()) return;
+    if (tab.info.encrypted && !FullAccess(tab.info.permissions) && tab.info.pendingSecurity < 0) {
+        UnlockDocument();  // limited: only the owner may change the protection
+        return;
+    }
+    ProtectOptions o;
+    o.state = tab.info.pendingSecurity == 1   ? L"New protection is set. It is applied when you save the document."
+              : tab.info.pendingSecurity == 0 ? L"The protection will be removed when you save the document."
+              : tab.info.encrypted            ? L"This document is protected with a password. Set a new one, or remove it."
+                                              : L"This document is not protected.";
+    o.canRemove = tab.info.encrypted || tab.info.pendingSecurity == 1;
+    if (!ShowProtectDialog(m_inst, m_hwnd, o)) return;
+    EditOp op;
+    op.kind = EditOp::SetSecurity;
+    if (o.remove) {
+        op.encrypt = false;
+    } else {
+        op.encrypt = true;
+        op.userPassword = WideToUtf8(o.userPassword);
+        op.ownerPassword = WideToUtf8(o.ownerPassword);
+        op.permissions = kPermAll;
+        if (o.limit)
+            op.permissions = (uint32_t)kPermAccessibility | (o.allowPrint ? (uint32_t)(kPermPrint | kPermPrintHigh) : 0u) |
+                             (o.allowCopy ? (uint32_t)kPermCopy : 0u) |
+                             (o.allowChange ? (uint32_t)(kPermModify | kPermAnnotate | kPermFillForms | kPermAssemble) : 0u);
+    }
+    SecureZeroMemory(o.userPassword.data(), o.userPassword.size() * sizeof(wchar_t));
+    SecureZeroMemory(o.ownerPassword.data(), o.ownerPassword.size() * sizeof(wchar_t));
+    const bool remove = !op.encrypt;
+    SendEdit(std::move(op));
+    MessageBoxW(m_hwnd,
+                remove ? L"The password will be removed when you save the document (Ctrl+S)."
+                       : L"The document will be protected when you save it (Ctrl+S, or Save as for a protected "
+                         L"copy). Undo (Ctrl+Z) takes it back before then.",
+                APP_NAME, MB_ICONINFORMATION);
+}
+
+HMENU MainWindow::CreateRedactMenu() {
+    PdfView& view = View();
+    const size_t marks = view.RedactionMarks().size();
+    HMENU m = CreatePopupMenu();
+    AppendMenuW(m, MF_STRING | (view.Tool() == ViewTool::Redact ? MF_CHECKED : 0), ID_TOOL_REDACT,
+                L"&Mark areas to redact");
+    AppendMenuW(m, MF_STRING | (view.HasSelection() ? 0 : MF_GRAYED), ID_REDACT_SELECTION, L"Mark &selected text");
+    AppendMenuW(m, MF_STRING, ID_REDACT_FIND, L"&Find and mark\x2026");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    const std::wstring apply = L"&Apply redactions" + (marks ? L" (" + std::to_wstring(marks) + L")" : L"") + L"\x2026";
+    AppendMenuW(m, MF_STRING | (marks ? 0 : MF_GRAYED), ID_REDACT_APPLY, apply.c_str());
+    AppendMenuW(m, MF_STRING | (marks ? 0 : MF_GRAYED), ID_REDACT_CLEAR, L"&Clear marks");
+    return m;
+}
+
+void MainWindow::StartRedactTool() {
+    if (!CanEdit()) return;
+    PdfView& view = View();
+    view.SetTool(view.Tool() == ViewTool::Redact ? ViewTool::Select : ViewTool::Redact);
+    UpdateUi();
+}
+
+void MainWindow::RedactSelection() {
+    if (!CanEdit()) return;
+    PdfView& view = View();
+    const std::vector<PageRect> rects = view.SelectionRects();
+    if (rects.empty()) return;
+    view.AddRedactionMarks(rects);
+    view.ClearSelection();
+}
+
+void MainWindow::FindForRedaction() {
+    if (!CanEdit()) return;
+    RedactFindOptions o = m_redactFind;
+    if (!ShowRedactFindDialog(m_inst, m_hwnd, o)) return;
+    m_redactFind = o;
+    const int patterns = (o.emails ? kFindEmails : 0) | (o.phones ? kFindPhones : 0) | (o.numbers ? kFindNumbers : 0);
+    std::wstring text = o.text;
+    if (text.find_first_not_of(L" \t") == std::wstring::npos) text.clear();
+    m_worker.FindForRedaction(Active().docId, text, o.matchCase, patterns);
+}
+
+void MainWindow::OnRedactFound(RedactFindResult* result) {
+    std::unique_ptr<RedactFindResult> res(result);
+    const int index = TabByDocId(res->docId);
+    if (index < 0) return;
+    Tab& tab = *m_tabs[(size_t)index];
+    if (res->marks.empty()) {
+        MessageBoxW(m_hwnd, L"Nothing was found to mark.", APP_NAME, MB_ICONINFORMATION);
+        return;
+    }
+    tab.view->AddRedactionMarks(res->marks);
+    std::set<int> pages;
+    for (const PageRect& m : res->marks) pages.insert(m.page);
+    const std::wstring msg = std::to_wstring(res->marks.size()) + (res->marks.size() == 1 ? L" place was" : L" places were") +
+                             L" marked on " + std::to_wstring(pages.size()) + (pages.size() == 1 ? L" page" : L" pages") +
+                             L".\n\nCheck them, remove any you want to keep (right-click a mark), then use Edit PDF "
+                             L"\x203A Redact \x203A Apply redactions.";
+    MessageBoxW(m_hwnd, msg.c_str(), APP_NAME, MB_ICONINFORMATION);
+}
+
+void MainWindow::ApplyRedactions() {
+    if (!CanEdit()) return;
+    PdfView& view = View();
+    const std::vector<PageRect> marks = view.RedactionMarks();
+    if (marks.empty()) {
+        MessageBoxW(m_hwnd, L"Mark what to redact first: Edit PDF \x203A Redact \x203A Mark areas, Mark selected text, or Find and mark.",
+                    APP_NAME, MB_ICONINFORMATION);
+        return;
+    }
+    const std::wstring msg = L"Redaction removes the text, pictures and drawings under the " +
+                             std::to_wstring(marks.size()) + (marks.size() == 1 ? L" marked area" : L" marked areas") +
+                             L", and the comments and links touching them, and covers them with black.\n\nOnce the "
+                             L"document is saved this can not be undone. Use Save as to keep the original.\n\nApply "
+                             L"the redactions now?";
+    if (MessageBoxW(m_hwnd, msg.c_str(), APP_NAME, MB_OKCANCEL | MB_ICONWARNING) != IDOK) return;
+    EditOp op;
+    op.kind = EditOp::Redact;
+    op.marks = marks;
+    view.ClearRedactionMarks();
+    view.SetTool(ViewTool::Select);
+    SendEdit(std::move(op));
+}
+
+// ===========================================================================
+// Geometry: ruler, protractor, rulers along the edges, units and scale
+// ===========================================================================
+void MainWindow::ApplyMeasureOptions() {
+    MeasureOptions o;
+    const Unit& u = kUnits[std::clamp(m_settings.measureUnit, 0, 5)];
+    o.unit = u.name;
+    o.perPoint = u.perPoint;
+    o.scale = std::max(1, m_settings.measureScale);
+    o.rulers = m_settings.showRulers;
+    for (auto& t : m_tabs) t->view->SetMeasureOptions(o);
+}
+
+void MainWindow::SetMeasureTool(ViewTool tool) {
+    PdfView& view = View();
+    if (!view.HasDocument()) return;
+    if (m_fullscreen) ToggleFullscreen();
+    view.SetTool(view.Tool() == tool ? ViewTool::Select : tool);
+    UpdateUi();
+}
+
+void MainWindow::SetCustomScale() {
+    std::wstring text = std::to_wstring(m_settings.measureScale);
+    if (!InputBox(L"Drawing scale",
+                  L"The drawing's scale is 1 to how many? (For example 250 for a plan drawn at 1:250.)", text))
+        return;
+    const long n = wcstol(text.c_str(), nullptr, 10);
+    if (n < 1 || n > 1000000) {
+        MessageBoxW(m_hwnd, L"Enter a whole number from 1 to 1000000.", APP_NAME, MB_ICONWARNING);
+        return;
+    }
+    m_settings.measureScale = (int)n;
+    ApplyMeasureOptions();
+}
+
+void MainWindow::ShowGeometryMenu() {
+    PdfView& view = View();
+    const UINT doc = view.HasDocument() ? 0 : MF_GRAYED;
+    HMENU units = CreatePopupMenu();
+    for (int i = 0; i < 6; ++i) AppendMenuW(units, MF_STRING, ID_UNIT_FIRST + i, kUnits[i].label);
+    CheckMenuRadioItem(units, ID_UNIT_FIRST, ID_UNIT_FIRST + 5, ID_UNIT_FIRST + std::clamp(m_settings.measureUnit, 0, 5),
+                       MF_BYCOMMAND);
+    HMENU scales = CreatePopupMenu();
+    bool known = false;
+    for (int i = 0; i < (int)(sizeof(kScales) / sizeof(kScales[0])); ++i) {
+        const std::wstring label = L"1:" + std::to_wstring(kScales[i]) + (kScales[i] == 1 ? L"  (actual size)" : L"");
+        const bool on = kScales[i] == m_settings.measureScale;
+        known = known || on;
+        AppendMenuW(scales, MF_STRING | (on ? MF_CHECKED : 0), ID_SCALE_FIRST + i, label.c_str());
+    }
+    AppendMenuW(scales, MF_SEPARATOR, 0, nullptr);
+    const std::wstring custom = known ? L"&Other\x2026" : L"1:" + std::to_wstring(m_settings.measureScale) + L"  (o&ther\x2026)";
+    AppendMenuW(scales, MF_STRING | (known ? 0 : MF_CHECKED), ID_SCALE_CUSTOM, custom.c_str());
+
+    HMENU m = CreatePopupMenu();
+    AppendMenuW(m, MF_STRING | doc | (view.Tool() == ViewTool::Ruler ? MF_CHECKED : 0), ID_TOOL_RULER,
+                L"&Ruler (measure a distance)");
+    AppendMenuW(m, MF_STRING | doc | (view.Tool() == ViewTool::Protractor ? MF_CHECKED : 0), ID_TOOL_PROTRACTOR,
+                L"&Protractor (measure an angle)");
+    AppendMenuW(m, MF_STRING | (m_settings.showRulers ? MF_CHECKED : 0), ID_SHOW_RULERS, L"Show r&ulers on the page");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_POPUP, (UINT_PTR)units, L"&Units");
+    AppendMenuW(m, MF_POPUP, (UINT_PTR)scales, L"Drawing &scale");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    const UINT has = view.HasMeasurements() ? 0 : MF_GRAYED;
+    AppendMenuW(m, MF_STRING | has, ID_MEASURE_KEEP_ALL, L"&Keep the measurements on the page");
+    AppendMenuW(m, MF_STRING | has, ID_MEASURE_CLEAR, L"&Clear the measurements");
+    const RECT rc = m_toolbar.ItemScreenRect(ID_GEOMETRY_MENU);
+    TrackPopupMenu(m, TPM_LEFTALIGN | TPM_TOPALIGN, rc.left, rc.bottom, 0, m_hwnd, nullptr);
+    DestroyMenu(m);
+}
+
+// ===========================================================================
+// Command palette (Ctrl+K)
+// ===========================================================================
+void MainWindow::ShowCommandPalette() {
+    if (m_fullscreen && !m_presenting) ToggleFullscreen();
+    PdfView& view = View();
+    const bool doc = view.HasDocument();
+    const bool sel = view.HasSelection();
+    const Tab& tab = Active();
+    std::vector<PaletteCommand> c = {
+        {ID_OPEN, L"Open a PDF", L"Ctrl+O", L"file new tab browse"},
+        {ID_SAVE, L"Save", L"Ctrl+S", L"", doc && tab.dirty},
+        {ID_SAVE_AS, L"Save as", L"Ctrl+Shift+S", L"copy", doc},
+        {ID_PRINT, L"Print", L"Ctrl+P", L"printer paper", doc},
+        {ID_CLOSE_TAB, L"Close tab", L"Ctrl+W", L""},
+        {ID_UNDO, L"Undo", L"Ctrl+Z", L"", doc && tab.canUndo},
+        {ID_REDO, L"Redo", L"Ctrl+Y", L"", doc && tab.canRedo},
+        {ID_EDIT_TEXT, L"Edit text", L"Ctrl+E", L"change words typo correct modify", doc},
+        {ID_REPLACE_TEXT, L"Find and replace text", L"Ctrl+Shift+H", L"substitute change everywhere", doc},
+        {ID_ADD_COMMENT, L"Add a comment", L"Ctrl+M", L"note sticky review", doc},
+        {ID_COMMENT_SELECTION, L"Comment on the selected text", L"Ctrl+Shift+M", L"note", doc && sel},
+        {ID_SHOW_COMMENTS, L"List all comments", L"", L"notes review annotations", doc},
+        {ID_OCR, L"Recognise text (OCR)", L"", L"scan scanned searchable ocr read image text", doc && !m_ocrJob.active},
+        {ID_WATERMARK, L"Add a watermark", L"", L"confidential draft stamp background", doc},
+        {ID_PAGE_NUMBERS, L"Add page numbers", L"", L"numbering footer header", doc},
+        {ID_EXPORT, L"Export as pictures, text or Markdown", L"", L"png jpeg jpg image txt md convert save", doc && !m_exporting},
+        {ID_COMPRESS, L"Compress (make the file smaller)", L"", L"reduce size optimize shrink", doc},
+        {ID_COMPARE, L"Compare with another PDF", L"", L"difference diff versions changes", doc && !m_comparing},
+        {ID_BESIDE_FILE, L"Open another file beside this one (side by side)", L"Ctrl+Shift+O", L"split two documents compare view parallel same tab", true},
+        {ID_SPLIT_OTHER, L"Side by side: work in the other document", L"F6", L"switch pane split", tab.partner != nullptr},
+        {ID_SPLIT_SWAP, L"Side by side: swap the documents", L"", L"exchange left right split", tab.partner != nullptr},
+        {ID_SPLIT_SYNC_SCROLL, L"Side by side: scroll together on or off", L"", L"sync synchronise linked split", tab.partner != nullptr},
+        {ID_SPLIT_SYNC_ZOOM, L"Side by side: zoom together on or off", L"", L"sync synchronise linked split", tab.partner != nullptr},
+        {ID_SPLIT_ORIENT, L"Side by side: one above the other, or side by side", L"", L"stacked vertical horizontal split", tab.partner != nullptr},
+        {ID_SPLIT_MARK, L"Side by side: mark the differences", L"", L"compare diff split", tab.partner != nullptr && !m_comparing},
+        {ID_PASSWORD, L"Password protection", L"", L"encrypt protect lock security unlock remove password", doc},
+        {ID_TOOL_REDACT, L"Redact: mark areas", L"", L"black out remove hide sensitive censor", doc},
+        {ID_REDACT_SELECTION, L"Redact the selected text", L"", L"black out remove hide", doc && sel},
+        {ID_REDACT_FIND, L"Find and mark for redaction", L"", L"email phone number black out", doc},
+        {ID_REDACT_APPLY, L"Apply redactions", L"", L"black out remove", doc && !View().RedactionMarks().empty()},
+        {ID_TOOL_RULER, L"Ruler: measure a distance", L"", L"geometry scale length measure", doc},
+        {ID_TOOL_PROTRACTOR, L"Protractor: measure an angle", L"", L"geometry angle degrees measure", doc},
+        {ID_SHOW_RULERS, L"Show rulers on the page", L"", L"geometry scale", true},
+        {ID_HIGHLIGHT, L"Highlight the selected text", L"Ctrl+H", L"marker", doc && sel},
+        {ID_UNDERLINE, L"Underline the selected text", L"Ctrl+U", L"", doc && sel},
+        {ID_STRIKEOUT, L"Strike through the selected text", L"Ctrl+Shift+K", L"strikethrough cross out", doc && sel},
+        {ID_SQUIGGLY, L"Squiggly underline", L"", L"wavy", doc && sel},
+        {ID_TOOL_ADD_TEXT, L"Add text", L"", L"type write typewriter text box", doc},
+        {ID_TOOL_RECT, L"Draw a rectangle", L"", L"box square shape", doc},
+        {ID_TOOL_ELLIPSE, L"Draw an ellipse", L"", L"circle oval shape", doc},
+        {ID_TOOL_LINE, L"Draw a line", L"", L"shape", doc},
+        {ID_TOOL_ARROW, L"Draw an arrow", L"", L"pointer shape", doc},
+        {ID_TOOL_PEN, L"Draw with the pen", L"", L"freehand ink pencil sketch", doc},
+        {ID_STAMP_FIRST, L"Stamp: APPROVED", L"", L"stamp", doc},
+        {ID_STAMP_FIRST + 1, L"Stamp: REJECTED", L"", L"stamp", doc},
+        {ID_STAMP_FIRST + 3, L"Stamp: CONFIDENTIAL", L"", L"stamp", doc},
+        {ID_STAMP_CUSTOM, L"Custom stamp", L"", L"stamp", doc},
+        {ID_SIGNATURE_USE, L"Sign the document", L"", L"signature autograph", doc},
+        {ID_SIGNATURE_NEW, L"Create a new signature", L"", L"sign autograph", doc},
+        {ID_INSERT_IMAGE, L"Insert a picture", L"", L"image photo logo png jpg", doc},
+        {ID_DELETE_PAGES, L"Delete the current or selected pages", L"", L"remove", doc},
+        {ID_ROTATE_PAGES_CW, L"Rotate pages clockwise (saved)", L"", L"turn", doc},
+        {ID_ROTATE_PAGES_CCW, L"Rotate pages counterclockwise (saved)", L"", L"turn", doc},
+        {ID_INSERT_BLANK, L"Insert a blank page", L"", L"add empty", doc},
+        {ID_INSERT_FILE, L"Insert pages from a file", L"", L"add merge", doc},
+        {ID_MERGE_FILES, L"Merge PDFs into this document", L"", L"combine join", doc},
+        {ID_MERGE_TABS, L"Merge open tabs into this document", L"", L"combine join", doc && m_tabs.size() > 1},
+        {ID_EXTRACT_PAGES, L"Extract or split pages", L"", L"split save pages separate", doc},
+        {ID_COPY_PAGES, L"Copy the selected pages", L"Ctrl+C (thumbnails)", L"duplicate clipboard pages", doc},
+        {ID_CUT_PAGES, L"Cut the selected pages", L"Ctrl+X (thumbnails)", L"move clipboard pages", doc},
+        {ID_PASTE_PAGES_AFTER, L"Paste pages after the selected page", L"Ctrl+V", L"insert clipboard pages", doc},
+        {ID_PASTE_PAGES_TABS, L"Paste pages into several tabs", L"", L"insert clipboard pages documents", doc},
+        {ID_CROP_PAGES, L"Crop pages", L"", L"margins trim cut page size a4 letter resize", doc},
+        {ID_TOOL_CROP, L"Crop by drawing a box", L"", L"trim cut area keep", doc},
+        {ID_NUP, L"Pages per sheet and booklets", L"", L"n-up 2 4 6 9 booklet print fold sheet", doc},
+        {ID_GOTO_PAGE, L"Go to page", L"Ctrl+G", L"jump", doc},
+        {ID_FIRST_PAGE, L"First page", L"Home", L"start beginning", doc},
+        {ID_LAST_PAGE, L"Last page", L"End", L"end", doc},
+        {ID_BACK, L"Back", L"Alt+Left", L"previous history", doc && view.CanGoBack()},
+        {ID_FORWARD, L"Forward", L"Alt+Right", L"next history", doc && view.CanGoForward()},
+        {ID_SEARCH, L"Search in the document", L"Ctrl+F", L"find", doc},
+        {ID_FIT_WIDTH, L"Fit width", L"Ctrl+2", L"zoom", doc},
+        {ID_FIT_PAGE, L"Fit page", L"Ctrl+0", L"zoom whole", doc},
+        {ID_ACTUAL_SIZE, L"Actual size (100%)", L"Ctrl+1", L"zoom", doc},
+        {ID_ZOOM_IN, L"Zoom in", L"Ctrl++", L"bigger", doc},
+        {ID_ZOOM_OUT, L"Zoom out", L"Ctrl+-", L"smaller", doc},
+        {ID_SINGLE_PAGE, L"Single page view", L"", L"layout", doc},
+        {ID_CONTINUOUS, L"Continuous view", L"", L"layout scroll", doc},
+        {ID_VIEW_TWO_PAGE, L"Two pages side by side", L"", L"layout book spread", doc},
+        {ID_ROTATE_LEFT, L"Rotate the view left", L"Ctrl+L", L"turn", doc},
+        {ID_ROTATE_RIGHT, L"Rotate the view right", L"Ctrl+R", L"turn", doc},
+        {ID_PRESENT, L"Presentation", L"F5", L"slideshow present full screen", doc},
+        {ID_FULLSCREEN, L"Full screen", L"F11", L"", true},
+        {ID_COLORS_NORMAL, L"Page colours: normal", L"", L"light", doc},
+        {ID_COLORS_DARK, L"Page colours: dark (night mode)", L"", L"night black invert", doc},
+        {ID_COLORS_DIM, L"Page colours: dimmed", L"", L"grey", doc},
+        {ID_THEME_LIGHT, L"Light theme", L"", L"appearance"},
+        {ID_THEME_DARK, L"Dark theme", L"", L"appearance night"},
+        {ID_THEME_SYSTEM, L"Theme like Windows", L"", L"appearance system"},
+        {ID_SIDEBAR_BOOKMARKS, L"Bookmarks panel", L"Ctrl+B", L"outline contents", doc},
+        {ID_SIDEBAR_THUMBNAILS, L"Thumbnails panel", L"Ctrl+Shift+B", L"pages preview", doc},
+        {ID_COPY, L"Copy the selected text", L"Ctrl+C", L"", doc && sel},
+        {ID_SELECT_ALL, L"Select all text", L"Ctrl+A", L"", doc},
+        {ID_COPY_PAGE_IMAGE, L"Copy the page as a picture", L"", L"image clipboard", doc},
+        {ID_COPY_AREA_IMAGE, L"Copy an area as a picture", L"", L"image clipboard snapshot", doc},
+        {ID_PROPERTIES, L"Document properties (title, author, keywords)", L"Ctrl+D", L"info author title subject keywords metadata edit", doc},
+        {ID_REGISTER_DEFAULT, L"Set as the default PDF viewer", L"", L"associate"},
+        {ID_ABOUT, L"About Feather PDF", L"", L"version licenses"},
+        {ID_EXIT, L"Exit", L"", L"quit close"},
+    };
+    for (size_t i = 0; i < m_settings.recent.size() && i < 10; ++i)
+        c.push_back({ID_RECENT_FIRST + (int)i, L"Open recent: " + FileNameFromPath(m_settings.recent[i]), L"",
+                     m_settings.recent[i]});
+    m_palette.Show(m_hwnd, std::move(c), [this](int id, const std::wstring& arg) { RunPaletteCommand(id, arg); });
+}
+
+void MainWindow::RunPaletteCommand(int id, const std::wstring& arg) {
+    PdfView& view = View();
+    if (id == kPaletteGoTo) {
+        const long page = wcstol(arg.c_str(), nullptr, 10);
+        if (view.HasDocument() && page >= 1) {
+            view.PushHistory();
+            view.GoToPage((int)std::min<long>(page, view.PageCount()) - 1);
+        }
+    } else if (id == kPaletteZoom) {
+        const long pct = wcstol(arg.c_str(), nullptr, 10);
+        if (view.HasDocument() && pct > 0) view.SetZoom(std::clamp(pct / 100.0, PdfView::kMinZoom, PdfView::kMaxZoom));
+    } else if (id == kPaletteFind) {
+        if (!view.HasDocument()) return;
+        ShowSearch(true);
+        SetWindowTextW(m_searchEdit, arg.c_str());
+        StartSearch();
+    } else if (id > 0) {
+        OnCommand(id, 0, nullptr);
+    }
+    if (!m_palette.IsOpen() && GetFocus() == nullptr) SetFocus(view.Hwnd());
+}
+
+// ===========================================================================
+// Recent files, presentation
+// ===========================================================================
+void MainWindow::AddRecent(const std::wstring& path) {
+    if (path.empty()) return;
+    auto& list = m_settings.recent;
+    list.erase(std::remove_if(list.begin(), list.end(), [&](const std::wstring& p) { return SamePath(p, path); }),
+               list.end());
+    list.insert(list.begin(), path);
+    if (list.size() > 20) list.resize(20);
+}
+
+HMENU MainWindow::CreateRecentMenu() {
+    HMENU m = CreatePopupMenu();
+    for (size_t i = 0; i < m_settings.recent.size() && i < 20; ++i) {
+        std::wstring name;  // "&" in a file name is not a menu accelerator
+        for (wchar_t ch : FileNameFromPath(m_settings.recent[i])) {
+            if (ch == L'&') name += L'&';
+            name += ch;
+        }
+        const std::wstring label = (i < 9 ? L"&" : L"") + std::to_wstring(i + 1) + L"  " + name;
+        AppendMenuW(m, MF_STRING, ID_RECENT_FIRST + (int)i, label.c_str());
+    }
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_STRING, ID_RECENT_CLEAR, L"&Clear the list");
+    return m;
+}
+
+void MainWindow::TogglePresentation() {
+    PdfView& view = View();
+    if (!m_presenting) {
+        if (!view.HasDocument()) return;
+        m_presenting = true;
+        m_presentWasFullscreen = m_fullscreen;
+        m_presentViewMode = view.GetViewMode();
+        m_presentZoomMode = view.GetZoomMode();
+        m_presentZoom = view.Zoom();
+        if (m_searchVisible) ShowSearch(false);
+        if (!m_fullscreen) ToggleFullscreen();
+        view.SetPresenting(true);
+        view.SetViewMode(ViewMode::Single);
+        view.SetZoomMode(ZoomMode::FitPage);
+    } else {
+        m_presenting = false;
+        view.SetPresenting(false);
+        view.SetViewMode(m_presentViewMode);
+        if (m_presentZoomMode == ZoomMode::Custom)
+            view.SetZoom(m_presentZoom);
+        else
+            view.SetZoomMode(m_presentZoomMode);
+        if (m_fullscreen && !m_presentWasFullscreen) ToggleFullscreen();
+    }
+    SetFocus(view.Hwnd());
+    UpdateUi();
+}
+
+// ===========================================================================
+// About, licences, input box
+// ===========================================================================
+namespace {
+std::wstring NoticesText() {
+    HRSRC res = FindResourceW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDR_NOTICES), RT_RCDATA);
+    HGLOBAL data = res ? LoadResource(GetModuleHandleW(nullptr), res) : nullptr;
+    const char* bytes = data ? (const char*)LockResource(data) : nullptr;
+    const DWORD size = res ? SizeofResource(GetModuleHandleW(nullptr), res) : 0;
+    const std::wstring text = bytes ? Utf8ToWide(std::string(bytes, size)) : L"";
+    // Shown as plain text: the Markdown table and marks are tidied up.
+    std::wstring out;
+    size_t pos = 0;
+    while (pos < text.size()) {
+        size_t end = text.find(L'\n', pos);
+        if (end == std::wstring::npos) end = text.size();
+        std::wstring line = text.substr(pos, end - pos);
+        pos = end + 1;
+        if (!line.empty() && line.back() == L'\r') line.pop_back();
+        if (line.rfind(L"|---", 0) == 0 || line.rfind(L"| ---", 0) == 0) continue;
+        while (!line.empty() && line.front() == L'#') line.erase(line.begin());
+        std::wstring clean;
+        for (size_t i = 0; i < line.size(); ++i) {
+            if (line[i] == L'`' || (line[i] == L'*' && i + 1 < line.size() && line[i + 1] == L'*')) {
+                if (line[i] == L'*') ++i;
+                continue;
+            }
+            clean += line[i];
+        }
+        if (!clean.empty() && clean.front() == L'|') {  // a table row
+            std::wstring row;
+            size_t a = 1;
+            while (a < clean.size()) {
+                size_t b = clean.find(L'|', a);
+                if (b == std::wstring::npos) b = clean.size();
+                std::wstring cell = clean.substr(a, b - a);
+                while (!cell.empty() && cell.front() == L' ') cell.erase(cell.begin());
+                while (!cell.empty() && cell.back() == L' ') cell.pop_back();
+                if (!cell.empty()) row += (row.empty() ? L"" : L"  \x2014  ") + cell;
+                a = b + 1;
+            }
+            clean = L"\x2022 " + row;
+        }
+        while (!clean.empty() && clean.front() == L' ') clean.erase(clean.begin());
+        out += clean + L"\r\n";
+    }
+    return out;
+}
+
+INT_PTR CALLBACK LicensesDlgProc(HWND dlg, UINT msg, WPARAM wp, LPARAM) {
+    switch (msg) {
+        case WM_INITDIALOG:
+            SetDlgItemTextW(dlg, IDC_LICENSES_TEXT, NoticesText().c_str());
+            SetFocus(GetDlgItem(dlg, IDCANCEL));
+            return FALSE;  // the focus was set (the text is not all selected)
+        case WM_COMMAND:
+            if (LOWORD(wp) == IDCANCEL || LOWORD(wp) == IDOK) EndDialog(dlg, IDCANCEL);
+            return TRUE;
+    }
+    return FALSE;
+}
+
+struct AboutFonts {
+    HFONT title = nullptr;
+};
+
+INT_PTR CALLBACK AboutDlgProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
+    auto* fonts = (AboutFonts*)GetWindowLongPtrW(dlg, DWLP_USER);
+    switch (msg) {
+        case WM_INITDIALOG: {
+            fonts = (AboutFonts*)lp;
+            SetWindowLongPtrW(dlg, DWLP_USER, (LONG_PTR)fonts);
+            fonts->title = CreateMessageFont(GetWindowDpi(dlg), 160);
+            LOGFONTW lf{};
+            GetObjectW(fonts->title, sizeof(lf), &lf);
+            lf.lfWeight = FW_SEMIBOLD;
+            DeleteObject(fonts->title);
+            fonts->title = CreateFontIndirectW(&lf);
+            SendDlgItemMessageW(dlg, IDC_ABOUT_NAME, WM_SETFONT, (WPARAM)fonts->title, TRUE);
+            SetDlgItemTextW(dlg, IDC_ABOUT_NAME, APP_NAME);
+            std::wstring version = APP_VERSION;
+            while (version.size() > 3 && version.compare(version.size() - 2, 2, L".0") == 0) version.resize(version.size() - 2);
+            SetDlgItemTextW(dlg, IDC_ABOUT_VERSION, (L"Version " + version).c_str());
+            SetDlgItemTextW(dlg, IDC_ABOUT_TEXT,
+                            L"Feather PDF is a fast, lightweight PDF reader and editor for Windows. It opens "
+                            L"documents in tabs to read, search, print and present them, and lets you edit them: "
+                            L"change and replace text, fill in forms, sign, and add comments, highlights, "
+                            L"drawings, stamps, pictures, text, watermarks and page numbers, as well as reorganise, "
+                            L"merge, split and extract pages, with undo and crash-safe saving. It makes scanned "
+                            L"pages searchable with text recognition, redacts, compresses, compares and "
+                            L"password-protects documents, measures them, and exports pages as pictures, text or "
+                            L"Markdown. Everything happens on your PC, "
+                            L"with no account, cloud service or tracking.\r\n\r\n"
+                            L"Created by: Akshaya Simha\r\n\r\n"
+                            L"\x00A9 2026 Akshaya Simha. All rights reserved.\r\n"
+                            L"This application incorporates third-party software and materials. See Third-Party "
+                            L"Licenses and Attributions for applicable notices and license terms.\r\n\r\n"
+                            L"Built with care for a faster, simpler document experience.");
+            SetFocus(GetDlgItem(dlg, IDOK));
+            return FALSE;
+        }
+        case WM_COMMAND:
+            if (LOWORD(wp) == IDC_ABOUT_LICENSES) {
+                DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_LICENSES), dlg, LicensesDlgProc, 0);
+                return TRUE;
+            }
+            if (LOWORD(wp) == IDOK || LOWORD(wp) == IDCANCEL) {
+                EndDialog(dlg, IDOK);
+                return TRUE;
+            }
+            break;
+        case WM_DESTROY:
+            if (fonts && fonts->title) DeleteObject(fonts->title);
+            break;
+    }
+    return FALSE;
+}
+
+struct InputDialog {
+    std::wstring title, label, text;
+};
+
+INT_PTR CALLBACK InputDlgProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
+    auto* d = (InputDialog*)GetWindowLongPtrW(dlg, DWLP_USER);
+    switch (msg) {
+        case WM_INITDIALOG:
+            d = (InputDialog*)lp;
+            SetWindowLongPtrW(dlg, DWLP_USER, (LONG_PTR)d);
+            SetWindowTextW(dlg, d->title.c_str());
+            SetDlgItemTextW(dlg, IDC_INPUT_LABEL, d->label.c_str());
+            SetDlgItemTextW(dlg, IDC_INPUT_EDIT, d->text.c_str());
+            SetFocus(GetDlgItem(dlg, IDC_INPUT_EDIT));
+            SendDlgItemMessageW(dlg, IDC_INPUT_EDIT, EM_SETSEL, 0, -1);
+            return FALSE;
+        case WM_COMMAND:
+            if (LOWORD(wp) == IDOK) {
+                d->text = DialogText(dlg, IDC_INPUT_EDIT);
+                EndDialog(dlg, IDOK);
+                return TRUE;
+            }
+            if (LOWORD(wp) == IDCANCEL) {
+                EndDialog(dlg, IDCANCEL);
+                return TRUE;
+            }
+            break;
+    }
+    return FALSE;
+}
+}  // namespace
+
+void MainWindow::ShowAbout() {
+    AboutFonts fonts;
+    DialogBoxParamW(m_inst, MAKEINTRESOURCEW(IDD_ABOUT), m_hwnd, AboutDlgProc, (LPARAM)&fonts);
+}
+
+bool MainWindow::InputBox(const std::wstring& title, const std::wstring& label, std::wstring& text) {
+    InputDialog d{title, label, text};
+    if (DialogBoxParamW(m_inst, MAKEINTRESOURCEW(IDD_INPUT), m_hwnd, InputDlgProc, (LPARAM)&d) != IDOK) return false;
+    text = d.text;
+    return true;
+}

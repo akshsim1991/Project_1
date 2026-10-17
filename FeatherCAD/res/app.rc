@@ -1,0 +1,389 @@
+// app.rc - icon, manifest, version information and dialogs.
+#include <windows.h>
+#include <commctrl.h>
+#include "resource.h"
+
+IDI_APP ICON "app.ico"
+
+1 RT_MANIFEST "app.manifest"
+
+IDD_UNITS DIALOGEX 0, 0, 240, 116
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Drawing units"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "&Units:", -1, 10, 12, 60, 10
+    COMBOBOX        IDC_UNITS_COMBO, 76, 10, 154, 120, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "&Precision:", -1, 10, 32, 60, 10
+    COMBOBOX        IDC_PRECISION_COMBO, 76, 30, 154, 120, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "", IDC_UNITS_SAMPLE, 76, 48, 154, 10
+    AUTOCHECKBOX    "Use these for &new drawings too", IDC_UNITS_DEFAULT, 10, 66, 220, 12, WS_TABSTOP
+    LTEXT           "Changing the units does not scale the drawing: 1 unit stays 1 unit.", -1, 10, 80, 220, 10
+    DEFPUSHBUTTON   "OK", IDOK, 124, 96, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 180, 96, 50, 14
+END
+
+IDD_DRAFTING DIALOGEX 0, 0, 280, 262
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Drafting settings"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    GROUPBOX        "Grid and snap", -1, 10, 6, 260, 66
+    AUTOCHECKBOX    "Show &grid (F7)", IDC_GRID_ON, 18, 20, 100, 12, WS_TABSTOP
+    LTEXT           "Spacing:", -1, 140, 21, 40, 10
+    EDITTEXT        IDC_GRID_SPACING, 184, 19, 78, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    AUTOCHECKBOX    "&Snap to spacing (F9)", IDC_SNAP_ON, 18, 38, 110, 12, WS_TABSTOP
+    LTEXT           "Spacing:", -1, 140, 39, 40, 10
+    EDITTEXT        IDC_SNAP_SPACING, 184, 37, 78, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    AUTOCHECKBOX    "&Ortho: horizontal and vertical only (F8; Shift swaps it while held)", IDC_ORTHO_ON, 18, 56, 248, 12, WS_TABSTOP
+    GROUPBOX        "Tracking and input", -1, 10, 76, 260, 66
+    AUTOCHECKBOX    "&Polar tracking (F10), every", IDC_POLAR_ON, 18, 90, 120, 12, WS_TABSTOP
+    COMBOBOX        IDC_POLAR_ANGLE, 140, 88, 50, 120, CBS_DROPDOWN | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "degrees", -1, 194, 90, 40, 10
+    AUTOCHECKBOX    "Object snap trac&king (F11): rest on a snap point to line up with it", IDC_OTRACK_ON, 18, 106, 248, 12, WS_TABSTOP
+    AUTOCHECKBOX    "&Dynamic input (F12): prompt, input and sizes at the cursor", IDC_DYN_ON, 18, 122, 248, 12, WS_TABSTOP
+    GROUPBOX        "Object snaps", -1, 10, 146, 260, 88
+    AUTOCHECKBOX    "Object snaps o&n (F3)", IDC_OSNAP_ON, 18, 160, 120, 12, WS_TABSTOP
+    AUTOCHECKBOX    "&Endpoint", IDC_OSNAP_FIRST + 0, 18, 176, 70, 12, WS_TABSTOP
+    AUTOCHECKBOX    "&Midpoint", IDC_OSNAP_FIRST + 1, 18, 190, 70, 12, WS_TABSTOP
+    AUTOCHECKBOX    "&Centre", IDC_OSNAP_FIRST + 2, 18, 204, 70, 12, WS_TABSTOP
+    AUTOCHECKBOX    "&Quadrant", IDC_OSNAP_FIRST + 3, 18, 218, 70, 12, WS_TABSTOP
+    AUTOCHECKBOX    "&Intersection", IDC_OSNAP_FIRST + 4, 140, 176, 80, 12, WS_TABSTOP
+    AUTOCHECKBOX    "Perpendic&ular", IDC_OSNAP_FIRST + 5, 140, 190, 80, 12, WS_TABSTOP
+    AUTOCHECKBOX    "&Tangent", IDC_OSNAP_FIRST + 6, 140, 204, 80, 12, WS_TABSTOP
+    AUTOCHECKBOX    "Ne&arest", IDC_OSNAP_FIRST + 7, 140, 218, 80, 12, WS_TABSTOP
+    PUSHBUTTON      "Select a&ll", IDC_OSNAP_ALL, 150, 158, 54, 14, WS_TABSTOP
+    PUSHBUTTON      "C&lear all", IDC_OSNAP_NONE, 208, 158, 54, 14, WS_TABSTOP
+    DEFPUSHBUTTON   "OK", IDOK, 164, 242, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 220, 242, 50, 14
+END
+
+IDD_QSELECT DIALOGEX 0, 0, 260, 172
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Quick select"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "Object &type:", -1, 10, 12, 60, 10
+    COMBOBOX        IDC_QS_TYPE, 76, 10, 174, 140, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "&Property:", -1, 10, 30, 60, 10
+    COMBOBOX        IDC_QS_PROP, 76, 28, 174, 140, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "&Operator:", -1, 10, 48, 60, 10
+    COMBOBOX        IDC_QS_OP, 76, 46, 174, 100, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "&Value:", -1, 10, 66, 60, 10
+    EDITTEXT        IDC_QS_VALUE, 76, 64, 174, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    GROUPBOX        "Matching objects", -1, 10, 84, 240, 58
+    AUTORADIOBUTTON "&Replace the current selection", IDC_QS_REPLACE, 18, 96, 220, 12, WS_GROUP | WS_TABSTOP
+    AUTORADIOBUTTON "&Add to the current selection", IDC_QS_ADD, 18, 110, 220, 12
+    AUTORADIOBUTTON "Re&move from the current selection", IDC_QS_REMOVE, 18, 124, 220, 12
+    DEFPUSHBUTTON   "Select", IDOK, 144, 150, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 200, 150, 50, 14
+END
+
+IDD_DIMSTYLE DIALOGEX 0, 0, 250, 192
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Dimension style"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "&Text height:", -1, 10, 12, 130, 10
+    EDITTEXT        IDC_DS_TEXT, 160, 10, 80, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "&Arrow size:", -1, 10, 30, 130, 10
+    EDITTEXT        IDC_DS_ARROW, 160, 28, 80, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "Gap from the &object to extension lines:", -1, 10, 48, 145, 10
+    EDITTEXT        IDC_DS_EXTOFFSET, 160, 46, 80, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "Extension lines go &past the dimension line by:", -1, 10, 66, 148, 10
+    EDITTEXT        IDC_DS_EXTBEYOND, 160, 64, 80, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "&Gap between the text and its line:", -1, 10, 84, 145, 10
+    EDITTEXT        IDC_DS_GAP, 160, 82, 80, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "&Decimal places:", -1, 10, 102, 130, 10
+    COMBOBOX        IDC_DS_DECIMALS, 160, 100, 80, 120, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    AUTOCHECKBOX    "&Leave out trailing zeros (12.5 rather than 12.50)", IDC_DS_TRIM, 10, 120, 230, 12, WS_TABSTOP
+    AUTOCHECKBOX    "&Unidirectional: text always level, in a break of the line", IDC_DS_UNIDIR, 10, 136, 230, 12, WS_TABSTOP
+    AUTOCHECKBOX    "Also change the dimensions already in the drawing", IDC_DS_APPLY, 10, 152, 230, 12, WS_TABSTOP
+    DEFPUSHBUTTON   "OK", IDOK, 134, 172, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 190, 172, 50, 14
+END
+
+IDD_DIMEDIT DIALOGEX 0, 0, 260, 150
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Edit dimension"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "", IDC_DE_KIND, 10, 10, 240, 10
+    LTEXT           "&Value:", -1, 10, 28, 60, 10
+    EDITTEXT        IDC_DE_VALUE, 76, 26, 100, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "", IDC_DE_NOTE, 10, 44, 240, 20
+    LTEXT           "&Text:", -1, 10, 70, 60, 10
+    EDITTEXT        IDC_DE_TEXT, 76, 68, 174, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "Empty: the value. <> stands for the value, as in  <> TYP  or  4x <>.", -1, 10, 86, 240, 10
+    LTEXT           "&Decimal places:", -1, 10, 104, 60, 10
+    COMBOBOX        IDC_DE_DECIMALS, 76, 102, 100, 120, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    DEFPUSHBUTTON   "OK", IDOK, 144, 128, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 200, 128, 50, 14
+END
+
+IDD_TEXTEDIT DIALOGEX 0, 0, 330, 206
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Text"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "&Text (Enter starts a new line):", -1, 10, 8, 200, 10
+    EDITTEXT        IDC_TE_TEXT, 10, 20, 310, 78, ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL | WS_TABSTOP
+    PUSHBUTTON      "", 1130, 10, 104, 18, 14
+    PUSHBUTTON      "", 1131, 30, 104, 18, 14
+    PUSHBUTTON      "", 1132, 50, 104, 18, 14
+    PUSHBUTTON      "", 1133, 70, 104, 18, 14
+    PUSHBUTTON      "", 1134, 90, 104, 18, 14
+    PUSHBUTTON      "", 1135, 110, 104, 18, 14
+    PUSHBUTTON      "", 1136, 130, 104, 18, 14
+    PUSHBUTTON      "", 1137, 150, 104, 18, 14
+    PUSHBUTTON      "", 1138, 170, 104, 18, 14
+    PUSHBUTTON      "", 1139, 190, 104, 18, 14
+    PUSHBUTTON      "", 1140, 210, 104, 18, 14
+    PUSHBUTTON      "", 1141, 230, 104, 18, 14
+    PUSHBUTTON      "", 1142, 250, 104, 18, 14
+    PUSHBUTTON      "", 1143, 270, 104, 18, 14
+    PUSHBUTTON      "F&ield...", IDC_TE_FIELD, 290, 104, 30, 14
+    LTEXT           "&Font:", -1, 10, 128, 40, 10
+    COMBOBOX        IDC_TE_FONT, 56, 126, 110, 200, CBS_DROPDOWN | CBS_SORT | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "&Height:", -1, 178, 128, 40, 10
+    EDITTEXT        IDC_TE_HEIGHT, 222, 126, 40, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "&Rotation:", -1, 10, 148, 40, 10
+    EDITTEXT        IDC_TE_ROTATION, 56, 146, 40, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "&Width:", -1, 106, 148, 30, 10
+    EDITTEXT        IDC_TE_WIDTH, 136, 146, 30, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "&Justify:", -1, 178, 148, 40, 10
+    COMBOBOX        IDC_TE_JUSTIFY, 222, 146, 98, 200, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "Fra&me:", -1, 10, 168, 40, 10
+    COMBOBOX        IDC_TE_FRAME, 56, 166, 110, 100, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    DEFPUSHBUTTON   "OK", IDOK, 214, 186, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 270, 186, 50, 14
+END
+
+IDD_PAGESETUP DIALOGEX 0, 0, 330, 240
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Page setup"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "&Name:", -1, 10, 12, 50, 10
+    EDITTEXT        IDC_PS_NAME, 70, 10, 150, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "&Paper:", -1, 10, 32, 50, 10
+    COMBOBOX        IDC_PS_PAPER, 70, 30, 150, 200, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "&Orientation:", -1, 10, 52, 50, 10
+    COMBOBOX        IDC_PS_ORIENT, 70, 50, 150, 60, CBS_DROPDOWNLIST | WS_TABSTOP
+    LTEXT           "Size (mm):", -1, 10, 72, 50, 10
+    EDITTEXT        IDC_PS_WIDTH, 70, 70, 50, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "x", -1, 124, 72, 8, 10
+    EDITTEXT        IDC_PS_HEIGHT, 134, 70, 50, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "&Margin (mm):", -1, 10, 92, 55, 10
+    EDITTEXT        IDC_PS_MARGIN, 70, 90, 50, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    AUTOCHECKBOX    "Make the &border and title block again for this paper", IDC_PS_BORDER, 10, 110, 300, 12
+    LTEXT           "Printing", -1, 10, 128, 100, 10
+    COMBOBOX        IDC_PS_COLOUR, 70, 126, 110, 60, CBS_DROPDOWNLIST | WS_TABSTOP
+    AUTOCHECKBOX    "Print &line weights", IDC_PS_LW, 190, 127, 120, 12
+    LTEXT           "Pens: line weight for each colour", -1, 10, 140, 300, 10
+    LTEXT           "", 1171, 10, 152, 46, 10
+    COMBOBOX        1161, 58, 150, 54, 200, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "", 1172, 114, 152, 46, 10
+    COMBOBOX        1162, 162, 150, 54, 200, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "", 1173, 218, 152, 46, 10
+    COMBOBOX        1163, 266, 150, 54, 200, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "", 1174, 10, 170, 46, 10
+    COMBOBOX        1164, 58, 168, 54, 200, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "", 1175, 114, 170, 46, 10
+    COMBOBOX        1165, 162, 168, 54, 200, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "", 1176, 218, 170, 46, 10
+    COMBOBOX        1166, 266, 168, 54, 200, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "", 1177, 10, 188, 46, 10
+    COMBOBOX        1167, 58, 186, 54, 200, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "", 1178, 114, 188, 46, 10
+    COMBOBOX        1168, 162, 186, 54, 200, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "", 1179, 218, 188, 46, 10
+    COMBOBOX        1169, 266, 186, 54, 200, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    DEFPUSHBUTTON   "OK", IDOK, 214, 218, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 270, 218, 50, 14
+END
+
+IDD_PLOT DIALOGEX 0, 0, 470, 270
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Print"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "&What:", -1, 10, 12, 40, 10
+    COMBOBOX        IDC_PL_WHAT, 52, 10, 118, 120, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "&Paper:", -1, 10, 32, 40, 10
+    COMBOBOX        IDC_PL_PAPER, 52, 30, 118, 200, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    AUTOCHECKBOX    "&Landscape", IDC_PL_LANDSCAPE, 52, 47, 100, 12
+    LTEXT           "&Scale:", -1, 10, 64, 40, 10
+    COMBOBOX        IDC_PL_SCALE, 52, 62, 118, 200, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "&Colours:", -1, 10, 84, 40, 10
+    COMBOBOX        IDC_PL_COLOUR, 52, 82, 118, 60, CBS_DROPDOWNLIST | WS_TABSTOP
+    AUTOCHECKBOX    "Print line &weights", IDC_PL_LW, 52, 100, 118, 12
+    AUTOCHECKBOX    "&Fit to the printer's paper", IDC_PL_FIT, 52, 114, 118, 12
+    LTEXT           "", IDC_PL_INFO, 10, 134, 160, 30
+    PUSHBUTTON      "&Print...", IDC_PL_PRINT, 10, 226, 76, 16
+    PUSHBUTTON      "Save P&DF...", IDC_PL_PDF, 94, 226, 76, 16
+    PUSHBUTTON      "Close", IDCANCEL, 94, 246, 76, 14
+    CONTROL         "", IDC_PL_PREVIEW, "Static", SS_OWNERDRAW, 180, 10, 280, 230
+    PUSHBUTTON      "<", IDC_PL_PREV, 180, 246, 20, 14
+    PUSHBUTTON      ">", IDC_PL_NEXT, 204, 246, 20, 14
+END
+
+IDD_DWGPROPS DIALOGEX 0, 0, 280, 250
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Drawing properties"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "Shown in title blocks as {title}, {number}, {drawnby}...", -1, 10, 8, 260, 10
+    LTEXT           "", 1210, 10, 26, 70, 10
+    EDITTEXT        1200, 84, 24, 186, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "", 1211, 10, 46, 70, 10
+    EDITTEXT        1201, 84, 44, 186, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "", 1212, 10, 66, 70, 10
+    EDITTEXT        1202, 84, 64, 186, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "", 1213, 10, 86, 70, 10
+    EDITTEXT        1203, 84, 84, 186, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "", 1214, 10, 106, 70, 10
+    EDITTEXT        1204, 84, 104, 186, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "", 1215, 10, 126, 70, 10
+    EDITTEXT        1205, 84, 124, 186, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "", 1216, 10, 146, 70, 10
+    EDITTEXT        1206, 84, 144, 186, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "", 1217, 10, 166, 70, 10
+    EDITTEXT        1207, 84, 164, 186, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "", 1218, 10, 186, 70, 10
+    EDITTEXT        1208, 84, 184, 186, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "", 1219, 10, 206, 70, 10
+    EDITTEXT        1209, 84, 204, 186, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    DEFPUSHBUTTON   "OK", IDOK, 164, 228, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 220, 228, 50, 14
+END
+
+IDD_SYMBOLS DIALOGEX 0, 0, 340, 214
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Symbols"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "&Group:", -1, 10, 12, 30, 10
+    COMBOBOX        IDC_SY_GROUP, 42, 10, 118, 200, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LISTBOX         IDC_SY_LIST, 10, 30, 150, 150, LBS_NOTIFY | WS_VSCROLL | WS_BORDER | WS_TABSTOP
+    CONTROL         "", IDC_SY_PREVIEW, "Static", SS_OWNERDRAW | WS_BORDER, 170, 10, 160, 150
+    LTEXT           "", IDC_SY_NAME, 170, 166, 160, 10
+    LTEXT           "Wires (WIRE) join the ends of the leads and follow the symbols.", -1, 10, 194, 200, 10
+    DEFPUSHBUTTON   "Place", IDOK, 226, 190, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 280, 190, 50, 14
+END
+
+IDD_VARIABLES DIALOGEX 0, 0, 360, 232
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Variables"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    CONTROL         "", IDC_VR_LIST, "SysListView32", LVS_REPORT | LVS_SHOWSELALWAYS | LVS_SINGLESEL | WS_BORDER | WS_TABSTOP, 10, 10, 340, 136
+    LTEXT           "&Name:", -1, 10, 156, 28, 10
+    EDITTEXT        IDC_VR_NAME, 40, 154, 70, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "&Formula:", -1, 118, 156, 32, 10
+    EDITTEXT        IDC_VR_FORMULA, 152, 154, 198, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "&Comment:", -1, 10, 174, 34, 10
+    EDITTEXT        IDC_VR_COMMENT, 46, 172, 196, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    PUSHBUTTON      "&Set", IDC_VR_SET, 248, 171, 50, 14
+    PUSHBUTTON      "&Delete", IDC_VR_DELETE, 300, 171, 50, 14
+    LTEXT           "", IDC_VR_INFO, 10, 192, 340, 18
+    DEFPUSHBUTTON   "OK", IDOK, 244, 212, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 300, 212, 50, 14
+END
+
+IDD_LAYERS DIALOGEX 0, 0, 480, 252
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Layers"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    CONTROL         "", IDC_LY_LIST, "SysListView32", LVS_REPORT | LVS_SHOWSELALWAYS | LVS_SINGLESEL | LVS_EDITLABELS | WS_BORDER | WS_TABSTOP, 10, 10, 460, 168
+    PUSHBUTTON      "&New", IDC_LY_NEW, 10, 184, 50, 14
+    PUSHBUTTON      "&Delete", IDC_LY_DELETE, 64, 184, 50, 14
+    PUSHBUTTON      "Set &current", IDC_LY_CURRENT, 118, 184, 60, 14
+    LTEXT           "Click On, Freeze, Lock or Plot to switch them, Colour, Line type or Weight to choose. Double-click: current. F2: rename.", -1, 186, 183, 284, 20
+    GROUPBOX        "Layer states (saved on/off, freeze, lock, colours and line types)", -1, 10, 206, 340, 38
+    COMBOBOX        IDC_LY_STATE, 18, 222, 120, 100, CBS_DROPDOWN | CBS_AUTOHSCROLL | WS_VSCROLL | WS_TABSTOP
+    PUSHBUTTON      "&Save", IDC_LY_SAVESTATE, 144, 221, 56, 14
+    PUSHBUTTON      "&Restore", IDC_LY_RESTORESTATE, 204, 221, 56, 14
+    PUSHBUTTON      "Delete s&tate", IDC_LY_DELSTATE, 264, 221, 78, 14
+    DEFPUSHBUTTON   "Close", IDOK, 420, 228, 50, 14
+END
+
+IDD_OPTIONS DIALOGEX 0, 0, 260, 112
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Auto-save and versions"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "&Auto-save every (minutes, 0 = off):", -1, 10, 12, 150, 10
+    EDITTEXT        IDC_AUTOSAVE_MINUTES, 190, 10, 60, 13, ES_NUMBER | WS_TABSTOP
+    LTEXT           "&Versions to keep for each drawing:", -1, 10, 30, 150, 10
+    EDITTEXT        IDC_KEEP_VERSIONS, 190, 28, 60, 13, ES_NUMBER | WS_TABSTOP
+    LTEXT           "Versions are kept in:", -1, 10, 48, 240, 10
+    EDITTEXT        IDC_HISTORY_FOLDER, 10, 60, 240, 13, ES_AUTOHSCROLL | ES_READONLY
+    DEFPUSHBUTTON   "OK", IDOK, 144, 92, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 200, 92, 50, 14
+END
+
+IDD_HISTORY DIALOGEX 0, 0, 340, 220
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Version history"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "", IDC_VERSION_INFO, 10, 8, 320, 18
+    CONTROL         "", IDC_VERSION_LIST, "SysListView32", LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | WS_BORDER | WS_TABSTOP, 10, 28, 320, 164
+    PUSHBUTTON      "&Restore", IDC_RESTORE, 10, 200, 60, 14, WS_TABSTOP
+    DEFPUSHBUTTON   "Close", IDCANCEL, 280, 200, 50, 14
+END
+
+IDD_RECOVER DIALOGEX 0, 0, 360, 220
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Recover drawings"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "", IDC_VERSION_INFO, 10, 8, 340, 18
+    CONTROL         "", IDC_VERSION_LIST, "SysListView32", LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | WS_BORDER | WS_TABSTOP, 10, 28, 340, 164
+    DEFPUSHBUTTON   "&Open", IDOK, 244, 200, 50, 14, WS_TABSTOP
+    PUSHBUTTON      "Close", IDCANCEL, 300, 200, 50, 14
+END
+
+IDD_ABOUT DIALOGEX 0, 0, 280, 160
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "About Feather CAD"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    ICON            IDI_APP, IDC_ABOUT_ICON, 12, 10, 21, 20
+    LTEXT           "", IDC_ABOUT_NAME, 44, 10, 226, 14, SS_NOPREFIX
+    LTEXT           "", IDC_ABOUT_VERSION, 44, 26, 226, 10, SS_NOPREFIX
+    LTEXT           "", IDC_ABOUT_TEXT, 12, 44, 258, 90, SS_NOPREFIX
+    DEFPUSHBUTTON   "OK", IDOK, 220, 140, 50, 14
+END
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION 2,4,0,0
+ PRODUCTVERSION 2,4,0,0
+ FILEFLAGSMASK 0x3fL
+ FILEFLAGS 0x0L
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_APP
+ FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "CompanyName", "Akshaya Simha"
+            VALUE "FileDescription", "Feather CAD"
+            VALUE "FileVersion", "2.4.0.0"
+            VALUE "InternalName", "FeatherCAD"
+            VALUE "LegalCopyright", "\251 2026 Akshaya Simha"
+            VALUE "OriginalFilename", "FeatherCAD.exe"
+            VALUE "ProductName", "Feather CAD"
+            VALUE "ProductVersion", "2.4.0.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

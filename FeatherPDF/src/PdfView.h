@@ -1,0 +1,477 @@
+// PdfView.h - the page canvas: layout, scrolling, zoom, navigation,
+// tile requests and painting.
+//
+// RENDERING PIPELINE
+// ------------------
+//   PdfView::Paint
+//     1. finds the visible pages (binary search over page offsets, so it is
+//        O(log n) even for 10,000-page documents);
+//     2. draws cached tiles for them (and stretched lower/higher resolution
+//        tiles as placeholders while a zoom change is being re-rendered);
+//     3. sends the list of missing visible tiles, followed by a budgeted
+//        prefetch band below/above the viewport, to the RenderWorker, which
+//        replaces its previous list;
+//   RenderWorker renders tiles one by one and posts them back;
+//   PdfView::OnTileReady inserts them into the PageCache and invalidates
+//   just that tile's rectangle.
+//
+// LAYOUT
+// ------
+// All page geometry is integer pixels at the current scale. Page offsets
+// are 64-bit so that very long documents at high zoom can not overflow;
+// scrollbar positions are divided down if the document is taller than the
+// 32-bit scrollbar range.
+#pragma once
+#include <functional>
+#include <unordered_map>
+#include <unordered_set>
+
+#include "PageCache.h"
+#include "Search.h"
+
+class RenderWorker;
+
+enum class ZoomMode { Custom = 0, FitWidth = 1, FitPage = 2 };
+enum class ViewMode { Single = 0, Continuous = 1, TwoPage = 2 };
+// What a click on the page does.
+enum class ViewTool {
+    Select = 0, EditText, AddComment, AddText,      // click
+    Rectangle, Ellipse, Line, Arrow, Pen,           // drag
+    Stamp, Signature, Image,                        // click or drag to place
+    Ruler, Protractor,                              // Geometry: measure distances and angles
+    Redact,                                         // drag to mark an area for redaction
+    Crop,                                           // drag the area of the page to keep
+};
+
+// How measurements are shown (Geometry menu): units and drawing scale.
+struct MeasureOptions {
+    std::wstring unit = L"mm";
+    double perPoint = 25.4 / 72;  // units per PDF point
+    double scale = 1;             // drawing scale 1:scale (1 = actual size)
+    bool rulers = false;          // rulers along the top and left edges
+};
+
+// What the drawing and placing tools draw (set by the main window).
+struct ToolOptions {
+    COLORREF color = RGB(220, 30, 30);
+    float width = 2;              // line width in points
+    float textSize = 12;          // new text, in points
+    std::wstring stamp;           // Stamp: the word ("APPROVED")
+    COLORREF stampColor = RGB(0, 130, 60);
+    std::vector<uint8_t> pixels;  // Signature / Image: BGRA, top-down
+    int imageW = 0, imageH = 0;
+    std::wstring author;
+};
+
+// Zoom steps used by zoom in / zoom out (1.0 == 100 %).
+extern const double kZoomPresets[];
+extern const int kZoomPresetCount;
+
+class PdfView {
+public:
+    static constexpr double kMinZoom = 0.05;
+    static constexpr double kMaxZoom = 16.0;
+
+    PdfView() = default;
+    ~PdfView() {
+        if (m_hwnd && IsWindow(m_hwnd)) DestroyWindow(m_hwnd);
+    }
+    PdfView(const PdfView&) = delete;
+    PdfView& operator=(const PdfView&) = delete;
+
+    bool Create(HWND parent, RenderWorker* worker);
+    HWND Hwnd() const { return m_hwnd; }
+
+    // --- document ----------------------------------------------------------
+    void SetDocument(uint32_t docId, std::vector<SizeF>&& sizes, int startPage);
+    void CloseDocument();
+    bool HasDocument() const { return !m_sizes.empty(); }
+    int PageCount() const { return (int)m_sizes.size(); }
+    uint32_t DocId() const { return m_docId; }
+    const std::vector<SizeF>& PageSizes() const { return m_sizes; }  // unrotated
+    void SetMessage(const std::wstring& text);  // shown when no document
+
+    // --- editing -------------------------------------------------------------
+    // An edit was sent to the worker under `newDocId`: keep showing the
+    // current pages as placeholders until EndEdit delivers the result.
+    void BeginEdit(uint32_t newDocId);
+    // The edited document's page sizes; shows `focusPage` if >= 0 (and not
+    // already visible), otherwise stays where the reader is.
+    void EndEdit(std::vector<SizeF>&& sizes, int focusPage);
+
+    // --- navigation --------------------------------------------------------
+    int CurrentPage() const;
+    void GoToPage(int page);
+    void NextPage();
+    void PrevPage();
+    void GoToTarget(const LinkTarget& target);  // bookmark / link destination
+
+    // --- where the reader is (two documents side by side scroll together) ---
+    struct Place {
+        int page = 0;       // the page at the top of the window
+        double down = 0;    // how far down that page the window's top edge is (0..1)
+        double across = 0;  // horizontal scroll, as a fraction of its range
+    };
+    Place GetPlace() const;
+    void SetPlace(const Place& place);
+
+    // --- zoom --------------------------------------------------------------
+    double Zoom() const { return m_zoom; }  // 1.0 == 100 % (actual size)
+    ZoomMode GetZoomMode() const { return m_mode; }
+    void SetZoom(double zoom);  // switches to custom zoom, anchored at centre
+    void SetZoomMode(ZoomMode mode);
+    void ZoomIn();
+    void ZoomOut();
+
+    // --- view mode, rotation, page colours -----------------------------------
+    ViewMode GetViewMode() const { return m_viewMode; }
+    void SetViewMode(ViewMode mode);
+    bool CoverPage() const { return m_cover; }  // two-page: first page alone
+    void SetCoverPage(bool cover);
+    int Rotation() const { return m_rotation; }  // quarter turns clockwise
+    void Rotate(int quarterTurns);
+    int GetPageColors() const { return m_colors; }
+    void SetPageColors(int mode);  // PageColors
+
+    // --- search highlights -------------------------------------------------
+    void SetSearch(const SearchState* search) { m_search = search; }
+    void ScrollToHit(const SearchHit& hit);
+
+    // --- text selection ----------------------------------------------------
+    bool HasSelection() const { return m_hasSel && !(m_selAnchor == m_selFocus); }
+    bool GetSelection(TextPos& from, TextPos& to) const;  // false if none
+    void CopySelection();  // text arrives as WM_APP_TEXT_COPIED
+    void SelectAll();
+    void ClearSelection();
+
+    // --- editing text and comments ---------------------------------------
+    // EditText: the page's text is outlined and a click edits it in place.
+    // AddComment: a click places a comment. Esc goes back to Select.
+    ViewTool Tool() const { return m_tool; }
+    void SetTool(ViewTool tool);
+    void SetToolOptions(const ToolOptions& options) { m_toolOptions = options; }
+    void OnTextRuns(TextRunsResult* result);  // takes ownership
+    // Called to record an edit (text changed in place, comment deleted).
+    std::function<void(EditOp&&)> onEdit;
+    // A new comment at (x, y) on `page` (page points), or an existing one.
+    std::function<void(int page, float x, float y)> onNewComment;
+    std::function<void(int page, const CommentInfo&)> onOpenComment;
+    // A signature field was clicked: sign inside `rect` (page points).
+    std::function<void(int page, const RectF& rect)> onSignField;
+    // Crop tool: the area to keep was drawn on `page` (page points).
+    std::function<void(int page, const RectF& rect)> onCropBox;
+    // Back / forward through the places jumped to (links, bookmarks, page numbers).
+    void PushHistory();
+    bool Back();
+    bool Forward();
+    bool CanGoBack() const { return !m_back.empty(); }
+    bool CanGoForward() const { return !m_forward.empty(); }
+    // Presentation: black surroundings, a click shows the next page.
+    void SetPresenting(bool on);
+
+    // --- moving blocks and pictures, formatting (EditText tool) ----------
+    // Blocks of text (paragraphs, headings, cells) and pictures can be
+    // selected: a click selects (and edits the line), Ctrl+click adds,
+    // a box selects the lines inside it. Selections are dragged, nudged
+    // with the arrow keys and deleted with Delete.
+    // The style of the line being typed in, or of the first selected line.
+    bool FormatTarget(TextRun& run) const;
+    // Formats the selected letters of the line being typed in, or all of the
+    // selected lines. False if nothing is selected.
+    bool ApplyFormat(const EditOp::Format& format);
+    // Lines up the selected lines (or the block being typed in): 0 left,
+    // 1 centre, 2 right. False if nothing is selected.
+    bool AlignSelection(int how);
+    bool SelectedImage(int& page, int& index) const;  // the selected picture
+    // A short message at the bottom of the view for a few seconds ("3 pages copied").
+    void ShowNote(const std::wstring& text);
+    void HoldInline(bool hold) { m_inlineHold = hold; }  // a dialog is open: keep the text box
+
+    // --- Geometry: rulers, distance and angle measurements -------------
+    void SetMeasureOptions(const MeasureOptions& options);
+    bool HasMeasurements() const { return !m_measures.empty(); }
+    void ClearMeasurements();
+    void KeepMeasurements();  // draws them on their pages (one edit each)
+    std::wstring FormatLength(float points) const;
+
+    // --- redaction marks (areas to redact, shown until applied) ---------
+    const std::vector<PageRect>& RedactionMarks() const { return m_marks; }
+    void AddRedactionMarks(const std::vector<PageRect>& marks);
+    void ClearRedactionMarks();
+    std::vector<PageRect> SelectionRects();  // the selected text, line by line
+    std::function<void()> onMarksChanged;
+
+    // The document's author may forbid copying its text and pictures.
+    void SetCopyAllowed(bool allowed) { m_copyAllowed = allowed; }
+
+    // --- page images for the clipboard (arrive as WM_APP_IMAGE_READY) ---
+    void CopyPageImage();
+    void StartAreaCopy();  // the next drag selects the area to copy
+
+    // --- events from the main window -------------------------------------
+    void OnTileReady(TileResult* result);      // takes ownership
+    void OnTextLayer(TextLayerResult* result); // takes ownership
+    void OnDpiChanged();
+    void OnThemeChanged();
+    void TrimMemory();  // drop all cached tiles (e.g. when minimised)
+
+    // Called whenever the current page, page count or zoom may have changed.
+    std::function<void()> onViewChanged;
+
+private:
+    struct PageLayout {
+        int64_t left = 0, top = 0;         // document position of the page
+        int w = 0, h = 0;                  // page size in pixels (rotated)
+        int64_t rowTop = 0, rowBottom = 0; // extent of the row it sits in
+    };
+
+    static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
+    LRESULT Handle(UINT msg, WPARAM wp, LPARAM lp);
+
+    // layout & scrolling
+    void Relayout();
+    void OnSize();
+    void UpdateScrollBars();
+    void ScrollTo(int64_t x, int64_t y);
+    void ScrollBy(int64_t dx, int64_t dy) { ScrollTo(m_scrollX + dx, m_scrollY + dy); }
+    void ScrollOrFlip(int64_t dy);  // single-page mode flips at the edges
+    void OnScrollBar(int bar, int code);
+    int64_t MaxScrollX() const;
+    int64_t MaxScrollY() const;
+    int64_t PageLeft(int page) const;  // document x of the page's left edge
+    void CenterHorizontally(int page);
+    int PageAtY(int64_t docY) const;                // last page of the row at docY
+    int PageAt(int64_t docX, int64_t docY) const;   // page nearest to a point
+    int RowFirst(int page) const;                    // first page of page's row
+    bool IsPaged() const { return m_viewMode == ViewMode::Single; }
+    float DispW(int page) const;                     // rotated size in points
+    float DispH(int page) const;
+    RectF ToView(const RectF& r, int page) const;    // unrotated -> rotated points
+    void FromView(float& x, float& y, int page) const;
+    void VisibleRange(int64_t y0, int64_t y1, int& first, int& last) const;
+    int ClientW() const { return m_clientW; }
+    int ClientH() const { return m_clientH; }
+    int LineStep() const;
+
+    // zoom
+    void ApplyZoom(double zoom, POINT anchor, bool settle);
+    double FitZoom(ZoomMode mode, int page) const;
+    void UpdateScale();
+    void UpdateCacheBudget();
+
+    // painting
+    void Paint(HDC hdc);
+    void PaintPage(HDC dc, int page, std::vector<std::pair<int64_t, TileRequest>>& missing,
+                   size_t& visibleBytes);
+    void RequestTiles(std::vector<std::pair<int64_t, TileRequest>>& missing, size_t visibleBytes);
+    void AddPrefetch(int64_t y0, int64_t y1, size_t& budgetLeft, std::vector<TileRequest>& out);
+    int TileW(int pageW) const;
+    void InvalidateTile(const TileRequest& r);
+    void Notify() {
+        if (onViewChanged) onViewChanged();
+    }
+
+    // text selection
+    struct TextLayer {
+        std::vector<TextChar> chars;
+        std::vector<LinkInfo> links;
+        std::vector<CommentInfo> comments;
+        std::vector<FormField> fields;
+    };
+    const LinkInfo* HitLink(POINT pt);
+    void UpdateLinkTip(const LinkInfo* link);
+    void ShowTip(const std::wstring& text);  // empty: hide
+
+    // editing text and comments
+    bool PagePoint(POINT pt, int& page, float& x, float& y);  // unrotated page points
+public:
+    // Where pages dropped at `pt` (client pixels) go: before the page under
+    // it when on its upper half, otherwise after it. -1: no document.
+    int DropIndexAt(POINT pt) const;
+private:
+    const CommentInfo* HitComment(POINT pt, int* page = nullptr);
+    void UpdateHoverTip(POINT pt);
+    const std::vector<TextRun>* GetRuns(int page, bool request);
+    bool HitRun(POINT pt, int& page, int& run);
+    RECT ClientRectOf(int page, const RectF& r) const;  // unrotated points -> client pixels
+    void DrawRuns(HDC dc, int page, const RECT& vis);
+    void DrawBanner(HDC dc);
+    void BeginInlineEdit(int page, int run);
+    enum class InlineKind { Run, Field, NewText };
+    void OpenInlineEditor(InlineKind kind, int page, const RectF& rect, const std::wstring& text,
+                          HFONT font, bool multiline, bool password);
+    const FormField* HitField(POINT pt, int* page = nullptr);
+    void ClickField(int page, const FormField& field);
+    void DrawToolPreview(HDC dc);
+    void FinishDrawing(POINT pt);
+    // Geometry and redaction (ViewGeometry.cpp)
+    struct Measure {
+        int page = 0;
+        std::vector<PointF> pts;  // 2: a distance; 3: an angle (arm end, vertex, arm end)
+    };
+    void DrawMeasure(HDC dc, const Measure& m, bool live);
+    void DrawMeasures(HDC dc);
+    void DrawRulers(HDC dc);
+    void DrawMarks(HDC dc);
+    std::wstring MeasureText(const Measure& m) const;
+    int HitMeasure(POINT pt) const;
+    int HitMark(POINT pt) const;
+    bool ShowGeometryMenu(POINT screen, POINT client);  // true if it handled the click
+    void SnapPoint(PointF& p, const PointF& from) const;  // Shift: 15 degree steps
+    void ShowRunMenu(POINT screen, int page, int run);
+    POINT ClientPointOf(int page, float x, float y) const;  // unrotated points -> client
+    void EndInlineEdit(bool commit);
+    void PositionInlineEdit();
+    static LRESULT CALLBACK InlineEditProc(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
+    void ClearRuns();
+    // blocks and pictures (ViewEditing.cpp)
+    enum class EditDrag { None, Armed, Move, Box, Resize };
+    const std::vector<PageImage>* GetImages(int page) const;
+    const std::vector<int>* GetBlocks(int page);
+    bool HitImage(POINT pt, int& page, int& image);
+    int HitHandle(POINT pt) const;  // a corner of the selected picture: 0..3, or -1
+    std::vector<int> SelectedRuns() const;  // indices into the selection page's runs
+    const PageImage* SelectedImageInfo() const;
+    bool SelectionRect(RectF& out) const;
+    void SelectBlock(int page, int run, bool toggle);
+    void ClearEditSelection();
+    void MoveSelection(float dx, float dy);
+    void DeleteSelection();
+    PointF ClampedPagePoint(POINT pt, int page) const;
+    RectF DraggedImageRect() const;
+    void DrawEditSelection(HDC dc, int page, const RECT& vis);
+    void DrawEditDrag(HDC dc);
+    bool EditMouseDown(POINT pt, WPARAM wp);
+    void EditMouseMove(POINT pt);
+    void EditMouseUp(POINT pt);
+    bool EditKeyDown(WPARAM wp);
+    bool ShowImageMenu(POINT screen, POINT client);
+    void FormatRun(int page, int run, const EditOp::Format& format);
+    void Reselect(int page, const std::vector<TextRun>& runs);
+    void FollowLink(const LinkTarget& target);
+    void RequestImage(int page, RECT pagePixels);  // rect in page pixels at m_scale
+    const TextLayer* GetTextLayer(int page, bool request);
+    // Maps a client point to a caret position. `strict` only succeeds when
+    // the point is on (or right next to) a line of text.
+    bool HitText(POINT pt, bool strict, TextPos* caret, int* charIndex = nullptr);
+    void SelectionBounds(TextPos& start, TextPos& end) const;
+    void DrawSelection(HDC dc, int page, int64_t left, int64_t top, const RECT& vis);
+    void SelectWordAt(POINT pt);
+    void UpdateSelectionTo(POINT pt);
+    void OnAutoScroll();
+    void ShowContextMenu(LPARAM lp);
+
+    HWND m_hwnd = nullptr;
+    RenderWorker* m_worker = nullptr;
+    int m_dpi = 96;
+    int m_clientW = 0, m_clientH = 0;
+
+    // document
+    uint32_t m_docId = 0;
+    std::vector<SizeF> m_sizes;  // in points
+    std::wstring m_message;
+
+    // layout
+    std::vector<PageLayout> m_layout;
+    int m_first = 0, m_last = -1;  // laid-out page range (single page mode: one page)
+    int m_singlePage = 0;
+    int64_t m_docW = 0, m_docH = 0;
+    int64_t m_scrollX = 0, m_scrollY = 0;
+    int64_t m_sbUnit = 1;  // pixels per scrollbar unit
+    int m_margin = 8;
+    ViewMode m_viewMode = ViewMode::Continuous;
+    bool m_cover = true;
+    int m_rotation = 0;
+    int m_colors = 0;
+    int m_forcedPage = -1;  // page explicitly navigated to (see CurrentPage)
+    bool m_inSize = false, m_sizeDirty = false;
+    bool m_editPending = false;  // between BeginEdit and EndEdit
+
+    // zoom
+    ZoomMode m_mode = ZoomMode::FitWidth;
+    double m_zoom = 1.0;
+    int m_scaleKey = 1000;  // pixels per point * 1000 (quantised)
+    double m_scale = 1.0;   // m_scaleKey / 1000.0
+    bool m_zoomSettling = false;
+
+    // rendering
+    PageCache m_cache;
+    std::unordered_set<TileKey, TileKeyHash> m_failed;  // allocation failures
+    const SearchState* m_search = nullptr;
+    HDC m_backDC = nullptr;
+    HBITMAP m_backBmp = nullptr;
+    int m_backW = 0, m_backH = 0;
+    HFONT m_messageFont = nullptr;
+
+    // text layers (LRU of pages' character boxes) and selection
+    std::unordered_map<int, TextLayer> m_text;
+    std::vector<int> m_textOrder;              // front = most recently used
+    std::unordered_set<int> m_textPending;
+    bool m_hasSel = false;
+    bool m_selecting = false;
+    TextPos m_selAnchor, m_selFocus;
+
+    // links
+    bool m_linkPressed = false;
+    LinkTarget m_pressedLink;
+    HWND m_linkTip = nullptr;
+    std::wstring m_linkTipText;
+
+    // editing tools
+    ViewTool m_tool = ViewTool::Select;
+    std::unordered_map<int, std::vector<TextRun>> m_runs;  // pages near the view
+    std::unordered_set<int> m_runsPending;
+    std::unordered_map<int, std::vector<PageImage>> m_images;  // arrive with the runs
+    std::unordered_map<int, std::vector<int>> m_blocks;        // block number of each run
+    int m_selPage = -1;               // the page of the selected lines or picture
+    std::vector<int> m_selFirsts;     // selected lines (their first page object)
+    int m_selImage = -1;              // selected picture (its page object), or -1
+    EditDrag m_editDrag = EditDrag::None;
+    POINT m_pressPt{};
+    int m_pressPage = -1, m_pressRun = -1, m_corner = -1;
+    PointF m_pressAt{}, m_dragAt{};   // page points
+    bool m_inlineHold = false;
+    bool m_returnToEdit = false;
+    std::wstring m_note;              // ShowNote
+    void DrawNote(HDC dc);      // a picture placed from the Edit tool goes back to it
+    int m_reselectPage = -1;          // after formatting: select the lines in this area again
+    RectF m_reselectRect;
+    int m_hoverPage = -1, m_hoverRun = -1;
+    HWND m_inlineEdit = nullptr;
+    HFONT m_inlineFont = nullptr;
+    int m_inlinePage = -1;
+    TextRun m_inlineRun;
+    InlineKind m_inlineKind = InlineKind::Run;
+    RectF m_inlineRect;         // page points, what the box covers
+    FormField m_inlineField;
+    bool m_inlineMultiline = false;
+    ToolOptions m_toolOptions;
+    bool m_drawing = false;     // a drag of a drawing / placing tool
+    int m_drawPage = -1;
+    std::vector<PointF> m_drawPoints;
+    std::vector<int> m_back, m_forward;
+    bool m_presenting = false;
+    bool m_inlineClosing = false;
+    HFONT m_bannerFont = nullptr;
+    std::wstring m_tipText;
+
+    // Geometry and redaction marks
+    MeasureOptions m_measure;
+    std::vector<Measure> m_measures;
+    bool m_angleArm = false;  // protractor: the first arm is set, the second follows the mouse
+    POINT m_mouse{-1, -1};
+    HFONT m_smallFont = nullptr;
+    std::vector<PageRect> m_marks;
+    bool m_copyAllowed = true;
+    bool CopyRefused();  // tells the user when copying is not allowed
+
+    // "copy area as image" mode
+    bool m_areaMode = false, m_areaDragging = false;
+    POINT m_areaStart{}, m_areaEnd{};
+
+    // mouse
+    bool m_dragging = false;
+    POINT m_dragStart{};
+    int64_t m_dragScrollX = 0, m_dragScrollY = 0;
+    ULONGLONG m_lastFlip = 0;
+};

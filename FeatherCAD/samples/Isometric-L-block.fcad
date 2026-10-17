@@ -1,0 +1,81 @@
+FeatherCAD 1
+units mm
+precision 2
+dimstyle 3.5 3 1 2 1 2 1
+layer 0 0 7 0 -3 name=0
+layer 1 0 7 0 50 name=Visible
+layer 2 0 6 10 25 name=Hidden
+layer 3 0 1 11 25 name=Centre
+layer 4 0 3 0 25 name=Dimension
+layer 5 0 4 0 18 name=Section
+layer 6 0 8 0 18 name=Construction
+layer 7 0 1 11 25 name=Cutting%20plane
+current 1 -1 -1 -1 1
+prop key=drawnby value=Feather%20CAD%20example
+prop key=title value=ISOMETRIC%20VIEW%20OF%20AN%20L%20BLOCK%20(true%20lengths)
+prop key=titleblock value=BIS
+line 0 0 51.96152422706632 30 L=1 W=50
+line 51.96152422706632 30 51.96152422706632 45 L=1 W=50
+line 0 15 51.96152422706632 45 L=1 W=50
+line 51.96152422706632 45 30.310889132455355 57.5 L=1 W=50
+line -21.65063509461097 27.5 30.310889132455355 57.5 L=1 W=50
+line 0 0 -34.64101615137755 20 L=1 W=50
+line -34.64101615137755 20 -34.64101615137755 75 L=1 W=50
+line -34.64101615137755 75 -21.65063509461097 67.5 L=1 W=50
+line -21.65063509461097 67.5 -21.65063509461097 27.5 L=1 W=50
+line -21.65063509461097 27.5 0 15 L=1 W=50
+line 0 15 0 0 L=1 W=50
+line 30.310889132455355 57.5 30.310889132455355 97.5 L=1 W=50
+line -21.65063509461097 67.5 30.310889132455355 97.5 L=1 W=50
+line 30.310889132455355 97.5 17.320508075688775 105 L=1 W=50
+line 17.320508075688775 105 -34.64101615137755 75 L=1 W=50
+ellipse 4.330127018922194 62.5 6.123724356957947 10.606601717798211 0.5773502691896258 0 0 1 L=1
+text -34.64101615137755 117 th=5 content=ISOMETRIC%20VIEW%20OF%20AN%20L%20BLOCK%20(true%20lengths)%0Abase%2060%20x%2040%20x%2015,%20upright%2060%20x%2015%20x%2040%20at%20the%20back,%20a%20hole%20of%2020%20diameter L=1
+text -34.64101615137755 -10 th=3 content=STEPS%0A1.%20ISODRAFT%20on%20(or%20the%20Iso%20switch%20on%20the%20status%20bar);%20Ortho%20keeps%20lines%20on%20the%2030%20deg%20and%20upright%20axes.%0A2.%20LINE%20with%20typed%20lengths:%20@60<30,%20@40<150,%20@15<90...;%20F5%20changes%20the%20plane%20(left,%20top,%20right).%0A3.%20ISOCIRCLE%20on%20the%20right%20plane%20for%20the%20hole.%20For%20isometric%20projection,%20ISODRAFT%20>%20Scale%20draws%20lengths%20x%200.816. L=1
+end
+sheet 420 297 1 10 0 1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 paper=A3 name=Sheet1
+FeatherCAD 1
+units mm
+precision 2
+dimstyle 3.5 3 1 2 1 2 1
+layer 0 0 7 0 -3 name=0
+current 0 -1 -1 -1 1
+block 0 0 34 name=BIS%20title%20block
+pline 1 4 -170 0 0 0 0 0 0 48 0 -170 48 0 W=50
+line -170 8 -40 8 W=25
+line -170 16 -40 16 W=25
+line -170 24 -40 24 W=25
+line -170 32 0 32 W=25
+line -170 40 0 40 W=25
+line -90 0 -90 32 W=25
+line -40 0 -40 32 W=25
+text -168.8 47.2 th=1.6 content=INSTITUTION W=18
+text -168.8 41.4 th=2.8 tj=6 content={company} W=25
+text -168.8 39.2 th=1.6 content=TITLE W=18
+text -168.8 33.4 th=3.5 tj=6 content={title} W=25
+text -168.8 31.2 th=1.6 content=NAME W=18
+text -168.8 25.4 th=2.8 tj=6 content={drawnby} W=25
+text -88.8 31.2 th=1.6 content=USN W=18
+text -88.8 25.4 th=2.8 tj=6 content={usn} W=25
+text -168.8 23.2 th=1.6 content=BRANCH%20/%20BATCH W=18
+text -168.8 17.4 th=2.8 tj=6 content={branch} W=25
+text -88.8 23.2 th=1.6 content=SHEET%20NO. W=18
+text -88.8 17.4 th=2.8 tj=6 content={sheet} W=25
+text -168.8 15.2 th=1.6 content=SCALE W=18
+text -168.8 9.4 th=2.8 tj=6 content={scale} W=25
+text -88.8 15.2 th=1.6 content=DATE W=18
+text -88.8 9.4 th=2.8 tj=6 content={date} W=25
+text -168.8 7.2 th=1.6 content=CHECKED%20BY W=18
+text -168.8 1.4 th=2.8 tj=6 content={checkedby} W=25
+text -88.8 7.2 th=1.6 content=MARKS W=18
+text -88.8 1.4 th=2.8 tj=6 content={marks} W=25
+pline 1 4 -32.05 13.2 0 -20.349999999999994 9.95 0 -20.349999999999994 22.95 0 -32.05 19.7 0 W=35
+circle -7.999999999999993 16.45 6.5 W=35
+circle -7.999999999999993 16.45 3.25 W=35
+line -34 16.45 0.45000000000000706 16.45 T=3 W=18 S=0.32499998807907104
+line -7.999999999999993 7.999999999999999 -7.999999999999993 24.9 T=3 W=18 S=0.32499998807907104
+text -20 1.5 th=1.8 tj=7 content=PROJECTION W=18
+pline 1 4 10 10 0 410 10 0 410 287 0 10 287 0 W=70
+insert 410 10 1 0 0 name=BIS%20title%20block
+viewport 15 55 405 282 79.84571569219784 44.59985 1 0
+end
