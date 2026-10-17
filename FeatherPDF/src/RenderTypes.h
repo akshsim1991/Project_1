@@ -208,11 +208,24 @@ struct TextCopyResult {
 
 // A print job handed to the worker. The printer DC belongs to the worker
 // from then on (it calls EndDoc and DeleteDC).
+// A page placed on a printed sheet: its rectangle in points from the top
+// left corner of the paper (as it comes out of the printer), turned
+// `rotate` quarter turns clockwise. See PrintLayout.h.
+struct PrintCell {
+    int page = 0;
+    RectF rect;
+    int rotate = 0;
+};
+
+struct PrintSheet {
+    std::vector<PrintCell> cells;  // empty: a blank sheet (the back of a booklet)
+};
+
 struct PrintJob {
     uint32_t docId = 0;
     HDC dc = nullptr;
     std::wstring docName;
-    std::vector<int> pages;  // in printing order (copies already expanded)
+    std::vector<PrintSheet> sheets;  // in printing order (copies already expanded)
 };
 
 // ---------------------------------------------------------------------------

@@ -22,7 +22,7 @@
 #include <vector>
 
 #define APP_NAME L"Feather PDF"
-#define APP_VERSION L"2.6.0"
+#define APP_VERSION L"2.6.1"
 #define APP_COPYRIGHT L"\x00A9 2026 Akshaya Simha"
 #define APP_WINDOW_CLASS L"FeatherPdfMain"
 #define APP_REG_KEY L"Software\\FeatherPDF"
@@ -52,6 +52,7 @@ enum : UINT {
     WM_APP_COMPARED,                 // CompareResult*
     WM_APP_REDACT_FOUND,             // RedactFindResult*
     WM_APP_AUTOSAVED,                // AutosaveResult* (a recovery copy was written)
+    WM_APP_PREVIEW_READY,            // TileResult* (a page for the print preview: req.page, req.rotate, req.scaleKey = request)
 };
 
 // WM_APP_SIDEBAR notifications: lParam = outline index / page index.

@@ -13,6 +13,7 @@
 #include "TabBar.h"
 #include "CommandPalette.h"
 #include "Ocr.h"
+#include "PrintDialog.h"
 #include "ToolDialogs.h"
 #include "Toolbar.h"
 
@@ -298,7 +299,6 @@ private:
     bool m_printing = false;
     bool m_printCancelled = false;
     int m_printDone = 0, m_printTotal = 0;
-    HGLOBAL m_devMode = nullptr, m_devNames = nullptr;
 
     // text recognition: one job at a time, a page or two ahead
     struct OcrJob {
@@ -319,6 +319,7 @@ private:
     PageNumberOptions m_numberOptions;
     ExportOptions m_exportOptions;
     CropOptions m_cropOptions;
+    PrintSettings m_printSettings;
     NupOptions m_nupOptions;
     // export (one at a time)
     bool m_exporting = false;

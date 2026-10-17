@@ -997,6 +997,9 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         case WM_APP_AUTOSAVED:
             OnAutosaved((AutosaveResult*)lp);
             return 0;
+        case WM_APP_PREVIEW_READY:
+            OnPrintPreviewPage((TileResult*)lp);
+            return 0;
         case WM_APP_OCR_IMAGE:
             OnOcrImage((OcrImage*)lp);
             return 0;
@@ -1192,9 +1195,6 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             KillTimer(m_hwnd, kSearchTimer);
             m_ocr.Stop();
             m_worker.Stop();
-            if (m_devMode) GlobalFree(m_devMode);
-            if (m_devNames) GlobalFree(m_devNames);
-            m_devMode = m_devNames = nullptr;
             if (m_accel) DestroyAcceleratorTable(m_accel);
             m_accel = nullptr;
             PostQuitMessage(0);
@@ -2264,68 +2264,26 @@ void MainWindow::Print() {
         MessageBoxW(m_hwnd, L"A document is already being printed.", APP_NAME, MB_ICONINFORMATION);
         return;
     }
-    const int count = tab.view->PageCount();
-    PRINTPAGERANGE ranges[32] = {};
-    ranges[0] = {1, (DWORD)count};
-    PRINTDLGEXW pd{};
-    pd.lStructSize = sizeof(pd);
-    pd.hwndOwner = m_hwnd;
-    pd.hDevMode = m_devMode;  // remembers the last printer and its settings
-    pd.hDevNames = m_devNames;
-    pd.Flags = PD_RETURNDC | PD_USEDEVMODECOPIESANDCOLLATE | PD_NOSELECTION;
-    pd.nPageRanges = 1;
-    pd.nMaxPageRanges = 32;
-    pd.lpPageRanges = ranges;
-    pd.nMinPage = 1;
-    pd.nMaxPage = (DWORD)count;
-    pd.nCopies = 1;
-    pd.nStartPage = START_PAGE_GENERAL;
-    const HRESULT hr = PrintDlgExW(&pd);
-    m_devMode = pd.hDevMode;
-    m_devNames = pd.hDevNames;
-    if (FAILED(hr) || pd.dwResultAction != PD_RESULT_PRINT || !pd.hDC) {
-        if (pd.hDC) DeleteDC(pd.hDC);
+    // Feather PDF's own Print window, with a preview of every sheet.
+    m_printSettings.pages = NewPageChoice(m_printSettings.pages);
+    HDC dc = nullptr;
+    std::vector<PrintSheet> sheets;
+    if (!ShowPrintDialog(m_inst, m_hwnd, &m_worker, tab.docId, tab.view->PageSizes(), m_printSettings, dc, sheets))
         return;
-    }
-
-    // Pages to print, in order.
-    std::vector<int> pages;
-    if (pd.Flags & PD_CURRENTPAGE) {
-        pages.push_back(tab.view->CurrentPage());
-    } else if (pd.Flags & PD_PAGENUMS) {
-        for (DWORD i = 0; i < pd.nPageRanges; ++i) {
-            const int from = std::max(1, (int)std::min(ranges[i].nFromPage, ranges[i].nToPage));
-            const int to = std::min(count, (int)std::max(ranges[i].nFromPage, ranges[i].nToPage));
-            for (int p = from; p <= to; ++p) pages.push_back(p - 1);
-        }
-    } else {
-        for (int p = 0; p < count; ++p) pages.push_back(p);
-    }
-    // Copies the driver can not do itself (nCopies is 1 when it can).
-    const int copies = std::max(1, (int)pd.nCopies);
-    if (copies > 1) {
-        std::vector<int> expanded;
-        if (pd.Flags & PD_COLLATE) {
-            for (int c = 0; c < copies; ++c) expanded.insert(expanded.end(), pages.begin(), pages.end());
-        } else {
-            for (int p : pages) expanded.insert(expanded.end(), (size_t)copies, p);
-        }
-        pages.swap(expanded);
-    }
-    if (pages.empty()) {
-        DeleteDC(pd.hDC);
+    if (sheets.empty() || IndexOf(&tab) < 0 || !tab.docId) {
+        DeleteDC(dc);
         return;
     }
 
     PrintJob job;
     job.docId = tab.docId;
-    job.dc = pd.hDC;  // owned by the worker from here on
+    job.dc = dc;  // owned by the worker from here on
     job.docName = FileNameFromPath(tab.path);
-    job.pages = std::move(pages);
+    job.sheets = std::move(sheets);
     m_printing = true;
     m_printCancelled = false;
     m_printDone = 0;
-    m_printTotal = (int)job.pages.size();
+    m_printTotal = (int)job.sheets.size();
     m_worker.StartPrint(std::move(job));
     UpdateTitle();
 }

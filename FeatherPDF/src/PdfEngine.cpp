@@ -668,31 +668,27 @@ void PdfEngine::GetInfo(DocInfo& info) {
     });
 }
 
-bool PdfEngine::PrintPage(HDC dc, int index) {
-    if (!m_doc || index < 0 || index >= m_pageCount) return false;
-    FPDF_PAGE page = nullptr;
-    if (!Guarded([&] { page = FPDF_LoadPage(m_doc, index); }) || !page) return false;
-
-    // Fit to the printable area, keeping the aspect ratio, centred, and
-    // turned 90 degrees when page and paper orientation differ.
-    const float w = FPDF_GetPageWidthF(page), h = FPDF_GetPageHeightF(page);
-    const int resX = GetDeviceCaps(dc, HORZRES), resY = GetDeviceCaps(dc, VERTRES);
-    const int dpiX = GetDeviceCaps(dc, LOGPIXELSX), dpiY = GetDeviceCaps(dc, LOGPIXELSY);
-    const bool rotate = (w > h) != (resX > resY);
-    const double pw = (rotate ? h : w) * dpiX / 72.0, ph = (rotate ? w : h) * dpiY / 72.0;
-    const double k = std::min(resX / pw, resY / ph);
-    const int outW = (int)(pw * k), outH = (int)(ph * k);
-
-    bool ok = StartPage(dc) > 0;
-    if (ok) {
-        Guarded([&] {
-            FPDF_RenderPage(dc, page, (resX - outW) / 2, (resY - outH) / 2, outW, outH,
-                            rotate ? 1 : 0, FPDF_ANNOT | FPDF_PRINTING);
-        });
-        ok = EndPage(dc) > 0;
+bool PdfEngine::PrintSheetTo(HDC dc, const PrintSheet& sheet) {
+    if (!m_doc) return false;
+    // Points from the paper's corner -> device pixels from the printable area's corner.
+    const double dpiX = GetDeviceCaps(dc, LOGPIXELSX) / 72.0, dpiY = GetDeviceCaps(dc, LOGPIXELSY) / 72.0;
+    const int offX = GetDeviceCaps(dc, PHYSICALOFFSETX), offY = GetDeviceCaps(dc, PHYSICALOFFSETY);
+    if (StartPage(dc) <= 0) return false;
+    bool ok = true;
+    for (const PrintCell& cell : sheet.cells) {
+        if (cell.page < 0 || cell.page >= m_pageCount) continue;
+        FPDF_PAGE page = nullptr;
+        if (!Guarded([&] { page = FPDF_LoadPage(m_doc, cell.page); }) || !page) {
+            ok = false;
+            continue;
+        }
+        const int x = (int)std::lround(cell.rect.left * dpiX) - offX, y = (int)std::lround(cell.rect.top * dpiY) - offY;
+        const int w = std::max(1, (int)std::lround((cell.rect.right - cell.rect.left) * dpiX));
+        const int h = std::max(1, (int)std::lround((cell.rect.bottom - cell.rect.top) * dpiY));
+        Guarded([&] { FPDF_RenderPage(dc, page, x, y, w, h, cell.rotate & 3, FPDF_ANNOT | FPDF_PRINTING); });
+        Guarded([&] { FPDF_ClosePage(page); });
     }
-    Guarded([&] { FPDF_ClosePage(page); });
-    return ok;
+    return EndPage(dc) > 0 && ok;
 }
 
 std::wstring PdfEngine::ExtractText(TextPos from, TextPos to) {
@@ -3121,22 +3117,23 @@ bool PdfEngine::AddOcrText(const EditOp& op) {
 // ---------------------------------------------------------------------------
 // Whole pages: pictures and text (text recognition and export)
 // ---------------------------------------------------------------------------
-bool PdfEngine::RenderPage(int index, float scale, bool annots, PixelBuffer& out) {
+bool PdfEngine::RenderPage(int index, float scale, bool annots, PixelBuffer& out, int rotate, bool printing) {
     if (!m_doc || index < 0 || index >= m_pageCount || scale <= 0) return false;
     bool ok = false;
     Guarded([&] {
         FPDF_PAGE page = LoadEditPage(index);
         if (!page) return;
-        const int w = std::max(1, (int)std::lround(FPDF_GetPageWidthF(page) * scale));
-        const int h = std::max(1, (int)std::lround(FPDF_GetPageHeightF(page) * scale));
+        int w = std::max(1, (int)std::lround(FPDF_GetPageWidthF(page) * scale));
+        int h = std::max(1, (int)std::lround(FPDF_GetPageHeightF(page) * scale));
+        if (rotate & 1) std::swap(w, h);
         FPDF_BITMAP bmp = nullptr;
         if (w <= 20000 && h <= 20000 && (double)w * h <= 200e6 && out.Allocate(w, h))
             bmp = FPDFBitmap_CreateEx(w, h, FPDFBitmap_BGRx, out.bits, w * 4);
         if (bmp) {
             FPDFBitmap_FillRect(bmp, 0, 0, w, h, 0xFFFFFFFF);
-            const int flags = (annots ? FPDF_ANNOT : 0) | FPDF_RENDER_LIMITEDIMAGECACHE;
-            FPDF_RenderPageBitmap(bmp, page, 0, 0, w, h, 0, flags);
-            if (annots && m_form) FPDF_FFLDraw(m_form->handle, bmp, page, 0, 0, w, h, 0, flags);
+            const int flags = (annots ? FPDF_ANNOT : 0) | (printing ? FPDF_PRINTING : 0) | FPDF_RENDER_LIMITEDIMAGECACHE;
+            FPDF_RenderPageBitmap(bmp, page, 0, 0, w, h, rotate & 3, flags);
+            if (annots && m_form) FPDF_FFLDraw(m_form->handle, bmp, page, 0, 0, w, h, rotate & 3, flags);
             FPDFBitmap_Destroy(bmp);
             ok = true;
         }

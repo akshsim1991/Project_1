@@ -63,6 +63,8 @@ public:
     void MakeLayout(uint32_t docId, LayoutJob&& job, const std::wstring& path);
     // Writes the document as it is now to `path` (WM_APP_AUTOSAVED), as it would be saved.
     void Autosave(uint32_t docId, const std::wstring& path);
+    // A page for the print preview, as printed (WM_APP_PREVIEW_READY).
+    void RenderPreview(uint32_t docId, int page, float scale, int rotate, int requestId);
 
     // Text recognition: renders `page` at `scale` pixels per point for the
     // recognition thread (-> WM_APP_OCR_IMAGE). With `skipText`, a page that
@@ -83,7 +85,7 @@ private:
         enum Type {
             Open, Close, TextLayer, Copy, Search, CancelSearch, Trim, Image, Print, CancelPrint,
             Edit, Undo, Redo, Save, Extract, TextRuns, Comments, OcrPage, Export, CancelExport, Compare, FindRedact,
-            Layout, Autosave
+            Layout, Autosave, Preview
         } type = Open;
         uint32_t docId = 0;
         uint32_t newDocId = 0;   // Edit / Undo / Redo

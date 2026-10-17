@@ -712,3 +712,7 @@ bool ShowNupDialog(HINSTANCE inst, HWND owner, NupOptions& o) {
 bool ShowPropertiesDialog(HINSTANCE inst, HWND owner, PropertiesOptions& o) {
     return Run(inst, owner, IDD_PROPERTIES, PropertiesProc, o);
 }
+
+void InitPageChoice(HWND dlg, const PageChoice& p) { InitPages(dlg, p); }
+bool PageChoiceCommand(HWND dlg, WPARAM wp) { return PagesCommand(dlg, wp); }
+bool ReadPageChoice(HWND dlg, PageChoice& p) { return ReadPages(dlg, p); }

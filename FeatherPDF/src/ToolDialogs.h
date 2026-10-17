@@ -64,6 +64,11 @@ struct RedactFindOptions {
     bool emails = false, phones = false, numbers = false;
 };
 
+// The shared "Pages" group (All / Current / Pages:) for other dialogs.
+void InitPageChoice(HWND dlg, const PageChoice& p);
+bool PageChoiceCommand(HWND dlg, WPARAM wp);  // typing a range selects "Pages:"
+bool ReadPageChoice(HWND dlg, PageChoice& p);  // false after telling the user what is wrong
+
 // Copied pages pasted into several open documents.
 struct PasteTabsOptions {
     std::wstring info;                // in: what is pasted

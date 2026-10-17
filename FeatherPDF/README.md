@@ -1,4 +1,4 @@
-# Feather PDF 2.6
+# Feather PDF 2.6.1
 
 A small, fast, native PDF **viewer and editor** for Windows 10 and 11.
 It opens PDFs in tabs and lets you scroll, jump to pages, zoom, search,
@@ -127,6 +127,8 @@ MainWindow ─► Tab × N ─► PdfView ── layout, visible pages, zoom, na
 | `src/ViewGeometry.cpp` | Ruler, protractor, rulers along the edges and redaction marks in the page view |
 | `src/ViewEditing.cpp` | Edit mode: selecting, moving and deleting blocks of text and pictures, resizing pictures, formatting and alignment |
 | `src/Recovery.cpp` | Recovery copies of unsaved changes, and restoring them after a crash |
+| `src/PrintDialog.*` | The Print window: printers and their settings, options, and the sheet preview |
+| `src/PrintLayout.*` | Where pages go on printed sheets (fit / actual size, pages per sheet, booklets), shared by preview and printing |
 | `src/FileAssoc.*` | `.pdf` "Open with" / Default-apps registration (HKCU) |
 
 ### Threading
@@ -335,11 +337,32 @@ Rotate left or right (Ctrl+L / Ctrl+R) turns sideways scans upright.
 on a dark page) / Dimmed. This applies to all tabs and is remembered.
 Printing and copying always use the original colours.
 
-**Printing:** ⋯ › Print (Ctrl+P) opens the standard Windows print dialog,
-with all pages, the current page or page ranges (such as `1-3, 7`), and
-copies. Each page is fitted to the paper and turned automatically when
-page and paper orientation differ. Pages are printed in the background
-while you keep reading, with progress in the title bar and a
+**Printing (new Print window in 2.6.1):** ⋯ › Print (Ctrl+P) opens Feather
+PDF's own Print window. (The Windows 11 print dialog shows an empty preview
+with "This app doesn't support print preview" for programs like Feather
+PDF, so it is no longer used.)
+
+* **Preview:** every sheet is shown exactly as it will come out of the
+  printer, on the paper size the printer uses, with a dotted line where the
+  printer's margins are. Turn the sheets with **<** and **>** or the mouse
+  wheel.
+* **Printer** with its **Properties** (paper, quality, two-sided printing
+  and the other settings of the printer itself). The printer and its
+  settings are remembered.
+* **Pages:** all, the current page, or ranges such as `1-3, 7, 10-`.
+* **Copies**, collated (whole sets) or not.
+* **Layout:** 1, 2, 4, 6 or 9 pages per sheet, or a **booklet** (two pages
+  on each side, in folding order: print on both sides, flipping on the
+  short edge, and fold in the middle).
+* **Size** (one page per sheet): fit to the paper, **actual size**, or
+  shrink only pages that are too large.
+* **Orientation:** automatic (as the pages), portrait or landscape. With
+  "automatic", a page that lies across the paper is turned to fit.
+* The window says how many sheets of paper the job needs.
+
+Comments, highlights and filled-in form fields are printed; the dark and
+dimmed page colours are only for the screen. Sheets are printed in the
+background while you keep reading, with progress in the title bar and a
 "Cancel printing" menu item.
 
 **Document properties:** ⋯ › Document properties (Ctrl+D) shows file name,
@@ -899,8 +922,8 @@ There are no other dependencies. The full license texts are installed to
 * Compress leaves pictures with transparent parts, rotated pictures and
   pictures inside form XObjects as they are.
 
-* Printing always fits each page to the paper; there is no "actual size"
-  or booklet option. Printing ignores the night/dim page colours.
+* Printing ignores the night/dim page colours. Duplex (two-sided)
+  printing is set in the printer's Properties.
 * Link and bookmark targets jump to the right page. The position within the
   page is only approximated (from the top-left of an unrotated page), so for
   rotated views or unusual page boxes the jump goes to the top of the page.
@@ -935,7 +958,7 @@ There are no other dependencies. The full license texts are installed to
 ## Suggested improvements for version 2
 
 1. Back/forward navigation (Alt+← / Alt+→) after following links and bookmarks.
-2. Print options: actual size, multiple pages per sheet, booklet.
+2. Print options: actual size, multiple pages per sheet, booklet (done in 2.6.1).
 3. Presentation mode and auto-scroll.
 4. Remember rotation per document.
 5. A recent-files list (Jump List integration) and per-document zoom memory.

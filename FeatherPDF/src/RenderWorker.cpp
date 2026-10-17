@@ -263,6 +263,17 @@ void RenderWorker::Autosave(uint32_t docId, const std::wstring& path) {
     Push(std::move(c));
 }
 
+void RenderWorker::RenderPreview(uint32_t docId, int page, float scale, int rotate, int requestId) {
+    Command c;
+    c.type = Command::Preview;
+    c.docId = docId;
+    c.page = page;
+    c.scale = scale;
+    c.flags = (uint32_t)rotate;
+    c.requestId = (uint32_t)requestId;
+    Push(std::move(c));
+}
+
 void RenderWorker::RenderForOcr(uint32_t docId, uint32_t jobId, int page, float scale, bool skipText) {
     Command c;
     c.type = Command::OcrPage;
@@ -532,6 +543,17 @@ void RenderWorker::Execute(Command& cmd) {
         case Command::Layout:
             ExecuteExtract(cmd);
             break;
+        case Command::Preview: {
+            auto* res = new TileResult;
+            res->docId = cmd.docId;
+            res->req.page = cmd.page;
+            res->req.rotate = (int)cmd.flags;
+            res->req.scaleKey = (int)cmd.requestId;
+            if (PdfEngine* engine = Engine(cmd.docId))
+                engine->RenderPage(cmd.page, cmd.scale, true, res->pixels, (int)cmd.flags, true);  // empty: failed
+            Post(WM_APP_PREVIEW_READY, res);
+            break;
+        }
         case Command::Autosave: {
             auto* res = new AutosaveResult;
             res->docId = cmd.docId;
@@ -839,16 +861,16 @@ void RenderWorker::PrintStep() {
         EndPrint(true);
         return;
     }
-    if (m_printPos < m_print.pages.size()) {
-        if (!engine->PrintPage(m_print.dc, m_print.pages[m_printPos])) {
+    if (m_printPos < m_print.sheets.size()) {
+        if (!engine->PrintSheetTo(m_print.dc, m_print.sheets[m_printPos])) {
             EndPrint(true);
             return;
         }
         ++m_printPos;
         PostMessageW(m_notify, WM_APP_PRINT_PROGRESS, (WPARAM)m_printPos,
-                     (LPARAM)m_print.pages.size());
+                     (LPARAM)m_print.sheets.size());
     }
-    if (m_printPos >= m_print.pages.size()) EndPrint(false);
+    if (m_printPos >= m_print.sheets.size()) EndPrint(false);
 }
 
 void RenderWorker::EndPrint(bool abort) {

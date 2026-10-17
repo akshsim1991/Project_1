@@ -7,7 +7,7 @@
 ; The installer is written to installer\Output\FeatherPDF-Setup-<version>.exe
 
 #define AppName "Feather PDF"
-#define AppVersion "2.6.0"
+#define AppVersion "2.6.1"
 #define AppExe "FeatherPDF.exe"
 #define ProgId "FeatherPDF.Document"
 

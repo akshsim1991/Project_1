@@ -77,8 +77,9 @@ public:
     void LoadOutline(std::vector<OutlineItem>& out);
     void GetInfo(DocInfo& info);
 
-    // Prints one page on `dc` (between StartDoc/EndDoc), fitted to the paper.
-    bool PrintPage(HDC dc, int page);
+    // Prints one sheet on `dc` (between StartDoc/EndDoc): its pages at
+    // their places (see PrintLayout.h).
+    bool PrintSheetTo(HDC dc, const PrintSheet& sheet);
 
     static void ApplyPageColors(PixelBuffer& px, int mode);
 
@@ -87,7 +88,7 @@ public:
 
     // A whole page as displayed (upright, /Rotate applied) at `scale`
     // pixels per point; with annotations and form fields when `annots`.
-    bool RenderPage(int page, float scale, bool annots, PixelBuffer& out);
+    bool RenderPage(int page, float scale, bool annots, PixelBuffer& out, int rotate = 0, bool printing = false);
     // Visible letters (not spaces) in a page's text layer: 0 for a scan.
     int CountLetters(int page);
     // The text of one page ("\r\n" between lines).
